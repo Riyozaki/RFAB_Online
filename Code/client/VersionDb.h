@@ -98,3 +98,46 @@ private:
     std::uint64_t m_base{0};
     bool m_translationEnabled{false};
 };
+
+//! @brief A pointer that is resolved through the Address Library on first use.
+//!
+//! Every POINTER_SKYRIMSE in the client is an instance of this template, so it
+//! has to live next to VersionDb. The lookup caches both the success and the
+//! failure: an id that is not reversed yet (see docs/phase1/IDS_RU.md) would
+//! otherwise be searched again on every call, and these pointers are used in
+//! per-frame code.
+template <class T> struct VersionDbPtr
+{
+    explicit VersionDbPtr(const std::uint32_t aId) noexcept
+        : m_id{aId}
+    {
+    }
+
+    VersionDbPtr() = delete;
+    VersionDbPtr(const VersionDbPtr&) = delete;
+    VersionDbPtr& operator=(const VersionDbPtr&) = delete;
+
+    operator T*() const noexcept { return Get(); }
+
+    T* operator->() const noexcept { return Get(); }
+
+    T* Get() const noexcept { return static_cast<T*>(GetPtr()); }
+
+    void* GetPtr() const noexcept
+    {
+        if (!m_resolved)
+        {
+            m_pPtr = VersionDb::Get().FindAddressById(m_id);
+            m_resolved = true;
+        }
+
+        return m_pPtr;
+    }
+
+    [[nodiscard]] std::uint32_t GetId() const noexcept { return m_id; }
+
+private:
+    mutable void* m_pPtr{nullptr};
+    mutable bool m_resolved{false};
+    const std::uint32_t m_id;
+};
