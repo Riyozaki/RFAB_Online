@@ -1,0 +1,13 @@
+Address Library ID audit — Phase 0 evidence
+Date: 2026-10-21
+Database: MO2/mods/Address Library for SKSE Plugins/SKSE/Plugins/version-1-5-97-0.bin
+  from github.com/drake1ch/RFAB (main, fetched 2026-10-21), blob f8ad64b3582c8519f03c278c2c52505a95bab779, 1490796 bytes
+Client source: github.com/rfortier/TiltedEvolution-rwf, branch features-integration, commit a7d061564338ab7ff475d6919a19c42664589611
+Tool: tools/address_db_check.py (decoder mirrors Code/client/VersionDb.h)
+
+database: format=1 version=1.5.97.0 module=SkyrimSE.exe entries=778674 max_offset=0x35f3830
+function/global IDs referenced: 278, missing: 0
+RTTI IDs referenced: 2806, missing: 0
+
+Caveat: ID presence = database has a counterpart offset for 1.5.97.
+It does NOT prove identical signatures/struct layouts (separate audit).
