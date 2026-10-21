@@ -1,3 +1,4 @@
+#include <Games/BytePatchGuard.h>
 
 #include <base/threading/ThreadUtils.h>
 
@@ -32,5 +33,6 @@ static TiltedPhoques::Initializer s_BSThreadInit(
         const VersionDbPtr<uint8_t> getTaskletManagerInstance(69554);
 
         // tasklet naming
-        TiltedPhoques::SwapCall(getTaskletManagerInstance.Get() + 0x63, Construct_TaskletManager, &Hook_Construct_TaskletManager);
+        if (CanApplyInsideFunctionPatch("BSTaskletManager/tasklet naming"))
+            TiltedPhoques::SwapCall(getTaskletManagerInstance.Get() + 0x63, Construct_TaskletManager, &Hook_Construct_TaskletManager);
     });

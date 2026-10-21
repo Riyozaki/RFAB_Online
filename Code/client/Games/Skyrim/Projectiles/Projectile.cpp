@@ -1,4 +1,5 @@
 #include "Projectile.h"
+#include <Games/BytePatchGuard.h>
 #include <Games/Skyrim/Forms/TESObjectWEAP.h>
 #include <Games/Skyrim/Forms/MagicItem.h>
 #include <Games/Skyrim/Forms/TESAmmo.h>
@@ -150,5 +151,6 @@ static TiltedPhoques::Initializer s_projectileHooks(
                 ret();
             }
         } gen(hookLoc.Get());
-        TiltedPhoques::Jump(hookLoc.Get() + 0x374, gen.getCode());
+        if (CanApplyInsideFunctionPatch("Projectile/launched hook"))
+            TiltedPhoques::Jump(hookLoc.Get() + 0x374, gen.getCode());
     });
