@@ -1,4 +1,4 @@
-
+﻿
 #include <ScriptExtender.h>
 #include <TiltedOnlinePCH.h>
 #include <VersionDb.h>
@@ -11,9 +11,18 @@ constexpr char kScriptExtenderEntrypoint[] = "StartSKSE";
 
 constexpr size_t kScriptExtenderNameLength = sizeof(kScriptExtenderName) / sizeof(wchar_t) - 1;
 
-// AE+ only
-// Use this to raise the SKSE baseline
-constexpr int kSKSEMinBuild = 20100;
+// SKSE version numbers are packed as major*1'000'000 + minor*10'000 + revision*100 + build.
+// SkyrimSE 1.5.97 needs SKSE64 2.0.20; every 1.6.x build needs SKSE64 2.1.0 or newer.
+constexpr int kSKSEMinBuildPreAnniversary = 2002000; // v2.0.20
+constexpr int kSKSEMinBuildAnniversary = 2100000;    // v2.1.0
+
+int GetMinimumSkseBuild()
+{
+    int major = 0, minor = 0, revision = 0, build = 0;
+    VersionDb::Get().GetLoadedVersion(major, minor, revision, build);
+
+    return VersionDb::Get().IsPreAnniversary() ? kSKSEMinBuildPreAnniversary : kSKSEMinBuildAnniversary;
+}
 
 HMODULE g_SKSEModuleHandle{nullptr};
 
@@ -126,9 +135,12 @@ void LoadScriptExender()
 
     // nice try.
     int SkseVCum = fileVersion.versions[0] * 1000000 + fileVersion.versions[1] * 10000 + fileVersion.versions[2] * 100 + fileVersion.versions[3];
-    if (SkseVCum < kSKSEMinBuild)
+    const int minBuild = GetMinimumSkseBuild();
+    if (SkseVCum < minBuild)
     {
-        spdlog::error("Pre anniversary Script Extender is unsupported");
+        spdlog::error("Script Extender {} is too old for SkyrimSE {}: v{}.{}.{}.{} is required, found {}",
+                      needle->filename().string(), VersionDb::Get().GetLoadedVersionString(), minBuild / 1000000,
+                      (minBuild / 10000) % 100, (minBuild / 100) % 100, minBuild % 100, skseVersion);
         return;
     }
 
