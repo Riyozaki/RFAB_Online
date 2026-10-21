@@ -98,14 +98,21 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 
     auto result = TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
 
-    TP_ASSERT(result, "No projectile handle returned.");
+    // TP_ASSERT only logs (Utils::Assert), so it cannot be used to guard a
+    // dereference: a failed launch must not take the game down with it.
+    if (!result)
+    {
+        spdlog::error("Launch: no projectile handle returned, the launch event is not sent");
+        return result;
+    }
 
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
-    TP_ASSERT(pProjectile, "No projectile found.");
-
-    Event.Power = pProjectile->fPower;
+    if (pProjectile)
+        Event.Power = pProjectile->fPower;
+    else
+        spdlog::warn("Launch: projectile not found after launch, sending the launch data power {} instead", arData.fPower);
 
     World::Get().GetRunner().Trigger(Event);
 

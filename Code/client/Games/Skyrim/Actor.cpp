@@ -1185,6 +1185,8 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
     if (!pObject)
     {
         spdlog::warn("Object to drop not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
+        // The list was allocated for the drop, nobody else can own it now.
+        ExtraDataList::Delete(pExtraData);
         return;
     }
 

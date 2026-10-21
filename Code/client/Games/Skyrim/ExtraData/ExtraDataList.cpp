@@ -12,6 +12,17 @@ ExtraDataList* ExtraDataList::New() noexcept
     return pExtraDataList;
 }
 
+ExtraDataList::~ExtraDataList() = default;
+
+void ExtraDataList::Delete(ExtraDataList* apList) noexcept
+{
+    if (!apList)
+        return;
+
+    Memory::Delete(apList->bitfield);
+    Memory::Delete(apList);
+}
+
 bool ExtraDataList::Contains(ExtraDataType aType) const
 {
     if (bitfield)

@@ -11,6 +11,11 @@ struct EnchantmentItem;
 struct ExtraDataList
 {
     static ExtraDataList* New() noexcept;
+    //! @brief Frees a list created by New(), including its bitfield.
+    //!
+    //! The list is allocated on the game heap and owns a separately allocated
+    //! bitfield, so it cannot be released with delete/Memory::Delete alone.
+    static void Delete(ExtraDataList* apList) noexcept;
 
     bool Contains(ExtraDataType aType) const;
     void Set(ExtraDataType aType, bool aSet);

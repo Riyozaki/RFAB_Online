@@ -476,35 +476,43 @@ void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataLis
 
     if (ExtraEnchantment* pExtraEnchantment = Cast<ExtraEnchantment>(apExtraDataList->GetByType(ExtraDataType::Enchantment)))
     {
-        TP_ASSERT(pExtraEnchantment->pEnchantment, "Null enchantment in ExtraEnchantment");
-
-        modSystem.GetServerModId(pExtraEnchantment->pEnchantment->formID, arEntry.ExtraEnchantId);
-
-        if (pExtraEnchantment->pEnchantment->formID & 0xFF000000)
+        // A mod item can carry an enchantment extra list with a null item (for
+        // example when the enchantment's mod is missing). Dereferencing it while
+        // serialising the inventory is a crash, so the entry is left without
+        // enchantment data instead.
+        if (!pExtraEnchantment->pEnchantment)
         {
-            for (EffectItem* pEffectItem : pExtraEnchantment->pEnchantment->listOfEffects)
-            {
-                TP_ASSERT(pEffectItem, "pEffectItem is null.");
-                if (!pEffectItem)
-                    continue;
+            spdlog::error("GetItemFromExtraData: enchantment extra data has no enchantment, item is serialised without it");
+        }
+        else
+        {
+            modSystem.GetServerModId(pExtraEnchantment->pEnchantment->formID, arEntry.ExtraEnchantId);
 
-                Inventory::EffectItem effect;
-                effect.Magnitude = pEffectItem->data.fMagnitude;
-                effect.Area = pEffectItem->data.iArea;
-                effect.Duration = pEffectItem->data.iDuration;
-                effect.RawCost = pEffectItem->fRawCost;
-                modSystem.GetServerModId(pEffectItem->pEffectSetting->formID, effect.EffectId);
-                arEntry.EnchantData.Effects.push_back(effect);
+            if (pExtraEnchantment->pEnchantment->formID & 0xFF000000)
+            {
+                for (EffectItem* pEffectItem : pExtraEnchantment->pEnchantment->listOfEffects)
+                {
+                    if (!pEffectItem || !pEffectItem->pEffectSetting)
+                        continue;
+
+                    Inventory::EffectItem effect;
+                    effect.Magnitude = pEffectItem->data.fMagnitude;
+                    effect.Area = pEffectItem->data.iArea;
+                    effect.Duration = pEffectItem->data.iDuration;
+                    effect.RawCost = pEffectItem->fRawCost;
+                    modSystem.GetServerModId(pEffectItem->pEffectSetting->formID, effect.EffectId);
+                    arEntry.EnchantData.Effects.push_back(effect);
+                }
+
+                uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
+                TESForm* pObject = TESForm::GetById(objectId);
+                if (pObject)
+                    arEntry.EnchantData.IsWeapon = pObject->formType == FormType::Weapon;
             }
 
-            uint32_t objectId = modSystem.GetGameId(arEntry.BaseId);
-            TESForm* pObject = TESForm::GetById(objectId);
-            if (pObject)
-                arEntry.EnchantData.IsWeapon = pObject->formType == FormType::Weapon;
+            arEntry.ExtraEnchantCharge = pExtraEnchantment->usCharge;
+            arEntry.ExtraEnchantRemoveUnequip = pExtraEnchantment->bRemoveOnUnequip;
         }
-
-        arEntry.ExtraEnchantCharge = pExtraEnchantment->usCharge;
-        arEntry.ExtraEnchantRemoveUnequip = pExtraEnchantment->bRemoveOnUnequip;
     }
 
     if (ExtraHealth* pExtraHealth = Cast<ExtraHealth>(apExtraDataList->GetByType(ExtraDataType::Health)))
@@ -572,21 +580,39 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
             pEnchantment = Cast<EnchantmentItem>(TESForm::GetById(enchantId));
         }
 
-        TP_ASSERT(pEnchantment, "No Enchantment created or found.");
-
-        pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
+        if (pEnchantment)
+        {
+            pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
+        }
+        else
+        {
+            // Passing nullptr into the game setter is a crash. This happens when
+            // the server sends an item from a mod the client does not have (RFAB
+            // adds its own enchantments), so the item is created without one.
+            spdlog::error("GetExtraDataFromItem: enchantment {:X} was not found, the item is created without enchantment data",
+                          arEntry.ExtraEnchantId.ModId);
+        }
     }
 
     if (arEntry.ExtraPoisonId != 0)
     {
         // TODO: does poison have the same temp problem as enchants?
         // doesn't seem to be the case, there are only like 3 poisons, and no custom ones
-        TP_ASSERT(arEntry.ExtraPoisonId.ModId != 0xFFFFFFFF, "Poison is sent as temp!");
-
-        uint32_t poisonId = modSystem.GetGameId(arEntry.ExtraPoisonId);
-        if (AlchemyItem* pPoison = Cast<AlchemyItem>(TESForm::GetById(poisonId)))
+        if (arEntry.ExtraPoisonId.ModId == 0xFFFFFFFF)
         {
-            pExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
+            spdlog::error("GetExtraDataFromItem: poison has a temporary form id and cannot be resolved, the poison is dropped");
+        }
+        else
+        {
+            uint32_t poisonId = modSystem.GetGameId(arEntry.ExtraPoisonId);
+            if (AlchemyItem* pPoison = Cast<AlchemyItem>(TESForm::GetById(poisonId)))
+            {
+                pExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
+            }
+            else
+            {
+                spdlog::error("GetExtraDataFromItem: poison {:X} was not found, the poison is dropped", arEntry.ExtraPoisonId.ModId);
+            }
         }
     }
 
@@ -625,10 +651,11 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
     }
     */
 
+    // The list is only kept alive when something was actually added to it;
+    // otherwise it is released here (the caller then passes nullptr to the game).
     if (pExtraDataList->data == nullptr)
     {
-        Memory::Delete(pExtraDataList->bitfield);
-        Memory::Delete(pExtraDataList);
+        ExtraDataList::Delete(pExtraDataList);
         pExtraDataList = nullptr;
     }
 
