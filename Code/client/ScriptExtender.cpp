@@ -42,13 +42,17 @@ int GetFileVersion(const std::filesystem::path& acFilePath, FileVersion& aVersio
         return 1;
     }
     std::string buf(sz, '\0');
-    if (!GetFileVersionInfoW(filename, dwHandle, sz, &buf[0]))
+    if (!GetFileVersionInfoW(filename, dwHandle, sz, buf.data()))
     {
         return 2;
     }
-    VS_FIXEDFILEINFO* pvi;
-    sz = sizeof(VS_FIXEDFILEINFO);
-    if (!VerQueryValueA(&buf[0], "\\", reinterpret_cast<LPVOID*>(&pvi), reinterpret_cast<unsigned int*>(&sz)))
+
+    // VerQueryValue writes into a UINT; passing the address of a DWORD (unsigned
+    // long) through a cast aliased two different types and left the result
+    // unchecked, so a query that "succeeded" could still hand out a null pvi.
+    VS_FIXEDFILEINFO* pvi = nullptr;
+    UINT versionInfoSize = sizeof(VS_FIXEDFILEINFO);
+    if (!VerQueryValueA(buf.data(), "\\", reinterpret_cast<LPVOID*>(&pvi), &versionInfoSize) || pvi == nullptr)
     {
         return 3;
     }
@@ -67,11 +71,14 @@ std::string GetSKSEStyleExeVersion()
     auto exeBuild = VersionDb::Get().GetLoadedVersionString();
     std::replace(exeBuild.begin(), exeBuild.end(), '.', '_');
 
-    // chop off empty patch numbers for instance "1.6.323.0 becomes "1_6_323"
-    auto patchPos = exeBuild.find_last_of("_0");
-    if (patchPos != std::string::npos)
+    // chop off empty patch numbers for instance "1.6.323.0 becomes "1_6_323".
+    // find_last_of("_0") also matched a leading digit zero ("1_6_640_0" was cut
+    // at the '0' of "640"), so only a trailing "_0" is removed now.
+    constexpr std::string_view kTrailingZero = "_0";
+    if (exeBuild.size() > kTrailingZero.size() &&
+        exeBuild.compare(exeBuild.size() - kTrailingZero.size(), kTrailingZero.size(), kTrailingZero) == 0)
     {
-        exeBuild.erase(exeBuild.begin() + (patchPos - 1), exeBuild.end());
+        exeBuild.erase(exeBuild.size() - kTrailingZero.size());
     }
 
     return exeBuild;
