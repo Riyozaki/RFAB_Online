@@ -62,29 +62,41 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
     // TODO: SkyrimTogether.esm
-    TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 0.f;
+    // 0x100F19 and 0xB8EC1 are vanilla globals, but a mod (or a missing master)
+    // can make either lookup fail; dereferencing the result crashed on connect.
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
+        pKillMove->f = 0.f;
+    else
+        spdlog::warn("bKillMove global (100F19) not found, kill moves stay enabled");
 
-    TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-    pWorldEncountersEnabled->f = 0.f;
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+        pWorldEncountersEnabled->f = 0.f;
+    else
+        spdlog::warn("WorldEncounters global (B8EC1) not found, world encounters stay enabled");
 }
 
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
-    PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);
+    // Disconnect can happen before a character exists (failed connect from the
+    // main menu), so PlayerCharacter::Get() is not guaranteed to be non-null.
+    if (auto* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetDifficulty(m_previousDifficulty);
+    else
+        spdlog::debug("Disconnected without a player character, difficulty is not restored");
+
     m_serverDifficulty = m_previousDifficulty = 6;
 
     ToggleDeathSystem(false);
 
-    TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 1.f;
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
+        pKillMove->f = 1.f;
 
     // Restore to the default value (150 in skyrim, 175 in fallout 4)
     float* greetDistance = Settings::GetGreetDistance();
     *greetDistance = 150.f;
 
-    TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-    pWorldEncountersEnabled->f = 1.f;
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+        pWorldEncountersEnabled->f = 1.f;
 }
 
 void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) noexcept
@@ -178,8 +190,8 @@ void PlayerService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
     // TODO: this can be done a bit prettier
     if (acEvent.IsLeader)
     {
-        TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-        pWorldEncountersEnabled->f = 1.f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+            pWorldEncountersEnabled->f = 1.f;
     }
 }
 
@@ -188,8 +200,8 @@ void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
     // TODO: this can be done a bit prettier
     if (World::Get().GetTransport().IsConnected())
     {
-        TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-        pWorldEncountersEnabled->f = 0.f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+            pWorldEncountersEnabled->f = 0.f;
     }
 }
 

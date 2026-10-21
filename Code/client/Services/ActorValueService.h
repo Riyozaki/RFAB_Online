@@ -35,7 +35,7 @@ struct ActorValueService
 {
 public:
     ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
-    ~ActorValueService() noexcept = default;
+    ~ActorValueService() noexcept;
 
     TP_NOCOPYMOVE(ActorValueService);
 
@@ -117,6 +117,17 @@ private:
     World& m_world;
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
+
+    //! @brief Set on disconnect, applied at the start of the next update.
+    //!
+    //! Components must not be destroyed from inside a dispatcher callback: the
+    //! disconnect path deletes actors and clears other components from the same
+    //! event, and doing registry work re-entrantly from a network event was the
+    //! source of the "this crashes sometimes" note below.
+    bool m_clearActorValuesOnUpdate = false;
+
+    entt::scoped_connection m_localComponentAddedConnection;
+    entt::scoped_connection m_disconnectedConnection;
 
     //! @brief Server ids and collected health changes.
     Map<uint32_t, float> m_smallHealthChanges;

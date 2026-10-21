@@ -28,8 +28,8 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
     , m_dispatcher(aDispatcher)
     , m_transport(aTransport)
 {
-    m_world.on_construct<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
-    m_dispatcher.sink<DisconnectedEvent>().connect<&ActorValueService::OnDisconnected>(this);
+    m_localComponentAddedConnection = m_world.on_construct<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
+    m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&ActorValueService::OnDisconnected>(this);
     m_dispatcher.sink<ActorRemovedEvent>().connect<&ActorValueService::OnActorRemoved>(this);
     m_dispatcher.sink<UpdateEvent>().connect<&ActorValueService::OnUpdate>(this);
     m_dispatcher.sink<NotifyActorValueChanges>().connect<&ActorValueService::OnActorValueChanges>(this);
@@ -37,6 +37,12 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
     m_dispatcher.sink<HealthChangeEvent>().connect<&ActorValueService::OnHealthChange>(this);
     m_dispatcher.sink<NotifyHealthChangeBroadcast>().connect<&ActorValueService::OnHealthChangeBroadcast>(this);
     m_dispatcher.sink<NotifyDeathStateChange>().connect<&ActorValueService::OnDeathStateChange>(this);
+}
+
+ActorValueService::~ActorValueService() noexcept
+{
+    m_disconnectedConnection.release();
+    m_localComponentAddedConnection.release();
 }
 
 void ActorValueService::CreateActorValuesComponent(const entt::entity aEntity, Actor* apActor) noexcept
@@ -68,8 +74,10 @@ void ActorValueService::OnLocalComponentAdded(entt::registry& aRegistry, const e
 
 void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
-    // TODO: this crashes sometimes, no clue why
-    m_world.clear<ActorValuesComponent>();
+    // Deferred on purpose, see the member documentation: the other listeners of
+    // DisconnectedEvent delete actors, which destroys their components, so
+    // clearing the pool here used to invalidate iterators that were still alive.
+    m_clearActorValuesOnUpdate = true;
 }
 
 void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
@@ -95,6 +103,13 @@ void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcep
 
 void ActorValueService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    if (m_clearActorValuesOnUpdate)
+    {
+        m_clearActorValuesOnUpdate = false;
+        m_world.clear<ActorValuesComponent>();
+        m_smallHealthChanges.clear();
+    }
+
     RunSmallHealthUpdates();
     RunDeathStateUpdates();
     RunActorValuesUpdates();
