@@ -1,0 +1,18 @@
+ae_id,se_1_5_97_id,status,evidence,resolution
+11806,11660,unique,realSetLevelMod@0x119450 (Code/client/Games/References.cpp:411),автоматически: единственный кандидат
+17201,16828,unique,s_getRefrByHandle@0x2130F0 (Code/client/Games/References.cpp:56),автоматически: единственный кандидат
+19787,19360,unique,s_rotateX@0x296680 (Code/client/Games/References.cpp:579),автоматически: единственный кандидат
+19788,19361,unique,s_rotateY@0x296740 (Code/client/Games/References.cpp:582),автоматически: единственный кандидат
+19789,19362,unique,s_rotateZ@0x296800 (Code/client/Games/References.cpp:585),автоматически: единственный кандидат
+37356,36365,unique,s_actorProcess@0x5D87F0 (Code/client/Games/References.cpp:588),автоматически: единственный кандидат
+400312,514164,unique,s_nullHandle@0x1EBEABC (Code/client/Games/Skyrim/TESObjectREFR.h:183),автоматически: единственный кандидат
+37521,36521,manual,s_pickUpItem@0x5E6580 (Code/client/Games/Skyrim/Actor.cpp:609 в дереве 1.5.97),вручную по файлу: Actor.cpp:1380 (s_pickUpObject) соответствует Actor.cpp:609 (0x5E6580)
+40533,39456,manual,s_pickUpItem@0x6A5300 (Code/client/Games/Skyrim/PlayerCharacter.cpp:21 в дереве 1.5.97),вручную по файлу: PlayerCharacter.cpp:248 (s_pickUpObject) соответствует PlayerCharacter.cpp:21 (0x6A5300)
+38952,37998,manual,PerformIdleAction@0x63B060 (Code/client/Games/Skyrim/AnimationExperiments.cpp:287 в дереве 1.5.97),вручную: в AE оба имени (PerformIdleAction и устаревшее sub_14063CFB0) получили один id 38952, поэтому берётся адрес PerformIdleAction (0x63B060), а не 0x63CFB0
+38896,37940,interval,интервал между известными парами 38895->37939 и 38897->37941 содержит единственный свободный SE id 37940 (0x637C30),совпадает с догадкой phase0; проверить в игре
+38903,37947,unique,type:TUnEquipSpellInternal@0x6383B0 (Code/client/Games/Skyrim/EquipManager.cpp:79 в дереве 1.5.97),автоматически по типу указателя
+38929,37974,unique,type:TEquip@0x639E20 (Code/client/Games/Skyrim/EquipManager.cpp:267 в дереве 1.5.97),автоматически по типу указателя
+38934,37979,unique,type:TUnEquip@0x63A6B0 (Code/client/Games/Skyrim/EquipManager.cpp:268 в дереве 1.5.97),автоматически по типу указателя
+401069,514905,unique,type:PlayerCharacter*@0x2EFF7D8 (Code/client/Games/Skyrim/PlayerCharacter.cpp:19 в дереве 1.5.97),автоматически по типу указателя
+35993,35100,manual,type:CtorT@0x597870 (Code/client/Games/SaveLoad.cpp:61 в дереве 1.5.97),вручную: второй по порядку конструктор; интервал между парами 35928->35027 и 36005->35112 содержит только 35100
+36035,35145,manual,type:CtorT@0x599440 (Code/client/Games/SaveLoad.cpp:29 в дереве 1.5.97),вручную: первый по порядку конструктор; интервал между парами 36005->35112 и 36053->35163 содержит только 35145

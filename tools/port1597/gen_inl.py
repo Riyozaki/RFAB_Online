@@ -6,8 +6,9 @@ Inputs
 * Code/client/**                every Address Library id the client links against
 * docs/phase0/id_map_1_5_97.csv  manual/heuristic reversal from Phase 0
 * docs/phase1/clibng_id_pairs.csv  exact pairs harvested from CommonLibSSE-NG
+* docs/phase1/id_pairs_curated.csv  pairs recovered from the 1.5.97 tree / intervals
 
-Priority: CommonLibSSE-NG > Phase 0 map. Where the two disagree the clibng value
+Priority: curated > CommonLibSSE-NG > Phase 0 map. Where the two disagree the clibng value
 wins and the conflict is listed in the generated inventory for review; Phase 0
 mapped 38894 and 38897 onto the same id, which is a strong hint that its
 heuristic picked a neighbouring function.
@@ -37,6 +38,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CLIENT_ROOT = ROOT / "Code" / "client"
 PHASE0_CSV = ROOT / "docs" / "phase0" / "id_map_1_5_97.csv"
 CLIBNG_CSV = ROOT / "docs" / "phase1" / "clibng_id_pairs.csv"
+HISTORY_CSV = ROOT / "docs" / "phase1" / "id_pairs_curated.csv"
 INL_PATH = ROOT / "Code" / "common" / "address_library" / "SkyrimIdMap1597.inl"
 INVENTORY_PATH = ROOT / "docs" / "phase1" / "address_id_inventory.csv"
 
@@ -49,7 +51,16 @@ PATTERNS = {
     "rtti": re.compile(r"registerRtti_\w+\s*\(\s*(\d+)\s*\)"),
 }
 
-SOURCE_PRIORITY = {"clibng": 2, "phase0": 1, "none": 0}
+SOURCE_PRIORITY = {"curated": 3, "clibng": 2, "phase0": 1, "quarantined": 0, "none": 0}
+
+# The Phase 0 name heuristic mapped several AE ids onto one SE id. Two different
+# functions cannot share an address, so these pairs are wrong by construction and
+# are dropped instead of shipping a known-bad offset (the startup audit then
+# reports the id as missing, which is a fixable state).
+# Every id that Phase 0 collided has since been recovered from the 1.5.97 tree
+# (docs/phase1/id_pairs_curated.csv), so the list is empty. The mechanism stays:
+# if a future heuristic maps two AE ids onto one SE id, it must be dropped here.
+QUARANTINE: dict[int, str] = {}
 
 
 def scan_client() -> dict[int, dict]:
@@ -107,30 +118,69 @@ def load_clibng() -> dict[int, int]:
     return mapping
 
 
+def load_history() -> dict[int, int]:
+    """Pairs recovered from the pre-1.6.x tree plus the 1.5.97 Address Library.
+
+    These are the strongest evidence available offline: the symbol carried a real
+    1.5.97 address that the Address Library database resolves to exactly one id.
+    """
+    mapping: dict[int, int] = {}
+    if not HISTORY_CSV.exists():
+        return mapping
+
+    for row in csv.DictReader(HISTORY_CSV.open(encoding="utf-8")):
+        if not row.get("ae_id") or not row.get("se_1_5_97_id"):
+            continue
+        ae = int(row["ae_id"])
+        se = int(row["se_1_5_97_id"])
+        if se and se != ae:
+            mapping[ae] = se
+    return mapping
+
+
 def build() -> tuple[dict[int, tuple[int, str]], list[str], dict[int, dict]]:
     used = scan_client()
     phase0, phase0_ambiguous = load_phase0()
     clibng = load_clibng()
+    history = load_history()
 
     resolved: dict[int, tuple[int, str]] = {}
     conflicts: list[str] = []
 
     for ae in used:
+        if ae in QUARANTINE and ae not in history and ae not in clibng:
+            resolved[ae] = (0, "quarantined")
+            conflicts.append(f"ae {ae}: {QUARANTINE[ae]}")
+            continue
+
+        from_history = history.get(ae)
         from_clibng = clibng.get(ae)
         from_phase0 = phase0.get(ae)
 
-        if from_clibng and from_phase0 and from_clibng != from_phase0:
+        if from_history and from_clibng and from_history != from_clibng:
+            conflicts.append(f"ae {ae}: curated {from_history} vs clibng {from_clibng} (curated wins)")
+        if from_history and from_phase0 and from_history != from_phase0:
+            conflicts.append(f"ae {ae}: curated {from_history} vs phase0 {from_phase0} (curated wins)")
+        if not from_history and from_clibng and from_phase0 and from_clibng != from_phase0:
             conflicts.append(f"ae {ae}: clibng {from_clibng} vs phase0 {from_phase0} (clibng wins)")
-        if from_clibng:
+
+        if from_history:
+            resolved[ae] = (from_history, "curated")
+        elif from_clibng:
             resolved[ae] = (from_clibng, "clibng")
         elif from_phase0:
             resolved[ae] = (from_phase0, "phase0")
         else:
             resolved[ae] = (0, "none")
 
-    for ae in phase0_ambiguous:
-        if ae in used and resolved.get(ae, (0,))[0]:
-            conflicts.append(f"ae {ae}: phase0 was ambiguous but resolved from clibng")
+    # A phase 0 id that was ambiguous (the heuristic found two candidate SE ids)
+    # and is now resolved by a stronger source is expected, not a conflict; only
+    # count them for the report.
+    if phase0_ambiguous:
+        resolved_ambiguous = sum(
+            1 for ae in phase0_ambiguous if ae in used and resolved.get(ae, (0,))[0]
+        )
+        print(f"phase0 ambiguous ids resolved by a better source: {resolved_ambiguous}/{len(phase0_ambiguous)}")
 
     return resolved, conflicts, used
 
@@ -139,7 +189,8 @@ def render_inl(resolved: dict[int, tuple[int, str]]) -> str:
     mapped = sum(1 for se, _ in resolved.values() if se)
     lines = [
         "// Generated by tools/port1597/gen_inl.py -- do not edit by hand.",
-        "// Sources: docs/phase1/clibng_id_pairs.csv (authoritative),",
+        "// Sources: docs/phase1/id_pairs_curated.csv (1.5.97 tree, strongest),",
+        "//          docs/phase1/clibng_id_pairs.csv (CommonLibSSE-NG),",
         "//          docs/phase0/id_map_1_5_97.csv (fallback).",
         f"// Entries: {len(resolved)}  mapped: {mapped}  unmapped: {len(resolved) - mapped}",
         "// clang-format off",

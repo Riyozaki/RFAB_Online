@@ -299,8 +299,21 @@ void TestTranslationTable()
     Check(tesForm.has_value(), "RTTI_TESForm (ae 392216) is mapped");
     CheckEqual<unsigned int>(tesForm.value_or(0), 513848u, "RTTI_TESForm maps to 513848");
 
-    Check(!AddressLibrary::TranslateAeToSe1597(38952).has_value(), "ambiguous id 38952 is not mapped");
+    // 38952 is one AE address used under two names (PerformIdleAction and the
+    // stale sub_14063CFB0). docs/phase1/id_pairs_curated.csv resolves it to the
+    // PerformIdleAction id 37998; see docs/phase1/IDS_RU.md for the reasoning.
+    CheckEqual<unsigned int>(AddressLibrary::TranslateAeToSe1597(38952).value_or(0), 37998u,
+                             "aliased id 38952 maps to PerformIdleAction (37998)");
+
+    // Pairs recovered from the fork's own 1.5.97 tree (tools/port1597/history_pairs.py).
+    CheckEqual<unsigned int>(AddressLibrary::TranslateAeToSe1597(17201).value_or(0), 16828u,
+                             "s_getRefrByHandle maps to 16828");
+    CheckEqual<unsigned int>(AddressLibrary::TranslateAeToSe1597(400312).value_or(0), 514164u,
+                             "s_nullHandle maps to 514164");
+
     Check(!AddressLibrary::TranslateAeToSe1597(1).has_value(), "unknown id is not mapped");
+    Check(!AddressLibrary::TranslateAeToSe1597(11612).has_value(),
+          "still unreversed id 11612 has no invented mapping");
 }
 
 void TestAgainstRealDatabase(const std::string& acPath)

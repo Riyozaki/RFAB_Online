@@ -239,9 +239,17 @@ TEST_CASE("AE to 1.5.97 id translation table", "[addresslib]")
 
     // Verified independently by tools/port1597/verify_pairs.py.
     CHECK(AddressLibrary::TranslateAeToSe1597(392216).value_or(0) == 513848);
-    CHECK_FALSE(AddressLibrary::TranslateAeToSe1597(38952).has_value()); // ambiguous
-    CHECK_FALSE(AddressLibrary::TranslateAeToSe1597(1).has_value());     // unknown
+
+    // 38952 was reported as ambiguous by the Phase 0 heuristic. It is one AE
+    // address reached through two names (PerformIdleAction and the stale
+    // sub_14063CFB0 identifier); docs/phase1/id_pairs_curated.csv resolves it to
+    // the PerformIdleAction id, see docs/phase1/IDS_RU.md.
+    CHECK(AddressLibrary::TranslateAeToSe1597(38952).value_or(0) == 37998);
     CHECK(AddressLibrary::IsKnownAeId1597(38952));
+
+    CHECK_FALSE(AddressLibrary::TranslateAeToSe1597(1).has_value());      // unknown
+    CHECK_FALSE(AddressLibrary::TranslateAeToSe1597(11612).has_value());  // still unreversed
+    CHECK(AddressLibrary::IsKnownAeId1597(11612));
     CHECK_FALSE(AddressLibrary::IsKnownAeId1597(1));
 }
 
