@@ -25,12 +25,13 @@ add_vectorexts("neon")
 -- build configurations
 add_rules("mode.debug", "mode.releasedbg", "mode.release")
 
--- Target game layout. 1597 enables the SkyrimSE 1.5.97 structure layouts
--- (see docs/phase1/LAYOUTS_RU.md); the default keeps the upstream 1.6.629+ layout.
+-- Target game layout. The fork targets SkyrimSE 1.5.97, so 1597 is the default
+-- (see docs/phase1/LAYOUTS_RU.md); 1600 keeps the upstream 1.6.629+ layout and is
+-- kept only so the difference between the two stays visible and compilable.
 option("skyrim_profile")
-    set_default("1600")
+    set_default("1597")
     set_values("1597", "1600")
-    set_description("Game memory layout to target: 1597 (SkyrimSE 1.5.97) or 1600 (SkyrimSE 1.6.629+)")
+    set_description("Game memory layout to target: 1597 (SkyrimSE 1.5.97, supported) or 1600 (SkyrimSE 1.6.629+, not verified)")
 option_end()
 
 if has_config("unitybuild") then

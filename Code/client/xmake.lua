@@ -56,7 +56,9 @@ target(name)
         "mem",
         "xbyak")
 
-    if get_config("skyrim_profile") == "1597" then
+    if get_config("skyrim_profile") == "1600" then
+        add_defines("TP_GAME_PROFILE_1600")
+    else
         add_defines("TP_GAME_PROFILE_1597")
     end
 

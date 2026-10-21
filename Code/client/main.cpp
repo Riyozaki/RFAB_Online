@@ -6,6 +6,7 @@
 #include <Windows.h>
 
 #include <VersionDb.h>
+#include <Games/GameProfile.h>
 #include <base/dialogues/win/TaskDialog.h>
 
 #include <algorithm>
@@ -83,6 +84,28 @@ void ShowAddressLibraryError(const std::filesystem::path& acGamePath, const std:
     exit(4);
 }
 
+// The build profile decides the structure layouts compiled into the client, so a
+// client built for one game version cannot run on another: the offsets would be
+// silently wrong instead of failing loudly.
+void ShowProfileMismatchError(int aMajor, int aMinor, int aRevision, int aBuild)
+{
+    const auto detail = fmt::format(L"This build targets SkyrimSE {}.\n"
+                                    L"The running game is {}.{}.{}.{}.\n\n"
+                                    L"Rebuild the client with  xmake f --skyrim_profile={}\n"
+                                    L"or run the matching game version.",
+                                    TP_TARGET_GAME_VERSION_W, aMajor, aMinor, aRevision, aBuild,
+                                    TP_PROFILE_IS_1597 ? L"1600" : L"1597");
+
+    spdlog::critical("Game profile mismatch: the build targets {}, the game is {}.{}.{}.{}", TP_TARGET_GAME_VERSION, aMajor,
+                     aMinor, aRevision, aBuild);
+
+    Base::TaskDialog dia(g_SharedWindowIcon, L"Error", L"Wrong game version for this build", L"", detail.c_str());
+    dia.AppendButton(0xBEEF, L"Close");
+    dia.Show();
+
+    exit(6);
+}
+
 void ShowIncompletePortError(const VersionDb::IdAuditResult& acAudit)
 {
     const auto missing = acAudit.notReversed.size() + acAudit.notInDatabase.size() + acAudit.unknown.size();
@@ -138,6 +161,17 @@ void RunTiltedInit(const std::filesystem::path& acGamePath, const String& aExeVe
                                     fmt::format("the game is {}.{}.{}.{} but the loaded address library describes {}.{}.{}.{}",
                                                 major, minor, revision, build, dbMajor, dbMinor, dbRevision, dbBuild));
         }
+
+        // The profile is chosen at build time; there is no way to adapt the
+        // compiled structure layouts at runtime, so refuse to run instead of
+        // corrupting memory.
+        if (major != TP_TARGET_GAME_VERSION_MAJOR || minor != TP_TARGET_GAME_VERSION_MINOR ||
+            revision != TP_TARGET_GAME_VERSION_REVISION)
+        {
+            ShowProfileMismatchError(major, minor, revision, build);
+        }
+
+        spdlog::info("Game profile {} matches SkyrimSE {}.{}.{}.{}", TP_TARGET_PROFILE_NAME, major, minor, revision, build);
     }
 
     const auto audit = versionDb.AuditAddressIds();
