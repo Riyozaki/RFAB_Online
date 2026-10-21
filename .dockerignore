@@ -1,0 +1,9 @@
+.githooks/*
+.github/*
+.xmake/*
+Services/*
+build/*
+vsxmake/*
+Tools/*
+vs*/*
+package/*

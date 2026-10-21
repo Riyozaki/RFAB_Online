@@ -1,0 +1,164 @@
+@import 'env';
+
+@import 'mixins/gapped-vertical';
+@import 'functions/mod';
+@import 'functions/rem';
+
+:host {
+  display: block;
+
+  &[data-app-root-game='false'] {
+    &.light-image {
+      // TODO replace with an independent image
+      background: url('https://static.giga.de/wp-content/uploads/2016/10/skyrim-special-edition-landschaft.jpg');
+    }
+
+    &.dark-image {
+      // TODO replace with an independent image
+      background: url('https://i.pinimg.com/originals/ea/b1/0f/eab10fac989a85c16dadcc1c5e27489e.jpg');
+    }
+
+    &.light {
+      $background: white;
+      $lines: transparentize($-color-background, 0.8);
+
+      background: repeating-linear-gradient(
+          to right,
+          transparent,
+          transparent #{$-size-gap},
+          $lines #{$-size-gap},
+          $lines calc(#{$-size-gap} + 1px)
+        ),
+        repeating-linear-gradient(
+            to bottom,
+            transparent,
+            transparent #{$-size-gap},
+            $lines #{$-size-gap},
+            $lines calc(#{$-size-gap} + 1px)
+          )
+          $background;
+    }
+
+    &.dark {
+      $background: mod($-color-background, 0.1);
+      $lines: mod($background, 0.1);
+
+      background: repeating-linear-gradient(
+          to right,
+          transparent,
+          transparent #{$-size-gap},
+          $lines #{$-size-gap},
+          $lines calc(#{$-size-gap} + 1px)
+        ),
+        repeating-linear-gradient(
+            to bottom,
+            transparent,
+            transparent #{$-size-gap},
+            $lines #{$-size-gap},
+            $lines calc(#{$-size-gap} + 1px)
+          )
+          $background;
+    }
+  }
+
+  > app-notifications {
+    width: 32vw;
+    left: $-size-gap;
+    bottom: $-size-gap;
+    position: absolute;
+  }
+}
+
+.background-element {
+  opacity: 30%;
+}
+
+::ng-deep {
+  .app-root-popups {
+    > app-popup > app-window {
+      max-width: 32vw;
+      min-width: 20vw;
+    }
+
+    > app-popup[data-popup='server'] > app-window {
+      max-width: 75vw;
+      min-width: 40vw;
+    }
+
+    > app-popup[data-popup='playerManager'] > app-window {
+      max-width: 30vw;
+      min-width: 25vw;
+    }
+  }
+}
+
+.app-root-controls {
+  @include gapped-vertical($-size-gap);
+
+  position: absolute;
+  left: $-size-gap;
+  display: flex;
+  flex-direction: column;
+  width: 32vw;
+  bottom: $-size-gap;
+}
+
+.app-root-menu,
+.app-root-chat {
+  flex: 0 0 auto;
+}
+
+.app-root-menu {
+  display: flex;
+  height: 4rem;
+  margin: 0 auto;
+
+  > button {
+    flex: 1 1 auto;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+.app-root-chat {
+  width: 100%;
+  height: 30vh;
+  display: flex;
+  flex-direction: column;
+
+  > app-chat {
+    margin: 0.1rem;
+    flex: 1 1 auto;
+  }
+}
+
+// Note: due to how `-webkit-background-clip` renders clipped text (that's needed for 
+// the cooldown effect), we need to apply a few workarounds to make it look just right. I'm sorry!
+
+.cooldown-supporting-text-normal {
+  color: mod($-color-background, 0.8);
+  transition: color 0.3s linear;
+}
+
+.cooldown-supporting-text-animating {
+  color: mod($-color-background, 0.3);
+}
+
+.text-cooldown-effect {
+  --cooldown-duration: 10s;
+  background: linear-gradient(
+    to left, 
+    mod($-color-background, 0.3) 50%, 
+    mod($-color-background, 1) 50%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  transition: background-position var(--cooldown-duration) linear;
+  color: transparent;
+  background-size: 200%;
+  background-position: 0%;
+
+  &.cooldown-active {
+    background-position: 100%;
+  }
+}

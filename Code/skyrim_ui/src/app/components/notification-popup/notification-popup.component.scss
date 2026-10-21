@@ -1,0 +1,57 @@
+@import 'env';
+
+@import 'functions/mod';
+@import 'mixins/gapped-vertical';
+
+:host {
+  display: block;
+  margin-right: 2em;
+  margin-bottom: 0.5em;
+  color: white;
+  background-color: $-color-background;
+  font-size: 1.3rem;
+
+  &:last-child {
+    margin-bottom: 1em;
+  }
+}
+
+.notification-popup {
+  display: flex;
+  align-items: center;
+  background-color: rgba($color: #000000, $alpha: 0.7);
+  padding: 0.5em;
+}
+
+.notification-popup:first-child {
+  margin-left: 1em;
+}
+
+.notification-popup > * {
+  margin-right: 1em;
+}
+
+img,
+.icon {
+  width: 2em;
+  height: 2em;
+  background-size: contain;
+}
+
+.icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon > * {
+  font-size: 1.5em;
+}
+
+p {
+  max-width: 25em;
+}
+
+button {
+  font-size: 1em;
+}

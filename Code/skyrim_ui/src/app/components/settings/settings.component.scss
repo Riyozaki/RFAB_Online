@@ -1,0 +1,79 @@
+@import 'env';
+
+@import 'functions/rem';
+
+:host {
+  position: relative;
+  display: block;
+}
+
+.container {
+  overflow: auto;
+  max-height: 60vh;
+  padding-right: 1rem;
+
+  .settings {
+    display: flex;
+    margin-top: 1rem;
+    justify-content: space-between;
+    flex-direction: column;
+
+    section {
+      margin-bottom: 1rem;
+      border-bottom: 2px solid;
+
+      .version {
+        color: green;
+
+        .outdated {
+          color: red;
+        }
+      }
+
+      .flex-item {
+        position: relative;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: 1em 0;
+      }
+
+      & > div:not(:last-child) {
+        margin-bottom: 0.5rem;
+      }
+    }
+
+    hr {
+      width: 100%;
+    }
+
+    h2:first-child {
+      margin-top: 0;
+    }
+  }
+}
+
+.setting {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  margin: 1em 0;
+
+  & > label {
+    width: 15em;
+  }
+
+  & > input,
+  > app-dropdown {
+    width: 10em;
+    max-width: 10em;
+    font-size: inherit;
+  }
+}
+
+.actions {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: center;
+}
