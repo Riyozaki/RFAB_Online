@@ -380,18 +380,22 @@ public:
     // void Save_Reversed(uint32_t aChangeFlags, Buffer::Writer& aWriter);
 };
 
-static_assert(offsetof(Actor, currentProcess) == 0xF8);
-static_assert(offsetof(Actor, flags1) == 0xE8);
-static_assert(offsetof(Actor, actorValueOwner) == 0xB8);
-static_assert(offsetof(Actor, actorState) == 0xC0);
-static_assert(offsetof(Actor, flags2) == 0x204);
-static_assert(offsetof(Actor, unk194) == 0x278);
-static_assert(offsetof(Actor, fVoiceTimer) == 0x110);
-static_assert(offsetof(Actor, unk84) == 0xF0);
-static_assert(offsetof(Actor, unk17C) == 0x184);
-static_assert(offsetof(Actor, pCombatController) == 0x160);
-static_assert(offsetof(Actor, magicItems) == 0x1C8);
-static_assert(offsetof(Actor, equippedShout) == 0x1E8);
-static_assert(offsetof(Actor, actorLock) == 0x284);
-static_assert(sizeof(Actor) == 0x2B8);
+// Skyrim SE 1.5.97 (pre-1.6.629) offsets: 8 bytes lower than the 629+
+// layout because TESObjectREFR's ExtraDataList has no vtable yet. Matches
+// CommonLibSSE-NG's versioned accessors for < SSE 1.6.629
+// (actorValueOwner 0xB0, actorState 0xB8, Actor runtime data 0xE0).
+static_assert(offsetof(Actor, currentProcess) == 0xF0);
+static_assert(offsetof(Actor, flags1) == 0xE0);
+static_assert(offsetof(Actor, actorValueOwner) == 0xB0);
+static_assert(offsetof(Actor, actorState) == 0xB8);
+static_assert(offsetof(Actor, flags2) == 0x1FC);
+static_assert(offsetof(Actor, unk194) == 0x270);
+static_assert(offsetof(Actor, fVoiceTimer) == 0x108);
+static_assert(offsetof(Actor, unk84) == 0xE8);
+static_assert(offsetof(Actor, unk17C) == 0x17C);
+static_assert(offsetof(Actor, pCombatController) == 0x158);
+static_assert(offsetof(Actor, magicItems) == 0x1C0);
+static_assert(offsetof(Actor, equippedShout) == 0x1E0);
+static_assert(offsetof(Actor, actorLock) == 0x27C);
+static_assert(sizeof(Actor) == 0x2B0);
 static_assert(sizeof(Actor::SpellItemEntry) == 0x18);

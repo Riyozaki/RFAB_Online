@@ -31,7 +31,11 @@ struct ExtraDataList
 
     [[nodiscard]] bool HasQuestObjectAlias() noexcept;
 
-    virtual ~ExtraDataList();
+    // RFAB Online (Skyrim SE 1.5.97): BaseExtraList has NO vtable before the
+    // 1.6.629 game update. Upstream added the virtual destructor for 629 in
+    // commit 553793fc ("fix: Skyrim new update crashes"); keeping it here
+    // would shift data/bitfield/lock and every embedding struct
+    // (TESObjectREFR, TESObjectCELL, Actor, PlayerCharacter) by 8 bytes.
     BSExtraData* data = nullptr;
 
     struct Bitfield

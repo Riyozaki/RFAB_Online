@@ -55,20 +55,24 @@ struct TESObjectCELL : TESForm
     float waterHeight;
     void* pNavMeshes;
     ReferenceData refData;
-    void* pUnkB8;
+    void* pUnkB0;
     GameArray<TESObjectREFR*> objectList;
-    GameArray<void*> unkD8;
-    GameArray<void*> unkF0;
-    GameArray<void*> unk108;
+    GameArray<void*> unkD0;
+    GameArray<void*> unkE8;
+    GameArray<void*> unk100;
     BSRecursiveLock lock;
     TESWorldSpace* worldspace;
     LoadedCellData* loadedCellData;
     void* pLightingTemplate;
-    uint64_t unk140;
+    uint64_t unk138;
 };
 
+// Skyrim SE 1.5.97 (pre-1.6.629) offsets: the embedded ExtraDataList has no
+// vtable yet, so everything from cellData on sits 8 bytes lower than on
+// 629+ (cellData 0x60, references 0x80, worldSpace 0x120, size 0x140).
+// Cross-checked with CommonLibSSE-NG TESObjectCELL for < SSE 1.6.629.
 static_assert(offsetof(TESObjectCELL, cellFlags) == 0x40);
-static_assert(offsetof(TESObjectCELL, refData) == 0x88);
-static_assert(offsetof(TESObjectCELL, worldspace) == 0x128);
-static_assert(offsetof(TESObjectCELL, loadedCellData) == 0x130);
-static_assert(sizeof(TESObjectCELL) == 0x148);
+static_assert(offsetof(TESObjectCELL, refData) == 0x80);
+static_assert(offsetof(TESObjectCELL, worldspace) == 0x120);
+static_assert(offsetof(TESObjectCELL, loadedCellData) == 0x128);
+static_assert(sizeof(TESObjectCELL) == 0x140);
