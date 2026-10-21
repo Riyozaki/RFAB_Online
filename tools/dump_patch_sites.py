@@ -37,7 +37,7 @@ CONTEXT = 48  # bytes before/after each patch offset
 
 
 def parse_pe(data):
-    if data[:2] != b"MZ":
+    if len(data) < 0x40 or data[:2] != b"MZ":
         raise SystemExit("not a PE file (no MZ header)")
     e_lfanew, = struct.unpack_from("<I", data, 0x3C)
     if data[e_lfanew:e_lfanew + 4] != b"PE\0\0":
