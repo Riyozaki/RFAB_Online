@@ -1,0 +1,17 @@
+version: "3"
+
+services:
+  skyrim-together:
+    image: tiltedphoques/st-reborn-server:latest
+    container_name: skyrim-together
+    volumes:
+      - /home/user/skyrim-together/config:/st-server/config
+      - /home/user/skyrim-together/logs:/st-server/logs
+      - /home/user/skyrim-together/Data:/st-server/Data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    ports:
+      - 10578:10578/udp
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
