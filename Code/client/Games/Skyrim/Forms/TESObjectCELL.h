@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Forms/TESForm.h>
+#include <Games/GameProfile.h>
 
 struct TESObjectREFR;
 struct TESWorldSpace;
@@ -67,8 +68,12 @@ struct TESObjectCELL : TESForm
     uint64_t unk140;
 };
 
+// The whole tail of the class follows ExtraDataList: in 1.5.97 ExtraDataList is
+// 0x18 instead of 0x20, so every member after extraData moves by eight bytes.
+// The values below match CommonLibSSE-NG's RUNTIME_DATA_CONTENT comments
+// (cellData /* 060, 068 */ ... worldSpace /* 120, 128 */).
 static_assert(offsetof(TESObjectCELL, cellFlags) == 0x40);
-static_assert(offsetof(TESObjectCELL, refData) == 0x88);
-static_assert(offsetof(TESObjectCELL, worldspace) == 0x128);
-static_assert(offsetof(TESObjectCELL, loadedCellData) == 0x130);
-static_assert(sizeof(TESObjectCELL) == 0x148);
+static_assert(offsetof(TESObjectCELL, refData) == TP_LAYOUT(0x80, 0x88));
+static_assert(offsetof(TESObjectCELL, worldspace) == TP_LAYOUT(0x120, 0x128));
+static_assert(offsetof(TESObjectCELL, loadedCellData) == TP_LAYOUT(0x128, 0x130));
+static_assert(sizeof(TESObjectCELL) == TP_LAYOUT(0x140, 0x148));

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Games/GameProfile.h>
+
 struct CombatTargetSelector;
 struct CombatGroup;
 struct CombatState;
@@ -32,7 +34,13 @@ struct CombatController
     float unk44;
     float unk4C;
     GameArray<void*> aimControllers;
+#if TP_PROFILE_IS_1597
+    // 1.5.97..1.6.353: no lock here. CommonLibSSE-NG describes the runtime data
+    // block as RUNTIME_DATA_ACCESSOR_VERSIONED(RUNTIME_DATA, RUNTIME_SSE_1_6_629,
+    // 0x68, 0x70): 1.6.629 inserted an eight byte spin lock in front of it.
+#else
     uint64_t aimControllerLock;
+#endif
     CombatAimController *pCurrentAimController;
     CombatAimController *pPreviousAimController;
     GameArray<void*> areas;
@@ -48,6 +56,8 @@ struct CombatController
 
 static_assert(offsetof(CombatController, targetHandle) == 0x2C);
 static_assert(offsetof(CombatController, startedCombat) == 0x35);
-static_assert(offsetof(CombatController, targetSelectors) == 0xA0);
-static_assert(offsetof(CombatController, pActiveTargetSelector) == 0xB8);
-static_assert(sizeof(CombatController) == 0xE0);
+static_assert(offsetof(CombatController, aimControllers) == 0x50);
+static_assert(offsetof(CombatController, targetSelectors) == TP_LAYOUT(0x98, 0xA0));
+static_assert(offsetof(CombatController, pActiveTargetSelector) == TP_LAYOUT(0xB0, 0xB8));
+static_assert(offsetof(CombatController, pCachedAttacker) == TP_LAYOUT(0xC8, 0xD0));
+static_assert(sizeof(CombatController) == TP_LAYOUT(0xD8, 0xE0));

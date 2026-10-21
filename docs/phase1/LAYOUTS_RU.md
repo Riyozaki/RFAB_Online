@@ -101,8 +101,8 @@ sizeof assertions: current  76, legacy  46, common 37
 
 Реализация:
 
-* `xmake f --skyrim_profile=1597|1600` (по умолчанию `1600`) → define
-  `TP_GAME_PROFILE_1597`;
+* `xmake f --skyrim_profile=1597|1600` (по умолчанию **`1597`**) → define
+  `TP_GAME_PROFILE_1597` или `TP_GAME_PROFILE_1600` (ровно один, иначе `#error`);
 * в заголовках структур — `TP_LAYOUT(se, ae)` в `static_assert`, чтобы
   компилятор проверял обе раскладки;
 * там, где поле физически отсутствует/добавлено, — `#if TP_PROFILE_IS_1597`.
@@ -115,7 +115,7 @@ sizeof assertions: current  76, legacy  46, common 37
 | 2 | `TESObjectREFR` → 0x98, `REFERENCE_RUNTIME_DATA` 0x88 | assert размера + `offsetof(loadedState)` |
 | 3 | `Actor` → 0x2B0, шесть смещений из таблицы | asserts в `Actor.h` |
 | 4 | `PlayerCharacter` — четыре смещения | asserts |
-| 5 | `BSAnimationGraphManager`, `CombatController`, `Inventory3DManager`, `TESObjectCELL` | asserts |
+| 5 | `BSAnimationGraphManager`, `CombatController`, `TESObjectCELL` | asserts |
 | 6 | Прогон `compare_layouts.py` для профиля 1597 | все дельты должны стать `+0x0` |
 
 Оценка: **3–5 дней** вместо 15–25 из первой версии плана. Основное время уйдёт
@@ -131,8 +131,9 @@ sizeof assertions: current  76, legacy  46, common 37
 | 3 | `Actor` 0x2B8 → 0x2B0, 13 смещений | сделано |
 | 4 | `PlayerCharacter` 0xBE8 → 0xBE0, 5 смещений | сделано |
 | 5 | `BSAnimationGraphManager` (`pad_ptrs2` 9 → 8) | сделано |
-| 6 | `CombatController` | **открыто** |
-| 7 | `TESObjectCELL`, `Inventory3DManager` | не требуются: этих классов в клиенте нет |
+| 6 | `CombatController` 0xE0 → 0xD8 (в 1.6.629 добавлен `aimControllerLock`) | сделано |
+| 7 | `TESObjectCELL` 0x148 → 0x140 (следствие `ExtraDataList`) | сделано |
+| 8 | `Inventory3DManager` | не требуется: класса в клиенте нет |
 
 «Сделано» означает: код собирается по макросам для обоих профилей и содержит
 утверждения для обеих раскладок. **Ни одна из этих правок не проверена
@@ -141,11 +142,22 @@ Skyrim. Профиль `1600` (по умолчанию) при этом оста
 все правки либо под `#if`, либо параметризованы `TP_LAYOUT(se, ae)`, где `ae` —
 старое значение.
 
-`CombatController` оставлен открытым сознательно. По NG блок runtime data
-сдвинут на 0x68 → 0x70, но в классе форка в этом месте нет явного паддинга,
-поэтому «сдвинуть на 8» нельзя, не поняв, какое именно поле добавлено в
-1.6.629. Здесь нужен разбор в игре (или сверка с IDA), чтобы не выдумывать
-смещение.
+`CombatController` и `TESObjectCELL` закрыты по NG, а не «сдвигом на 8».
+
+* `CombatController`: NG описывает блок как
+  `RUNTIME_DATA_ACCESSOR_VERSIONED(RUNTIME_DATA, RUNTIME_SSE_1_6_629, 0x68, 0x70)`
+  и отдельно `AE_ONLY_POINTER_ACCESSOR_VERSIONED(AE_RUNTIME_DATA, ...)`, где
+  `AE_RUNTIME_DATA` — это `BSSpinLock aimControllerLock`. То есть в 1.6.629 перед
+  блоком runtime data появилось восьмибайтовое поле-замок. В профиле 1597 его
+  нет: `targetSelectors` 0x98 (было 0xA0), `pCachedAttacker` 0xC8 (было 0xD0),
+  размер 0xD8 (было 0xE0). Занятость полей проверена отдельной компиляцией
+  синтетической структуры.
+* `TESObjectCELL`: по NG `RUNTIME_DATA` начинается на 0x60 против 0x68, а все
+  члены блока сдвинуты на 8 — ровно на столько, на сколько `ExtraDataList`
+  короче в 1.5.97. Поэтому отдельные поля не нужны: достаточно assert'ов
+  `TP_LAYOUT`. Прежнее расхождение из `layout_diff.csv`
+  (`worldspace` 0xC8 против 0x128) — артефакт ручной заглушки в дереве 2021
+  года; источником истины здесь служит NG (`worldSpace /* 120, 128 */`).
 
 ## 6. Что обязательно проверить в игре
 
@@ -154,10 +166,9 @@ Skyrim. Профиль `1600` (по умолчанию) при этом оста
 2. `Actor::actorState` (0xB8) — анимации и боевые состояния.
 3. `ActorValueOwner` (0xB0) — здоровье/магия/стамина в UI и в уроне.
 4. `PlayerCharacter` runtime data — камера, инвентарь, цели.
-5. `TESObjectCELL` runtime data — переходы между ячейками.
-6. `CombatController` — агрессия NPC и выбор цели.
-7. `Inventory3DManager` — предпросмотр предметов (менее критично).
-8. `BSAnimationGraphManager` — проигрывание анимаций.
+5. `TESObjectCELL` (`worldspace` 0x120, `loadedCellData` 0x128) — переходы между ячейками.
+6. `CombatController` (`targetSelectors` 0x98, размер 0xD8) — агрессия NPC и выбор цели.
+7. `BSAnimationGraphManager` — проигрывание анимаций.
 
 Пункты 1–3 и 8 — блокирующие: без них клиент нельзя считать работающим.
 
