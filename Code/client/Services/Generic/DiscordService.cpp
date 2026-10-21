@@ -39,7 +39,27 @@ DiscordService::DiscordService(entt::dispatcher& aDispatcher)
 #endif
 }
 
-DiscordService::~DiscordService() = default;
+DiscordService::~DiscordService()
+{
+    // The pump thread calls into m_pCore every iteration, so it has to be
+    // stopped before the core (and the dll that owns it) go away.
+    m_bRequestThreadKillHack = true;
+
+    if (m_updateThread.joinable())
+        m_updateThread.join();
+
+    if (m_pCore)
+    {
+        m_pCore->destroy(m_pCore);
+        m_pCore = nullptr;
+    }
+
+    if (m_discordModule)
+    {
+        FreeLibrary(m_discordModule);
+        m_discordModule = nullptr;
+    }
+}
 
 void DiscordService::OnUserUpdate(void* userp)
 {
@@ -157,7 +177,12 @@ bool DiscordService::Init()
     auto* f_pDiscordCreate = (decltype(&DiscordCreate))(GetProcAddress(pHandle, "DiscordCreate"));
 
     if (!f_pDiscordCreate)
+    {
+        FreeLibrary(pHandle);
         return false;
+    }
+
+    m_discordModule = pHandle;
 
     DiscordCreateParams params{};
     DiscordCreateParamsSetDefault(&params); // initialize version fields
@@ -187,10 +212,15 @@ bool DiscordService::Init()
     m_pAppMgr = m_pCore->get_application_manager(m_pCore);
     m_pOverlayMgr = m_pCore->get_overlay_manager(m_pCore);
 
-    if (!m_pUserMgr || !m_pActivity || !m_pAppMgr || !m_pOverlayMgr)
+    // The overlay manager is optional: it is only meaningful when the Discord
+    // overlay is enabled, and requiring it here silently disabled presence for
+    // everyone who has the overlay turned off.
+    if (!m_pUserMgr || !m_pActivity || !m_pAppMgr)
     {
         m_pCore->destroy(m_pCore);
+        m_pCore = nullptr;
         FreeLibrary(pHandle);
+        m_discordModule = nullptr;
         return false;
     }
 
@@ -200,8 +230,8 @@ bool DiscordService::Init()
 
     // TODO (Force): i want to move this away from its own thread
     // this is done because discord needs to be ticked before world
-    static std::thread updateThread(
-        [&]()
+    m_updateThread = std::thread(
+        [this]()
         {
             Base::SetCurrentThreadName("DiscordCallbacks");
 
@@ -215,7 +245,6 @@ bool DiscordService::Init()
                 std::this_thread::sleep_for(std::chrono::milliseconds(16));
             }
         });
-    updateThread.detach();
 
     return true;
 }

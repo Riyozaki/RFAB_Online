@@ -171,16 +171,17 @@ void OverlayService::Reload() noexcept
 {
     SetInGame(false);
     SetActive(false);
-    GetOverlayApp()->GetClient()->GetBrowser()->Reload();
+    if (m_pOverlay && m_pOverlay->GetClient() && m_pOverlay->GetClient()->GetBrowser())
+        m_pOverlay->GetClient()->GetBrowser()->Reload();
     Initialize();
     SetInGame(true);
-    m_pOverlay->ExecuteAsync("enterGame");
+    ExecuteAsync("enterGame");
     SetActive(true);
 }
 
 void OverlayService::Initialize() noexcept
 {
-    m_pOverlay->ExecuteAsync("init");
+    ExecuteAsync("init");
 }
 
 void OverlayService::SetActive(bool aActive) noexcept
@@ -192,7 +193,7 @@ void OverlayService::SetActive(bool aActive) noexcept
 
     m_active = aActive;
 
-    m_pOverlay->ExecuteAsync(m_active ? "activate" : "deactivate");
+    ExecuteAsync(m_active ? "activate" : "deactivate");
 }
 
 bool OverlayService::GetActive() const noexcept
@@ -209,11 +210,11 @@ void OverlayService::SetInGame(bool aInGame) noexcept
     if (m_inGame)
     {
         SetVersion(BUILD_COMMIT);
-        m_pOverlay->ExecuteAsync("enterGame");
+        ExecuteAsync("enterGame");
     }
     else
     {
-        m_pOverlay->ExecuteAsync("exitGame");
+        ExecuteAsync("exitGame");
         // TODO: this does nothing, since m_inGame is false
         SetActive(false);
     }
@@ -232,7 +233,7 @@ void OverlayService::SetVersion(const std::string& acVersion)
     auto pArguments = CefListValue::Create();
 
     pArguments->SetString(0, acVersion);
-    m_pOverlay->ExecuteAsync("setVersion", pArguments);
+    ExecuteAsync("setVersion", pArguments);
 }
 
 void OverlayService::SendSystemMessage(const std::string& acMessage)
@@ -244,7 +245,7 @@ void OverlayService::SendSystemMessage(const std::string& acMessage)
     pArguments->SetInt(0, kSystemMessage);
     pArguments->SetString(1, acMessage);
 
-    m_pOverlay->ExecuteAsync("message", pArguments);
+    ExecuteAsync("message", pArguments);
 }
 
 void OverlayService::SetPlayerHealthPercentage(uint32_t aFormId) const noexcept
@@ -272,7 +273,7 @@ void OverlayService::SetPlayerHealthPercentage(uint32_t aFormId) const noexcept
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, playerComponent.Id);
     pArguments->SetDouble(1, static_cast<double>(percentage));
-    m_pOverlay->ExecuteAsync("setHealth", pArguments);
+    ExecuteAsync("setHealth", pArguments);
 }
 
 void OverlayService::OnUpdate(const UpdateEvent&) noexcept
@@ -283,16 +284,16 @@ void OverlayService::OnUpdate(const UpdateEvent&) noexcept
 
 void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
 {
-    m_pOverlay->ExecuteAsync("connect");
+    ExecuteAsync("connect");
 
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acEvent.PlayerId);
-    m_pOverlay->ExecuteAsync("setLocalPlayerId", pArguments);
+    ExecuteAsync("setLocalPlayerId", pArguments);
 }
 
 void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
 {
-    m_pOverlay->ExecuteAsync("disconnect");
+    ExecuteAsync("disconnect");
 }
 
 void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
@@ -316,7 +317,7 @@ void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::enti
     pArguments->SetInt(0, pPlayerComponent->Id);
     pArguments->SetInt(1, static_cast<int>(percentage));
 
-    m_pOverlay->ExecuteAsync("setPlayer3dLoaded", pArguments);
+    ExecuteAsync("setPlayer3dLoaded", pArguments);
 }
 
 void OverlayService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
@@ -326,7 +327,7 @@ void OverlayService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::e
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, playerComponent.Id);
 
-    m_pOverlay->ExecuteAsync("setPlayer3dUnloaded", pArguments);
+    ExecuteAsync("setPlayer3dUnloaded", pArguments);
 }
 
 void OverlayService::OnChatMessageReceived(const NotifyChatMessageBroadcast& acMessage) noexcept
@@ -339,7 +340,7 @@ void OverlayService::OnChatMessageReceived(const NotifyChatMessageBroadcast& acM
     pArguments->SetString(1, acMessage.ChatMessage.c_str());
     pArguments->SetString(2, acMessage.PlayerName.c_str());
 
-    m_pOverlay->ExecuteAsync("message", pArguments);
+    ExecuteAsync("message", pArguments);
 }
 
 void OverlayService::OnPlayerDialogue(const NotifyPlayerDialogue& acMessage) noexcept
@@ -352,14 +353,14 @@ void OverlayService::OnPlayerDialogue(const NotifyPlayerDialogue& acMessage) noe
     pArguments->SetString(1, acMessage.Text.c_str());
     pArguments->SetString(2, acMessage.Name.c_str());
 
-    m_pOverlay->ExecuteAsync("message", pArguments);
+    ExecuteAsync("message", pArguments);
 }
 
 void OverlayService::OnConnectionError(const ConnectionErrorEvent& acConnectedEvent) const noexcept
 {
     auto pArgs = CefListValue::Create();
     pArgs->SetString(0, acConnectedEvent.ErrorDetail.c_str());
-    m_pOverlay->ExecuteAsync("triggerError", pArgs);
+    ExecuteAsync("triggerError", pArgs);
 }
 
 void OverlayService::OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcept
@@ -372,7 +373,7 @@ void OverlayService::OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcep
     String cellName = GetCellName(acMessage.WorldSpaceId, acMessage.CellId);
     pArguments->SetString(3, cellName.c_str());
 
-    m_pOverlay->ExecuteAsync("playerConnected", pArguments);
+    ExecuteAsync("playerConnected", pArguments);
 }
 
 void OverlayService::OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept
@@ -380,7 +381,7 @@ void OverlayService::OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetString(1, acMessage.Username.c_str());
-    m_pOverlay->ExecuteAsync("playerDisconnected", pArguments);
+    ExecuteAsync("playerDisconnected", pArguments);
 }
 
 void OverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept
@@ -388,7 +389,7 @@ void OverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetInt(1, acMessage.NewLevel);
-    m_pOverlay->ExecuteAsync("setLevel", pArguments);
+    ExecuteAsync("setLevel", pArguments);
 }
 
 void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessage) const noexcept
@@ -397,7 +398,7 @@ void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessag
     pArguments->SetInt(0, acMessage.PlayerId);
     String cellName = GetCellName(acMessage.WorldSpaceId, acMessage.CellId);
     pArguments->SetString(1, cellName.c_str());
-    m_pOverlay->ExecuteAsync("setCell", pArguments);
+    ExecuteAsync("setCell", pArguments);
 }
 
 void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
@@ -434,18 +435,18 @@ void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& 
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetDouble(1, static_cast<double>(percentage));
-    m_pOverlay->ExecuteAsync("setHealth", pArguments);
+    ExecuteAsync("setHealth", pArguments);
 }
 
 void OverlayService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
 {
     if (acEvent.IsLeader)
-        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyCreated");
+        ExecuteAsync("partyCreated");
 }
 
 void OverlayService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
 {
-    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyLeft");
+    ExecuteAsync("partyLeft");
 }
 
 void OverlayService::RunDebugDataUpdates() noexcept
@@ -470,7 +471,7 @@ void OverlayService::RunDebugDataUpdates() noexcept
     pArguments->SetInt(4, internalStats.SentBytes);
     pArguments->SetInt(5, internalStats.RecvBytes);
 
-    m_pOverlay->ExecuteAsync("debugData", pArguments);
+    ExecuteAsync("debugData", pArguments);
 }
 
 // TODO(cosideci): this whole thing is a really hacky solution to

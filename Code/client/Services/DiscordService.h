@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <thread>
+
 #include <discord.h>
 
 class DiscordService final : public entt::registry
@@ -30,7 +33,14 @@ private:
 
     bool m_bCustomPresence = false;
     bool m_bOverlayEnabled = false;
-    bool m_bRequestThreadKillHack = false;
+    // Written from the WndProc handler and read from the callback thread, so
+    // this has to be atomic.
+    std::atomic<bool> m_bRequestThreadKillHack{false};
+
+    // Owned callback pump. It used to be a detached static std::thread, which
+    // kept calling into this service after it was destroyed.
+    std::thread m_updateThread;
+    HMODULE m_discordModule = nullptr;
 
     IDiscordCore* m_pCore = nullptr;
     IDiscordUserManager* m_pUserMgr = nullptr;

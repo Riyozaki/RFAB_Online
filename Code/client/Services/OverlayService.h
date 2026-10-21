@@ -2,6 +2,8 @@
 
 #include <include/internal/cef_ptr.h>
 
+#include <utility>
+
 namespace TiltedPhoques
 {
 struct OverlayApp;
@@ -59,6 +61,18 @@ struct OverlayService
     void SetVersion(const std::string& acVersion);
 
     OverlayApp* GetOverlayApp() const noexcept { return m_pOverlay.get(); }
+
+    // The overlay is created lazily by the render system, so every event can
+    // arrive before it exists (for example when the client connects and drops
+    // before the first frame). Forwarding to CefRefPtr's operator-> there was a
+    // null dereference; all UI calls go through this guard instead.
+    template <class... TArgs> void ExecuteAsync(const char* acMethod, TArgs&&... args) const noexcept
+    {
+        if (!m_pOverlay)
+            return;
+
+        m_pOverlay->ExecuteAsync(acMethod, std::forward<TArgs>(args)...);
+    }
 
     void SendSystemMessage(const std::string& acMessage);
 

@@ -121,8 +121,8 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         // TODO: this can be done a bit prettier
         if (m_isLeader)
         {
-            TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-            pWorldEncountersEnabled->f = 1.f;
+            if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+                pWorldEncountersEnabled->f = 1.f;
         }
 
         auto pArguments = CefListValue::Create();
@@ -134,7 +134,7 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         pArguments->SetList(0, pPlayerIds);
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
 
-        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInfo", pArguments);
+        m_world.GetOverlayService().ExecuteAsync("partyInfo", pArguments);
     }
 }
 
@@ -146,7 +146,7 @@ void PartyService::OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcep
 
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acPartyInvite.InviterId);
-    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInviteReceived", pArguments);
+    m_world.GetOverlayService().ExecuteAsync("partyInviteReceived", pArguments);
 }
 
 void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept
