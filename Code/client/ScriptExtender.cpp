@@ -11,9 +11,12 @@ constexpr char kScriptExtenderEntrypoint[] = "StartSKSE";
 
 constexpr size_t kScriptExtenderNameLength = sizeof(kScriptExtenderName) / sizeof(wchar_t) - 1;
 
-// AE+ only
-// Use this to raise the SKSE baseline
-constexpr int kSKSEMinBuild = 20100;
+// RFAB Online targets Skyrim SE 1.5.97 with SKSE64 2.0.20 only.
+// SKSE stores its version in VS_FIXEDFILEINFO as 0.2.0.20 for the 2.0.20
+// release (verified against the skse64_1_5_97.dll shipped in RFAB, which
+// exports StartSKSE). The words are compared verbatim below; the previous
+// cumulative-threshold check rejected 2.0.20 as "pre anniversary".
+constexpr DWORD kExpectedSKSEVersion[4] = {0, 2, 0, 20};
 
 HMODULE g_SKSEModuleHandle{nullptr};
 
@@ -44,7 +47,7 @@ int GetFileVersion(const std::filesystem::path& acFilePath, FileVersion& aVersio
         return 3;
     }
 
-    aVersion.versions[0] = pvi->dwProductVersionMS >> 16;
+    aVersion.versions[0] = pvi->dwFileVersionMS >> 16;
     aVersion.versions[1] = pvi->dwFileVersionMS & 0xFFFF;
     aVersion.versions[2] = pvi->dwFileVersionLS >> 16;
     aVersion.versions[3] = pvi->dwFileVersionLS & 0xFFFF;
@@ -54,11 +57,10 @@ int GetFileVersion(const std::filesystem::path& acFilePath, FileVersion& aVersio
 
 std::string GetSKSEStyleExeVersion()
 {
-    // make sure newer than anniversary!
     auto exeBuild = VersionDb::Get().GetLoadedVersionString();
     std::replace(exeBuild.begin(), exeBuild.end(), '.', '_');
 
-    // chop off empty patch numbers for instance "1.6.323.0 becomes "1_6_323"
+    // chop off empty patch numbers for instance "1.5.97.0" becomes "1_5_97"
     auto patchPos = exeBuild.find_last_of("_0");
     if (patchPos != std::string::npos)
     {
@@ -124,11 +126,16 @@ void LoadScriptExender()
 
     auto skseVersion = fmt::format("v{}.{}.{}.{}", fileVersion.versions[0], fileVersion.versions[1], fileVersion.versions[2], fileVersion.versions[3]);
 
-    // nice try.
-    int SkseVCum = fileVersion.versions[0] * 1000000 + fileVersion.versions[1] * 10000 + fileVersion.versions[2] * 100 + fileVersion.versions[3];
-    if (SkseVCum < kSKSEMinBuild)
+    bool isExpectedSKSE = true;
+    for (int i = 0; i < FileVersion::scVersionSize; i++)
     {
-        spdlog::error("Pre anniversary Script Extender is unsupported");
+        if (fileVersion.versions[i] != kExpectedSKSEVersion[i])
+            isExpectedSKSE = false;
+    }
+
+    if (!isExpectedSKSE)
+    {
+        spdlog::error("Unsupported SKSE version {}: RFAB Online requires SKSE64 2.0.20 (file version 0.2.0.20) for Skyrim SE 1.5.97. SKSE was not started.", skseVersion);
         return;
     }
 
