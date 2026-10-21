@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Games/GameProfile.h>
 #include <Games/Primitives.h>
 #include <Forms/TESForm.h>
 #include <NetImmerse/BSFaceGenNiNode.h>
@@ -226,5 +227,7 @@ struct TESObjectREFR : TESForm
     uint16_t referenceFlags;
 };
 
-static_assert(sizeof(TESObjectREFR) == 0xA0);
+// 1.5.97: ExtraDataList is 8 bytes smaller (no vtable), the reference itself
+// therefore ends at 0x98. loadedState sits before ExtraDataList and does not move.
+TP_STATIC_ASSERT_SIZE(TESObjectREFR, 0x98, 0xA0);
 static_assert(offsetof(TESObjectREFR, loadedState) == 0x68);

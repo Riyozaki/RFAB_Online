@@ -2,6 +2,7 @@
 
 #include "ExtraData.h"
 
+#include <Games/GameProfile.h>
 #include <ExtraData/ExtraSoul.h>
 
 struct AlchemyItem;
@@ -31,7 +32,12 @@ struct ExtraDataList
 
     [[nodiscard]] bool HasQuestObjectAlias() noexcept;
 
+#if TP_PROFILE_IS_1597
+    // 1.5.97: BaseExtraList has no vtable, so the list owns no vptr.
+    ~ExtraDataList();
+#else
     virtual ~ExtraDataList();
+#endif
     BSExtraData* data = nullptr;
 
     struct Bitfield
@@ -42,3 +48,5 @@ struct ExtraDataList
     Bitfield* bitfield{};
     mutable BSRecursiveLock lock{};
 };
+
+TP_STATIC_ASSERT_SIZE(ExtraDataList, 0x18, 0x20);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Games/Events.h>
+#include <Games/GameProfile.h>
 #include <TESObjectREFR.h>
 
 #include <Magic/MagicTarget.h>
@@ -375,23 +376,25 @@ public:
 
     uint8_t pad198[8];
     BSRecursiveLock actorLock;
-    uint8_t padActorEnd[0x2B0 - 0x284];
+    uint8_t padActorEnd[TP_LAYOUT(0x2B0, 0x2B8) - TP_LAYOUT(0x27C, 0x284) - sizeof(BSRecursiveLock)];
 
     // void Save_Reversed(uint32_t aChangeFlags, Buffer::Writer& aWriter);
 };
 
-static_assert(offsetof(Actor, currentProcess) == 0xF8);
-static_assert(offsetof(Actor, flags1) == 0xE8);
-static_assert(offsetof(Actor, actorValueOwner) == 0xB8);
-static_assert(offsetof(Actor, actorState) == 0xC0);
-static_assert(offsetof(Actor, flags2) == 0x204);
-static_assert(offsetof(Actor, unk194) == 0x278);
-static_assert(offsetof(Actor, fVoiceTimer) == 0x110);
-static_assert(offsetof(Actor, unk84) == 0xF0);
-static_assert(offsetof(Actor, unk17C) == 0x184);
-static_assert(offsetof(Actor, pCombatController) == 0x160);
-static_assert(offsetof(Actor, magicItems) == 0x1C8);
-static_assert(offsetof(Actor, equippedShout) == 0x1E8);
-static_assert(offsetof(Actor, actorLock) == 0x284);
-static_assert(sizeof(Actor) == 0x2B8);
+// 1.5.97 values are the ones the 2021 pre-Anniversary sources asserted and ran
+// with; the eight byte difference comes from ExtraDataList (see GameProfile.h).
+TP_STATIC_ASSERT_OFFSET(Actor, currentProcess, 0xF0, 0xF8);
+TP_STATIC_ASSERT_OFFSET(Actor, flags1, 0xE0, 0xE8);
+TP_STATIC_ASSERT_OFFSET(Actor, actorValueOwner, 0xB0, 0xB8);
+TP_STATIC_ASSERT_OFFSET(Actor, actorState, 0xB8, 0xC0);
+TP_STATIC_ASSERT_OFFSET(Actor, flags2, 0x1FC, 0x204);
+TP_STATIC_ASSERT_OFFSET(Actor, unk194, 0x270, 0x278);
+TP_STATIC_ASSERT_OFFSET(Actor, fVoiceTimer, 0x108, 0x110);
+TP_STATIC_ASSERT_OFFSET(Actor, unk84, 0xE8, 0xF0);
+TP_STATIC_ASSERT_OFFSET(Actor, unk17C, 0x17C, 0x184);
+TP_STATIC_ASSERT_OFFSET(Actor, pCombatController, 0x158, 0x160);
+TP_STATIC_ASSERT_OFFSET(Actor, magicItems, 0x1C0, 0x1C8);
+TP_STATIC_ASSERT_OFFSET(Actor, equippedShout, 0x1E0, 0x1E8);
+TP_STATIC_ASSERT_OFFSET(Actor, actorLock, 0x27C, 0x284);
+TP_STATIC_ASSERT_SIZE(Actor, 0x2B0, 0x2B8);
 static_assert(sizeof(Actor::SpellItemEntry) == 0x18);

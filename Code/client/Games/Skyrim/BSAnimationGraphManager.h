@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Games/GameProfile.h>
+
 #include <Games/Primitives.h>
 
 #include <Havok/BShkbAnimationGraph.h>
@@ -20,8 +22,8 @@ struct BSAnimationGraphManager
     volatile LONG refCount;
     void* pad_ptrs[6];
     BSTSmallArray<BShkbAnimationGraph> animationGraphs; // 40 - 20
-    void* pad_ptrs2[9];
-    BSRecursiveLock lock;  // 98 - 4C
+    void* pad_ptrs2[TP_LAYOUT(8, 9)]; // the AE runtime block gained one pointer in 1.6.629
+    BSRecursiveLock lock;  // 98 (1.5.97) / A0 (1.6.629+), 4C on 32-bit
     void* unkPtrAfterLock; // A0 - 58
 
 #if TP_PLATFORM_32
@@ -37,8 +39,8 @@ struct BSAnimationGraphManager
 
 #if TP_PLATFORM_64
 static_assert(offsetof(BSAnimationGraphManager, animationGraphs) == 0x40);
-static_assert(offsetof(BSAnimationGraphManager, lock) == 0xA0);
-static_assert(offsetof(BSAnimationGraphManager, animationGraphIndex) == 0xB0);
+TP_STATIC_ASSERT_OFFSET(BSAnimationGraphManager, lock, 0x98, 0xA0);
+TP_STATIC_ASSERT_OFFSET(BSAnimationGraphManager, animationGraphIndex, 0xA8, 0xB0);
 #else
 static_assert(offsetof(BSAnimationGraphManager, animationGraphs) == 0x20);
 static_assert(offsetof(BSAnimationGraphManager, lock) == 0x4C);

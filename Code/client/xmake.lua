@@ -56,6 +56,10 @@ target(name)
         "mem",
         "xbyak")
 
+    if get_config("skyrim_profile") == "1597" then
+        add_defines("TP_GAME_PROFILE_1597")
+    end
+
     if has_config("vivox") then
         add_files("Services/Vivox/**.cpp")
         add_headerfiles("Services/Vivox/**.h")
