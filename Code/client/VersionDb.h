@@ -169,16 +169,37 @@ public:
     {
         Clear();
 
-        char fileName[256];
-        _snprintf_s(fileName, 256, "versionlib-%d-%d-%d-%d.bin", major, minor, revision, build);
+        // RFAB Online: Address Library ships under two naming schemes:
+        // "versionlib-<ver>.bin" (Anniversary-era packs) and
+        // "version-<ver>.bin" (Special Edition packs, as in RFAB for 1.5.97).
+        // Accept either file name for the requested game version.
+        const auto pluginsPath = acGamePath / "Data" / "SKSE" / "Plugins";
 
-        std::ifstream file(acGamePath / "Data" / "SKSE" / "Plugins" / fileName, std::ios::binary);
+        static const char* namePatterns[] = {"versionlib-%d-%d-%d-%d.bin", "version-%d-%d-%d-%d.bin"};
+
+        std::ifstream file;
+        for (const char* namePattern : namePatterns)
+        {
+            char fileName[256];
+            _snprintf_s(fileName, 256, namePattern, major, minor, revision, build);
+
+            file.open(pluginsPath / fileName, std::ios::binary);
+            if (file.good())
+                break;
+
+            file.clear();
+        }
+
         if (!file.good())
             return false;
 
         int format = read<int>(file);
 
-        if (format != 2)
+        // RFAB Online: the 1.5.97 database (version-1-5-97-0.bin) uses format 1.
+        // Its nibble-delta payload encoding is identical to format 2; this was
+        // verified by decoding the RFAB-shipped file with this exact parser
+        // (tools/address_db_check.py, docs/phase-0-evidence/address-id-audit.txt).
+        if (format != 1 && format != 2)
             return false;
 
         for (int i = 0; i < 4; i++)
