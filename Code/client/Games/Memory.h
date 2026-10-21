@@ -11,11 +11,13 @@ struct Memory
         return pMemory;
     }
 
+    // Both overloads used to allocate twice: the first block was never freed and
+    // the returned object lived in the second one. Every Memory::New<T>() call
+    // therefore leaked sizeof(T) bytes (face tints, overlay renderer, ...).
     template <class T> static T* New() noexcept { return new (Allocate<T>()) T; }
 
     template <class T, class... TArgs> static T* New(TArgs... args) noexcept
     {
-        auto pMemory = static_cast<T*>(Allocate(sizeof(T)));
         return new (Allocate<T>()) T(std::forward<TArgs>(args)...);
     }
 
