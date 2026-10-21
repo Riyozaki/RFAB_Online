@@ -188,7 +188,11 @@ def main() -> int:
     print(f"unmapped ids analysed: {len(report)}")
     for verdict, count in sorted(buckets.items(), key=lambda item: -item[1]):
         print(f"  {count:>3}  {verdict}")
-    print(f"wrote {args.out.relative_to(ROOT)}")
+    try:
+        shown = args.out.relative_to(ROOT)
+    except ValueError:
+        shown = args.out
+    print(f"wrote {shown}")
 
     for row in report:
         if row["used_candidates"] == 1:

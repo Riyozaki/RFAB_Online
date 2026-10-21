@@ -112,7 +112,11 @@ def main() -> int:
     print(f"unmapped ids: {len(unmapped)}")
     print(f"  with several symbols (suspicious): {len(duplicates)} -> {[row['ae_id'] for row in duplicates]}")
     print(f"  without a scanned symbol: {len(no_symbol)} -> {[row['ae_id'] for row in no_symbol]}")
-    print(f"wrote {args.out.relative_to(ROOT)}")
+    try:
+        shown = args.out.relative_to(ROOT)
+    except ValueError:
+        shown = args.out
+    print(f"wrote {shown}")
     return 0
 
 

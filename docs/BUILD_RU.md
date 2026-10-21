@@ -129,7 +129,23 @@ g++ -std=c++20 -I Code/common tools/port1597/selftest.cpp \
 /tmp/selftest --database "/path/to/version-1-5-97-0.bin"
 ```
 
-Генераторы данных проверяются так:
+Всё офлайн-проверки сразу (без Windows, Skyrim и SKSE):
+
+```bash
+TP_ADDRESS_LIBRARY=/path/to/version-1-5-97-0.bin \
+TP_LEGACY_TREE=/path/to/pre-AE-client \
+TP_FORK_REPO=/path/to/TiltedEvolution \
+TP_CLIBNG_TREE=/path/to/CommonLibSSE-NG \
+bash tools/port1597/check_all.sh
+```
+
+Скрипт проверяет: актуальность сгенерированных файлов, компиляцию обоих
+профилей раскладок, самотест слоя адресов, сверку пар с деревом 2021 года,
+сверку восстановленных из истории пар и выгрузку пар из NG. Незаданные
+переменные означают «пропустить соответствующий блок», а не «успех» — итоговая
+строка показывает число пропусков.
+
+Отдельные генераторы проверяются так:
 
 ```bash
 python tools/port1597/gen_inl.py --check
