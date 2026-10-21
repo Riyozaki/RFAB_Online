@@ -99,6 +99,19 @@ xmake -y SkyrimTogetherServer
 
 Docker-образ собирается из `.github/workflows/docker-server-image.yml`.
 
+## 4.1. Логи
+
+Клиент пишет `logs/tp_client.log` (ротация: 5 МБ × 3 файла) и одновременно в
+консоль. Уровень задаётся переменной окружения **до** запуска игры:
+
+```powershell
+$env:TP_LOG_LEVEL = "debug"   # trace | debug | info | warn | error | critical | off
+```
+
+По умолчанию `info`. Записи уровня `warn` и выше сбрасываются на диск сразу,
+остальные — раз в секунду; ошибки sink'ов уходят в `OutputDebugString` и не
+роняют игру.
+
 ## 5. Тесты
 
 ```bash
