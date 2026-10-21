@@ -1,7 +1,1 @@
-ae_id,se_1_5_97_id,status,keys,evidence,notes
-35993,,ambiguous,type:CtorT,,"кандидаты: 35100 (type:CtorT@0x599440), 35145 (type:CtorT@0x599440)"
-36035,,ambiguous,type:CtorT,,"кандидаты: 35100 (type:CtorT@0x599440), 35145 (type:CtorT@0x599440)"
-38903,37947,unique,type:TUnEquipSpellInternal,type:TUnEquipSpellInternal@0x6383B0,
-38929,37974,unique,type:TEquip,type:TEquip@0x639E20,
-38934,37979,unique,type:TUnEquip,type:TUnEquip@0x63A6B0,
-401069,514905,unique,type:PlayerCharacter*,type:PlayerCharacter*@0x2EFF7D8,
+

@@ -102,7 +102,7 @@ def main() -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=list(report[0].keys()) if report else [])
+        writer = csv.DictWriter(file, fieldnames=list(report[0].keys()) if report else [], lineterminator="\n")
         writer.writeheader()
         writer.writerows(report)
 
