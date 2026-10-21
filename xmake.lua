@@ -39,6 +39,7 @@ add_requires(
     "spdlog v1.13.0", 
     "cpp-httplib 0.14.0",
     "gtest v1.14.0", 
+    "catch2 2.13.10",
     "mem 1.0.0", 
     "glm 0.9.9+8", 
     "zlib v1.3.1"
