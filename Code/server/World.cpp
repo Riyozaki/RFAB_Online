@@ -18,6 +18,7 @@
 #include <Services/MapService.h>
 #include <Services/HealthScalingService.h>
 #include <Services/XpShareService.h>
+#include <Services/ProgressionService.h>
 
 #include <es_loader/ESLoader.h>
 
@@ -44,6 +45,7 @@ World::World()
     ctx().emplace<WeatherService>(*this, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher);
     ctx().emplace<HealthScalingService>(*this, m_dispatcher);
+    ctx().emplace<ProgressionService>(*this, m_dispatcher);
     ctx().emplace<XpShareService>(*this, m_dispatcher);
 
     ESLoader::ESLoader loader;

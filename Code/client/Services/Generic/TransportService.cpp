@@ -1,6 +1,7 @@
 
 #include <ProtocolVersion.h>
 #include <Services/TransportService.h>
+#include <Services/RfabXp.h>
 
 #include <Events/ConnectedEvent.h>
 #include <Events/ConnectionErrorEvent.h>
@@ -157,6 +158,11 @@ void TransportService::OnConnected()
     modSystem.GetServerModId(pPlayer->parentCell->formID, request.CellId);
 
     request.Level = pPlayer->GetLevel();
+
+    // Report the RFAB experience total so the server can restore what it has
+    // already attributed to this username (crash, older save, new character).
+    // Zero when RFAB is not installed - the server treats that as "unknown".
+    request.RfabXpTotal = RfabXp::Read();
 
     auto* pGameTime = TimeData::Get();
     request.PlayerTime.TimeScale = pGameTime->TimeScale->f;

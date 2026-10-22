@@ -10,6 +10,7 @@
 #include <Services/ScriptService.h>
 #include <Services/HealthScalingService.h>
 #include <Services/XpShareService.h>
+#include <Services/ProgressionService.h>
 
 #include "Game/PlayerManager.h"
 
@@ -42,6 +43,7 @@ struct World : entt::registry
     ScriptService& GetScriptService() const noexcept { return *m_pScriptService; }
     HealthScalingService& GetHealthScalingService() noexcept { return ctx().at<HealthScalingService>(); }
     const HealthScalingService& GetHealthScalingService() const noexcept { return ctx().at<const HealthScalingService>(); }
+    ProgressionService& GetProgressionService() noexcept { return ctx().at<ProgressionService>(); }
     XpShareService& GetXpShareService() noexcept { return ctx().at<XpShareService>(); }
     const XpShareService& GetXpShareService() const noexcept { return ctx().at<const XpShareService>(); }
 

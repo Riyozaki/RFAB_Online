@@ -1005,6 +1005,7 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
         pPlayer->SetMods(playerMods);
         pPlayer->SetModIds(playerModsIds);
         pPlayer->SetLevel(acRequest->Level);
+        pPlayer->SetRfabXpTotal(acRequest->RfabXpTotal);
 
         // this event is shit, needs to be fixed, i know
         auto [canceled, reason] = m_pWorld->GetScriptService().HandlePlayerJoin(aConnectionId);

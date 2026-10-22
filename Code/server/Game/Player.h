@@ -21,6 +21,9 @@ struct Player
     [[nodiscard]] const uint64_t GetDiscordId() const noexcept { return m_discordId; }
     [[nodiscard]] const uint32_t GetStringCacheId() const noexcept { return m_stringCacheId; }
     [[nodiscard]] const uint16_t GetLevel() const noexcept { return m_level; }
+    //! RFAB experience the client reported when it connected, plus everything
+    //! the server has awarded it since (see Gameplay::Progression).
+    [[nodiscard]] int32_t GetRfabXpTotal() const noexcept { return m_rfabXpTotal; }
 
     [[nodiscard]] CellIdComponent& GetCellComponent() noexcept;
     [[nodiscard]] const CellIdComponent& GetCellComponent() const noexcept;
@@ -36,6 +39,8 @@ struct Player
     void SetStringCacheId(uint32_t aStringCacheId) noexcept;
     // TODO(cosideci): update on level up
     void SetLevel(uint16_t aLevel) noexcept;
+    void SetRfabXpTotal(int32_t aTotal) noexcept;
+    void AddRfabXp(int32_t aAmount) noexcept;
 
     void SetCellComponent(const CellIdComponent& aCellComponent) noexcept;
 
@@ -55,4 +60,5 @@ private:
     CellIdComponent m_cell;
     uint32_t m_stringCacheId{0};
     uint16_t m_level{0};
+    int32_t m_rfabXpTotal{0};
 };

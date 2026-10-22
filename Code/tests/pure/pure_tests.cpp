@@ -17,6 +17,7 @@
 #include <Gameplay/HealthScaling.h>
 #include <Gameplay/SaveSession.h>
 #include <Gameplay/XpAward.h>
+#include <Gameplay/Progression.h>
 #include <Gameplay/XpShare.h>
 
 namespace
@@ -453,6 +454,164 @@ void TestXpAward()
     CHECK(!Gameplay::XpAward::ShouldAnnounceLevelUp(1000, -1.0f));
 }
 
+void TestProgressionCatchUp()
+{
+    BeginCase("Progression::ComputeCatchUp");
+
+    using Gameplay::Progression::ComputeCatchUp;
+    using Gameplay::Progression::kMaxTotalXp;
+
+    // A returning player who lost progress is topped up to the server total.
+    CHECK(ComputeCatchUp(5000, 1000) == 4000);
+
+    // Exactly equal, or ahead (played single player in between): nothing.
+    CHECK(ComputeCatchUp(5000, 5000) == 0);
+    CHECK(ComputeCatchUp(5000, 9000) == 0);
+
+    // Nothing known: never invent progress.
+    CHECK(ComputeCatchUp(0, 0) == 0);
+    CHECK(ComputeCatchUp(0, 500) == 0);
+    CHECK(ComputeCatchUp(-100, 0) == 0);
+
+    // Garbage from a client is treated as zero, not as a negative deficit.
+    CHECK(ComputeCatchUp(1000, -50) == 0);
+
+    // The catch-up is clamped to the same ceiling as everything else.
+    const int32_t big = ComputeCatchUp(kMaxTotalXp, 0);
+    CHECK(big == kMaxTotalXp);
+
+    // abs(INT32_MIN) must not overflow.
+    CHECK(ComputeCatchUp(100, -2147483647 - 1) == 0);
+}
+
+void TestProgressionRecord()
+{
+    BeginCase("Progression ledger records");
+
+    using Gameplay::Progression::FormatRecord;
+    using Gameplay::Progression::Ledger;
+    using Gameplay::Progression::Merge;
+    using Gameplay::Progression::ParseRecord;
+    using Gameplay::Progression::PlayerRecord;
+
+    PlayerRecord record;
+    record.Username = "Dovah \"the\" Bold";
+    record.RfabXp = 1234;
+    record.Level = 17;
+    record.UpdatedUnixMs = 1756000000123ull;
+    record.CellBaseId = 0x1A26F;
+    record.CellModId = 0;
+    record.WorldSpaceBaseId = 0x3C;
+    record.WorldSpaceModId = 0;
+    record.PositionX = 1234.5f;
+    record.PositionY = -42.25f;
+    record.PositionZ = 0.0f;
+
+    const std::string line = FormatRecord(record);
+
+    PlayerRecord parsed;
+    CHECK(ParseRecord(line, parsed));
+    CHECK(parsed.Username == record.Username);
+    CHECK(parsed.RfabXp == 1234);
+    CHECK(parsed.Level == 17);
+    CHECK(parsed.UpdatedUnixMs == record.UpdatedUnixMs);
+    CHECK(parsed.CellBaseId == 0x1A26F);
+    CHECK(parsed.WorldSpaceBaseId == 0x3C);
+    CHECK(parsed.PositionX == 1234.5f);
+    CHECK(parsed.PositionY == -42.25f);
+
+    // A control character in a username survives the round trip.
+    PlayerRecord weird;
+    weird.Username = std::string("a") + '\t' + "b";
+    weird.RfabXp = 1;
+    PlayerRecord weirdParsed;
+    CHECK(ParseRecord(FormatRecord(weird), weirdParsed));
+    CHECK(weirdParsed.Username == weird.Username);
+
+    // Malformed input is rejected, not half parsed.
+    PlayerRecord rejected;
+    CHECK(!ParseRecord("", rejected));
+    CHECK(!ParseRecord("{}", rejected));
+    CHECK(!ParseRecord("{\"user\":\"\"}", rejected));
+    CHECK(!ParseRecord("{\"xp\":5}", rejected));
+    CHECK(!ParseRecord("not json at all", rejected));
+    CHECK(!ParseRecord("{\"user\":7}", rejected));
+    CHECK(!ParseRecord("{\"user\":\"a\",}", rejected));
+    CHECK(!ParseRecord("{\"user\":\"a\"} trailing", rejected));
+
+    // Unknown keys are ignored (forward compatibility).
+    CHECK(ParseRecord("{\"user\":\"a\",\"future\":\"value\"}", rejected));
+    CHECK(rejected.Username == "a");
+
+    BeginCase("Progression::Merge");
+    PlayerRecord stored;
+    stored.Username = "a";
+    stored.RfabXp = 5000;
+    stored.Level = 10;
+    stored.UpdatedUnixMs = 200;
+
+    PlayerRecord current;
+    current.Username = "a";
+    current.RfabXp = 1000;
+    current.Level = 8;
+    current.UpdatedUnixMs = 300;
+    current.CellBaseId = 0x99;
+
+    // Experience never goes backwards, the newest snapshot wins for the rest.
+    const PlayerRecord merged = Merge(stored, current);
+    CHECK(merged.RfabXp == 5000);
+    CHECK(merged.Level == 8);
+    CHECK(merged.CellBaseId == 0x99);
+
+    // An older observation must not overwrite a newer snapshot.
+    PlayerRecord older = current;
+    older.UpdatedUnixMs = 100;
+    older.CellBaseId = 0x11;
+    const PlayerRecord keptNewer = Merge(stored, older);
+    CHECK(keptNewer.CellBaseId == 0x0); // stored snapshot (200) wins over 100
+    CHECK(keptNewer.RfabXp == 5000);
+
+    // Empty inputs are handled.
+    CHECK(Merge(PlayerRecord{}, current).Username == "a");
+    CHECK(Merge(stored, PlayerRecord{}).RfabXp == 5000);
+
+    BeginCase("Progression::Ledger");
+    Ledger ledger;
+    CHECK(ledger.Size() == 0);
+
+    ledger.Upsert(record);
+    CHECK(ledger.Size() == 1);
+    CHECK(ledger.Find("Dovah \"the\" Bold") != nullptr);
+    CHECK(ledger.Find("nobody") == nullptr);
+
+    PlayerRecord second;
+    second.Username = "Second";
+    second.RfabXp = 10;
+    ledger.Upsert(second);
+
+    // Same username merges instead of duplicating.
+    PlayerRecord third = second;
+    third.RfabXp = 20;
+    third.UpdatedUnixMs = 5;
+    ledger.Upsert(third);
+    CHECK(ledger.Size() == 2);
+    CHECK(ledger.Find("Second")->RfabXp == 20);
+
+    const std::string text = ledger.Serialize();
+    Ledger restored;
+    CHECK(restored.Deserialize(text) == 2);
+    CHECK(restored.Find("Second")->RfabXp == 20);
+    CHECK(restored.Find("Dovah \"the\" Bold") != nullptr);
+
+    // A file with one broken line keeps the good ones.
+    Ledger partial;
+    CHECK(partial.Deserialize("garbage\n{\"user\":\"ok\",\"xp\":5}\n\n") == 1);
+    CHECK(partial.Find("ok")->RfabXp == 5);
+
+    // Re-serialising a restored ledger is stable.
+    CHECK(restored.Serialize() == text);
+}
+
 void TestActorValueIds()
 {
     BeginCase("ActorValue ids are the Skyrim SE ones");
@@ -482,6 +641,8 @@ int main()
     TestSaveSettleTracker();
     TestXpAward();
     TestXpEchoFilter();
+    TestProgressionCatchUp();
+    TestProgressionRecord();
     TestSanitise();
     TestActorValueIds();
 

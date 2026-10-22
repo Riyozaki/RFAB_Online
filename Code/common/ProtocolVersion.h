@@ -16,12 +16,14 @@
 //       server opcode  NotifySyncRfabExperience    added.
 //   2 - SyncRfabExperienceRequest gained Sequence (replay/reconnect protection)
 //       and shares experience server-wide instead of party-only.
+//   3 - AuthenticationRequest gained RfabXpTotal (the client's RFAB experience,
+//       so the server can restore a returning player's progress).
 //
 // A wrong number is never silently accepted: the server still rejects a client
 // whose BUILD_COMMIT differs (GameServer::HandleAuthenticationRequest), and both
 // sides log the protocol version at startup so a mismatched pair is obvious.
 namespace Protocol
 {
-inline constexpr uint32_t kVersion = 2;
+inline constexpr uint32_t kVersion = 3;
 
 } // namespace Protocol

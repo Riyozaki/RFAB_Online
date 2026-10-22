@@ -30,6 +30,7 @@ TEST_CASE("Encoding factory", "[encoding.factory]")
     {
         AuthenticationRequest request;
         request.Token = "TesSt";
+        request.RfabXpTotal = 123456;
 
         Buffer::Writer writer(&buff);
         request.Serialize(writer);
@@ -44,6 +45,7 @@ TEST_CASE("Encoding factory", "[encoding.factory]")
 
         auto pRequest = CastUnique<AuthenticationRequest>(std::move(pMessage));
         REQUIRE(pRequest->Token == request.Token);
+        REQUIRE(pRequest->RfabXpTotal == 123456);
     }
 
     {

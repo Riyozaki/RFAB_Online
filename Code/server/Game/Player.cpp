@@ -1,6 +1,8 @@
 #include "Player.h"
 #include <GameServer.h>
 
+#include <algorithm>
+
 static uint32_t GenerateId()
 {
     // NOTE(Vince): Start counting like a MAD man at 1, so we can pass this value to lua without
@@ -88,6 +90,20 @@ void Player::SetStringCacheId(uint32_t aStringCacheId) noexcept
 void Player::SetLevel(uint16_t aLevel) noexcept
 {
     m_level = aLevel;
+}
+
+void Player::SetRfabXpTotal(int32_t aTotal) noexcept
+{
+    m_rfabXpTotal = std::max(0, aTotal);
+}
+
+void Player::AddRfabXp(int32_t aAmount) noexcept
+{
+    if (aAmount <= 0)
+        return;
+
+    // The same ceiling the client award path uses (a float GlobalVariable).
+    m_rfabXpTotal = std::min<int64_t>(static_cast<int64_t>(m_rfabXpTotal) + aAmount, 10'000'000);
 }
 
 void Player::SetCellComponent(const CellIdComponent& aCellComponent) noexcept
