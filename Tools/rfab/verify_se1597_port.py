@@ -154,7 +154,7 @@ def main() -> int:
 
     pat_ptr = re.compile(r"\bPOINTER_SKYRIMSE\s*\([^,]+,[^,]+,\s*(\d+)\s*\)")
     pat_vdb = re.compile(r"\bVersionDbPtr\s*<[^>]+>\s*\w+\s*\(\s*(\d+)\s*\)")
-    pat_rtti = re.compile(r"\{\s*(\d+)\s*(?:,|\})")
+    pat_rtti = re.compile(r"\{\s*0\s*,\s*(\d+)\s*,")
 
     found_ids: set[int] = set()
     for p in (REPO_ROOT / "Code").rglob("*"):
@@ -167,9 +167,7 @@ def main() -> int:
             found_ids.add(int(m.group(1)))
         if p.name == "RTTI.cpp":
             for m in pat_rtti.finditer(txt):
-                val = int(m.group(1))
-                if val > 1000:
-                    found_ids.add(val)
+                found_ids.add(int(m.group(1)))
 
     in_se = sum(1 for x in found_ids if x in se_set or x == 75591)
     only_ae = sum(1 for x in found_ids if x in ae_to_se and x not in se_set)
