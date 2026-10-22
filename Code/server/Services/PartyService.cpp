@@ -20,10 +20,8 @@
 #include <Messages/NotifyPlayerJoined.h>
 
 #include <Setting.h>
-namespace
-{
-Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
-}
+
+extern Console::Setting<bool> bAutoPartyJoin;
 
 PartyService::PartyService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)

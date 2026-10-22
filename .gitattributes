@@ -15,4 +15,9 @@
 *.RTF	 diff=astextplain
 # Custom for the project to build
 *.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 binary
 dist_ready/** filter=lfs diff=lfs merge=lfs -text
+dist_ready/RFAB_Online_MO2/SkyrimTogetherReborn/assets/images/** -filter -diff -merge -text
+dist_ready/RFAB_Patcher/*.bat -filter -diff -merge text eol=crlf
+dist_ready/RFAB_Patcher/*.ps1 -filter -diff -merge binary
