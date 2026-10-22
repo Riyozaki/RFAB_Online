@@ -471,6 +471,15 @@ foreach ($pf in ($Po3Files | Select-Object -Unique -Property FullName)) {
     }
 }
 
+# Скрываем BetterStealing.dll (конфликт пролога SE 36525 с синхронизацией инвентаря ST; остальные плагины NSF остаются активны!)
+$BetterStealingFiles = foreach ($cr in $CompatRoots) {
+    Get-ChildItem -LiteralPath $cr -Filter "BetterStealing.dll" -Recurse -ErrorAction SilentlyContinue
+}
+foreach ($bs in ($BetterStealingFiles | Select-Object -Unique -Property FullName)) {
+    Rename-Item -LiteralPath $bs.FullName -NewName "BetterStealing.dll.mohidden" -Force
+    Write-Ok "Скрыт несовместимый плагин BetterStealing.dll -> $($bs.FullName).mohidden"
+}
+
 # 8. Запись пути к RFAB SkyrimSE.exe в реестр Windows + добавление ярлыка в ModOrganizer.ini
 Write-Step "Шаг 6/7. Привязка пути SkyrimSE.exe (1.5.97) и добавление кнопки запуска в MO2"
 $RegPath = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"

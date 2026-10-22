@@ -53,6 +53,7 @@ std::string NormalizeLineEndings(const std::string& aInput)
         L"SpecialK64.dll",           // breaks rendering
         L"ReShade64_SpecialK64.dll", // same reason
         L"NvCamera64.dll",           // broken af nvidia stuff, blacklisted for now, needs fix later
+        L"BetterStealing.dll",       // NetScriptFramework plugin conflicts on SE 36525 / 19282 add-item prologue bytes
        // L"atiuxp64.dll",
        // L"aticfx64.dll"
     };
