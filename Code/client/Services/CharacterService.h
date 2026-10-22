@@ -93,6 +93,7 @@ struct CharacterService
     void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
 
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
+    void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
 
 private:
     void MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;

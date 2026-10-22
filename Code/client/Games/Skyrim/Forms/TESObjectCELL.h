@@ -71,7 +71,11 @@ struct TESObjectCELL : TESForm
 // vtable yet, so everything from cellData on sits 8 bytes lower than on
 // 629+ (cellData 0x60, references 0x80, worldSpace 0x120, size 0x140).
 // Cross-checked with CommonLibSSE-NG TESObjectCELL for < SSE 1.6.629.
+#ifdef _MSC_VER
 static_assert(offsetof(TESObjectCELL, cellFlags) == 0x40);
+#else
+static_assert(offsetof(TESObjectCELL, cellFlags) == 0x3C);
+#endif
 static_assert(offsetof(TESObjectCELL, refData) == 0x80);
 static_assert(offsetof(TESObjectCELL, worldspace) == 0x120);
 static_assert(offsetof(TESObjectCELL, loadedCellData) == 0x128);

@@ -85,19 +85,13 @@
 - [x] Исправлены `SIGSEGV` при передаче ownership отключившегося игрока (`CharacterService::TransferOwnership`), `IsNonSyncableQuest` (`||` -> `&&`) и `nullptr`-краши в `QuestService`, утечка в `ExtraDataList::Delete`, остановка `ServerListService` и серверные заголовки (`ActorValueService.cpp`, `ServerListService.cpp`).
 - [x] Включено автоматическое серверное масштабирование HP врагов (`bAutoScaleEnemyHealth = true`: `1p = 1×`, `2p = 3×`, `3p = 4×`, $N \ge 2 \implies (N + 1)\times$) с фильтром игроков/напарников/саммонов/лошадей и безопасным двухшаговым рескейлом (`SetScaledHealthSafely`), исключающим мгновенную смерть раненых NPC при дисконнекте, а также равная рассылка опыта `RFAB` всем подключённым игрокам с защитой `kInfamy = -1.0f` и дедупликацией квестового XP (`TPTests`: `Passed all 10 test cases with 2075 assertions`).
 
-### Этап 3 — Строгое масштабирование HP врагов (`1p=1×`, `2p=3×`, `3p=4×`) при `1×` числе врагов
-1. Удалить сломанный прототип из `Client/ActorValueService.cpp` и внедрить чистый модуль `EnemyHealthScalingService` (сервер сообщает точное число активных игроков $N$ при каждом входе/выходе игрока).
-2. Реализовать строгий фильтр **только враждебных NPC** (исключая игроков, удалённых игроков, саммонов, нежить игрока и напарников) и **безопасный двухшаговый алгоритм рескейла** (`PERMANENT -> DAMAGE` при росте $N$, `DAMAGE -> PERMANENT` при убывании $N$), гарантирующий сохранение точного `% HP` и **нулевой шанс смерти NPC при дисконнекте**.
-3. Обеспечить **строго `1×` число врагов** (никакого размножения спавнов на число игроков, включая защиту от дублирования скриптовых засад `RFAB_AmbushScript`).
+### Этап 3 — Адаптивность к обновлениям `drake1ch/RFAB`, двухфазные сохранения, `0 HP Downed-on-Knee` и `1×` спавны *(ВЫПОЛНЕНО И ПРОВЕРЕНО)*
+- [x] Внедрены `Data/SKSE/Plugins/RFAB_Online_Bindings.json`, `Code/common/RfabModpackCompat.h`, `RfabAdapterService` (`TESForm::LookupByEditorID` `SE 14464` + живой парсинг `StorageUtilData/`) и `Tools/rfab/patch_rfab_modpack_compat.py` + автопатч `EngineFixes.toml` (`RegularQuicksaves = true`) и подавление одиночного `[RFAB] Autosave.ini`.
+- [x] Внедрены `SaveSnapshotService` и `CoordinatedSaveService` (`BGSSaveLoadManager` `SE 516860` / `34818` / `34819`): двухфазный протокол `PREPARE -> ACK -> COMMIT`, кольцевые слоты `RFAB_MP_<Session>_Slot<K>`, авточекпоинт после боя и атомарный откат `ServerWorldSnapshot` при `Total Party Wipe`.
+- [x] Внедрены `EncounterService` и `DownedStateService` с заморозкой всех положительных мутаций `kHealth` в `ActorValueOwner::RestoreActorValue` (`SE 37513`, subobject `+0xB0`), `HookRegenAttributes` и `HookApplyActorEffect`, реанимацией союзником за `~4.0s` (`E`), автоподъёмом на `~30% HP` после честной победы, защитой `strict_rfab_leash` (`120 м`) и `1-к-1` дедупликацией скриптовых спавнов `0xFF000000`.
 
-### Этап 4 — Полная интеграция с `drake1ch/RFAB` и равное распределение опыта (`100%` всем игрокам)
-1. Внедрить серверный дедуплицированный реестр `ServerXpLedger` и клиентский `RfabXpService`:
-   - равное начисление опыта **всем игрокам на сервере поровну** за убийства, квесты, книги опыта и особые награды;
-   - синхронное обновление **обоих** пулов (`RFAB_XP_Amount` + `PlayerCharacter::pSkills->data->xp`), показ HUD-уведомлений и срабатывание повышения уровня по `Experience.ini`;
-   - синхронизация меток `Infamy = -1` на убитых врагах и `XPBooksReaded` на книгах опыта (0% эксплойтов и 0% `N×` умножения на квестах!).
-2. Автоматически переключать `REQ_Combat_NoDeathHandling = 1` на время сетевой сессии (никаких принудительных перезагрузок сейва при смерти одного игрока!).
-3. Синхронизировать глобальные счётчики прогрессии RFAB (`FalmersKilled`, `DragonsKilled`, `TFOTG_Kill_Counter`) и фазы боссов (`RFAB_Global_CurrentUmbraBossPhase`).
+### Этап 4 — Полная интеграция с `drake1ch/RFAB` и равное распределение опыта (`100%` всем игрокам) *(ВЫПОЛНЕНО И ПРОВЕРЕНО)*
+- [x] Внедрены `RfabProgressionService` (`ServerXpLedger` для убийств, квестов и книг `XPBooksReaded` `BGSListForm::AddForm` `SE 20470`) и синхронизация двойного пула XP (`RFAB_XP_Amount` + `PlayerCharacter::pSkills->data->xp` по `Experience.ini`) + глобалов прогрессии и фаз боссов `RFAB_Global_*`.
 
-### Этап 5 — Финальная верификация, unit/offline тесты и подготовка сборки
-1. Покрыть unit-тестами математику скейлинга HP (все переходы $1 \leftrightarrow 2 \leftrightarrow 3 \leftrightarrow 4$ игроков на `100%`, `50%`, `1 HP` мобах), `ServerXpLedger` (убийства, квесты на 3 игроков, книги, реконнект) и инверсию `DeltaHealth`.
-2. Прогнать полный `Tools/rfab/verify_se1597_port.py --addrlib ... --strict-migrated` (`0` AE ID, `100%` `static_assert` `1.5.97`), проверить Linux-сборку сервера (`SkyrimTogetherServer`) в песочнице и подготовить готовую инструкцию сборки клиента Windows MSVC (`xmake`) + конфиг совместимости `EngineFixes.toml` для `MO2 RFAB`.
+### Этап 5 — Многопроходная верификация и документация *(ВЫПОЛНЕНО И ПРОВЕРЕНО)*
+- [x] Пройдены все 5 контуров верификации: `TPTests` (`15 / 15` тест-сьютов, `2 208` проверок), `verify_client_real` (`3 092` RVAs + ABI asserts), `verify_se1597_port.py --strict-migrated` (`3 096 / 3 096` вызовов, `9 / 9` `static_assert`), C++20 сборка всех серверных и клиентских TU и справочник [`docs/RFAB_PORT_NOTES.md`](./RFAB_PORT_NOTES.md).

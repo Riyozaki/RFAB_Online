@@ -24,6 +24,9 @@ World::World()
     m_spAdminService = std::make_shared<AdminService>(*this, m_dispatcher);
     spdlog::default_logger()->sinks().push_back(std::static_pointer_cast<spdlog::sinks::sink>(m_spAdminService));
 
+    ctx().emplace<RfabProgressionService>(*this, m_dispatcher);
+    ctx().emplace<SaveSnapshotService>(*this, m_dispatcher);
+    ctx().emplace<EncounterService>(*this, m_dispatcher);
     ctx().emplace<CharacterService>(*this, m_dispatcher);
     ctx().emplace<PlayerService>(*this, m_dispatcher);
     ctx().emplace<CalendarService>(*this, m_dispatcher);

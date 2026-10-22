@@ -1,9 +1,8 @@
-
 target("TPTests")
     set_kind("binary")
     set_group("Tests")
     add_includedirs(
-        ".", "../encoding")
+        ".", "..", "../encoding", "../server")
     add_headerfiles("**.h")
     add_files("*.cpp")
     add_deps("SkyrimEncoding")
@@ -12,4 +11,5 @@ target("TPTests")
         "hopscotch-map",
         "catch2",
         "mimalloc",
-        "glm")
+        "glm",
+        "entt")

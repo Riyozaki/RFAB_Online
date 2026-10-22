@@ -1,0 +1,535 @@
+#include <TiltedOnlinePCH.h>
+
+#include <Services/DownedStateService.h>
+
+#include <World.h>
+#include <Utils.h>
+#include <common/RfabModpackCompat.h>
+#include <Components.h>
+#include <Events/ConnectedEvent.h>
+#include <Events/DisconnectedEvent.h>
+#include <Events/HealthChangeEvent.h>
+#include <Events/UpdateEvent.h>
+#include <Forms/ActorValueInfo.h>
+#include <Games/ActorExtension.h>
+#include <Games/Overrides.h>
+#include <Games/Skyrim/Interface/UI.h>
+#include <Messages/CombatEncounterStateReport.h>
+#include <Messages/NotifyPlayerDownedState.h>
+#include <Messages/NotifyReviveState.h>
+#include <Messages/ReviveActionRequest.h>
+#include <Messages/SyncPlayerDownedState.h>
+#include <Misc/ActorValueOwner.h>
+#include <PlayerCharacter.h>
+#include <Services/TransportService.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
+namespace
+{
+constexpr float kDownedFloorHealth = 1.0f;
+constexpr float kClientRevivePromptMeters = 3.0f;
+constexpr float kHostileScanRadiusMeters = 55.0f;
+constexpr float kRfabBossMaxHealthThreshold = 1200.0f;
+
+bool IsHoldReviveKeyPressed() noexcept
+{
+#ifdef _WIN32
+    if (auto* pUi = UI::Get())
+    {
+        if (pUi->GetMenuOpen(BSFixedString("Console")) ||
+            pUi->GetMenuOpen(BSFixedString("Journal Menu")) ||
+            pUi->GetMenuOpen(BSFixedString("InventoryMenu")) ||
+            pUi->GetMenuOpen(BSFixedString("MagicMenu")) ||
+            pUi->GetMenuOpen(BSFixedString("Loading Menu")))
+        {
+            return false;
+        }
+    }
+    return (GetAsyncKeyState('E') & 0x8000) != 0;
+#else
+    return false;
+#endif
+}
+} // namespace
+
+DownedStateService::DownedStateService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
+    : m_world(aWorld)
+    , m_dispatcher(aDispatcher)
+    , m_transport(aTransport)
+    , m_connectedConnection(aDispatcher.sink<ConnectedEvent>().connect<&DownedStateService::OnConnected>(this))
+    , m_disconnectedConnection(aDispatcher.sink<DisconnectedEvent>().connect<&DownedStateService::OnDisconnected>(this))
+    , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&DownedStateService::OnUpdate>(this))
+    , m_notifyDownedConnection(aDispatcher.sink<NotifyPlayerDownedState>().connect<&DownedStateService::OnNotifyPlayerDownedState>(this))
+    , m_notifyReviveConnection(aDispatcher.sink<NotifyReviveState>().connect<&DownedStateService::OnNotifyReviveState>(this))
+{
+}
+
+bool DownedStateService::IsSystemActive() const noexcept
+{
+    return m_transport.IsConnected() && m_world.GetServerSettings().DownedSystemEnabled;
+}
+
+bool DownedStateService::ShouldBlockPlayerHealthMutation(float aDelta) const noexcept
+{
+    if (!IsSystemActive())
+        return false;
+
+    if (m_allowAuthorizedHeal)
+        return false;
+
+    if (m_isLocalDowned)
+    {
+        // Freeze BOTH positive regen/potions/spells AND negative poison/bleed/ground-fire ticks while on knee.
+        return aDelta != 0.0f;
+    }
+
+    if (m_graceRemainingSec > 0.0 && aDelta < 0.0f)
+        return true;
+
+    return false;
+}
+
+bool DownedStateService::IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept
+{
+    const auto it = m_remoteDownedByPlayerId.find(aPlayerId);
+    return it != m_remoteDownedByPlayerId.end() && it->second;
+}
+
+bool DownedStateService::InterceptPotentialFatalPlayerDamage(
+    Actor* apPlayer,
+    float aCurrentHealth,
+    float aIncomingDamage) noexcept
+{
+    if (!IsSystemActive() || !apPlayer)
+        return false;
+
+    if (m_isLocalDowned || m_graceRemainingSec > 0.0)
+        return true;
+
+    if (aIncomingDamage <= 0.0f)
+        return false;
+
+    if ((aCurrentHealth - aIncomingDamage) > kDownedFloorHealth)
+        return false;
+
+    // Clamp player health safely down to 1.0f under ScopedReviveHealAllowance so Skyrim never triggers Actor::Kill
+    // or REQ_DeathHandler, then transition immediately into frozen Downed-on-Knee state.
+    {
+        ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
+        const float safeDelta = kDownedFloorHealth - aCurrentHealth;
+        if (std::fabs(safeDelta) > 1e-3f)
+        {
+            apPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, safeDelta);
+            m_world.GetRunner().Trigger(HealthChangeEvent(apPlayer->formID, safeDelta));
+        }
+    }
+
+    EnterLocalDownedState();
+    return true;
+}
+
+void DownedStateService::EnterLocalDownedState() noexcept
+{
+    if (m_isLocalDowned)
+        return;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    m_isLocalDowned = true;
+    m_isChannelingRevive = false;
+    m_channelTargetPlayerId = 0;
+
+    pPlayer->InterruptCast(false);
+    pPlayer->SetNoBleedoutRecovery(true);
+    pPlayer->StopCombat();
+    RedirectHostileAggroAwayFromPlayer(pPlayer);
+
+    uint32_t nearbyHostiles = 0;
+    const float maxUnits = RfabCompat::MetersToSkyrimUnits(kHostileScanRadiusMeters);
+    const float maxUnitsSq = maxUnits * maxUnits;
+
+    auto view = m_world.view<FormIdComponent>();
+    for (auto entity : view)
+    {
+        Actor* pActor = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(entity).Id));
+        if (!pActor || pActor == pPlayer || pActor->IsDead() || pActor->IsPlayerTeammate())
+            continue;
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsPlayer())
+            continue;
+        if (!pActor->IsInCombat())
+            continue;
+
+        const float dx = pActor->position.x - pPlayer->position.x;
+        const float dy = pActor->position.y - pPlayer->position.y;
+        const float dz = pActor->position.z - pPlayer->position.z;
+        if ((dx * dx + dy * dy + dz * dz) <= maxUnitsSq)
+            ++nearbyHostiles;
+    }
+
+    SyncPlayerDownedState pkt{};
+    pkt.IsDowned = true;
+    pkt.PositionX = pPlayer->position.x;
+    pkt.PositionY = pPlayer->position.y;
+    pkt.PositionZ = pPlayer->position.z;
+    pkt.NearbyHostileCount = nearbyHostiles;
+    m_transport.Send(pkt);
+
+    Utils::ShowHudMessage(String("Вы тяжело ранены (0 HP) — ждите помощи союзника [E] или конца боя"));
+}
+
+void DownedStateService::ApplyAuthoritativeRevive(
+    float aHealthFraction,
+    float aGraceSec,
+    bool aShowPostCombatNotice) noexcept
+{
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    m_isLocalDowned = false;
+    m_graceRemainingSec = std::clamp(static_cast<double>(aGraceSec), 0.0, 15.0);
+
+    {
+        ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
+        const float maxHp = std::max(10.0f, pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth));
+        const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
+        const float targetHp = std::max(kDownedFloorHealth + 1.0f, maxHp * std::clamp(aHealthFraction, 0.05f, 1.0f));
+        const float healDelta = std::max(0.0f, targetHp - curHp);
+
+        if (healDelta > 0.0f)
+        {
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, healDelta);
+            m_world.GetRunner().Trigger(HealthChangeEvent(pPlayer->formID, healDelta));
+        }
+    }
+
+    pPlayer->SetNoBleedoutRecovery(false);
+
+    SyncPlayerDownedState syncUp{};
+    syncUp.IsDowned = false;
+    syncUp.PositionX = pPlayer->position.x;
+    syncUp.PositionY = pPlayer->position.y;
+    syncUp.PositionZ = pPlayer->position.z;
+    m_transport.Send(syncUp);
+
+    Utils::ShowHudMessage(
+        aShowPostCombatNotice
+            ? String("Победа в бою — второе дыхание (30% HP)")
+            : String("Союзник поднял вас на ноги (30% HP)"));
+}
+
+void DownedStateService::ResetAllStates() noexcept
+{
+    m_isLocalDowned = false;
+    m_allowAuthorizedHeal = false;
+    m_graceRemainingSec = 0.0;
+    m_isChannelingRevive = false;
+    m_channelTargetPlayerId = 0;
+    m_channelElapsedSec = 0.0;
+    m_bossDefeatedPendingReport = false;
+    m_liveBossesSeenInCombat.clear();
+    m_remoteDownedByPlayerId.clear();
+
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetNoBleedoutRecovery(false);
+}
+
+void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
+{
+    ResetAllStates();
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetPlayerRespawnMode(true);
+}
+
+void DownedStateService::OnDisconnected(const DisconnectedEvent&) noexcept
+{
+    ResetAllStates();
+}
+
+void DownedStateService::RedirectHostileAggroAwayFromPlayer(Actor* apLocalPlayer) noexcept
+{
+    if (!apLocalPlayer)
+        return;
+
+    Actor* pNearestLivingAlly = nullptr;
+    float bestAllyDistSq = std::numeric_limits<float>::max();
+
+    auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+    for (auto entity : playerView)
+    {
+        const auto& playerComp = playerView.get<PlayerComponent>(entity);
+        if (IsRemotePlayerDowned(playerComp.Id))
+            continue;
+
+        Actor* pAlly = Cast<Actor>(TESForm::GetById(playerView.get<FormIdComponent>(entity).Id));
+        if (!pAlly || pAlly == apLocalPlayer || pAlly->IsDead())
+            continue;
+
+        const float dx = pAlly->position.x - apLocalPlayer->position.x;
+        const float dy = pAlly->position.y - apLocalPlayer->position.y;
+        const float dz = pAlly->position.z - apLocalPlayer->position.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq < bestAllyDistSq)
+        {
+            bestAllyDistSq = distSq;
+            pNearestLivingAlly = pAlly;
+        }
+    }
+
+    auto actorView = m_world.view<FormIdComponent>();
+    for (auto entity : actorView)
+    {
+        Actor* pNpc = Cast<Actor>(TESForm::GetById(actorView.get<FormIdComponent>(entity).Id));
+        if (!pNpc || pNpc == apLocalPlayer || pNpc->IsDead())
+            continue;
+        if (auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
+            continue;
+
+        if (pNpc->GetCombatTarget() == apLocalPlayer)
+        {
+            pNpc->StopCombat();
+            if (pNearestLivingAlly)
+                pNpc->StartCombatEx(pNearestLivingAlly);
+        }
+    }
+}
+
+uint32_t DownedStateService::GetLocalPlayerId() const noexcept
+{
+    const PlayerCharacter* pLocal = PlayerCharacter::Get();
+    if (!pLocal)
+        return 0;
+
+    auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+    for (auto entity : playerView)
+    {
+        if (playerView.get<FormIdComponent>(entity).Id == pLocal->formID)
+            return playerView.get<PlayerComponent>(entity).Id;
+    }
+    return 0;
+}
+
+void DownedStateService::UpdateInteractiveReviveInput(double aDeltaSec) noexcept
+{
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || m_isLocalDowned)
+        return;
+
+    const float maxUnits = RfabCompat::MetersToSkyrimUnits(kClientRevivePromptMeters);
+    const float maxUnitsSq = maxUnits * maxUnits;
+
+    uint32_t nearestDownedPlayerId = 0;
+    float bestDistSq = maxUnitsSq;
+
+    auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+    for (auto entity : playerView)
+    {
+        Actor* pAlly = Cast<Actor>(TESForm::GetById(playerView.get<FormIdComponent>(entity).Id));
+        if (!pAlly || pAlly == pPlayer)
+            continue;
+
+        const uint32_t pid = playerView.get<PlayerComponent>(entity).Id;
+        if (!IsRemotePlayerDowned(pid))
+            continue;
+
+        const float dx = pAlly->position.x - pPlayer->position.x;
+        const float dy = pAlly->position.y - pPlayer->position.y;
+        const float dz = pAlly->position.z - pPlayer->position.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq <= bestDistSq)
+        {
+            bestDistSq = distSq;
+            nearestDownedPlayerId = pid;
+        }
+    }
+
+    const bool keyHeld = IsHoldReviveKeyPressed();
+    if (nearestDownedPlayerId != 0 && keyHeld)
+    {
+        if (!m_isChannelingRevive || m_channelTargetPlayerId != nearestDownedPlayerId)
+        {
+            m_isChannelingRevive = true;
+            m_channelTargetPlayerId = nearestDownedPlayerId;
+            m_channelElapsedSec = 0.0;
+            m_channelDurationSec = m_world.GetServerSettings().ReviveDurationSec;
+
+            ReviveActionRequest req{};
+            req.Action = ReviveActionRequest::ActionType::StartChannel;
+            req.TargetPlayerId = nearestDownedPlayerId;
+            m_transport.Send(req);
+
+            Utils::ShowHudMessage(String("Реанимация союзника... удерживайте [E]"));
+        }
+        else
+        {
+            m_channelElapsedSec += aDeltaSec;
+        }
+    }
+    else if (m_isChannelingRevive)
+    {
+        ReviveActionRequest cancelReq{};
+        cancelReq.Action = ReviveActionRequest::ActionType::CancelChannel;
+        cancelReq.TargetPlayerId = m_channelTargetPlayerId;
+        m_transport.Send(cancelReq);
+
+        m_isChannelingRevive = false;
+        m_channelTargetPlayerId = 0;
+        m_channelElapsedSec = 0.0;
+    }
+}
+
+void DownedStateService::SendCombatEncounterReport() noexcept
+{
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    uint32_t nearbyHostiles = 0;
+    float nearestUnitsSq = std::numeric_limits<float>::max();
+    const float maxUnits = RfabCompat::MetersToSkyrimUnits(kHostileScanRadiusMeters);
+    const float maxUnitsSq = maxUnits * maxUnits;
+
+    auto view = m_world.view<FormIdComponent>();
+    for (auto entity : view)
+    {
+        Actor* pNpc = Cast<Actor>(TESForm::GetById(view.get<FormIdComponent>(entity).Id));
+        if (!pNpc || pNpc == pPlayer || pNpc->IsPlayerTeammate())
+            continue;
+        if (auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
+            continue;
+
+        const bool isBossTier = pNpc->IsDragon() ||
+            (pNpc->GetActorPermanentValue(ActorValueInfo::kHealth) >= kRfabBossMaxHealthThreshold);
+
+        if (pNpc->IsDead())
+        {
+            if (isBossTier && m_liveBossesSeenInCombat.erase(pNpc->formID) > 0)
+                m_bossDefeatedPendingReport = true;
+            continue;
+        }
+
+        if (!pNpc->IsInCombat())
+            continue;
+
+        if (isBossTier)
+            m_liveBossesSeenInCombat.insert(pNpc->formID);
+
+        const float dx = pNpc->position.x - pPlayer->position.x;
+        const float dy = pNpc->position.y - pPlayer->position.y;
+        const float dz = pNpc->position.z - pPlayer->position.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq <= maxUnitsSq)
+        {
+            ++nearbyHostiles;
+            nearestUnitsSq = std::min(nearestUnitsSq, distSq);
+        }
+    }
+
+    CombatEncounterStateReport report{};
+    report.InCombat = (!m_isLocalDowned && pPlayer->IsInCombat()) || nearbyHostiles > 0;
+    report.NearbyHostileCount = nearbyHostiles;
+    report.NearestHostileDistanceMeters = (nearbyHostiles > 0)
+        ? RfabCompat::SkyrimUnitsToMeters(std::sqrt(nearestUnitsSq))
+        : 9999.0f;
+    report.BossDefeatedInEncounter = m_bossDefeatedPendingReport;
+    report.PositionX = pPlayer->position.x;
+    report.PositionY = pPlayer->position.y;
+    report.PositionZ = pPlayer->position.z;
+
+    m_bossDefeatedPendingReport = false;
+    m_transport.Send(report);
+}
+
+void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
+{
+    if (!IsSystemActive())
+        return;
+
+    if (m_graceRemainingSec > 0.0)
+        m_graceRemainingSec = std::max(0.0, m_graceRemainingSec - acEvent.Delta);
+
+    if (m_isLocalDowned)
+    {
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+            RedirectHostileAggroAwayFromPlayer(pPlayer);
+    }
+    else
+    {
+        UpdateInteractiveReviveInput(acEvent.Delta);
+    }
+
+    m_reportTimerSec += acEvent.Delta;
+    if (m_reportTimerSec >= 0.25)
+    {
+        m_reportTimerSec = 0.0;
+        SendCombatEncounterReport();
+    }
+}
+
+void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState& acMessage) noexcept
+{
+    m_remoteDownedByPlayerId[acMessage.PlayerId] = acMessage.IsDowned;
+
+    auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+    for (auto entity : playerView)
+    {
+        if (playerView.get<PlayerComponent>(entity).Id != acMessage.PlayerId)
+            continue;
+
+        if (Actor* pRemoteActor = Cast<Actor>(TESForm::GetById(playerView.get<FormIdComponent>(entity).Id)))
+            pRemoteActor->SetNoBleedoutRecovery(acMessage.IsDowned);
+        break;
+    }
+
+    if (acMessage.IsDowned)
+        Utils::ShowHudMessage(String("Союзник тяжело ранен! Удерживайте [E] рядом, чтобы поднять"));
+}
+
+void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage) noexcept
+{
+    const uint32_t localId = GetLocalPlayerId();
+    const bool targetsLocalPlayer = (localId == 0 || acMessage.TargetPlayerId == localId);
+
+    switch (acMessage.Status)
+    {
+    case NotifyReviveState::ReviveStatus::ChannelStarted:
+        if (m_isLocalDowned && targetsLocalPlayer)
+            Utils::ShowHudMessage(String("Союзник поднимает вас..."));
+        break;
+
+    case NotifyReviveState::ReviveStatus::ChannelCancelled:
+        if (m_isChannelingRevive && m_channelTargetPlayerId == acMessage.TargetPlayerId)
+        {
+            m_isChannelingRevive = false;
+            m_channelTargetPlayerId = 0;
+        }
+        break;
+
+    case NotifyReviveState::ReviveStatus::RevivedByAlly:
+        m_remoteDownedByPlayerId[acMessage.TargetPlayerId] = false;
+        if (m_isChannelingRevive && m_channelTargetPlayerId == acMessage.TargetPlayerId)
+        {
+            m_isChannelingRevive = false;
+            m_channelTargetPlayerId = 0;
+            Utils::ShowHudMessage(String("Вы подняли союзника!"));
+        }
+        if (m_isLocalDowned && targetsLocalPlayer)
+            ApplyAuthoritativeRevive(acMessage.HealthFraction, acMessage.GraceSec, false);
+        break;
+
+    case NotifyReviveState::ReviveStatus::RevivedPostCombat:
+        m_remoteDownedByPlayerId[acMessage.TargetPlayerId] = false;
+        if (m_isLocalDowned && targetsLocalPlayer)
+            ApplyAuthoritativeRevive(acMessage.HealthFraction, acMessage.GraceSec, true);
+        break;
+
+    case NotifyReviveState::ReviveStatus::PartyWipeImminent:
+        Utils::ShowHudMessage(String("Весь отряд пал — перезагрузка последнего чекпоинта..."));
+        break;
+    }
+}

@@ -8,6 +8,9 @@
 #include <Services/CalendarService.h>
 #include <Services/QuestService.h>
 #include <Services/ScriptService.h>
+#include <Services/RfabProgressionService.h>
+#include <Services/SaveSnapshotService.h>
+#include <Services/EncounterService.h>
 
 #include "Game/PlayerManager.h"
 
@@ -35,6 +38,12 @@ struct World : entt::registry
     const CalendarService& GetCalendarService() const noexcept { return ctx().at<const CalendarService>(); }
     QuestService& GetQuestService() noexcept { return ctx().at<QuestService>(); }
     const QuestService& GetQuestService() const noexcept { return ctx().at<const QuestService>(); }
+    RfabProgressionService& GetRfabProgressionService() noexcept { return ctx().at<RfabProgressionService>(); }
+    const RfabProgressionService& GetRfabProgressionService() const noexcept { return ctx().at<const RfabProgressionService>(); }
+    SaveSnapshotService& GetSaveSnapshotService() noexcept { return ctx().at<SaveSnapshotService>(); }
+    const SaveSnapshotService& GetSaveSnapshotService() const noexcept { return ctx().at<const SaveSnapshotService>(); }
+    EncounterService& GetEncounterService() noexcept { return ctx().at<EncounterService>(); }
+    const EncounterService& GetEncounterService() const noexcept { return ctx().at<const EncounterService>(); }
     PlayerManager& GetPlayerManager() noexcept { return m_playerManager; }
     const PlayerManager& GetPlayerManager() const noexcept { return m_playerManager; }
     ScriptService& GetScriptService() const noexcept { return *m_pScriptService; }

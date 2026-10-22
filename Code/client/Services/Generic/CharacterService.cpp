@@ -5,6 +5,7 @@
 
 #include <Services/CharacterService.h>
 #include <Services/QuestService.h>
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
 #include <Games/References.h>
@@ -14,7 +15,7 @@
 #include <Forms/TESGlobal.h>
 #include <Forms/TESNPC.h>
 #include <Forms/TESQuest.h>
-#include <misc/ActorValueOwner.h>
+#include <Misc/ActorValueOwner.h>
 
 #include <BranchInfo.h>
 #include <Components.h>
@@ -77,47 +78,21 @@
 namespace
 {
 constexpr uint32_t cMaxRfabXpDelta = 1'000'000;
-constexpr uint32_t cRfabXpAmountBaseId = 0xAD45BB;
 
 TESGlobal* GetRfabXpGlobal() noexcept
 {
-    static TESGlobal* s_pGlobal = nullptr;
-    if (s_pGlobal != nullptr)
-        return s_pGlobal;
-
-    auto* pModManager = ModManager::Get();
-    if (pModManager == nullptr)
-        return nullptr;
-
-    auto* pMod = pModManager->GetByName("RFAB.esp");
-    if (pMod == nullptr)
-        return nullptr;
-
-    s_pGlobal = Cast<TESGlobal>(TESForm::GetById(pMod->GetFormId(cRfabXpAmountBaseId)));
-    return s_pGlobal;
+    return World::Get().GetRfabAdapterService().GetRfabXpGlobal();
 }
 
 int32_t ReadRfabXp(TESGlobal* apGlobal) noexcept
 {
-    return static_cast<int32_t>(std::lround(std::max(0.0f, apGlobal->f)));
+    return RfabAdapterService::ReadRfabXp(apGlobal);
 }
 
 bool ApplyRfabExperience(TESGlobal* apRfabXp, int32_t aDelta, int32_t& aNewExperience) noexcept
 {
-    auto& papyrusService = World::Get().ctx().at<PapyrusService>();
-
-    const void* pGetExperience = papyrusService.Get("Game", "GetPlayerExperience");
-    const void* pSetExperience = papyrusService.Get("Game", "SetPlayerExperience");
-    if (pGetExperience == nullptr || pSetExperience == nullptr)
-        return false;
-
-    GlobalPapyrusFunction<float> getExperience(pGetExperience);
-    GlobalPapyrusFunction<void, float> setExperience(pSetExperience);
-
-    aNewExperience = ReadRfabXp(apRfabXp) + aDelta;
-    apRfabXp->f = static_cast<float>(aNewExperience);
-    setExperience(getExperience() + static_cast<float>(aDelta));
-    return true;
+    (void)apRfabXp;
+    return World::Get().GetRfabAdapterService().ApplyDualPoolExperienceDelta(aDelta, aNewExperience);
 }
 } // namespace
 
@@ -1086,6 +1061,26 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     m_lastAppliedRemoteXpTime = now;
 
     spdlog::debug("Received RFAB experience {} (total {})", delta, newExperience);
+}
+
+void CharacterService::ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept
+{
+    if (aDelta == 0)
+        return;
+
+    TESGlobal* pRfabXp = GetRfabXpGlobal();
+    if (pRfabXp == nullptr)
+        return;
+
+    const int32_t currentExperience = ReadRfabXp(pRfabXp);
+    int32_t newExperience = currentExperience;
+    if (!ApplyRfabExperience(pRfabXp, aDelta, newExperience))
+        return;
+
+    m_lastRfabExperience = newExperience;
+    m_rfabExperienceInitialized = true;
+    m_lastAppliedRemoteXpAmount = aDelta;
+    m_lastAppliedRemoteXpTime = std::chrono::steady_clock::now();
 }
 
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept

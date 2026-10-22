@@ -23,6 +23,7 @@
 #include <Games/TES.h>
 #include <World.h>
 #include <Services/PapyrusService.h>
+#include <Services/DownedStateService.h>
 
 #include <Forms/ActorValueInfo.h>
 #include <Forms/TESRace.h>
@@ -1043,6 +1044,10 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
                 return false;
         }
 
+        // RFAB Stage 3 Downed-on-Knee interception: clamp HP at 1.0f BEFORE Actor::Kill / REQ_DeathHandler fires!
+        if (World::Get().GetDownedStateService().InterceptPotentialFatalPlayerDamage(apThis, currentHealth, estimatedRealDamage))
+            return false;
+
         return applyAuthoritativeDamage();
     }
     else if (pExHittee->IsRemotePlayer())
@@ -1083,6 +1088,12 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
                 const auto pExTarget = apTarget->GetExtension();
                 if (pExTarget->IsLocal())
                 {
+                    if (pExTarget->IsLocalPlayer() &&
+                        World::Get().GetDownedStateService().ShouldBlockPlayerHealthMutation(aEffectValue))
+                    {
+                        return;
+                    }
+
                     World::Get().GetRunner().Trigger(HealthChangeEvent(apTarget->formID, aEffectValue));
                     return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
                 }
@@ -1110,8 +1121,44 @@ void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
         return 0;
     }
 
+    if (pExTarget->IsLocalPlayer() &&
+        World::Get().GetDownedStateService().ShouldBlockPlayerHealthMutation(aRegenValue))
+    {
+        return 0;
+    }
+
     World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, aRegenValue));
     return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
+}
+
+TP_THIS_FUNCTION(TRestoreActorValue, void, ActorValueOwner, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue);
+static TRestoreActorValue* RealRestoreActorValue = nullptr;
+
+// Hooks Actor::RestoreActorValue (ActorValueOwner vfunc #06, SE 37513) with exact ActorValueOwner* subobject ABI:
+// - Blocks 100% of positive health restores (potions, spells, food, scripts, HealRate) while local player is Downed
+//   without mutating a single stat, active effect, or save record!
+// - Clamps fatal negative health restores (poisons, bleeds, fall damage, ScriptDamage) at 1.0f into Downed-on-Knee!
+void TP_MAKE_THISCALL(HookRestoreActorValue, ActorValueOwner, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue)
+{
+    if (aMode == ActorValueOwner::ForceMode::DAMAGE && aId == ActorValueInfo::kHealth)
+    {
+        PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+        if (pLocalPlayer && apThis == &pLocalPlayer->actorValueOwner)
+        {
+            auto& downed = World::Get().GetDownedStateService();
+            if (downed.ShouldBlockPlayerHealthMutation(aValue))
+                return;
+
+            if (aValue < 0.0f)
+            {
+                const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
+                if (downed.InterceptPotentialFatalPlayerDamage(pLocalPlayer, curHp, -aValue))
+                    return;
+            }
+        }
+    }
+
+    return TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
 }
 
 void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
@@ -1392,6 +1439,7 @@ static TiltedPhoques::Initializer s_actorHooks(
         POINTER_SKYRIMSE(TSpeakSoundFunction, s_speakSoundFunction, 36541);
         POINTER_SKYRIMSE(TAddDeathItems, addDeathItems, 36218);
         POINTER_SKYRIMSE(TIsFleeing, isFleeing, 36575);
+        POINTER_SKYRIMSE(TRestoreActorValue, s_restoreActorValue, 37513);
 
         RealActorProcess = s_actorProcess.Get();
         RealSetPosition = s_setPosition.Get();
@@ -1414,6 +1462,7 @@ static TiltedPhoques::Initializer s_actorHooks(
         RealSpeakSoundFunction = s_speakSoundFunction.Get();
         RealAddDeathItems = addDeathItems.Get();
         RealIsFleeing = isFleeing.Get();
+        RealRestoreActorValue = s_restoreActorValue.Get();
 
         TP_HOOK(&RealActorProcess, HookActorProcess);
         TP_HOOK(&RealSetPosition, HookSetPosition);
@@ -1435,4 +1484,5 @@ static TiltedPhoques::Initializer s_actorHooks(
         TP_HOOK(&RealSpeakSoundFunction, HookSpeakSoundFunction);
         TP_HOOK(&RealAddDeathItems, HookAddDeathItems);
         TP_HOOK(&RealIsFleeing, HookIsFleeing);
+        TP_HOOK(&RealRestoreActorValue, HookRestoreActorValue);
     });

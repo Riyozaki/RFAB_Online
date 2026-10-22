@@ -24,7 +24,7 @@
 #include <Messages/NotifyDeathStateChange.h>
 #include <Messages/RequestDeathStateChange.h>
 
-#include <misc/ActorValueOwner.h>
+#include <Misc/ActorValueOwner.h>
 
 static constexpr float kMinHealthMultiplier = 0.1f;
 static constexpr float kMaxHealthMultiplier = 20.0f;

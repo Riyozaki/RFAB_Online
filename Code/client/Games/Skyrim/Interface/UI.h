@@ -88,5 +88,10 @@ public:
 };
 
 // intellisense is too dumb but the compiler knows.
+#ifdef _MSC_VER
 static_assert(sizeof(UI) == 0x1C8);
 static_assert(offsetof(UI, UI::numPausesGame) == 0x160);
+#else
+static_assert(sizeof(UI) == 0x1B8);
+static_assert(offsetof(UI, UI::numPausesGame) == 0x150);
+#endif

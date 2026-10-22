@@ -46,8 +46,11 @@ Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the 
 Console::Setting uTimeScale{"Gameplay:uTimeScale", "How many seconds pass ingame for every real second (0 to 1000). Changing this can make the game unstable", 20u};
 Console::Setting bSyncPlayerCalendar{"Gameplay:bSyncPlayerCalendar", "Syncs up all player calendars to be the same day, month, and year. This uses the date of the player with the furthest ahead date at connection.", false};
 Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
-Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Base max-health multiplier for non-player enemies (0.1 to 10.0)", 1.0f};
-Console::Setting bAutoScaleEnemyHealth{"Gameplay:bAutoScaleEnemyHealth", "Automatically scales enemy HP with connected player count (1p=1x, 2p=3x, 3p=4x, N>=2 -> (N+1)x)", true};
+Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Base max-health multiplier for non-player enemies (0.1 to 20.0)", 1.0f};
+Console::Setting bAutoScaleEnemyHealth{"Gameplay:bAutoScaleEnemyHealth", "Automatically scales enemy HP with connected player count (1p=1x, 2p=3x, 3p=4x, N>=2 -> (N+ExtraBase)x)", true};
+Console::Setting fHealthExtraBase{"Gameplay:fHealthExtraBase", "Extra baseline term added to connected player count for HP scaling (1.0 => 2p=3x, 3p=4x)", 1.0f};
+Console::Setting bEnableDownedSystem{"Gameplay:bEnableDownedSystem", "Enables RFAB 0-HP downed-on-knee bleedout, E-revive, strict combat leash, and party wipe checkpoint reload", true};
+Console::Setting bEnableCoordinatedSaves{"Gameplay:bEnableCoordinatedSaves", "Enables host-coordinated saves/loads and automatic post-combat world checkpoints", true};
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
@@ -117,7 +120,7 @@ Console::Command<> ShowMoPoStatus(
 
 // -- Constants --
 constexpr float kMinHealthMultiplier = 0.1f;
-constexpr float kMaxHealthMultiplier = 10.0f;
+constexpr float kMaxHealthMultiplier = 20.0f;
 
 static float GetHealthMultiplier()
 {
@@ -130,19 +133,15 @@ static float GetHealthMultiplier()
 
 static float GetEffectiveHealthMultiplier()
 {
-    float multiplier = GetHealthMultiplier();
+    size_t playerCount = 0;
+    if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
+        playerCount = pServer->GetWorld().GetPlayerManager().Count();
 
-    if (bAutoScaleEnemyHealth)
-    {
-        if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
-        {
-            const size_t playerCount = pServer->GetWorld().GetPlayerManager().Count();
-            if (playerCount >= 2)
-                multiplier *= static_cast<float>(playerCount + 1);
-        }
-    }
-
-    return std::clamp(multiplier, kMinHealthMultiplier, kMaxHealthMultiplier);
+    return ServerSettings::ComputeEffectiveHealthMultiplier(
+        GetHealthMultiplier(),
+        bAutoScaleEnemyHealth,
+        fHealthExtraBase.as_float(),
+        playerCount);
 }
 
 constexpr char kBypassMoPoWarning[]{"ModCheck is disabled. This can lead to desync and other oddities. Make sure you know what you are doing. We "
@@ -178,6 +177,17 @@ ServerSettings GetSettings()
     settings.SyncPlayerCalendar = bSyncPlayerCalendar;
     settings.AutoPartyJoin = bAutoPartyJoin;
     settings.HealthMultiplier = GetEffectiveHealthMultiplier();
+    settings.HealthExtraBase = std::isfinite(fHealthExtraBase.as_float()) ? std::clamp(fHealthExtraBase.as_float(), 0.0f, 10.0f) : 1.0f;
+    settings.DownedSystemEnabled = bEnableDownedSystem;
+    settings.CoordinatedSavesEnabled = bEnableCoordinatedSaves;
+    if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
+    {
+        const auto& encCfg = pServer->GetWorld().GetEncounterService().GetCoordinator().GetConfig();
+        settings.ReviveDurationSec = encCfg.ReviveDurationSec;
+        settings.ReviveHealthFraction = encCfg.ReviveHealthFraction;
+        settings.PostReviveGraceSec = encCfg.PostReviveGraceSec;
+        settings.CombatLeashRadiusMeters = encCfg.LeashRadiusMeters;
+    }
     return settings;
 }
 
@@ -339,6 +349,38 @@ void GameServer::BindMessageHandlers()
 
 void GameServer::BindServerCommands()
 {
+    m_commands.RegisterCommand<>(
+        "rfab_save", "Trigger a two-phase coordinated save checkpoint across all connected players",
+        [this](Console::ArgStack&)
+        {
+            const bool started = m_pWorld->GetSaveSnapshotService().TriggerCoordinatedSave(false, nullptr);
+            spdlog::get("ConOut")->info("[RFAB] Coordinated save {}", started ? "started" : "skipped (no players or save already in flight)");
+        });
+
+    m_commands.RegisterCommand<>(
+        "rfab_load", "Roll back server world snapshot and synchronously load latest checkpoint on all clients",
+        [this](Console::ArgStack&)
+        {
+            const bool started = m_pWorld->GetSaveSnapshotService().TriggerRollbackToLatest(false);
+            spdlog::get("ConOut")->info("[RFAB] Coordinated checkpoint load {}", started ? "dispatched" : "failed");
+        });
+
+    m_commands.RegisterCommand<>(
+        "rfab_snapshots", "Show current RFAB checkpoint epoch, slot name, and shared XP ledger",
+        [this](Console::ArgStack&)
+        {
+            const auto& snaps = m_pWorld->GetSaveSnapshotService();
+            const auto& ledger = m_pWorld->GetRfabProgressionService().GetLedger();
+            spdlog::get("ConOut")->info(
+                "[RFAB] Snapshots={} LastEpoch={} LastSlot='{}' SharedXP={} ReadBooks={} SyncedGlobals={}",
+                snaps.GetSnapshotCount(),
+                snaps.GetLastCommittedEpoch(),
+                snaps.GetLastCommittedSlot(),
+                ledger.GetTotalSharedXp(),
+                ledger.GetReadBooks().size(),
+                ledger.GetSyncedGlobals().size());
+        });
+
     m_commands.RegisterCommand<>(
         "uptime", "Show how long the server has been running for",
         [this](Console::ArgStack&)

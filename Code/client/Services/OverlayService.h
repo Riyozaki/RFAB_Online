@@ -26,7 +26,7 @@ struct NotifyPlayerLevel;
 struct NotifyPlayerCellChanged;
 struct NotifyTeleport;
 struct NotifyPlayerHealthUpdate;
-enum ChatMessageTypes;
+#include <ChatMessageTypes.h>
 struct PartyJoinedEvent;
 struct PartyLeftEvent;
 

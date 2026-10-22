@@ -257,6 +257,67 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
         }
     }
 
+    // Deduplicate dynamic scripted ambush spawns (e.g. RFAB_AmbushScript::PlaceActorAtMe producing 0xFF000000 actors)
+    // across peers in the same cell & radius within 3s so 2 players fight 1x enemy with 3x HP instead of 2x clones,
+    // while strictly preserving multi-actor ambushes from the SAME owner (PlaceActorAtMe(Wolf, 3)) and player summons!
+    const bool isTemporarySpawn = (refId.ModId == std::numeric_limits<uint32_t>::max());
+    if (isTemporarySpawn && !isPlayer && !message.IsPlayerSummon && message.FormId != GameId{})
+    {
+        constexpr uint64_t kAmbushDedupWindowMs = 3000;
+        constexpr float kAmbushDedupRadiusUnits = RfabCompat::MetersToSkyrimUnits(12.0f);
+
+        const uint32_t existingServerId = m_world.GetRfabProgressionService().GetLedger().FindMatchingRecentAmbush(
+            acMessage.pPlayer->GetId(),
+            message.CellId,
+            message.FormId,
+            message.Position.x,
+            message.Position.y,
+            message.Position.z,
+            GameServer::Get()->GetTick(),
+            kAmbushDedupWindowMs,
+            kAmbushDedupRadiusUnits);
+
+        if (existingServerId != 0)
+        {
+            const entt::entity existingEntity = static_cast<entt::entity>(existingServerId);
+            if (m_world.valid(existingEntity))
+            {
+                const auto* pChar = m_world.try_get<CharacterComponent>(existingEntity);
+                const auto* pAv = m_world.try_get<ActorValuesComponent>(existingEntity);
+                const auto* pInv = m_world.try_get<InventoryComponent>(existingEntity);
+                const auto* pMove = m_world.try_get<MovementComponent>(existingEntity);
+                const auto* pCell = m_world.try_get<CellIdComponent>(existingEntity);
+
+                if (pChar && pAv && pInv && pMove && pCell)
+                {
+                    AssignCharacterResponse response{};
+                    response.Cookie = message.Cookie;
+                    response.ServerId = existingServerId;
+                    response.Owner = false;
+                    response.AllActorValues = pAv->CurrentActorValues;
+                    response.CurrentInventory = pInv->Content;
+                    response.IsDead = pChar->IsDead();
+                    response.IsWeaponDrawn = pChar->IsWeaponDrawn();
+                    response.PlayerId = pChar->PlayerId;
+                    response.Position = pMove->Position;
+                    response.CellId = pCell->Cell;
+                    response.WorldSpaceId = pCell->WorldSpaceId;
+                    if (auto* pAnim = m_world.try_get<AnimationComponent>(existingEntity))
+                        response.ActionsToReplay = pAnim->ActionsReplayCache.FormRefinedReplayChain();
+
+                    acMessage.pPlayer->Send(response);
+                    spdlog::debug(
+                        "[RFAB AmbushDedup] Bound peer {} dynamic ambush NPC {:X}:{:X} to existing ServerId {:X}",
+                        acMessage.pPlayer->GetId(),
+                        message.FormId.ModId,
+                        message.FormId.BaseId,
+                        existingServerId);
+                    return;
+                }
+            }
+        }
+    }
+
     // This entity has no owner create it
     CreateCharacter(acMessage);
 }
@@ -691,6 +752,21 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     response.ServerId = World::ToInteger(cEntity);
     response.PlayerId = characterComponent.PlayerId;
     response.Owner = true;
+
+    if (isTemporary && !isPlayer && !message.IsPlayerSummon && baseId != GameId{})
+    {
+        constexpr uint64_t kAmbushDedupWindowMs = 3000;
+        m_world.GetRfabProgressionService().GetLedger().RegisterAmbushSpawn(
+            World::ToInteger(cEntity),
+            acMessage.pPlayer->GetId(),
+            message.CellId,
+            baseId,
+            message.Position.x,
+            message.Position.y,
+            message.Position.z,
+            pServer->GetTick(),
+            kAmbushDedupWindowMs);
+    }
 
     pServer->Send(acMessage.pPlayer->GetConnectionId(), response);
 

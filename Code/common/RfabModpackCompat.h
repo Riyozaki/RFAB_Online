@@ -1,0 +1,623 @@
+#pragma once
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+namespace RfabCompat
+{
+// Skyrim Creation Engine spatial unit ratio: 1 meter = 70.0 game units (64 units = 3 feet = 0.9144m; 70 units = 1.0m).
+inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
+
+[[nodiscard]] constexpr float MetersToSkyrimUnits(float aMeters) noexcept
+{
+    return aMeters * kSkyrimUnitsPerMeter;
+}
+
+[[nodiscard]] constexpr float SkyrimUnitsToMeters(float aUnits) noexcept
+{
+    return aUnits / kSkyrimUnitsPerMeter;
+}
+
+struct RfabBindingsConfig
+{
+    uint32_t SchemaVersion{1};
+    std::string PluginName{"RFAB.esp"};
+
+    std::string XpAmountGlobalEditorId{"RFAB_XP_Amount"};
+    std::string XpBonusGlobalEditorId{"RFAB_XP_Bonus"};
+    std::string XpBooksFormListEditorId{"XPBooksReaded"};
+    std::string NoDeathHandlingGlobalEditorId{"REQ_Combat_NoDeathHandling"};
+    std::string KillCounterGlobalEditorId{"TFOTG_Kill_Counter"};
+    std::string XpHandlerQuestEditorId{"RFAB_XP_Handler"};
+
+    // Optional last-resort base FormID only used if PO3 EditorID tables are completely absent.
+    uint32_t FallbackXpAmountBaseFormId{0x00AD45BB};
+
+    std::vector<std::string> SyncedGlobalPrefixes{
+        "RFAB_Counter_",
+        "RFAB_Global_",
+        "RFAB_Boss_",
+        "RFAB_Quest_",
+        "TFOTG_",
+    };
+
+    std::vector<std::string> ExcludedGlobalPrefixes{
+        "RFAB_MCM_",
+        "RFAB_UI_",
+        "RFAB_Option_",
+        "RFAB_Key_",
+        "RFAB_HUD_",
+        "RFAB_Sound_",
+        "RFAB_Camera_",
+        "RFAB_XP_Amount",
+        "RFAB_XP_Bonus",
+    };
+
+    std::string ExperienceIniRelPath{"Data/SKSE/Plugins/StorageUtilData/Experience.ini"};
+    std::string QuestsIniRelPath{"Data/SKSE/Plugins/StorageUtilData/Quests.ini"};
+    std::string XpSettingsJsonRelPath{"Data/SKSE/Plugins/StorageUtilData/RFAB_XP_Settings.json"};
+    std::string BossListJsonRelPath{"Data/SKSE/Plugins/StorageUtilData/BossList.json"};
+    std::string RaceListJsonRelPath{"Data/SKSE/Plugins/StorageUtilData/RaceList.json"};
+    std::string RfabAutosaveIniRelPath{"Data/SKSE/Plugins/[RFAB] Autosave.ini"};
+
+    bool AutoScaleEnemyHealth{true};
+    float HealthExtraBase{1.0f};
+    float DownedReviveDurationSec{4.0f};
+    float DownedReviveHpFraction{0.30f};
+    float PostReviveGraceSec{3.0f};
+    float CombatLeashRadiusMeters{120.0f};
+    float CombatClearHysteresisSec{4.5f};
+    uint32_t PostCombatAutosaveIntervalSec{180};
+    uint32_t SaveRingBufferSize{3};
+    float AmbushDedupRadiusMeters{12.0f};
+    uint32_t AmbushDedupWindowMs{3000};
+};
+
+struct RfabLiveXpTable
+{
+    std::unordered_map<uint32_t, int32_t> LevelThresholds{};
+    std::unordered_map<std::string, int32_t> QuestRewards{};
+    std::unordered_map<std::string, float> XpMultipliers{};
+
+    [[nodiscard]] int32_t GetThresholdForLevel(uint32_t aLevel) const noexcept
+    {
+        if (const auto it = LevelThresholds.find(aLevel); it != LevelThresholds.end())
+            return it->second;
+        return 0;
+    }
+};
+
+namespace Detail
+{
+inline std::string Trim(std::string_view aView)
+{
+    size_t start = 0;
+    while (start < aView.size() && std::isspace(static_cast<unsigned char>(aView[start])))
+        ++start;
+
+    size_t end = aView.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(aView[end - 1])))
+        --end;
+
+    return std::string(aView.substr(start, end - start));
+}
+
+inline std::string ToLowerAscii(std::string_view aView)
+{
+    std::string out(aView);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+inline bool StartsWithIgnoreCase(std::string_view aText, std::string_view aPrefix) noexcept
+{
+    if (aPrefix.empty() || aText.size() < aPrefix.size())
+        return false;
+
+    for (size_t i = 0; i < aPrefix.size(); ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(aText[i])) != std::tolower(static_cast<unsigned char>(aPrefix[i])))
+            return false;
+    }
+    return true;
+}
+
+inline bool ReadTextFile(const std::filesystem::path& acPath, std::string& aOut) noexcept
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(acPath, ec) || !std::filesystem::is_regular_file(acPath, ec))
+        return false;
+
+    std::ifstream ifs(acPath, std::ios::in | std::ios::binary);
+    if (!ifs.is_open())
+        return false;
+
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    aOut = ss.str();
+    return true;
+}
+
+inline bool WriteTextFile(const std::filesystem::path& acPath, std::string_view aContent) noexcept
+{
+    std::error_code ec;
+    std::filesystem::create_directories(acPath.parent_path(), ec);
+
+    std::ofstream ofs(acPath, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open())
+        return false;
+
+    ofs.write(aContent.data(), static_cast<std::streamsize>(aContent.size()));
+    return ofs.good();
+}
+
+// Lightweight zero-dependency extractors for flat/nested config keys in JSON manifests.
+inline bool ExtractJsonString(std::string_view aJson, std::string_view aKey, std::string& aOut)
+{
+    const std::string needle = "\"" + std::string(aKey) + "\"";
+    const size_t keyPos = aJson.find(needle);
+    if (keyPos == std::string_view::npos)
+        return false;
+
+    const size_t colonPos = aJson.find(':', keyPos + needle.size());
+    if (colonPos == std::string_view::npos)
+        return false;
+
+    const size_t openQuote = aJson.find('"', colonPos + 1);
+    if (openQuote == std::string_view::npos)
+        return false;
+
+    std::string result;
+    for (size_t i = openQuote + 1; i < aJson.size(); ++i)
+    {
+        if (aJson[i] == '\\' && i + 1 < aJson.size())
+        {
+            result.push_back(aJson[++i]);
+            continue;
+        }
+        if (aJson[i] == '"')
+        {
+            aOut = std::move(result);
+            return true;
+        }
+        result.push_back(aJson[i]);
+    }
+    return false;
+}
+
+inline bool ExtractJsonFloat(std::string_view aJson, std::string_view aKey, float& aOut)
+{
+    const std::string needle = "\"" + std::string(aKey) + "\"";
+    const size_t keyPos = aJson.find(needle);
+    if (keyPos == std::string_view::npos)
+        return false;
+
+    const size_t colonPos = aJson.find(':', keyPos + needle.size());
+    if (colonPos == std::string_view::npos)
+        return false;
+
+    size_t pos = colonPos + 1;
+    while (pos < aJson.size() && std::isspace(static_cast<unsigned char>(aJson[pos])))
+        ++pos;
+
+    if (pos >= aJson.size())
+        return false;
+
+    char* endPtr = nullptr;
+    const std::string tail(aJson.substr(pos, 64));
+    const float parsed = std::strtof(tail.c_str(), &endPtr);
+    if (endPtr == tail.c_str())
+        return false;
+
+    aOut = parsed;
+    return true;
+}
+
+inline bool ExtractJsonBool(std::string_view aJson, std::string_view aKey, bool& aOut)
+{
+    const std::string needle = "\"" + std::string(aKey) + "\"";
+    const size_t keyPos = aJson.find(needle);
+    if (keyPos == std::string_view::npos)
+        return false;
+
+    const size_t colonPos = aJson.find(':', keyPos + needle.size());
+    if (colonPos == std::string_view::npos)
+        return false;
+
+    const std::string token = ToLowerAscii(Trim(aJson.substr(colonPos + 1, 16)));
+    if (StartsWithIgnoreCase(token, "true"))
+    {
+        aOut = true;
+        return true;
+    }
+    if (StartsWithIgnoreCase(token, "false"))
+    {
+        aOut = false;
+        return true;
+    }
+    return false;
+}
+
+inline bool ExtractJsonStringArray(std::string_view aJson, std::string_view aKey, std::vector<std::string>& aOut)
+{
+    const std::string needle = "\"" + std::string(aKey) + "\"";
+    const size_t keyPos = aJson.find(needle);
+    if (keyPos == std::string_view::npos)
+        return false;
+
+    const size_t openBracket = aJson.find('[', keyPos + needle.size());
+    if (openBracket == std::string_view::npos)
+        return false;
+
+    const size_t closeBracket = aJson.find(']', openBracket + 1);
+    if (closeBracket == std::string_view::npos)
+        return false;
+
+    std::vector<std::string> items;
+    const std::string_view slice = aJson.substr(openBracket + 1, closeBracket - openBracket - 1);
+    size_t pos = 0;
+    while (pos < slice.size())
+    {
+        const size_t q1 = slice.find('"', pos);
+        if (q1 == std::string_view::npos)
+            break;
+        const size_t q2 = slice.find('"', q1 + 1);
+        if (q2 == std::string_view::npos)
+            break;
+        items.emplace_back(slice.substr(q1 + 1, q2 - q1 - 1));
+        pos = q2 + 1;
+    }
+
+    aOut = std::move(items);
+    return true;
+}
+} // namespace Detail
+
+inline RfabBindingsConfig ParseBindingsJson(std::string_view aJson)
+{
+    RfabBindingsConfig cfg{};
+    float numVal = 0.0f;
+    if (Detail::ExtractJsonFloat(aJson, "schema_version", numVal) && numVal >= 1.0f)
+        cfg.SchemaVersion = static_cast<uint32_t>(numVal);
+
+    Detail::ExtractJsonString(aJson, "plugin_name", cfg.PluginName);
+    Detail::ExtractJsonString(aJson, "xp_amount_global", cfg.XpAmountGlobalEditorId);
+    Detail::ExtractJsonString(aJson, "xp_bonus_global", cfg.XpBonusGlobalEditorId);
+    Detail::ExtractJsonString(aJson, "xp_books_formlist", cfg.XpBooksFormListEditorId);
+    Detail::ExtractJsonString(aJson, "no_death_handling_global", cfg.NoDeathHandlingGlobalEditorId);
+    Detail::ExtractJsonString(aJson, "kill_counter_global", cfg.KillCounterGlobalEditorId);
+    Detail::ExtractJsonString(aJson, "xp_handler_quest", cfg.XpHandlerQuestEditorId);
+
+    std::string hexFallback;
+    if (Detail::ExtractJsonString(aJson, "xp_amount_global", hexFallback))
+    {
+        // Note: editor_ids appears before fallback_base_form_ids; search fallback block explicitly if present.
+        if (const size_t fbBlock = aJson.find("\"fallback_base_form_ids\""); fbBlock != std::string_view::npos)
+        {
+            std::string fbHex;
+            if (Detail::ExtractJsonString(aJson.substr(fbBlock), "xp_amount_global", fbHex))
+                cfg.FallbackXpAmountBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
+        }
+    }
+
+    Detail::ExtractJsonStringArray(aJson, "synced_global_prefixes", cfg.SyncedGlobalPrefixes);
+    Detail::ExtractJsonStringArray(aJson, "excluded_global_prefixes", cfg.ExcludedGlobalPrefixes);
+
+    Detail::ExtractJsonString(aJson, "experience_ini", cfg.ExperienceIniRelPath);
+    Detail::ExtractJsonString(aJson, "quests_ini", cfg.QuestsIniRelPath);
+    Detail::ExtractJsonString(aJson, "xp_settings_json", cfg.XpSettingsJsonRelPath);
+    Detail::ExtractJsonString(aJson, "boss_list_json", cfg.BossListJsonRelPath);
+    Detail::ExtractJsonString(aJson, "race_list_json", cfg.RaceListJsonRelPath);
+    Detail::ExtractJsonString(aJson, "rfab_autosave_ini", cfg.RfabAutosaveIniRelPath);
+
+    Detail::ExtractJsonBool(aJson, "auto_scale_enemy_health", cfg.AutoScaleEnemyHealth);
+    Detail::ExtractJsonFloat(aJson, "health_extra_base", cfg.HealthExtraBase);
+    Detail::ExtractJsonFloat(aJson, "downed_revive_duration_sec", cfg.DownedReviveDurationSec);
+    Detail::ExtractJsonFloat(aJson, "downed_revive_hp_fraction", cfg.DownedReviveHpFraction);
+    Detail::ExtractJsonFloat(aJson, "post_revive_grace_sec", cfg.PostReviveGraceSec);
+    Detail::ExtractJsonFloat(aJson, "combat_leash_radius_meters", cfg.CombatLeashRadiusMeters);
+    Detail::ExtractJsonFloat(aJson, "combat_clear_hysteresis_sec", cfg.CombatClearHysteresisSec);
+
+    if (Detail::ExtractJsonFloat(aJson, "post_combat_autosave_interval_sec", numVal) && numVal >= 0.0f)
+        cfg.PostCombatAutosaveIntervalSec = static_cast<uint32_t>(numVal);
+    if (Detail::ExtractJsonFloat(aJson, "save_ring_buffer_size", numVal) && numVal >= 1.0f)
+        cfg.SaveRingBufferSize = std::clamp(static_cast<uint32_t>(numVal), 1U, 10U);
+
+    Detail::ExtractJsonFloat(aJson, "ambush_dedup_radius_meters", cfg.AmbushDedupRadiusMeters);
+    if (Detail::ExtractJsonFloat(aJson, "ambush_dedup_window_ms", numVal) && numVal >= 0.0f)
+        cfg.AmbushDedupWindowMs = static_cast<uint32_t>(numVal);
+
+    return cfg;
+}
+
+inline RfabBindingsConfig LoadBindingsFromDisk(const std::filesystem::path& acGameRoot)
+{
+    std::string raw;
+    const auto candidate = acGameRoot / "Data" / "SKSE" / "Plugins" / "RFAB_Online_Bindings.json";
+    if (Detail::ReadTextFile(candidate, raw))
+        return ParseBindingsJson(raw);
+
+    return RfabBindingsConfig{};
+}
+
+[[nodiscard]] inline bool ShouldAutoSyncGlobalEditorId(std::string_view aEditorId, const RfabBindingsConfig& acConfig) noexcept
+{
+    if (aEditorId.empty())
+        return false;
+
+    for (const auto& excluded : acConfig.ExcludedGlobalPrefixes)
+    {
+        if (Detail::StartsWithIgnoreCase(aEditorId, excluded))
+            return false;
+    }
+
+    if (Detail::ToLowerAscii(aEditorId) == Detail::ToLowerAscii(acConfig.KillCounterGlobalEditorId))
+        return true;
+
+    for (const auto& prefix : acConfig.SyncedGlobalPrefixes)
+    {
+        if (Detail::StartsWithIgnoreCase(aEditorId, prefix))
+            return true;
+    }
+
+    return false;
+}
+
+// Parses RFAB's Data/SKSE/Plugins/StorageUtilData/Experience.ini (e.g. "Level 2 = 2500" or "2 = 2500").
+inline void ParseExperienceIni(std::string_view aContent, RfabLiveXpTable& aTable)
+{
+    std::istringstream iss{std::string(aContent)};
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        const size_t commentPos = line.find_first_of(";#");
+        if (commentPos != std::string::npos)
+            line.erase(commentPos);
+
+        const size_t eqPos = line.find('=');
+        if (eqPos == std::string::npos)
+            continue;
+
+        std::string lhs = Detail::Trim(std::string_view(line).substr(0, eqPos));
+        std::string rhs = Detail::Trim(std::string_view(line).substr(eqPos + 1));
+        if (lhs.empty() || rhs.empty())
+            continue;
+
+        // Extract trailing digits from keys such as "2", "Level2", "Level 2", or "XP_2".
+        size_t digitPos = lhs.size();
+        while (digitPos > 0 && std::isdigit(static_cast<unsigned char>(lhs[digitPos - 1])))
+            --digitPos;
+
+        if (digitPos < lhs.size())
+        {
+            const uint32_t level = static_cast<uint32_t>(std::strtoul(lhs.c_str() + digitPos, nullptr, 10));
+            const int32_t threshold = static_cast<int32_t>(std::strtol(rhs.c_str(), nullptr, 10));
+            if (level > 0 && threshold >= 0)
+                aTable.LevelThresholds[level] = threshold;
+        }
+    }
+}
+
+// Parses RFAB's Quests.ini lines (e.g. "MQ103 = 1500" or "[MainQuest]\nMQ103|100 = 1500").
+inline void ParseQuestsIni(std::string_view aContent, RfabLiveXpTable& aTable)
+{
+    std::istringstream iss{std::string(aContent)};
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        const size_t commentPos = line.find_first_of(";#");
+        if (commentPos != std::string::npos)
+            line.erase(commentPos);
+
+        const size_t eqPos = line.find('=');
+        if (eqPos == std::string::npos)
+            continue;
+
+        const std::string lhs = Detail::Trim(std::string_view(line).substr(0, eqPos));
+        const std::string rhs = Detail::Trim(std::string_view(line).substr(eqPos + 1));
+        if (lhs.empty() || rhs.empty() || lhs.front() == '[')
+            continue;
+
+        char* endPtr = nullptr;
+        const long xp = std::strtol(rhs.c_str(), &endPtr, 10);
+        if (endPtr != rhs.c_str() && xp >= 0)
+            aTable.QuestRewards[lhs] = static_cast<int32_t>(xp);
+    }
+}
+
+// Parses flat/nested float multipliers from RFAB_XP_Settings.json ("float" section in StorageUtil JSON).
+inline void ParseXpSettingsJson(std::string_view aJson, RfabLiveXpTable& aTable)
+{
+    size_t pos = 0;
+    while (pos < aJson.size())
+    {
+        const size_t q1 = aJson.find('"', pos);
+        if (q1 == std::string_view::npos)
+            break;
+        const size_t q2 = aJson.find('"', q1 + 1);
+        if (q2 == std::string_view::npos)
+            break;
+
+        const std::string key(aJson.substr(q1 + 1, q2 - q1 - 1));
+        pos = q2 + 1;
+
+        const size_t colon = aJson.find(':', pos);
+        if (colon == std::string_view::npos)
+            break;
+
+        size_t valStart = colon + 1;
+        while (valStart < aJson.size() && std::isspace(static_cast<unsigned char>(aJson[valStart])))
+            ++valStart;
+
+        if (valStart < aJson.size() && (std::isdigit(static_cast<unsigned char>(aJson[valStart])) || aJson[valStart] == '-'))
+        {
+            const std::string slice(aJson.substr(valStart, 48));
+            char* endPtr = nullptr;
+            const float val = std::strtof(slice.c_str(), &endPtr);
+            if (endPtr != slice.c_str())
+                aTable.XpMultipliers[key] = val;
+        }
+    }
+}
+
+// Idempotently patches EngineFixes.toml content (including overrides like RFAB's
+// "Disable Quick Saves/skse/plugins/EngineFixes.toml") so Tilted's allocator & MO2 VFS work cleanly
+// while preserving RegularQuicksaves = true and all other user settings byte-for-byte.
+inline bool PatchEngineFixesTomlContent(std::string& aToml)
+{
+    bool changed = false;
+    const bool hasCrLf = aToml.find("\r\n") != std::string::npos;
+    const std::string newline = hasCrLf ? "\r\n" : "\n";
+
+    auto patchKey = [&](std::string_view keyName, std::string_view desiredValue)
+    {
+        std::istringstream iss(aToml);
+        std::ostringstream oss;
+        std::string line;
+        bool first = true;
+        bool found = false;
+
+        while (std::getline(iss, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+
+            if (!first)
+                oss << newline;
+            first = false;
+
+            const std::string trimmed = Detail::Trim(line);
+            if (!trimmed.empty() && trimmed.front() != '#' && trimmed.front() != '[')
+            {
+                if (const size_t eq = trimmed.find('='); eq != std::string::npos)
+                {
+                    const std::string currentKey = Detail::Trim(std::string_view(trimmed).substr(0, eq));
+                    if (Detail::ToLowerAscii(currentKey) == Detail::ToLowerAscii(keyName))
+                    {
+                        found = true;
+                        std::string currentVal = Detail::Trim(std::string_view(trimmed).substr(eq + 1));
+                        if (const size_t hash = currentVal.find('#'); hash != std::string::npos)
+                            currentVal = Detail::Trim(std::string_view(currentVal).substr(0, hash));
+
+                        if (Detail::ToLowerAscii(currentVal) != Detail::ToLowerAscii(desiredValue))
+                        {
+                            const size_t rawEq = line.find('=');
+                            std::string commentSuffix;
+                            if (const size_t rawHash = line.find('#', rawEq + 1); rawHash != std::string::npos)
+                                commentSuffix = " " + Detail::Trim(std::string_view(line).substr(rawHash));
+
+                            line = line.substr(0, rawEq + 1) + " " + std::string(desiredValue) + commentSuffix;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            oss << line;
+        }
+
+        if (found)
+            aToml = oss.str() + ((!aToml.empty() && aToml.back() == '\n') ? newline : "");
+    };
+
+    patchKey("MemoryManager", "false");
+    patchKey("ScaleformAllocator", "false");
+    patchKey("MaxStdio", "8192");
+
+    return changed;
+}
+
+inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acGameOrMo2Root) noexcept
+{
+    size_t patchedFiles = 0;
+
+    auto patchSingle = [&](const std::filesystem::path& p)
+    {
+        std::string content;
+        if (!Detail::ReadTextFile(p, content))
+            return;
+
+        if (PatchEngineFixesTomlContent(content))
+        {
+            if (Detail::WriteTextFile(p, content))
+                ++patchedFiles;
+        }
+    };
+
+    // 1. Direct or MO2 USVFS-mapped Data/SKSE/Plugins/EngineFixes.toml (resolves directly to winning override, e.g. Disable Quick Saves!)
+    patchSingle(acGameOrMo2Root / "Data" / "SKSE" / "Plugins" / "EngineFixes.toml");
+    patchSingle(acGameOrMo2Root / "Data" / "skse" / "plugins" / "EngineFixes.toml");
+
+    // 2. If game sits next to or inside an MO2 instance root, scan mods/*/skse/plugins/EngineFixes.toml as well.
+    std::error_code ec;
+    for (const auto& candidateModsDir : {acGameOrMo2Root / "mods", acGameOrMo2Root.parent_path() / "mods"})
+    {
+        if (!std::filesystem::exists(candidateModsDir, ec) || !std::filesystem::is_directory(candidateModsDir, ec))
+            continue;
+
+        for (const auto& modEntry : std::filesystem::directory_iterator(candidateModsDir, ec))
+        {
+            if (!modEntry.is_directory(ec))
+                continue;
+            patchSingle(modEntry.path() / "SKSE" / "Plugins" / "EngineFixes.toml");
+            patchSingle(modEntry.path() / "skse" / "plugins" / "EngineFixes.toml");
+        }
+    }
+
+    return patchedFiles;
+}
+
+// Suppresses "[RFAB] Autosave.ini" combat/interval triggers while connected to multiplayer,
+// preserving original file contents in memory so solo settings restore cleanly on disconnect.
+inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
+{
+    const bool hasCrLf = aOriginalIni.find("\r\n") != std::string_view::npos;
+    const std::string newline = hasCrLf ? "\r\n" : "\n";
+
+    std::istringstream iss{std::string(aOriginalIni)};
+    std::ostringstream oss;
+    std::string line;
+    bool first = true;
+
+    while (std::getline(iss, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+
+        if (!first)
+            oss << newline;
+        first = false;
+
+        const std::string trimmed = Detail::Trim(line);
+        if (!trimmed.empty() && trimmed.front() != ';' && trimmed.front() != '#' && trimmed.front() != '[')
+        {
+            if (const size_t eq = trimmed.find('='); eq != std::string::npos)
+            {
+                const std::string key = Detail::ToLowerAscii(Detail::Trim(std::string_view(trimmed).substr(0, eq)));
+                if (key == "enable autosave" || key == "save after combat")
+                {
+                    const size_t rawEq = line.find('=');
+                    line = line.substr(0, rawEq + 1) + " 0";
+                }
+            }
+        }
+
+        oss << line;
+    }
+
+    if (!aOriginalIni.empty() && aOriginalIni.back() == '\n')
+        oss << newline;
+
+    return oss.str();
+}
+
+} // namespace RfabCompat

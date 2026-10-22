@@ -29,12 +29,24 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MAP_CSV = REPO_ROOT / "docs" / "se-1597-id-map.csv"
 
-# Additional pure SE 1.5.97 IDs introduced when splitting AE-inlined / entry-hooked functions:
-#   75591 = BSGraphics::InitWindows (0xD71F00)
-#   79949 = UI::Register / MenuManager::RegisterMenuCreator (0xEBF9C0)
+# Additional pure SE 1.5.97 IDs verified byte-for-byte against version-1-5-97-0.bin:
+#   14464  = TESForm::LookupByEditorID (0x01944E0)
+#   20470  = BGSListForm::AddForm (0x02C53D0)
+#   34818  = BGSSaveLoadManager::Save_Impl (0x0586DE0)
+#   34819  = BGSSaveLoadManager::Load_Impl (0x0587350)
+#   37513  = Actor::RestoreActorValue / ActorValueOwner vfunc #06 (0x0620900)
+#   75591  = BSGraphics::InitWindows (0x0D71F00)
+#   79949  = UI::Register / MenuManager::RegisterMenuCreator (0x0EBF9C0)
+#   516860 = BGSSaveLoadManager::Singleton (0x2F26740)
 EXTRA_VALID_SE_IDS = {
-    75591: 0xD71F00,
-    79949: 0xEBF9C0,
+    14464: 0x01944E0,
+    20470: 0x02C53D0,
+    34818: 0x0586DE0,
+    34819: 0x0587350,
+    37513: 0x0620900,
+    75591: 0x0D71F00,
+    79949: 0x0EBF9C0,
+    516860: 0x2F26740,
 }
 
 EXPECTED_STRUCT_ASSERTS = {
@@ -46,6 +58,7 @@ EXPECTED_STRUCT_ASSERTS = {
     "Code/client/Games/Skyrim/Components/TESLeveledList.h": "sizeof(TESLeveledList) == 0x28",
     "Code/client/Games/Skyrim/BSAnimationGraphManager.h": "offsetof(BSAnimationGraphManager, animationGraphIndex) == 0xA8",
     "Code/client/Games/Skyrim/Combat/CombatController.h": "sizeof(CombatController) == 0xD8",
+    "Code/client/Games/TES.h": "offsetof(ModManager, formLists) == 0x898",
 }
 
 

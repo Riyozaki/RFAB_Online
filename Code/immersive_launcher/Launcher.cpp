@@ -18,6 +18,7 @@
 #include "utils/Registry.h"
 
 #include <BranchInfo.h>
+#include <common/RfabModpackCompat.h>
 
 // These symbols are defined within the client code skyrimtogetherclient
 extern void InstallStartHook();
@@ -104,6 +105,10 @@ int StartUp(int argc, char** argv)
 
     if (!oobe::SelectInstall(askSelect))
         DIE_NOW(L"Failed to select game install.");
+
+    // Ensure EngineFixes.toml (including MO2 overrides like RFAB's "Disable Quick Saves/skse/plugins/EngineFixes.toml")
+    // disables conflicting allocators and sets MaxStdio = 8192 while preserving RegularQuicksaves = true.
+    RfabCompat::EnsureEngineFixesPatchedUnderRoot(LC->gamePath);
 
     // Bind path environment.
     loader::InstallPathRouting(LC->gamePath);

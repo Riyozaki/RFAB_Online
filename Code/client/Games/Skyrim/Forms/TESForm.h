@@ -40,6 +40,7 @@ struct TESForm : BaseFormComponent
     };
 
     static TESForm* GetById(uint32_t aId);
+    static TESForm* GetByEditorId(const BSFixedString& acEditorId) noexcept;
 
     virtual void sub_4();
     virtual void sub_5();

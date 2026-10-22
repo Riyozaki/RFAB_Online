@@ -2,6 +2,7 @@
 
 #include <PlayerCharacter.h>
 #include <Forms/BGSHeadPart.h>
+#include <Forms/BGSListForm.h>
 #include <Forms/TESNPC.h>
 
 #include <Games/IFormFactory.h>
@@ -15,6 +16,27 @@ TESForm* TESForm::GetById(const uint32_t aId)
     POINTER_SKYRIMSE(TGetFormById, getFormById, 14461);
 
     return getFormById.Get()(aId);
+}
+
+TESForm* TESForm::GetByEditorId(const BSFixedString& acEditorId) noexcept
+{
+    if (!acEditorId.AsAscii() || acEditorId.AsAscii()[0] == '\0')
+        return nullptr;
+
+    using TLookupByEditorId = TESForm*(const BSFixedString&);
+    POINTER_SKYRIMSE(TLookupByEditorId, lookupByEditorId, 14464);
+
+    return lookupByEditorId.Get()(acEditorId);
+}
+
+void BGSListForm::AddForm(TESForm* apForm) noexcept
+{
+    if (!apForm)
+        return;
+
+    TP_THIS_FUNCTION(TAddForm, void, BGSListForm, TESForm* apForm);
+    POINTER_SKYRIMSE(TAddForm, s_addForm, 20470);
+    TiltedPhoques::ThisCall(s_addForm, this, apForm);
 }
 
 void TESNPC::Serialize(String* apSaveBuffer) const noexcept

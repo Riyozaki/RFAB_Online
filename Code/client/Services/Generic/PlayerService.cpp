@@ -195,7 +195,7 @@ void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
 
 void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 {
-    if (!m_isDeathSystemEnabled)
+    if (!m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled)
         return;
 
     static bool s_startTimer = false;
@@ -254,7 +254,7 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 // Doesn't seem to respawn quite yet
 void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
 {
-    if (!m_isDeathSystemEnabled)
+    if (!m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled)
         return;
 
     // If a player dies in ragdoll, it gets stuck.
