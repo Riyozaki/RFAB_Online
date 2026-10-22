@@ -170,4 +170,53 @@ inline bool ComputeTarget(float aBaseMax,
     return (delta > tolerance) || (delta < -tolerance);
 }
 
+/**
+ * @brief What maximum health to restore when leaving a server.
+ *
+ * Two sources are possible, in order of accuracy:
+ *   * the unscaled value captured locally when the server first scaled the
+ *     actor (`aRememberedBase`), which is exact;
+ *   * only the session multiplier (`aSessionMultiplier`), which is all a client
+ *     has for actors that arrived already scaled (a late joiner receives the
+ *     scaled maximum in ActorData). Dividing by the multiplier is the exact
+ *     inverse when nothing else touched the value.
+ *
+ * Never shrinks nothing: when the actor is not scaled, `ShouldRestore` is false.
+ */
+struct RestoreTarget
+{
+    float Base{0.0f};
+    bool ShouldRestore{false};
+};
+
+inline RestoreTarget ComputeRestore(float aCurrentMax, float aRememberedBase, float aSessionMultiplier) noexcept
+{
+    RestoreTarget result{};
+
+    if (!(aCurrentMax > 0.0f)) // also rejects NaN
+        return result;
+
+    float base = 0.0f;
+
+    if (aRememberedBase > 0.0f)
+    {
+        // A remembered base is authoritative - including when it equals the
+        // current maximum, which simply means "this actor was never scaled".
+        base = aRememberedBase;
+    }
+    else if (aSessionMultiplier > 1.0f)
+    {
+        base = aCurrentMax / aSessionMultiplier;
+    }
+
+    // A base that is not a real reduction means there is nothing to undo.
+    const float tolerance = (aCurrentMax > 1.0f ? aCurrentMax : 1.0f) * 0.0001f;
+    if (!(base > 0.0f) || base >= aCurrentMax - tolerance)
+        return result;
+
+    result.Base = base;
+    result.ShouldRestore = true;
+    return result;
+}
+
 } // namespace Gameplay::HealthScaling

@@ -9,6 +9,7 @@
 #include <Services/MagicService.h>
 #include <Services/DebugService.h>
 #include <Services/SaveGameService.h>
+#include <Services/ActorValueService.h>
 
 #include <Systems/ModSystem.h>
 
@@ -34,6 +35,7 @@ struct World : entt::registry
     DebugService& GetDebugService() noexcept { return ctx().at<DebugService>(); }
     const DebugService& GetDebugService() const noexcept { return ctx().at<const DebugService>(); }
     SaveGameService& GetSaveGameService() noexcept { return ctx().at<SaveGameService>(); }
+    ActorValueService& GetActorValueService() noexcept { return ctx().at<ActorValueService>(); }
     MagicService& GetMagicService() noexcept { return ctx().at<MagicService>(); }
     const MagicService& GetMagicService() const noexcept { return ctx().at<const MagicService>(); }
 

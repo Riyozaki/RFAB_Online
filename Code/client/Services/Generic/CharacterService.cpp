@@ -71,6 +71,7 @@
 #include <Games/TES.h>
 
 #include <Services/RfabXp.h>
+#include <Services/ActorValueService.h>
 #include <Utils.h>
 #include <Gameplay/XpAward.h>
 
@@ -490,6 +491,21 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
     pActor->MoveTo(PlayerCharacter::Get()->parentCell, acMessage.Position);
+
+    // Actors can arrive already scaled by party-size health scaling (the server
+    // sends the scaled maximum). Remember the unscaled maximum before applying
+    // it, otherwise this client cannot undo the scaling on disconnect.
+    if (const auto maxHealthIt = acMessage.InitialActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+        maxHealthIt != acMessage.InitialActorValues.ActorMaxValuesList.end())
+    {
+        if (const float healthMultiplier = m_world.GetServerSettings().HealthMultiplier; healthMultiplier > 1.0f)
+        {
+            const float scaledMax = maxHealthIt->second;
+            if (std::isfinite(scaledMax) && scaledMax > 0.0f)
+                m_world.GetActorValueService().RememberScaledMaxHealth(*entity, scaledMax / healthMultiplier);
+        }
+    }
+
     pActor->SetActorValues(acMessage.InitialActorValues);
 
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);

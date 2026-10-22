@@ -119,6 +119,11 @@ private:
      * party-size health scaling (used to restore the value on disconnect).
      */
     void RememberUnscaledHealth(uint32_t aServerId, Actor* apActor) noexcept;
+    /**
+     * @brief Remembers the unscaled maximum for an entity when only the value is
+     * known (an actor that arrived already scaled).
+     */
+    void RememberScaledMaxHealth(entt::entity aEntity, float aBaseMaxHealth) noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;

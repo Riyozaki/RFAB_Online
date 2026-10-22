@@ -18,6 +18,7 @@
 #include <Gameplay/SaveSession.h>
 #include <Gameplay/XpAward.h>
 #include <Gameplay/Progression.h>
+#include <limits>
 #include <Gameplay/RateLimiter.h>
 #include <Gameplay/XpShare.h>
 
@@ -613,6 +614,41 @@ void TestProgressionRecord()
     CHECK(restored.Serialize() == text);
 }
 
+void TestHealthRestore()
+{
+    BeginCase("HealthScaling::ComputeRestore");
+
+    using Gameplay::HealthScaling::ComputeRestore;
+
+    // Exact base known: it is preferred over the multiplier.
+    const auto exact = ComputeRestore(300.0f, 100.0f, 3.0f);
+    CHECK(exact.ShouldRestore);
+    CHECK(exact.Base == 100.0f);
+
+    // Late joiner: only the multiplier is known.
+    const auto byMultiplier = ComputeRestore(400.0f, 0.0f, 4.0f);
+    CHECK(byMultiplier.ShouldRestore);
+    CHECK(byMultiplier.Base == 100.0f);
+
+    // Not scaled: nothing to do.
+    CHECK(!ComputeRestore(100.0f, 0.0f, 1.0f).ShouldRestore);
+    CHECK(!ComputeRestore(100.0f, 100.0f, 3.0f).ShouldRestore);
+
+    // Remembered base cannot make things worse.
+    CHECK(!ComputeRestore(100.0f, 200.0f, 1.0f).ShouldRestore);
+    CHECK(!ComputeRestore(100.0f, -5.0f, 1.0f).ShouldRestore);
+
+    // Garbage in: no restore, no NaN propagation.
+    CHECK(!ComputeRestore(0.0f, 100.0f, 3.0f).ShouldRestore);
+    CHECK(!ComputeRestore(-100.0f, 100.0f, 3.0f).ShouldRestore);
+    CHECK(!ComputeRestore(std::numeric_limits<float>::quiet_NaN(), 100.0f, 3.0f).ShouldRestore);
+    CHECK(!ComputeRestore(300.0f, 0.0f, std::numeric_limits<float>::quiet_NaN()).ShouldRestore);
+    CHECK(!ComputeRestore(300.0f, 0.0f, 0.5f).ShouldRestore); // never scales up
+
+    // A multiplier of 1 with no remembered base is a no-op.
+    CHECK(!ComputeRestore(300.0f, 0.0f, 1.0f).ShouldRestore);
+}
+
 void TestRateLimiter()
 {
     BeginCase("TokenBucket");
@@ -708,6 +744,7 @@ int main()
     TestProgressionCatchUp();
     TestProgressionRecord();
     TestRateLimiter();
+    TestHealthRestore();
     TestSanitise();
     TestActorValueIds();
 

@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include <Services/ActorValueService.h>
 #include <World.h>
 #include <Forms/ActorValueInfo.h>
 #include <Games/References.h>
+#include <PlayerCharacter.h>
 #include <Components.h>
 
 #include <Events/UpdateEvent.h>
@@ -25,6 +27,7 @@
 #include <Messages/RequestDeathStateChange.h>
 
 #include <misc/ActorValueOwner.h>
+#include <Gameplay/HealthScaling.h>
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -70,36 +73,72 @@ void ActorValueService::OnLocalComponentAdded(entt::registry& aRegistry, const e
     }
 }
 
-void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
+void ActorValueService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
-    // Party-size health scaling is server authoritative. When the session ends,
-    // put back the unscaled maximum we captured when the server first scaled the
-    // actor, so a player does not stay in a world of x3/x4 health NPCs after
-    // leaving multiplayer.
-    auto view = m_world.view<ActorValuesComponent>();
-    for (auto entity : view)
+    // Party-size health scaling is server authoritative, so when the session
+    // ends the scaled maxima have to be undone - otherwise the player keeps a
+    // world of x3/x4 NPCs in single player (and saves them that way).
+    //
+    // Two kinds of actors need this:
+    //   * ones we saw being scaled: ActorValuesComponent::BaseMaxHealth holds the
+    //     exact unscaled value;
+    //   * ones that arrived already scaled (late joiners receive the scaled
+    //     maximum in ActorData), where only the session multiplier is known.
+    //     The multiplier is read from the server settings the client already
+    //     keeps (AuthenticationResponse / NotifySettingsChange).
+    //
+    // The entities are collected first and the component is cleared afterwards:
+    // mutating the pool while iterating a view of it is exactly the kind of thing
+    // that made this handler crash before.
+    std::vector<entt::entity> toRestore;
+
+    auto formView = m_world.view<FormIdComponent>();
+    for (const auto entity : formView)
+        toRestore.push_back(entity);
+
+    const float serverMultiplier = m_world.GetServerSettings().HealthMultiplier;
+    // Anything outside [1, 32] is either "no scaling" or a broken setting; the
+    // restore path must never multiply health *up*.
+    const float sessionMultiplier = (std::isfinite(serverMultiplier) && serverMultiplier > 1.0f) ? std::min(serverMultiplier, 32.0f) : 1.0f;
+
+    Actor* pLocalPlayer = PlayerCharacter::Get();
+
+    for (const auto entity : toRestore)
     {
-        auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
-        if (actorValuesComponent.BaseMaxHealth <= 0.0f)
+        if (!m_world.valid(entity))
             continue;
 
-        Actor* pActor = Cast<Actor>(TESForm::GetById(actorValuesComponent.FormId));
-        if (pActor == nullptr)
+        const auto& formIdComponent = m_world.get<FormIdComponent>(entity);
+        if (formIdComponent.Id == GameId{})
+            continue;
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (pActor == nullptr || pActor == pLocalPlayer)
             continue;
 
         const float currentMax = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
-        const float currentHealth = pActor->GetActorValue(ActorValueInfo::kHealth);
-
-        if (currentMax <= 0.0f)
+        if (!std::isfinite(currentMax) || currentMax <= 0.0f)
             continue;
 
-        const float base = actorValuesComponent.BaseMaxHealth;
+        const float currentHealth = pActor->GetActorValue(ActorValueInfo::kHealth);
+        const float ratio = std::clamp(currentHealth / currentMax, 0.0f, 1.0f);
+
+        float rememberedBase = 0.0f;
+        if (const auto* pActorValues = m_world.try_get<ActorValuesComponent>(entity); pActorValues != nullptr)
+            rememberedBase = pActorValues->BaseMaxHealth;
+
+        const auto restore = Gameplay::HealthScaling::ComputeRestore(currentMax, rememberedBase, sessionMultiplier);
+        if (!restore.ShouldRestore)
+            continue;
+
+        const float base = restore.Base;
+
         pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, base);
-        pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth,
-                                std::clamp(currentHealth / currentMax, 0.0f, 1.0f) * base);
+        pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, ratio * base);
+
+        spdlog::debug("Restored health of {:X} on disconnect: {:.0f} -> {:.0f}", pActor->formID, currentMax, base);
     }
 
-    // TODO: this crashes sometimes, no clue why
     m_world.clear<ActorValuesComponent>();
 }
 
@@ -412,6 +451,25 @@ void ActorValueService::RememberUnscaledHealth(uint32_t aServerId, Actor* apActo
         pActorValues->BaseMaxHealth = apActor->GetActorPermanentValue(ActorValueInfo::kHealth);
         return;
     }
+}
+
+void ActorValueService::RememberScaledMaxHealth(entt::entity aEntity, float aBaseMaxHealth) noexcept
+{
+    if (!(aBaseMaxHealth > 0.0f))
+        return;
+
+    auto* pActorValues = m_world.try_get<ActorValuesComponent>(aEntity);
+    if (pActorValues == nullptr)
+        pActorValues = &m_world.emplace_or_replace<ActorValuesComponent>(aEntity);
+
+    // Whatever was captured before is the truth (it comes from an exact value).
+    if (pActorValues->BaseMaxHealth > 0.0f)
+        return;
+
+    if (const auto* pFormId = m_world.try_get<FormIdComponent>(aEntity))
+        pActorValues->FormId = pFormId->Id;
+
+    pActorValues->BaseMaxHealth = aBaseMaxHealth;
 }
 
 void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessage) const noexcept
