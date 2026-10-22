@@ -1,6 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-
 # Custom for Visual Studio
 *.cs     diff=csharp
 # Standard to msysgit
@@ -14,6 +13,6 @@
 *.PDF	 diff=astextplain
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
-
 # Custom for the project to build
 *.sh text eol=lf
+dist_ready/** filter=lfs diff=lfs merge=lfs -text

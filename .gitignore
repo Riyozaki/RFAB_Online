@@ -104,3 +104,7 @@ Unselected files/
 RFAB_extract/
 RFAB_ref/
 
+# Packaged RFAB release artifacts are stored via Git LFS
+!dist_ready/**/*.esp
+!dist_ready/**/*.pex
+
