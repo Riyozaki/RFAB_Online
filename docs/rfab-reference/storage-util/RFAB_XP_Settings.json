@@ -1,0 +1,15 @@
+{
+	"int" : 
+	{
+		"basebookxp" : 200,
+		"hotkey" : 35,
+		"menuoffset_x" : 0,
+		"menuoffset_y" : 0,
+		"menuscale" : 100,
+		"notification color" : 16741376
+	},
+	"string" : 
+	{
+		"notification color" : "#FF7400"
+	}
+}

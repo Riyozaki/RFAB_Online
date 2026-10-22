@@ -1,0 +1,32 @@
+{
+	"AutoLoot" : 
+	{
+		"AllowOverWeight" : 1,
+		"HotKey" : 259,
+		"LootMisc" : 1,
+		"LootTrophies" : 1,
+		"MethodID" : 1,
+		"SaveBlessing" : 1,
+		"Value" : 10
+	},
+	"Mounts" : 
+	{
+		"iHotKey" : 21
+	},
+	"float" : 
+	{
+		"books alpha" : 80
+	},
+	"int" : 
+	{
+		"books color default" : 4219055,
+		"books color quest" : 13369395,
+		"books color spell" : 1684081,
+		"books color xp" : 14905890,
+		"books glowing default" : 0,
+		"books glowing quest" : 1,
+		"books glowing spell" : 1,
+		"books glowing xp" : 1,
+		"glow texture id" : 2
+	}
+}
