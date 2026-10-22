@@ -1,31 +1,23 @@
 # RFAB Online
 
-Мультиплеер для сборки **RFAB SE XI Prime** на базе TiltedEvolution
-(Skyrim Together Reborn), портированный на **Skyrim Special Edition 1.5.97**.
+Мультиплеерная платформа для модпака **[Skyrim Requiem for a Balance (RFAB)](https://github.com/drake1ch/RFAB)** на базе форка [`rfortier/TiltedEvolution-rwf`](https://github.com/rfortier/TiltedEvolution-rwf), адаптируемая строго под **Skyrim Special Edition `1.5.97.0.8`** (`SKSE64 2.0.20`, `version-1-5-97-0.bin`).
 
-> Статус: **в разработке (Фаза 1 — порт на 1.5.97)**. Игровых тестов ещё не
-> было; что проверено, а что нет — см. отчёты по фазам в `docs/`.
-> Anniversary Edition (1.6.x) **не поддерживается**.
+---
 
-## Требования
+## Ключевые проектные принципы
 
-- Skyrim Special Edition **1.5.97** (любой дистрибутив: Steam, даунгрейд,
-  DRM-free — версия определяется по самому `SkyrimSE.exe`)
-- SKSE64 **2.0.20** (`skse64_1_5_97.dll`)
-- Address Library for SKSE Plugins, **SE-вариант** (`version-1-5-97-0.bin`)
-- Сборка RFAB (Mod Organizer 2, профиль как у всех участников сессии)
+- **Строгий таргет `Skyrim SE 1.5.97.0.8`:** полная бинарная совместимость с `SkyrimSE.exe 1.5.97.0.8`, `skse64_1_5_97.dll` (`2.0.20`), `version-1-5-97-0.bin` (формат `1`) и стеком SKSE-плагинов `RFAB` (`EngineFixes.dll`, `SSEDisplayTweaks.dll`, `SkyrimSoulsRE.dll`, `OAR`, `AMR`, `RFAB.dll`). Версии `1.6.x` (AE) намеренно не поддерживаются.
+- **Равное распределение опыта RFAB:** все игроки на сервере получают **равное количество опыта (`1×`)** за убийства врагов/боссов, завершение квестов, книги опыта и особые награды с серверной дедупликацией и полноценным повышением уровня (`PlayerCharacter::pSkills->data->xp` + `RFAB_XP_Amount`).
+- **Честный баланс врагов без размножения спавнов:** количество врагов **никогда не умножается** на число игроков (`1×` врагов); вместо этого масштабируется только HP враждебных NPC (`1` игрок = `1× HP`, `2` игрока = `3× HP`, `3` игрока = `4× HP`, $N \ge 2 \implies (N + 1)\times\text{HP}$).
 
-## Документация
+---
 
-- [Фаза 0 — анализ и план](docs/phase-0-analysis.md)
-- [Фаза 1 — отчёт о порте на 1.5.97](docs/phase-1-report.md)
-- [Аудит внутрифункционных патчей](docs/phase-1-midfunction-audit.md)
-- [Сборка из исходников](BUILD.md)
-- [Оригинальный README Tilted Online](README.upstream.md)
-- [Анимационные моды (форк rwf)](README-ANIMATION-MODS.md)
+## Документация и инженерные артефакты
 
-## Происхождение и лицензия
-
-Форк цепочки: TiltedPhoques/TiltedEvolution → rfortier/TiltedEvolution-rwf
-(ветка `features-integration`, коммит `a7d06156`) → RFAB Online.
-Лицензия — **GPLv3**, как у оригинала (см. `LICENSE`).
+- [`docs/ARCHITECTURE_REVIEW_AND_ROADMAP.md`](./docs/ARCHITECTURE_REVIEW_AND_ROADMAP.md) — **Главный отчёт ревью и дорожная карта**: аудит всех веток репозитория (`main`, `014f2836`, `fcbffe0c`, `ada174eb`), разбор найденных багов и поэтапный план реализации.
+- [`docs/SE_1597_PORT_SPEC.md`](./docs/SE_1597_PORT_SPEC.md) — **Низкоуровневая спецификация порта на `1.5.97.0.8`**: все `16 656`-типные проверки `sizeof`/`offsetof` C++-структур, все `11` внутрифункциональных патчей `VersionDbPtr` и правила совместимости с SKSE-плагинами `RFAB`.
+- [`docs/se-1597-id-map.csv`](./docs/se-1597-id-map.csv) — **Полная бинарно верифицированная таблица `3 083 / 3 083` (`100%`) Address Library ID** (`AE 1.6.x -> SE 1.5.97.0.8` + точные `RVA` из `version-1-5-97-0.bin`).
+- [`docs/RFAB_ADAPTATION_SPEC.md`](./docs/RFAB_ADAPTATION_SPEC.md) — **Спецификация интеграции с `drake1ch/RFAB`**: точные FormID из `RFAB.esp`, механика `RFAB_XP_Alias` / `RFAB_XP_Handler` / `RFAB_PapyrusFunctions`, формулы безопасного масштабирования HP, `REQ_DeathHandler`, засады, счётчики и боссы.
+- [`docs/rfab/`](./docs/rfab/) — извлечённая текстовая база записей `RFAB.esp` (`rfab_records.tsv`) и эталонные таблицы баланса `StorageUtilData/` (`Experience.ini`, `BossList.json`, `RaceList.json`, `Quests.ini`).
+- [`Tools/rfab/`](./Tools/rfab/) — офлайн-скрипты верификации порта (`verify_se1597_port.py`, `parse_rfab_esp.py`).
+- [`BUILD.md`](./BUILD.md) — инструкция по локальной сборке клиента и сервера через `xmake` / Visual Studio 2022 + `pnpm`.

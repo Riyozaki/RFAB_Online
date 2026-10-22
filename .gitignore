@@ -88,3 +88,19 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+# Binary game / modpack / Address Library artifacts (never commit binaries to Git)
+*.esp
+!GameFiles/Skyrim/SkyrimTogether.esp
+*.esm
+*.esl
+*.bsa
+*.ba2
+*.pex
+version-*.bin
+versionlib-*.bin
+NetScriptFramework.*.bin
+Unselected files/
+RFAB_extract/
+RFAB_ref/
+
