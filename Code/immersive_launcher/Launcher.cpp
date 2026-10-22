@@ -24,6 +24,7 @@
 extern void InstallStartHook();
 extern void RunTiltedApp();
 extern void RunTiltedInit(const std::filesystem::path& acGamePath, const TiltedPhoques::String& aExeVersion);
+extern void SpoofPebMainModuleName(const std::filesystem::path& acExePath);
 
 // Defined in EarlyLoad.dll
 bool __declspec(dllimport) EarlyInstallSucceeded();
@@ -137,6 +138,7 @@ bool LoadProgram(LaunchContext& LC)
     if (LC.Version.empty())
         DIE_NOW(L"Failed to query game version");
     LC.SetLoaded();
+    SpoofPebMainModuleName(LC.exePath);
 
     ExeLoader loader(CurrentTarget.exeLoadSz);
     if (!loader.Load(reinterpret_cast<uint8_t*>(content.data())))

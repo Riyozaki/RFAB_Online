@@ -482,7 +482,9 @@ Set-ItemProperty -LiteralPath $RegPath -Name "TitleExe" -Value $SkyrimExe -Type 
 Write-Ok "Реестр TiltedEvolution настроен строго на: $SkyrimExe"
 
 Backup-Once $Mo2Ini
-$ClientExe = Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimTogether.exe"
+# Copy launcher as SkyrimSE.exe inside SkyrimTogetherReborn so .NET Script Framework (SE 1.5.97) sees MainModule.ModuleName == "SkyrimSE.exe"
+Copy-Item -LiteralPath (Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimTogether.exe") -Destination (Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimSE.exe") -Force
+$ClientExe = Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimSE.exe"
 $ClientWorkDir = Join-Path $TargetModDir "SkyrimTogetherReborn"
 $QtClientBin = Encode-QtIniPath $ClientExe
 $QtClientWorkDir = Encode-QtIniPath $ClientWorkDir
@@ -513,7 +515,7 @@ if ($secStart -ge 0) {
             $valBin = $Matches[2]
             if ($idx -gt $maxIdx) { $maxIdx = $idx }
             $decodedBin = Decode-Mo2IniValue $valBin
-            if ($decodedBin.EndsWith("SkyrimTogether.exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ($decodedBin.IndexOf("SkyrimTogetherReborn/", [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or $decodedBin.IndexOf("SkyrimTogetherReborn\", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
                 $existingIdx = $idx
             }
         } elseif ($iniRawLines[$i] -match '^\s*size\s*=\s*(\d+)\s*$') {

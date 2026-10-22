@@ -291,3 +291,29 @@ void CoreStubsInit()
 }
 
 #undef VALIDATE
+
+void SpoofPebMainModuleName(const std::filesystem::path& acExePath)
+{
+    static std::wstring s_spoofFullPath;
+    static std::wstring s_spoofBaseName;
+    s_spoofFullPath = acExePath.wstring();
+    s_spoofBaseName = acExePath.filename().wstring();
+
+    auto* pPeb = reinterpret_cast<PEB*>(NtInternal::ThePeb());
+    if (!pPeb || !pPeb->Ldr)
+        return;
+
+    LIST_ENTRY* pHead = &pPeb->Ldr->InMemoryOrderModuleList;
+    for (LIST_ENTRY* pEntry = pHead->Flink; pEntry && pEntry != pHead; pEntry = pEntry->Flink)
+    {
+        auto* pMod = CONTAINING_RECORD(pEntry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+        if (pMod->DllBase == NtInternal::ThePeb()->pImageBase)
+        {
+            RtlInitUnicodeString(&pMod->FullDllName, s_spoofFullPath.c_str());
+            auto* pBaseDllName = reinterpret_cast<UNICODE_STRING*>(
+                reinterpret_cast<uint8_t*>(&pMod->FullDllName) + sizeof(UNICODE_STRING));
+            RtlInitUnicodeString(pBaseDllName, s_spoofBaseName.c_str());
+            break;
+        }
+    }
+}
