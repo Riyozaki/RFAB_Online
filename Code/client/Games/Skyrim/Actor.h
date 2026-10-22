@@ -380,6 +380,10 @@ public:
     // void Save_Reversed(uint32_t aChangeFlags, Buffer::Writer& aWriter);
 };
 
+// Skyrim SE 1.5.97 (pre-1.6.629) offsets: 8 bytes lower than the 629+
+// layout because TESObjectREFR's ExtraDataList has no vtable yet. Matches
+// CommonLibSSE-NG's versioned accessors for < SSE 1.6.629
+// (actorValueOwner 0xB0, actorState 0xB8, Actor runtime data 0xE0).
 static_assert(offsetof(Actor, magicTarget) == 0x98);
 static_assert(offsetof(Actor, addedSpells) == 0x188);
 static_assert(offsetof(Actor, currentProcess) == 0xF0);

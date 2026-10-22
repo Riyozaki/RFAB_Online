@@ -142,6 +142,7 @@ struct PlayerCharacter : Actor
         uint64_t instanceCount;
     };
 
+    // Skyrim SE 1.5.97 (pre-1.6.629) layout; see Actor.h.
     uint8_t pad1[0x580 - sizeof(Actor)];
     GameArray<ObjectiveInstance> objectives;
     uint8_t pad598[0x9B0 - 0x598];

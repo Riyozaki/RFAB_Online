@@ -306,7 +306,7 @@ uint32_t TESObjectREFR::GetCellId() const noexcept
 TESWorldSpace* TESObjectREFR::GetWorldSpace() const noexcept
 {
     auto* pParentCell = parentCell ? parentCell : GetParentCell();
-    if (pParentCell && !(pParentCell->cellFlags & 1))
+    if (pParentCell && !(pParentCell->cellFlags[0] & 1))
         return pParentCell->worldspace;
 
     return nullptr;
