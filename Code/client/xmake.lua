@@ -21,6 +21,14 @@ target(name)
         local uidir = path.join(target:scriptdir(), "..", "skyrim_ui", "src")
         os.cp(path.join(uidir, "assets", "images", "cursor.dds"), path.join(target:installdir(), "bin", "assets", "images", "cursor.dds"))
         os.cp(path.join(uidir, "assets", "images", "cursor.png"), path.join(target:installdir(), "bin", "assets", "images", "cursor.png"))
+        -- copy RFAB EditorID/modpack bindings manifest for both MO2 root-Data layout (SKSE/Plugins/) and game-dir layout (Data/SKSE/Plugins/)
+        local rfab_bindings = path.join(target:scriptdir(), "..", "..", "Data", "SKSE", "Plugins", "RFAB_Online_Bindings.json")
+        if os.isfile(rfab_bindings) then
+            os.mkdir(path.join(target:installdir(), "SKSE", "Plugins"))
+            os.cp(rfab_bindings, path.join(target:installdir(), "SKSE", "Plugins", "RFAB_Online_Bindings.json"))
+            os.mkdir(path.join(target:installdir(), "Data", "SKSE", "Plugins"))
+            os.cp(rfab_bindings, path.join(target:installdir(), "Data", "SKSE", "Plugins", "RFAB_Online_Bindings.json"))
+        end
         os.rm(path.join(target:installdir(), "bin", "**Tests.exe"))
     end)
 
