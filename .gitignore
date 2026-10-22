@@ -88,3 +88,10 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+# --- RFAB Online: third-party reference data is kept out of the repository ---
+# Large/game files (RFAB.esp, SKSE and RFAB DLLs, Address Library database) are
+# only needed locally for offline audits. See RFAB_extract/README.md.
+RFAB_extract/*.esp
+RFAB_extract/*.dll
+RFAB_extract/*.bin
