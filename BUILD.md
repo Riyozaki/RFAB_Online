@@ -22,10 +22,14 @@
 3. Собрать (эквивалент `Build.bat`):
    ```
    xmake project -k vsxmake
-   xmake config -m releasedbg
+   xmake config -m releasedbg --runtimes=MT
    xmake -y
    xmake install -o distrib
    ```
+   Windows-сборка этим тулчейном (xmake 3.1.2, `releasedbg`, `--runtimes=MT`)
+   проверена 2026-10-22 агентом на ПК владельца: клиент и сервер собираются,
+   тесты `Code/tests` проходят. Точный пошаговый рецепт агента — задача T1 из
+   `docs/review-agent-main-2026-10-22.md`.
 4. UI:
    ```
    cd Code\skyrim_ui
