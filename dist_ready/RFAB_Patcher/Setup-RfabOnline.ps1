@@ -142,7 +142,6 @@ if (-not (Test-Path -LiteralPath $CursorPngRel)) {
 $RequiredModFiles = @(
     "SkyrimTogether.esp",
     "SKSE\Plugins\RFAB_Online_Bindings.json",
-    "SkyrimTogetherReborn\SkyrimTogether.exe",
     "SkyrimTogetherReborn\TPProcess.exe",
     "SkyrimTogetherReborn\EarlyLoad.dll",
     "SkyrimTogetherReborn\libcef.dll",
