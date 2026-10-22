@@ -88,3 +88,8 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+# RFAB Online: local reference binaries (RFAB.esp, SKSE dlls, Address
+# Library bin) are never committed - see docs/rfab-reference/README.md
+/RFAB_extract/
+/refdata/
