@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Events/PacketEvent.h>
+#include <Gameplay/RateLimiter.h>
 #include <Gameplay/XpShare.h>
 #include <TiltedCore/Stl.hpp>
 
@@ -29,7 +30,12 @@ struct SyncRfabExperienceRequest;
  *   * optionally collapses "same amount within N seconds" reports coming from
  *     different players, which is what happens when the game tells every client
  *     about the same quest completion / kill;
- *   * fans out to the whole server (configurable) instead of the party only.
+ *   * fans out to the whole server (configurable) instead of the party only;
+ *   * rate limits reports per connection. This message is amplified: one small
+ *     packet becomes a fan-out to every player, so without a limit a single
+ *     broken client could turn the server into a traffic multiplier. Legitimate
+ *     traffic is one report per second; the bucket is orders of magnitude more
+ *     generous than that and is configurable.
  *
  * Known limitation: without per-event ids from RFAB (ModXP takes only an
  * integer; see MO2/mods/RFAB/scripts/source/RFAB_XP_Handler.psc) two *different*
@@ -52,6 +58,7 @@ struct XpShareService
         uint64_t ReportsAccepted{0};
         uint64_t ReportsRejected{0};
         uint64_t ReportsSuppressed{0};
+        uint64_t ReportsThrottled{0};
         uint64_t TotalAwarded{0};
     };
 
@@ -65,6 +72,7 @@ private:
     World& m_world;
 
     TiltedPhoques::Map<ConnectionId_t, Gameplay::XpShare::SequenceTracker> m_trackers{};
+    TiltedPhoques::Map<ConnectionId_t, Gameplay::TokenBucket> m_rateLimits{};
     Gameplay::XpShare::AmountWindow m_window{};
     Stats m_stats{};
 

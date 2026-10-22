@@ -18,6 +18,7 @@
 #include <Gameplay/SaveSession.h>
 #include <Gameplay/XpAward.h>
 #include <Gameplay/Progression.h>
+#include <Gameplay/RateLimiter.h>
 #include <Gameplay/XpShare.h>
 
 namespace
@@ -612,6 +613,69 @@ void TestProgressionRecord()
     CHECK(restored.Serialize() == text);
 }
 
+void TestRateLimiter()
+{
+    BeginCase("TokenBucket");
+
+    using Gameplay::TokenBucket;
+
+    // A default constructed bucket only allows a single action.
+    TokenBucket unconfigured;
+    CHECK(!unconfigured.IsConfigured());
+    CHECK(unconfigured.TryConsume(0));
+    CHECK(!unconfigured.TryConsume(0));
+
+    // Burst of 3, then one token per second.
+    TokenBucket bucket(3, 1);
+    CHECK(bucket.IsConfigured());
+
+    // The first call only starts the clock: a client that connects to a server
+    // running for hours must not receive a huge burst.
+    CHECK(bucket.TryConsume(1'000'000)); // token 1 (from the initial fill)
+    CHECK(bucket.TryConsume(1'000'000)); // token 2
+    CHECK(bucket.TryConsume(1'000'000)); // token 3
+    CHECK(!bucket.TryConsume(1'000'000));
+    CHECK(bucket.Rejected() == 1);
+
+    // A second later exactly one token is back.
+    CHECK(bucket.TryConsume(1'001'000));
+    CHECK(!bucket.TryConsume(1'001'000));
+
+    // Partial seconds do not accumulate into a token ...
+    CHECK(!bucket.TryConsume(1'001'500));
+
+    // ... but they are not lost either: 600 ms + 400 ms is one token.
+    CHECK(bucket.TryConsume(1'002'000));
+
+    // Idle time refills at most to capacity.
+    CHECK(bucket.TryConsume(2'000'000));
+    CHECK(bucket.TryConsume(2'000'000));
+    CHECK(bucket.TryConsume(2'000'000));
+    CHECK(!bucket.TryConsume(2'000'000));
+    CHECK(bucket.Available() == 0);
+
+    // A clock that jumps backwards refills instead of blocking forever.
+    CHECK(bucket.TryConsume(10));
+
+    // Refill rate of zero means "burst only".
+    TokenBucket burstOnly(2, 0);
+    CHECK(burstOnly.TryConsume(0));
+    CHECK(burstOnly.TryConsume(0));
+    CHECK(!burstOnly.TryConsume(0));
+    CHECK(!burstOnly.TryConsume(10'000'000));
+
+    // Reconfiguration refills.
+    burstOnly.Configure(1, 10);
+    CHECK(burstOnly.TryConsume(0));
+    CHECK(!burstOnly.TryConsume(0));
+
+    // 64 bit arithmetic: a very long idle period must not overflow.
+    TokenBucket longIdle(5, 4);
+    CHECK(longIdle.TryConsume(0));
+    CHECK(longIdle.TryConsume(0xFFFF'FFFF'FFFFull));
+    CHECK(longIdle.Available() <= 5);
+}
+
 void TestActorValueIds()
 {
     BeginCase("ActorValue ids are the Skyrim SE ones");
@@ -643,6 +707,7 @@ int main()
     TestXpEchoFilter();
     TestProgressionCatchUp();
     TestProgressionRecord();
+    TestRateLimiter();
     TestSanitise();
     TestActorValueIds();
 

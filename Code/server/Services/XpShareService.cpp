@@ -25,6 +25,9 @@ Console::Setting uXpShareDedupWindowMs{"Gameplay:uXpShareDedupWindowMs",
                                        "milliseconds (0 disables, 5000 is a good default)",
                                        5000u};
 
+Console::Setting uXpReportBurst{"Gameplay:uXpReportBurst", "How many XP reports a client may send in a burst (anti-spam, legitimate traffic is ~1 per second)", 30u};
+Console::Setting uXpReportsPerSecond{"Gameplay:uXpReportsPerSecond", "Sustained XP reports per second allowed per client (0 = burst only)", 10u};
+
 uint64_t NowMs() noexcept
 {
     using namespace std::chrono;
@@ -52,6 +55,26 @@ void XpShareService::OnShareRequest(const PacketEvent<SyncRfabExperienceRequest>
     const uint32_t amount = Gameplay::XpShare::SanitiseAmount(acMessage.Packet.Experience);
     if (amount == 0)
         return;
+
+    // Anti-amplification: one report fans out to every player, so a flood must be
+    // stopped before it costs anything. A legitimate client sends ~1 per second.
+    const uint32_t burst = uXpReportBurst.value_as<uint32_t>();
+    const uint32_t perSecond = uXpReportsPerSecond.value_as<uint32_t>();
+
+    auto& limiter = m_rateLimits[pSender->GetConnectionId()];
+    if (!limiter.IsConfigured())
+        limiter.Configure(burst, perSecond); // connection seen before the join event
+
+    if (!limiter.TryConsume(NowMs()))
+    {
+        ++m_stats.ReportsThrottled;
+
+        // Logging every dropped packet would itself be a flood.
+        if (limiter.Rejected() % 100 == 1)
+            spdlog::warn("XP share: throttled {} report(s) from {:X}, check the client", limiter.Rejected(), pSender->GetConnectionId());
+
+        return;
+    }
 
     // Layer 1: exact replay protection. A client that reconnects restarts its
     // counter at 0, which is accepted, so a lost connection never blocks XP.
@@ -101,11 +124,18 @@ void XpShareService::OnShareRequest(const PacketEvent<SyncRfabExperienceRequest>
 void XpShareService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 {
     if (acEvent.pPlayer != nullptr)
-        m_trackers[acEvent.pPlayer->GetConnectionId()].Reset();
+    {
+        const auto id = acEvent.pPlayer->GetConnectionId();
+        m_trackers[id].Reset();
+        m_rateLimits[id].Configure(uXpReportBurst.value_as<uint32_t>(), uXpReportsPerSecond.value_as<uint32_t>());
+    }
 }
 
 void XpShareService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
 {
     if (acEvent.pPlayer != nullptr)
+    {
         m_trackers.erase(acEvent.pPlayer->GetConnectionId());
+        m_rateLimits.erase(acEvent.pPlayer->GetConnectionId());
+    }
 }
