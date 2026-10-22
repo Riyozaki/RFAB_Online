@@ -1,0 +1,48 @@
+# Готовый workflow для GitHub Actions.
+#
+# Он не лежит в .github/workflows/ намеренно: токен, которым ведётся этот
+# репозиторий, не имеет права создавать workflow-файлы. Чтобы включить проверки,
+# скопируйте файл руками:
+#
+#     mkdir -p .github/workflows
+#     cp docs/ci/checks.yml .github/workflows/checks.yml
+#     git add .github/workflows/checks.yml && git commit -m "ci: static checks"
+#
+# Дальше он будет запускаться на каждый push и pull request.
+
+name: Static checks
+
+# The checks that do not need Windows, MSVC or the game itself:
+#   * pure gameplay logic tests (g++, no dependencies)
+#   * server settings versus documentation
+#   * struct layout diff against the last pre-AE upstream commit
+#
+# This exists because the full Windows build cannot run on GitHub-hosted runners
+# (MSVC + CEF + game SDK), and "no checks at all" is how the AE/TESObjectCELL
+# mix-up happened in the first place.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The layout check compares against a historical commit (5c5837f6);
+          # a shallow clone would silently skip it. Submodules are not needed
+          # for any of these checks.
+          fetch-depth: 0
+          submodules: false
+
+      - name: Compiler
+        run: g++ --version
+
+      - name: Run checks
+        run: ./tools/run_checks.sh
