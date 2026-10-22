@@ -18,6 +18,7 @@ struct NotifyHealthChangeBroadcast;
 struct NotifyDeathStateChange;
 
 struct Actor;
+struct ActorValuesComponent;
 
 /**
  * @brief Broadcast and apply actor values and death state.
@@ -50,6 +51,10 @@ private:
      * @brief Creates actor values components for new local components.
      */
     void OnLocalComponentAdded(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    /**
+     * @brief Restores health scaling when an actor is no longer locally simulated.
+     */
+    void OnLocalComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept;
     /**
      * @brief Clears actor values components on disconnect.
      */
@@ -113,6 +118,14 @@ private:
      * @brief Creates actor values component for actor and caches the initial actor values.
      */
     void CreateActorValuesComponent(entt::entity aEntity, Actor* apActor) noexcept;
+    /**
+     * @brief Applies the server health multiplier to all locally simulated actors.
+     */
+    void ApplyHealthScaling() noexcept;
+    /**
+     * @brief Applies a health multiplier to a single actor while preserving its health percentage.
+     */
+    void ApplyHealthMultiplier(Actor* apActor, ActorValuesComponent& aComponent, float aMultiplier) noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;

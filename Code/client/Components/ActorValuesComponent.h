@@ -9,4 +9,6 @@
 struct ActorValuesComponent
 {
     ActorValues CurrentActorValues{};
+    uint32_t FormId{0};
+    float AppliedHealthBonus{0.0f};
 };

@@ -2,6 +2,9 @@
 #include <GameServer.h>
 #include <Packet.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 #include <Events/AdminPacketEvent.h>
 #include <Events/CharacterRemoveEvent.h>
 #include <Events/OwnershipTransferEvent.h>
@@ -43,6 +46,7 @@ Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the 
 Console::Setting uTimeScale{"Gameplay:uTimeScale", "How many seconds pass ingame for every real second (0 to 1000). Changing this can make the game unstable", 20u};
 Console::Setting bSyncPlayerCalendar{"Gameplay:bSyncPlayerCalendar", "Syncs up all player calendars to be the same day, month, and year. This uses the date of the player with the furthest ahead date at connection.", false};
 Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
+Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Multiplies the max health of actors (0.1 to 10.0)", 1.0f};
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
@@ -111,6 +115,18 @@ Console::Command<> ShowMoPoStatus(
     });
 
 // -- Constants --
+constexpr float kMinHealthMultiplier = 0.1f;
+constexpr float kMaxHealthMultiplier = 10.0f;
+
+static float GetHealthMultiplier()
+{
+    const float value = fHealthMultiplier.as_float();
+    if (!std::isfinite(value))
+        return 1.0f;
+
+    return std::clamp(value, kMinHealthMultiplier, kMaxHealthMultiplier);
+}
+
 constexpr char kBypassMoPoWarning[]{"ModCheck is disabled. This can lead to desync and other oddities. Make sure you know what you are doing. We "
                                     "may not be able to assist you if ModCheck was disabled."};
 
@@ -143,6 +159,7 @@ ServerSettings GetSettings()
     settings.DeathSystemEnabled = bEnableDeathSystem;
     settings.SyncPlayerCalendar = bSyncPlayerCalendar;
     settings.AutoPartyJoin = bAutoPartyJoin;
+    settings.HealthMultiplier = GetHealthMultiplier();
     return settings;
 }
 
@@ -170,6 +187,18 @@ GameServer::GameServer(Console::ConsoleRegistry& aConsole) noexcept
             uDifficulty.value_as<uint8_t>());
 
         uDifficulty = 4;
+    }
+
+    const float healthMultiplier = fHealthMultiplier.as_float();
+    if (!std::isfinite(healthMultiplier) || healthMultiplier < kMinHealthMultiplier || healthMultiplier > kMaxHealthMultiplier)
+    {
+        spdlog::warn(
+            "Health multiplier is invalid (should be from {} to {}, current value is {}), setting it to 1.0.",
+            kMinHealthMultiplier,
+            kMaxHealthMultiplier,
+            healthMultiplier);
+
+        fHealthMultiplier = 1.0f;
     }
 
     if (!bEnableDeathSystem)

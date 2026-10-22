@@ -1,5 +1,8 @@
 #include <TiltedOnlinePCH.h>
 
+#include <algorithm>
+#include <cmath>
+
 #include <Services/ActorValueService.h>
 #include <World.h>
 #include <Forms/ActorValueInfo.h>
@@ -23,12 +26,25 @@
 
 #include <misc/ActorValueOwner.h>
 
+static constexpr float kMinHealthMultiplier = 0.1f;
+static constexpr float kMaxHealthMultiplier = 10.0f;
+
+static float GetHealthMultiplier(const ServerSettings& acSettings) noexcept
+{
+    const float value = acSettings.HealthMultiplier;
+    if (!std::isfinite(value))
+        return 1.0f;
+
+    return std::clamp(value, kMinHealthMultiplier, kMaxHealthMultiplier);
+}
+
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
     , m_transport(aTransport)
 {
     m_world.on_construct<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
+    m_world.on_destroy<LocalComponent>().connect<&ActorValueService::OnLocalComponentRemoved>(this);
     m_dispatcher.sink<DisconnectedEvent>().connect<&ActorValueService::OnDisconnected>(this);
     m_dispatcher.sink<ActorRemovedEvent>().connect<&ActorValueService::OnActorRemoved>(this);
     m_dispatcher.sink<UpdateEvent>().connect<&ActorValueService::OnUpdate>(this);
@@ -42,6 +58,7 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
 void ActorValueService::CreateActorValuesComponent(const entt::entity aEntity, Actor* apActor) noexcept
 {
     auto& actorValuesComponent = m_world.emplace_or_replace<ActorValuesComponent>(aEntity);
+    actorValuesComponent.FormId = apActor->formID;
 
     for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
     {
@@ -63,13 +80,92 @@ void ActorValueService::OnLocalComponentAdded(entt::registry& aRegistry, const e
         localComponent.IsDead = pActor->IsDead();
         localComponent.IsWeaponDrawn = pActor->actorState.IsWeaponDrawn();
         CreateActorValuesComponent(aEntity, pActor);
+
+        auto& actorValuesComponent = aRegistry.get<ActorValuesComponent>(aEntity);
+        const float healthMultiplier = m_transport.IsConnected() ? GetHealthMultiplier(m_world.GetServerSettings()) : 1.0f;
+
+        if (aRegistry.all_of<RemoteComponent>(aEntity) && healthMultiplier != 1.0f)
+        {
+            const float currentMax = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+            actorValuesComponent.AppliedHealthBonus = currentMax - currentMax / healthMultiplier;
+        }
+
+        ApplyHealthMultiplier(pActor, actorValuesComponent, healthMultiplier);
     }
+}
+
+void ActorValueService::OnLocalComponentRemoved(entt::registry& aRegistry, const entt::entity aEntity) noexcept
+{
+    auto* pActorValuesComponent = aRegistry.try_get<ActorValuesComponent>(aEntity);
+    if (!pActorValuesComponent)
+        return;
+
+    Actor* pActor = Cast<Actor>(TESForm::GetById(pActorValuesComponent->FormId));
+    if (!pActor)
+        return;
+
+    ApplyHealthMultiplier(pActor, *pActorValuesComponent, 1.0f);
 }
 
 void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
+    auto view = m_world.view<ActorValuesComponent>();
+    for (auto entity : view)
+    {
+        auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(actorValuesComponent.FormId));
+        if (pActor)
+            ApplyHealthMultiplier(pActor, actorValuesComponent, 1.0f);
+    }
+
     // TODO: this crashes sometimes, no clue why
     m_world.clear<ActorValuesComponent>();
+}
+
+void ActorValueService::ApplyHealthScaling() noexcept
+{
+    const float healthMultiplier = m_transport.IsConnected() ? GetHealthMultiplier(m_world.GetServerSettings()) : 1.0f;
+
+    auto view = m_world.view<ActorValuesComponent>();
+    for (auto entity : view)
+    {
+        auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(actorValuesComponent.FormId));
+        if (pActor)
+            ApplyHealthMultiplier(pActor, actorValuesComponent, healthMultiplier);
+    }
+}
+
+void ActorValueService::ApplyHealthMultiplier(Actor* apActor, ActorValuesComponent& aComponent, float aMultiplier) noexcept
+{
+    const float currentMax = apActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+    const float currentHealth = apActor->GetActorValue(ActorValueInfo::kHealth);
+
+    if (currentMax <= 0.0f)
+    {
+        aComponent.AppliedHealthBonus = 0.0f;
+        return;
+    }
+
+    const float unscaledMax = currentMax - aComponent.AppliedHealthBonus;
+    if (unscaledMax <= 0.0f)
+    {
+        aComponent.AppliedHealthBonus = 0.0f;
+        return;
+    }
+
+    const float desiredMax = unscaledMax * aMultiplier;
+    const float desiredBonus = desiredMax - unscaledMax;
+
+    if (std::abs(desiredBonus - aComponent.AppliedHealthBonus) <= 0.01f)
+        return;
+
+    const float healthPercentage = std::clamp(currentHealth / currentMax, 0.0f, 1.0f);
+
+    apActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, desiredMax);
+    apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, desiredMax * healthPercentage);
+
+    aComponent.AppliedHealthBonus = desiredBonus;
 }
 
 void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
@@ -277,6 +373,7 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 
     lastSendTimePoint = now;
 
+    ApplyHealthScaling();
     BroadcastActorValues();
 }
 
