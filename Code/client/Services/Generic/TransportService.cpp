@@ -1,4 +1,5 @@
 
+#include <ProtocolVersion.h>
 #include <Services/TransportService.h>
 
 #include <Events/ConnectedEvent.h>
@@ -111,6 +112,8 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
 
 void TransportService::OnConnected()
 {
+    spdlog::info("Connecting: client build {} (protocol v{})", BUILD_COMMIT, Protocol::kVersion);
+
     AuthenticationRequest request{};
     request.Version = BUILD_COMMIT;
     request.SKSEActive = IsScriptExtenderLoaded();

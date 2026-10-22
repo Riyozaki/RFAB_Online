@@ -70,52 +70,20 @@
 #include <World.h>
 #include <Games/TES.h>
 
+#include <Services/RfabXp.h>
+#include <Utils.h>
+#include <Gameplay/XpAward.h>
+
 #include <cmath>
 
 namespace
 {
-constexpr uint32_t cMaxRfabXpDelta = 1'000'000;
-constexpr uint32_t cRfabXpAmountBaseId = 0xAD45BB;
+constexpr uint32_t cMaxRfabXpDelta = Gameplay::XpAward::kMaxSingleAward;
 
-TESGlobal* GetRfabXpGlobal() noexcept
+uint64_t NowMs() noexcept
 {
-    static TESGlobal* s_pGlobal = nullptr;
-    if (s_pGlobal != nullptr)
-        return s_pGlobal;
-
-    auto* pModManager = ModManager::Get();
-    if (pModManager == nullptr)
-        return nullptr;
-
-    auto* pMod = pModManager->GetByName("RFAB.esp");
-    if (pMod == nullptr)
-        return nullptr;
-
-    s_pGlobal = Cast<TESGlobal>(TESForm::GetById(pMod->GetFormId(cRfabXpAmountBaseId)));
-    return s_pGlobal;
-}
-
-int32_t ReadRfabXp(TESGlobal* apGlobal) noexcept
-{
-    return static_cast<int32_t>(std::lround(std::max(0.0f, apGlobal->f)));
-}
-
-bool ApplyRfabExperience(TESGlobal* apRfabXp, int32_t aDelta, int32_t& aNewExperience) noexcept
-{
-    auto& papyrusService = World::Get().ctx().at<PapyrusService>();
-
-    const void* pGetExperience = papyrusService.Get("Game", "GetPlayerExperience");
-    const void* pSetExperience = papyrusService.Get("Game", "SetPlayerExperience");
-    if (pGetExperience == nullptr || pSetExperience == nullptr)
-        return false;
-
-    GlobalPapyrusFunction<float> getExperience(pGetExperience);
-    GlobalPapyrusFunction<void, float> setExperience(pSetExperience);
-
-    aNewExperience = ReadRfabXp(apRfabXp) + aDelta;
-    apRfabXp->f = static_cast<float>(aNewExperience);
-    setExperience(getExperience() + static_cast<float>(aDelta));
-    return true;
+    using namespace std::chrono;
+    return static_cast<uint64_t>(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
 }
 } // namespace
 
@@ -976,30 +944,41 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     if (acMessage.Experience == 0 || acMessage.Experience > cMaxRfabXpDelta)
         return;
 
-    PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    TESGlobal* pRfabXp = GetRfabXpGlobal();
-    if (pPlayer == nullptr || pRfabXp == nullptr)
+    if (PlayerCharacter::Get() == nullptr)
         return;
 
     const int32_t delta = static_cast<int32_t>(acMessage.Experience);
-    const int32_t currentExperience = ReadRfabXp(pRfabXp);
-    int32_t newExperience = currentExperience;
 
-    if (!ApplyRfabExperience(pRfabXp, delta, newExperience))
+    // If this client already ran the same RFAB event locally (a quest completion
+    // is evaluated by every client), the award is already on our counter: adding
+    // it again would hand us double XP for the same quest.
+    if (m_rfabEchoFilter.ShouldSuppress(acMessage.Experience, NowMs()))
     {
-        spdlog::warn("Unable to apply RFAB XP: Game.SetPlayerExperience is unavailable");
+        spdlog::debug("Shared RFAB XP {} was already applied locally, ignoring the echo", delta);
         return;
     }
 
-    if (!m_rfabExperienceInitialized)
+    // Applies the award exactly like RFAB_XP_Handler.ModXP would (RFAB global +
+    // vanilla bar), see Code/client/Services/RfabXp.h.
+    const auto award = RfabXp::Award(delta);
+    if (!award.Ok)
     {
-        m_lastRfabExperience = currentExperience;
-        m_rfabExperienceInitialized = true;
+        spdlog::warn("Unable to apply shared RFAB XP of {}", delta);
+        return;
     }
 
-    m_lastRfabExperience += delta;
+    if (award.LevelUp)
+    {
+        Utils::ShowHudMessage("Level up");
+        spdlog::info("Shared RFAB XP crossed a level threshold (total {})", award.Total);
+    }
 
-    spdlog::debug("Received RFAB experience {} (total {})", delta, newExperience);
+    // Keep the "already seen" marker in sync so this remote award is not sent
+    // straight back to the server by RunRfabExperienceUpdates().
+    m_lastRfabExperience = award.Total;
+    m_rfabExperienceInitialized = true;
+
+    spdlog::debug("Received RFAB experience {} (total {})", delta, award.Total);
 }
 
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
@@ -1861,14 +1840,15 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
     if (!m_transport.IsConnected())
     {
         m_rfabExperienceInitialized = false;
+        m_rfabExperienceSequence = 0;
+        m_rfabEchoFilter.Reset();
         return;
     }
 
-    TESGlobal* pRfabXp = GetRfabXpGlobal();
-    if (pRfabXp == nullptr)
+    if (RfabXp::GetGlobal() == nullptr)
         return;
 
-    const int32_t currentExperience = ReadRfabXp(pRfabXp);
+    const int32_t currentExperience = RfabXp::Read();
     if (!m_rfabExperienceInitialized)
     {
         m_lastRfabExperience = currentExperience;
@@ -1879,13 +1859,20 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
     const int32_t delta = currentExperience - m_lastRfabExperience;
     m_lastRfabExperience = currentExperience;
 
-    if (delta <= 0 || !World::Get().GetPartyService().IsInParty())
+    // The server decides who receives the experience (whole server by default),
+    // so the client must not require a party anymore.
+    if (delta <= 0)
         return;
 
     SyncRfabExperienceRequest message;
     message.Experience = static_cast<uint32_t>(std::min(delta, static_cast<int32_t>(cMaxRfabXpDelta)));
+    message.Sequence = ++m_rfabExperienceSequence;
 
     m_transport.Send(message);
+
+    // Remember it, so the fan-out of our own event (which reaches us as well
+    // when another client reported it first) is not applied twice.
+    m_rfabEchoFilter.Record(message.Experience, NowMs());
 
     spdlog::debug("Sending over RFAB experience {}", message.Experience);
 }

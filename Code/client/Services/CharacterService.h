@@ -1,4 +1,6 @@
 #pragma once
+
+#include <Gameplay/XpShare.h>
 #include "Structs/Inventory.h"
 #include "Structs/ActorData.h"
 
@@ -117,7 +119,11 @@ private:
 
     float m_cachedExperience = 0.f;
     int32_t m_lastRfabExperience = 0;
+    Gameplay::XpShare::EchoFilter m_rfabEchoFilter{};
     bool m_rfabExperienceInitialized = false;
+    // Monotonic per-session counter; the server uses it to drop replays and
+    // duplicated reports. Restarts at 0 on reconnect.
+    uint32_t m_rfabExperienceSequence = 0;
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

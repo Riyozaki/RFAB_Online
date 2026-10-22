@@ -69,7 +69,10 @@ target(name)
     add_syslinks(
         "version",
         "dbghelp",
-        "kernel32")
+        "kernel32",
+        # SHGetKnownFolderPath for the multiplayer save index (SaveGameService)
+        "shell32",
+        "ole32")
 end
 
 add_requires("tiltedcore")

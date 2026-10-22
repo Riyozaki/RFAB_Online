@@ -100,7 +100,12 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
 
     std::string endpoint = baseIp + ":" + std::to_string(port);
 
-    World::Get().GetRunner().Queue([endpoint] { World::Get().GetTransport().Connect(endpoint); });
+    World::Get().GetRunner().Queue(
+        [endpoint]()
+        {
+            World::Get().GetTransport().SetLastEndpoint(endpoint);
+            World::Get().GetTransport().Connect(endpoint);
+        });
 }
 
 void OverlayClient::ProcessDisconnectMessage()

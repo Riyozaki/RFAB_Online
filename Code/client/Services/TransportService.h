@@ -35,6 +35,10 @@ struct TransportService : Client
 
     [[nodiscard]] bool IsOnline() const noexcept { return m_connected; }
     void SetServerPassword(const std::string& acPassword) noexcept { m_serverPassword = acPassword; }
+    //! Endpoint of the last connect attempt ("host:port"), for logs and the
+    //! multiplayer save index.
+    void SetLastEndpoint(const std::string& acEndpoint) noexcept { m_lastEndpoint = acEndpoint; }
+    [[nodiscard]] const std::string& GetLastEndpoint() const noexcept { return m_lastEndpoint; }
     const uint32_t& GetLocalPlayerId() const noexcept { return m_localPlayerId; }
 
 protected:
@@ -52,6 +56,7 @@ private:
     entt::dispatcher& m_dispatcher;
     bool m_connected;
     String m_serverPassword{};
+    std::string m_lastEndpoint{};
     uint32_t m_localPlayerId;
 
     entt::scoped_connection m_updateConnection;

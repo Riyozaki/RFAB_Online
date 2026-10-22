@@ -3,6 +3,7 @@
 void SyncRfabExperienceRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, Experience);
+    Serialization::WriteVarInt(aWriter, Sequence);
 }
 
 void SyncRfabExperienceRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -10,4 +11,5 @@ void SyncRfabExperienceRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aR
     ClientMessage::DeserializeRaw(aReader);
 
     Experience = static_cast<uint32_t>(Serialization::ReadVarInt(aReader));
+    Sequence = static_cast<uint32_t>(Serialization::ReadVarInt(aReader));
 }

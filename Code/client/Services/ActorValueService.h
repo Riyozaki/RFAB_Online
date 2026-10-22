@@ -52,10 +52,6 @@ private:
      */
     void OnLocalComponentAdded(entt::registry& aRegistry, entt::entity aEntity) noexcept;
     /**
-     * @brief Restores health scaling when an actor is no longer locally simulated.
-     */
-    void OnLocalComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept;
-    /**
      * @brief Clears actor values components on disconnect.
      */
     void OnDisconnected(const DisconnectedEvent&) noexcept;
@@ -74,7 +70,7 @@ private:
     /**
      * @brief Receives remote max actor values changes and applies them locally.
      */
-    void OnActorMaxValueChanges(const NotifyActorMaxValueChanges& acMessage) const noexcept;
+    void OnActorMaxValueChanges(const NotifyActorMaxValueChanges& acMessage) noexcept;
     /**
      * @brief Processes health value changes.
      *
@@ -119,13 +115,10 @@ private:
      */
     void CreateActorValuesComponent(entt::entity aEntity, Actor* apActor) noexcept;
     /**
-     * @brief Applies the server health multiplier to all locally simulated actors.
+     * @brief Remembers the unscaled maximum health before the server applies
+     * party-size health scaling (used to restore the value on disconnect).
      */
-    void ApplyHealthScaling() noexcept;
-    /**
-     * @brief Applies a health multiplier to a single actor while preserving its health percentage.
-     */
-    void ApplyHealthMultiplier(Actor* apActor, ActorValuesComponent& aComponent, float aMultiplier) noexcept;
+    void RememberUnscaledHealth(uint32_t aServerId, Actor* apActor) noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
