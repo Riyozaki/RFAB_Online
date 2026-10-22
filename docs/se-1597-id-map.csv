@@ -233,6 +233,7 @@ ae_id,se_1_5_97_id,se_rva_hex,kind,ref_count,first_reference,source,symbol
 104655,97929,0x1250F60,pointer,1,Code/client/Games/Skyrim/Misc/BSScript.h:274,audit:nsf_exact,BSScript::NF_util::NativeFunctionBase::dtor (non-deleting base dtor)
 104788,98065,0x1258CB0,pointer,1,Code/client/Games/Misc/BSScript.cpp:98,phase0,BSScript__Internal__VirtualMachine::Func24_141258CB0
 105220,98564,0x127EFE0,pointer,1,Code/client/Games/Misc/BSScript.cpp:102,diaphora-318,BSScript__Internal__CodeTasklet::sub_14127EFE0
+109689,102238,0x134BDB0,versiondb,1,Code/client/Games/Skyrim/RTTI.cpp:3,se_ae.csv+git_9e0c078,RE::_CRT::RTDynamicCast @ 0x134BDB0
 188603,232777,0x1548198,pointer,1,Code/client/Games/Animation.cpp:173,se_ae.csv,VTABLE_TESActionData_0
 370892,503019,0x1DD9988,pointer,1,Code/client/Games/References.cpp:44,diaphora-318,
 380768,508799,0x1DEED10,pointer,1,Code/client/TiltedOnlineApp.cpp:149,phase0,

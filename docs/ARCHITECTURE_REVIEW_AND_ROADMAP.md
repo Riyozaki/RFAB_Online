@@ -75,15 +75,15 @@
 - [x] Защитить `.gitignore` и аккуратно разложить чистые справочные таблицы RFAB в `docs/rfab/` и утилиты проверки в `Tools/rfab/`.
 - [x] Сформировать и на `100%` верифицировать полную таблицу **`3 083 / 3 083`** адресов SE `1.5.97` ([`docs/se-1597-id-map.csv`](./se-1597-id-map.csv)), все `16 656` структур движка ([`docs/SE_1597_PORT_SPEC.md`](./SE_1597_PORT_SPEC.md)) и все механики `RFAB` ([`docs/RFAB_ADAPTATION_SPEC.md`](./RFAB_ADAPTATION_SPEC.md)).
 
-### Этап 1 — Чистый бинарный порт клиента на `Skyrim SE 1.5.97.0.8` (Zero AE Residue)
-1. Применить проверенную таблицу `docs/se-1597-id-map.csv` ко всем `3 083` точкам `POINTER_SKYRIMSE` / `VersionDbPtr` / `RTTI` в `Code/client/` (0 оставшихся AE ID по `Tools/rfab/verify_se1597_port.py --strict-migrated`).
-2. Исправить C++-структуры **`BSAnimationGraphManager.h`** (`lock = 0x98`, `animationGraphIndex = 0xA8`, `sizeof = 0xB0`) и **`CombatController.h`** (`targetSelectors = 0x98`, `pActiveTargetSelector = 0xB0`, `sizeof = 0xD8`).
-3. Портировать все **11 `VersionDbPtr` патчей** с рантайм-проверкой сигнатур инструкций, чистым хуком `SE 33672 + 0x0` в `Projectile.cpp` (без `Xbyak` AE-хака) и защитой совместимости с `SkyrimSoulsRE.dll`, `SSEDisplayTweaks.dll` и `EngineFixes.dll`.
+### Этап 1 — Чистый бинарный порт клиента на `Skyrim SE 1.5.97.0.8` (Zero AE Residue) *(ВЫПОЛНЕНО И ПРОВЕРЕНО)*
+- [x] Применена проверенная таблица `docs/se-1597-id-map.csv` ко всем `3 090` точкам `POINTER_SKYRIMSE` / `VersionDbPtr` / `RTTI` в `Code/client/` (`0` оставшихся AE ID по `Tools/rfab/verify_se1597_port.py --strict-migrated` и C++20 `VersionDb(1,5,97,8)` тесту).
+- [x] Исправлены C++-структуры **`BSAnimationGraphManager.h`** (`lock = 0x98`, `animationGraphIndex = 0xA8`, `sizeof = 0xB0`) и **`CombatController.h`** (`targetSelectors = 0x98`, `pActiveTargetSelector = 0xB0`, `sizeof = 0xD8`), добавлен `Actor::IsPlayerTeammate()`.
+- [x] Портированы все **11 `VersionDbPtr` патчей** с рантайм-проверкой и чистым хуком входа `SE 33672` (`ActorMagicCaster::Fire`) в `Projectile.cpp`, обеспечена совместимость с `SkyrimSoulsRE.dll`, `SSEDisplayTweaks.dll`, `EngineFixes.dll` (`CRLF/LF` regex) и `MO2` (`VersionDb` `(1,5,97,8)` -> `version-1-5-97-0.bin`), восстановлены git-сабмодули `Libraries/Tilted*`.
 
-### Этап 2 — Исправление багов ядра `TiltedEvolution-rwf` и стабилизация синхронизации врагов
-1. Исправить инверсию знака `DeltaHealth` в `Code/server/Services/ActorValueService.cpp` (`+ message.DeltaHealth` + `clamp`).
-2. Исправить null-pointer dereference `pOwner->Send(...)` в `CharacterService::TransferOwnership` при дисконнекте игрока + перенести проверенные фиксы `nullptr`/утечек памяти клиента.
-3. Усилить синхронизацию врагов и владения (`Ownership`): исключить перезапись здоровья/позиции врага устаревшими пакетами не-владельцев, гарантировать доставку `DeathStateChange`, точную синхронизацию снарядов (`SE 33672`) и `DamageActorValue` (включая `RFAB_PapyrusFunctions.ScriptDamage`).
+### Этап 2 — Исправление багов ядра `TiltedEvolution-rwf`, стабилизация синхронизации врагов, базовый HP-скейлинг и равная рассылка XP *(ВЫПОЛНЕНО И ПРОВЕРЕНО)*
+- [x] Исправлена инверсия знака `DeltaHealth` в `Code/server/Services/ActorValueService.cpp` (`currentHealth + message.DeltaHealth` + `std::clamp(..., 0.f, maxHealth)`) + проверка владельца при периодических апдейтах + точный клиентский `actualDelta = healthAfter - healthBefore` в `Actor.cpp` (`HookDamageActor`).
+- [x] Исправлены `SIGSEGV` при передаче ownership отключившегося игрока (`CharacterService::TransferOwnership`), `IsNonSyncableQuest` (`||` -> `&&`) и `nullptr`-краши в `QuestService`, утечка в `ExtraDataList::Delete`, остановка `ServerListService` и серверные заголовки (`ActorValueService.cpp`, `ServerListService.cpp`).
+- [x] Включено автоматическое серверное масштабирование HP врагов (`bAutoScaleEnemyHealth = true`: `1p = 1×`, `2p = 3×`, `3p = 4×`, $N \ge 2 \implies (N + 1)\times$) с фильтром игроков/напарников/саммонов/лошадей и безопасным двухшаговым рескейлом (`SetScaledHealthSafely`), исключающим мгновенную смерть раненых NPC при дисконнекте, а также равная рассылка опыта `RFAB` всем подключённым игрокам с защитой `kInfamy = -1.0f` и дедупликацией квестового XP (`TPTests`: `Passed all 10 test cases with 2075 assertions`).
 
 ### Этап 3 — Строгое масштабирование HP врагов (`1p=1×`, `2p=3×`, `3p=4×`) при `1×` числе врагов
 1. Удалить сломанный прототип из `Client/ActorValueService.cpp` и внедрить чистый модуль `EnemyHealthScalingService` (сервер сообщает точное число активных игроков $N$ при каждом входе/выходе игрока).

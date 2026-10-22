@@ -175,19 +175,25 @@ public:
         // Accept either file name for the requested game version.
         const auto pluginsPath = acGamePath / "Data" / "SKSE" / "Plugins";
 
-        static const char* namePatterns[] = {"versionlib-%d-%d-%d-%d.bin", "version-%d-%d-%d-%d.bin"};
+        static const char* namePatterns[] = {"version-%d-%d-%d-%d.bin", "versionlib-%d-%d-%d-%d.bin"};
+        const int candidateBuilds[2] = {build, 0};
+        const int numBuilds = (build != 0) ? 2 : 1;
 
         std::ifstream file;
-        for (const char* namePattern : namePatterns)
+        for (int bi = 0; bi < numBuilds && !file.is_open(); ++bi)
         {
-            char fileName[256];
-            _snprintf_s(fileName, 256, namePattern, major, minor, revision, build);
+            for (const char* namePattern : namePatterns)
+            {
+                char fileName[256];
+                _snprintf_s(fileName, 256, namePattern, major, minor, revision, candidateBuilds[bi]);
 
-            file.open(pluginsPath / fileName, std::ios::binary);
-            if (file.good())
-                break;
+                file.open(pluginsPath / fileName, std::ios::binary);
+                if (file.good())
+                    break;
 
-            file.clear();
+                file.close();
+                file.clear();
+            }
         }
 
         if (!file.good())
@@ -313,7 +319,11 @@ public:
                 d2 = read<unsigned int>(file);
                 q2 = d2;
                 break;
-            default: throw std::exception();
+            default:
+            {
+                Clear();
+                return false;
+            }
             }
 
             if ((high & 8) != 0)

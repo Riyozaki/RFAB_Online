@@ -10,9 +10,11 @@
 #include <Games/References.h>
 #include <Games/Misc/SubtitleManager.h>
 
+#include <Forms/ActorValueInfo.h>
 #include <Forms/TESGlobal.h>
 #include <Forms/TESNPC.h>
 #include <Forms/TESQuest.h>
+#include <misc/ActorValueOwner.h>
 
 #include <BranchInfo.h>
 #include <Components.h>
@@ -297,8 +299,13 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     ApplyCachedWeaponDraws(acUpdateEvent);
 }
 
-void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const noexcept
+void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexcept
 {
+    m_rfabExperienceInitialized = false;
+    m_localQuestXpGainedInWindow = 0;
+    m_lastAppliedRemoteXpAmount = 0;
+    m_creditToRefundOnLocalQuestXp = 0;
+
     // Go through all the forms that were previously detected
     auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     Vector<entt::entity> entities(view.begin(), view.end());
@@ -320,8 +327,13 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const
     }
 }
 
-void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) const noexcept
+void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
 {
+    m_rfabExperienceInitialized = false;
+    m_localQuestXpGainedInWindow = 0;
+    m_lastAppliedRemoteXpAmount = 0;
+    m_creditToRefundOnLocalQuestXp = 0;
+
     auto remoteView = m_world.view<FormIdComponent, RemoteComponent>();
     for (auto entity : remoteView)
     {
@@ -338,6 +350,18 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
     }
 
     m_world.clear<WaitingForAssignmentComponent, LocalComponent, RemoteComponent>();
+}
+
+void CharacterService::NotifyRemoteQuestStageApplied() noexcept
+{
+    const auto now = std::chrono::steady_clock::now();
+    m_remoteQuestXpWindowUntil = now + 4000ms;
+
+    if (m_lastAppliedRemoteXpAmount > 0 && (now - m_lastAppliedRemoteXpTime) <= 3000ms)
+    {
+        m_creditToRefundOnLocalQuestXp += m_lastAppliedRemoteXpAmount;
+        m_lastAppliedRemoteXpAmount = 0;
+    }
 }
 
 void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept
@@ -384,6 +408,22 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     {
         spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm->GetName());
 
+        // When taking ownership of an actor already tracked on the server (e.g. a party leader
+        // entering a dungeon room where another party member already damaged, looted, or killed an NPC),
+        // apply the server's authoritative state BEFORE constructing LocalComponent so we never
+        // heal or resurrect wounded/dead enemies!
+        if (acMessage.PlayerId == 0 && !acMessage.AllActorValues.ActorValuesList.empty())
+        {
+            pActor->SetActorValues(acMessage.AllActorValues);
+            pActor->SetActorInventory(acMessage.CurrentInventory);
+
+            if (pActor->IsDead() != acMessage.IsDead)
+                acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+
+            m_weaponDrawUpdates[pActor->formID] = {acMessage.IsWeaponDrawn};
+            MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
+        }
+
         m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId);
         auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
 
@@ -414,6 +454,12 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 #if (!IS_MASTER)
         m_world.emplace_or_replace<ReplayedActionsDebugComponent>(cEntity, acMessage.ActionsToReplay);
 #endif
+
+        if (const auto maxHealthIt = acMessage.AllActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+            maxHealthIt != acMessage.AllActorValues.ActorMaxValuesList.end())
+        {
+            m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+        }
 
         pActor->SetActorValues(acMessage.AllActorValues);
         pActor->SetActorInventory(acMessage.CurrentInventory);
@@ -460,6 +506,11 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             }
 
             pNpc = Cast<TESNPC>(TESForm::GetById(cNpcId));
+            if (!pNpc)
+            {
+                spdlog::error("Form {:X} is not a TESNPC, skipping remote spawn", cNpcId);
+                return;
+            }
             pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
         }
         else
@@ -522,9 +573,19 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
     pActor->MoveTo(PlayerCharacter::Get()->parentCell, acMessage.Position);
+    pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
+
+    if (!acMessage.IsPlayer)
+    {
+        if (const auto maxHealthIt = acMessage.InitialActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+            maxHealthIt != acMessage.InitialActorValues.ActorMaxValuesList.end())
+        {
+            m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+        }
+    }
+
     pActor->SetActorValues(acMessage.InitialActorValues);
 
-    pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
     if (acMessage.IsPlayer)
     {
         pActor->SetIgnoreFriendlyHit(true);
@@ -533,7 +594,17 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     }
 
     if (pActor->IsDead() != acMessage.IsDead)
-        acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+    {
+        if (acMessage.IsDead)
+        {
+            pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+            pActor->Kill();
+        }
+        else
+        {
+            pActor->Respawn();
+        }
+    }
 
     spdlog::info("Spawn Request Is summon {}", acMessage.IsPlayerSummon);
 
@@ -981,7 +1052,20 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     if (pPlayer == nullptr || pRfabXp == nullptr)
         return;
 
-    const int32_t delta = static_cast<int32_t>(acMessage.Experience);
+    const auto now = std::chrono::steady_clock::now();
+    int32_t delta = static_cast<int32_t>(acMessage.Experience);
+
+    // If a synced quest stage already executed locally on this client, absorb the matching quest XP delta
+    // so both players get exact 1x quest XP rather than 2x.
+    if (now <= m_remoteQuestXpWindowUntil && m_localQuestXpGainedInWindow > 0)
+    {
+        const int32_t absorbed = std::min(delta, m_localQuestXpGainedInWindow);
+        m_localQuestXpGainedInWindow -= absorbed;
+        delta -= absorbed;
+        if (delta <= 0)
+            return;
+    }
+
     const int32_t currentExperience = ReadRfabXp(pRfabXp);
     int32_t newExperience = currentExperience;
 
@@ -998,6 +1082,8 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     }
 
     m_lastRfabExperience += delta;
+    m_lastAppliedRemoteXpAmount = delta;
+    m_lastAppliedRemoteXpTime = now;
 
     spdlog::debug("Received RFAB experience {} (total {})", delta, newExperience);
 }
@@ -1850,7 +1936,7 @@ void CharacterService::RunExperienceUpdates() noexcept
 void CharacterService::RunRfabExperienceUpdates() noexcept
 {
     static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenSnapshots = 1000ms;
+    constexpr auto cDelayBetweenSnapshots = 250ms;
 
     const auto now = std::chrono::steady_clock::now();
     if (now - lastSendTimePoint < cDelayBetweenSnapshots)
@@ -1862,6 +1948,12 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
     {
         m_rfabExperienceInitialized = false;
         return;
+    }
+
+    if (now > m_remoteQuestXpWindowUntil)
+    {
+        m_localQuestXpGainedInWindow = 0;
+        m_creditToRefundOnLocalQuestXp = 0;
     }
 
     TESGlobal* pRfabXp = GetRfabXpGlobal();
@@ -1876,11 +1968,32 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
         return;
     }
 
-    const int32_t delta = currentExperience - m_lastRfabExperience;
+    int32_t delta = currentExperience - m_lastRfabExperience;
     m_lastRfabExperience = currentExperience;
 
-    if (delta <= 0 || !World::Get().GetPartyService().IsInParty())
+    if (delta <= 0)
         return;
+
+    // Suppress echo & double-award when a synced quest stage fragment awarded XP locally on this client
+    if (now <= m_remoteQuestXpWindowUntil)
+    {
+        if (m_creditToRefundOnLocalQuestXp > 0)
+        {
+            const int32_t refund = std::min(delta, m_creditToRefundOnLocalQuestXp);
+            int32_t adjustedExperience = currentExperience;
+            if (ApplyRfabExperience(pRfabXp, -refund, adjustedExperience))
+            {
+                m_creditToRefundOnLocalQuestXp -= refund;
+                m_lastRfabExperience = adjustedExperience;
+            }
+            delta -= refund;
+        }
+
+        if (delta > 0)
+            m_localQuestXpGainedInWindow += delta;
+
+        return;
+    }
 
     SyncRfabExperienceRequest message;
     message.Experience = static_cast<uint32_t>(std::min(delta, static_cast<int32_t>(cMaxRfabXpDelta)));

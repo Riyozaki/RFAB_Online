@@ -17,7 +17,7 @@ BGSSaveFormBuffer::BGSSaveFormBuffer()
 {
     TP_THIS_FUNCTION(CtorT, BGSSaveFormBuffer*, BGSSaveFormBuffer);
 
-    POINTER_SKYRIMSE(CtorT, ctor, 36035);
+    POINTER_SKYRIMSE(CtorT, ctor, 35145);
 
     TiltedPhoques::ThisCall(ctor, this);
 
@@ -46,7 +46,7 @@ BGSLoadFormBuffer::BGSLoadFormBuffer(const uint32_t aChangeFlags)
 {
     TP_THIS_FUNCTION(CtorT, BGSLoadFormBuffer*, BGSLoadFormBuffer);
 
-    POINTER_SKYRIMSE(CtorT, ctor, 35993);
+    POINTER_SKYRIMSE(CtorT, ctor, 35100);
 
     TiltedPhoques::ThisCall(ctor, this);
 
@@ -116,9 +116,9 @@ bool TP_MAKE_THISCALL(BGSLoadFormBuffer_LoadFormId, BGSLoadFormBuffer, uint32_t&
 static TiltedPhoques::Initializer s_saveLoadHooks(
     []()
     {
-        POINTER_SKYRIMSE(TBGSLoadFormBuffer_ReadFormId, s_readFormId, 36000);
-        POINTER_SKYRIMSE(TBGSSaveFormBuffer_WriteFormId, s_writeFormId, 36048);
-        POINTER_SKYRIMSE(TBGSSaveFormBuffer_WriteId, s_writeId, 36047);
+        POINTER_SKYRIMSE(TBGSLoadFormBuffer_ReadFormId, s_readFormId, 35107);
+        POINTER_SKYRIMSE(TBGSSaveFormBuffer_WriteFormId, s_writeFormId, 35158);
+        POINTER_SKYRIMSE(TBGSSaveFormBuffer_WriteId, s_writeId, 35157);
 
         RealBGSLoadFormBuffer_ReadFormId = s_readFormId.Get();
         RealBGSSaveFormBuffer_WriteFormId = s_writeFormId.Get();

@@ -2,6 +2,7 @@
 #include <Games/Skyrim/Forms/TESObjectWEAP.h>
 #include <Games/Skyrim/Forms/MagicItem.h>
 #include <Games/Skyrim/Forms/TESAmmo.h>
+#include <Magic/ActorMagicCaster.h>
 #include <Actor.h>
 #include <Games/ActorExtension.h>
 #include <World.h>
@@ -11,6 +12,9 @@
 
 TP_THIS_FUNCTION(TLaunch, BSPointerHandle<Projectile>*, BSPointerHandle<Projectile>, Projectile::LaunchData& arData);
 static TLaunch* RealLaunch = nullptr;
+
+TP_THIS_FUNCTION(TActorMagicCasterFire, bool, ActorMagicCaster, void* apArg1, void* apArg2, void* apArg3);
+static TActorMagicCasterFire* RealActorMagicCasterFire = nullptr;
 
 BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apResult, LaunchData& apLaunchData) noexcept
 {
@@ -36,6 +40,24 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
     pProjectile->fPower = apLaunchData.fPower;
 
     return result;
+}
+
+bool TP_MAKE_THISCALL(HookActorMagicCasterFire, ActorMagicCaster, void* apArg1, void* apArg2, void* apArg3)
+{
+    // Non-concentration spell projectiles fired by remote actors are spawned strictly via
+    // NotifyProjectileLaunch on receiving clients. Returning false at ActorMagicCaster::Fire
+    // function entry prevents the caller from dereferencing a null projectile handle without
+    // needing any fragile AE stack-frame unwind Xbyak trampoline.
+    if (apThis && apThis->pCasterActor && apThis->pCasterActor->GetExtension()->IsRemote())
+    {
+        const auto* pSpell = Cast<SpellItem>(apThis->pCurrentSpell);
+        if (!pSpell || pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION)
+        {
+            return false;
+        }
+    }
+
+    return TiltedPhoques::ThisCall(RealActorMagicCasterFire, apThis, apArg1, apArg2, apArg3);
 }
 
 BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projectile>, Projectile::LaunchData& arData)
@@ -98,13 +120,18 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
     auto result = TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
 
     TP_ASSERT(result, "No projectile handle returned.");
+    if (!result)
+    {
+        spdlog::error("HookLaunch: no projectile handle returned.");
+        return nullptr;
+    }
 
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
     TP_ASSERT(pProjectile, "No projectile found.");
-
-    Event.Power = pProjectile->fPower;
+    if (pProjectile)
+        Event.Power = pProjectile->fPower;
 
     World::Get().GetRunner().Trigger(Event);
 
@@ -114,41 +141,13 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 static TiltedPhoques::Initializer s_projectileHooks(
     []()
     {
-        POINTER_SKYRIMSE(TLaunch, s_launch, 44108);
+        // Projectile::Launch (SE 42928 @ 0x74B170) & ActorMagicCaster::Fire (SE 33672 @ 0x5506C0)
+        POINTER_SKYRIMSE(TLaunch, s_launch, 42928);
+        POINTER_SKYRIMSE(TActorMagicCasterFire, s_actorMagicCasterFire, 33672);
 
         RealLaunch = s_launch.Get();
+        RealActorMagicCasterFire = s_actorMagicCasterFire.Get();
 
         TP_HOOK(&RealLaunch, HookLaunch);
-
-        VersionDbPtr<uint8_t> hookLoc(34452);
-
-        struct C : TiltedPhoques::CodeGenerator
-        {
-            C(uint8_t* apLoc)
-            {
-                // replicate
-                mov(rbx, ptr[rsp + 0x50]);
-
-                // nullptr check
-                cmp(rbx, 0);
-                jz("exit");
-                // jump back
-                jmp_S(apLoc + 0x379);
-
-                L("exit");
-                // return false; scratch space from the registers
-                mov(al, 0);
-                add(rsp, 0x138);
-                pop(r15);
-                pop(r14);
-                pop(r13);
-                pop(r12);
-                pop(rdi);
-                pop(rsi);
-                pop(rbx);
-                pop(rbp);
-                ret();
-            }
-        } gen(hookLoc.Get());
-        TiltedPhoques::Jump(hookLoc.Get() + 0x374, gen.getCode());
+        TP_HOOK(&RealActorMagicCasterFire, HookActorMagicCasterFire);
     });

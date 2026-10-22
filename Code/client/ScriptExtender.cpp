@@ -57,17 +57,12 @@ int GetFileVersion(const std::filesystem::path& acFilePath, FileVersion& aVersio
 
 std::string GetSKSEStyleExeVersion()
 {
-    auto exeBuild = VersionDb::Get().GetLoadedVersionString();
-    std::replace(exeBuild.begin(), exeBuild.end(), '.', '_');
+    int major = 0, minor = 0, revision = 0, build = 0;
+    VersionDb::Get().GetLoadedVersion(major, minor, revision, build);
+    if (build == 0)
+        return fmt::format("{}_{}_{}", major, minor, revision);
 
-    // chop off empty patch numbers for instance "1.5.97.0" becomes "1_5_97"
-    auto patchPos = exeBuild.find_last_of("_0");
-    if (patchPos != std::string::npos)
-    {
-        exeBuild.erase(exeBuild.begin() + (patchPos - 1), exeBuild.end());
-    }
-
-    return exeBuild;
+    return fmt::format("{}_{}_{}_{}", major, minor, revision, build);
 }
 } // namespace
 
@@ -87,14 +82,14 @@ void LoadScriptExender()
     for (const auto& dirEntry : std::filesystem::directory_iterator(gameDir))
     {
         const auto& path = dirEntry.path();
-        if (path.extension() != L".dll")
+        if (_wcsicmp(path.extension().c_str(), L".dll") != 0)
             continue;
 
         auto fileName = path.filename().wstring();
-        if (fileName.length() < kScriptExtenderNameLength)
+        if (fileName.length() <= kScriptExtenderNameLength)
             continue;
 
-        if (fileName.substr(0, kScriptExtenderNameLength) == kScriptExtenderName)
+        if (_wcsnicmp(fileName.c_str(), kScriptExtenderName, kScriptExtenderNameLength) == 0)
         {
             dllMatches.push_back(path);
         }
@@ -107,7 +102,7 @@ void LoadScriptExender()
         auto fname = match.filename().string();
         auto ptr = &fname[kScriptExtenderNameLength + 1];
         // make extra sure!
-        if (std::strncmp(ptr, exeVerson.c_str(), exeVerson.length()) == 0)
+        if (_strnicmp(ptr, exeVerson.c_str(), exeVerson.length()) == 0)
         {
             needle = &match;
             break;

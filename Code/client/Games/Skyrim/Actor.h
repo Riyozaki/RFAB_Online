@@ -261,11 +261,14 @@ struct Actor : TESObjectREFR
     void SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit = false);
     void EquipOutfit(bool aIsSleepOutfit = false) noexcept;
 
-    enum ActorBoolBits
+    enum ActorBoolBits : uint32_t
     {
         kNone = 0,
         kHasSceneExtra = 1 << 3,
+        kPlayerTeammate = 1 << 26,
     };
+
+    [[nodiscard]] bool IsPlayerTeammate() const noexcept { return (flags1 & ActorBoolBits::kPlayerTeammate) != 0; }
 
     enum ActorFlags
     {

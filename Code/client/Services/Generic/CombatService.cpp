@@ -116,6 +116,11 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
     }
 
     launchData.pShooter = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
+    if (!launchData.pShooter)
+    {
+        spdlog::warn("Cannot launch projectile, invalid shooter form id: {:X}", formIdComponent.Id);
+        return;
+    }
 
     launchData.Origin.x = acMessage.OriginX;
     launchData.Origin.y = acMessage.OriginY;
@@ -123,6 +128,11 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
 
     const uint32_t cProjectileBaseId = modSystem.GetGameId(acMessage.ProjectileBaseID);
     launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
+    if (!launchData.pProjectileBase)
+    {
+        spdlog::warn("Cannot launch projectile, invalid projectile base id: {:X}", cProjectileBaseId);
+        return;
+    }
 
     const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
     launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));

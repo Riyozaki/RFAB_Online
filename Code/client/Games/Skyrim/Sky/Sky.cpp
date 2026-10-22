@@ -10,7 +10,7 @@ Sky* Sky::Get() noexcept
 {
     using SkyGet = Sky*(__fastcall)();
 
-    POINTER_SKYRIMSE(SkyGet, skyGet, 13878);
+    POINTER_SKYRIMSE(SkyGet, skyGet, 13789);
 
     return skyGet.Get()();
 }
@@ -30,7 +30,7 @@ void Sky::ForceWeather(TESWeather* apWeather) noexcept
 void Sky::ReleaseWeatherOverride() noexcept
 {
     TP_THIS_FUNCTION(TReleaseWeatherOverride, void, Sky);
-    POINTER_SKYRIMSE(TReleaseWeatherOverride, releaseWeatherOverride, 26244);
+    POINTER_SKYRIMSE(TReleaseWeatherOverride, releaseWeatherOverride, 25697);
 
     TiltedPhoques::ThisCall(releaseWeatherOverride, this);
 }
@@ -38,7 +38,7 @@ void Sky::ReleaseWeatherOverride() noexcept
 void Sky::ResetWeather() noexcept
 {
     TP_THIS_FUNCTION(TResetWeather, void, Sky);
-    POINTER_SKYRIMSE(TResetWeather, resetWeather, 26242);
+    POINTER_SKYRIMSE(TResetWeather, resetWeather, 25695);
 
     TiltedPhoques::ThisCall(resetWeather, this);
 }
@@ -88,9 +88,9 @@ void TP_MAKE_THISCALL(HookUpdateWeather, Sky)
 static TiltedPhoques::Initializer s_skyHooks(
     []()
     {
-        POINTER_SKYRIMSE(TSetWeather, setWeather, 26241);
-        POINTER_SKYRIMSE(TForceWeather, forceWeather, 26243);
-        POINTER_SKYRIMSE(TUpdateWeather, updateWeather, 26231);
+        POINTER_SKYRIMSE(TSetWeather, setWeather, 25694);
+        POINTER_SKYRIMSE(TForceWeather, forceWeather, 25696);
+        POINTER_SKYRIMSE(TUpdateWeather, updateWeather, 25684);
 
         RealSetWeather = setWeather.Get();
         RealForceWeather = forceWeather.Get();

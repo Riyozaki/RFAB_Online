@@ -35,13 +35,13 @@ namespace Settings
 {
 int32_t* GetDifficulty() noexcept
 {
-    POINTER_SKYRIMSE(int32_t, s_difficulty, 381472);
+    POINTER_SKYRIMSE(int32_t, s_difficulty, 509231);
     return s_difficulty.Get();
 }
 
 float* GetGreetDistance() noexcept
 {
-    POINTER_SKYRIMSE(float, s_greetDistance, 370892);
+    POINTER_SKYRIMSE(float, s_greetDistance, 503019);
     return s_greetDistance.Get();
 }
 
@@ -53,7 +53,7 @@ namespace GameplayFormulas
 float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexcept
 {
     using TGetDifficultyMultiplier = float(int32_t, int32_t, bool);
-    POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 26503);
+    POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 25920);
 
     bool isPlayer = apHittee == PlayerCharacter::Get();
 
@@ -74,7 +74,7 @@ float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexce
 void FadeOutGame(bool aFadingOut, bool aBlackFade, float aFadeDuration, bool aRemainVisible, float aSecondsToFade) noexcept
 {
     using TFadeOutGame = void(bool, bool, float, bool, float);
-    POINTER_SKYRIMSE(TFadeOutGame, fadeOutGame, 52847);
+    POINTER_SKYRIMSE(TFadeOutGame, fadeOutGame, 51909);
     fadeOutGame.Get()(aFadingOut, aBlackFade, aFadeDuration, aRemainVisible, aSecondsToFade);
 }
 
@@ -133,9 +133,9 @@ void TP_MAKE_THISCALL(HookSetCurrentPickREFR, Console, BSPointerHandle<TESObject
 static TiltedPhoques::Initializer s_referencesHooks(
     []()
     {
-        POINTER_SKYRIMSE(TCheckForNewPackage, s_checkForNewPackage, 39114);
-        POINTER_SKYRIMSE(TInitFromPackage, s_initFromPackage, 38959);
-        POINTER_SKYRIMSE(TSetCurrentPickREFR, s_setCurrentPickREFR, 51093);
+        POINTER_SKYRIMSE(TCheckForNewPackage, s_checkForNewPackage, 38156);
+        POINTER_SKYRIMSE(TInitFromPackage, s_initFromPackage, 38005);
+        POINTER_SKYRIMSE(TSetCurrentPickREFR, s_setCurrentPickREFR, 50164);
 
         RealCheckForNewPackage = s_checkForNewPackage.Get();
         RealInitFromPackage = s_initFromPackage.Get();

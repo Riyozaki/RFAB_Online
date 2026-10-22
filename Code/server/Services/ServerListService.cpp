@@ -4,7 +4,7 @@
 #include <GameServer.h>
 #include <Services/ServerListService.h>
 
-#include <console/Setting.h>
+#include <Setting.h>
 #include <future>
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -54,20 +54,27 @@ void ServerListService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
 
 void ServerListService::Announce() noexcept
 {
-    std::thread([&]() {
-        auto* pServer = GameServer::Get();
-        auto pc = static_cast<uint16_t>(m_world.GetPlayerManager().Count());
+    if (!bAnnounceServer)
+        return;
 
-        if (bAnnounceServer)
-            m_flags |= kIsPublic;
-        if (pServer->IsPasswordProtected())
-            m_flags |= kHasPassword;
+    auto* pServer = GameServer::Get();
+    if (!pServer)
+        return;
 
-        const auto& cInfo = pServer->GetInfo();
+    const auto pc = static_cast<uint16_t>(m_world.GetPlayerManager().Count());
+    int32 flags = m_flags | kIsPublic;
+    if (pServer->IsPasswordProtected())
+        flags |= kHasPassword;
+    m_flags = flags;
 
-        PostAnnouncement(cInfo.name, cInfo.desc, cInfo.icon_url, pServer->GetPort(), cInfo.tick_rate, pc,
-                         uMaxPlayerCount.value_as<uint16_t>(), cInfo.tagList, bAnnounceServer,
-                         pServer->IsPasswordProtected(), m_flags);
+    const auto cInfo = pServer->GetInfo();
+    const uint16_t port = pServer->GetPort();
+    const uint16_t maxPlayers = uMaxPlayerCount.value_as<uint16_t>();
+    const bool hasPassword = pServer->IsPasswordProtected();
+
+    std::thread([cInfo, port, pc, maxPlayers, hasPassword, flags]() {
+        PostAnnouncement(cInfo.name, cInfo.desc, cInfo.icon_url, port, cInfo.tick_rate, pc,
+                         maxPlayers, cInfo.tagList, true, hasPassword, flags);
     }).detach();
 }
 

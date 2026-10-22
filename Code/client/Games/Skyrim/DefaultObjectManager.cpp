@@ -6,7 +6,7 @@ DefaultObjectManager& DefaultObjectManager::Get()
 {
     using TGetDefaultObjectManager = DefaultObjectManager&();
 
-    POINTER_SKYRIMSE(TGetDefaultObjectManager, GetDefaultObjectManager, 13894);
+    POINTER_SKYRIMSE(TGetDefaultObjectManager, GetDefaultObjectManager, 10878);
 
     return GetDefaultObjectManager();
 }

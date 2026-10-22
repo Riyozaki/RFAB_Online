@@ -1,15 +1,26 @@
-#include <Components.h>
-#include <Messages/RequestActorValueChanges.h>
-#include <Messages/RequestActorMaxValueChanges.h>
-#include <Messages/RequestHealthChangeBroadcast.h>
-#include <Messages/RequestDeathStateChange.h>
+#include <algorithm>
+
+#include <Events/PacketEvent.h>
+#include <GameServer.h>
 #include <Services/ActorValueService.h>
 #include <World.h>
-#include <GameServer.h>
+#include <Components.h>
+
+#include <Messages/RequestActorValueChanges.h>
 #include <Messages/NotifyActorValueChanges.h>
+#include <Messages/RequestActorMaxValueChanges.h>
 #include <Messages/NotifyActorMaxValueChanges.h>
+#include <Messages/RequestHealthChangeBroadcast.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/RequestDeathStateChange.h>
 #include <Messages/NotifyDeathStateChange.h>
+
+#include <algorithm>
+
+namespace
+{
+constexpr uint32_t kHealthActorValueIndex = 24;
+}
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -25,16 +36,19 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
     auto& message = acMessage.Packet;
 
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
-
     auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+    if (it == actorValuesView.end())
+        return;
 
-    if (it != actorValuesView.end())
+    // Reject stale periodic snapshots from an ex-owner right after ownership transfer.
+    const auto& ownerComponent = actorValuesView.get<OwnerComponent>(*it);
+    if (ownerComponent.GetOwner() != acMessage.pPlayer)
+        return;
+
+    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    for (auto& [id, value] : message.Values)
     {
-        auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-        for (auto& [id, value] : message.Values)
-        {
-            actorValuesComponent.CurrentActorValues.ActorValuesList[id] = value;
-        }
+        actorValuesComponent.CurrentActorValues.ActorValuesList[id] = value;
     }
 
     NotifyActorValueChanges notify;
@@ -51,16 +65,19 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
     auto& message = acMessage.Packet;
 
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
-
     auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+    if (it == actorValuesView.end())
+        return;
 
-    if (it != actorValuesView.end())
+    // Reject stale max-value snapshots from an ex-owner right after ownership transfer.
+    const auto& ownerComponent = actorValuesView.get<OwnerComponent>(*it);
+    if (ownerComponent.GetOwner() != acMessage.pPlayer)
+        return;
+
+    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    for (auto& [id, value] : message.Values)
     {
-        auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-        for (auto& [id, value] : message.Values)
-        {
-            actorValuesComponent.CurrentActorValues.ActorMaxValuesList[id] = value;
-        }
+        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[id] = value;
     }
 
     NotifyActorMaxValueChanges notify;
@@ -76,16 +93,20 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
 {
     auto& message = acMessage.Packet;
 
-    // TODO(cosideci): should server side health not be updated?
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
-
     auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
 
     if (it != actorValuesView.end())
     {
         auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-        auto currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[24];
-        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = currentHealth - message.DeltaHealth;
+        const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
+        float updatedHealth = std::max(0.f, currentHealth + message.DeltaHealth);
+
+        const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
+        if (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() && maxIt->second > 0.f)
+            updatedHealth = std::min(updatedHealth, maxIt->second);
+
+        actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = updatedHealth;
     }
 
     NotifyHealthChangeBroadcast notify;
@@ -102,13 +123,19 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     auto& message = acMessage.Packet;
 
     auto characterView = m_world.view<CharacterComponent, OwnerComponent>();
-
     const auto it = characterView.find(static_cast<entt::entity>(message.Id));
 
     if (it != characterView.end())
     {
         auto& characterComponent = characterView.get<CharacterComponent>(*it);
         characterComponent.SetDead(message.IsDead);
+
+        if (message.IsDead)
+        {
+            if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
+                pActorValues->CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = 0.f;
+        }
+
         spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
     }
 

@@ -46,7 +46,8 @@ Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the 
 Console::Setting uTimeScale{"Gameplay:uTimeScale", "How many seconds pass ingame for every real second (0 to 1000). Changing this can make the game unstable", 20u};
 Console::Setting bSyncPlayerCalendar{"Gameplay:bSyncPlayerCalendar", "Syncs up all player calendars to be the same day, month, and year. This uses the date of the player with the furthest ahead date at connection.", false};
 Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
-Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Multiplies the max health of actors (0.1 to 10.0)", 1.0f};
+Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Base max-health multiplier for non-player enemies (0.1 to 10.0)", 1.0f};
+Console::Setting bAutoScaleEnemyHealth{"Gameplay:bAutoScaleEnemyHealth", "Automatically scales enemy HP with connected player count (1p=1x, 2p=3x, 3p=4x, N>=2 -> (N+1)x)", true};
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
@@ -127,6 +128,23 @@ static float GetHealthMultiplier()
     return std::clamp(value, kMinHealthMultiplier, kMaxHealthMultiplier);
 }
 
+static float GetEffectiveHealthMultiplier()
+{
+    float multiplier = GetHealthMultiplier();
+
+    if (bAutoScaleEnemyHealth)
+    {
+        if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
+        {
+            const size_t playerCount = pServer->GetWorld().GetPlayerManager().Count();
+            if (playerCount >= 2)
+                multiplier *= static_cast<float>(playerCount + 1);
+        }
+    }
+
+    return std::clamp(multiplier, kMinHealthMultiplier, kMaxHealthMultiplier);
+}
+
 constexpr char kBypassMoPoWarning[]{"ModCheck is disabled. This can lead to desync and other oddities. Make sure you know what you are doing. We "
                                     "may not be able to assist you if ModCheck was disabled."};
 
@@ -159,7 +177,7 @@ ServerSettings GetSettings()
     settings.DeathSystemEnabled = bEnableDeathSystem;
     settings.SyncPlayerCalendar = bSyncPlayerCalendar;
     settings.AutoPartyJoin = bAutoPartyJoin;
-    settings.HealthMultiplier = GetHealthMultiplier();
+    settings.HealthMultiplier = GetEffectiveHealthMultiplier();
     return settings;
 }
 
@@ -673,6 +691,7 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
         m_pWorld->GetDispatcher().update();
 
         m_pWorld->GetPlayerManager().Remove(pPlayer);
+        UpdateSettings();
     }
 
     UpdateTitle();
@@ -1013,6 +1032,17 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
 
         serverResponse.Type = AuthenticationResponse::ResponseType::kAccepted;
         Send(aConnectionId, serverResponse);
+
+        // Broadcast updated player-count health scaling to all already-connected peers as well
+        for (auto* pExisting : m_pWorld->GetPlayerManager())
+        {
+            if (pExisting != pPlayer)
+            {
+                NotifySettingsChange settingsNotify{};
+                settingsNotify.Settings = serverResponse.Settings;
+                pExisting->Send(settingsNotify);
+            }
+        }
 
         uint32_t startId = 0;
         auto initStringCache = StringCache::Get().Serialize(startId);

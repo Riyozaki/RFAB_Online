@@ -4,12 +4,16 @@ Tools/rfab/verify_se1597_port.py
 
 Offline verifier for the Skyrim SE 1.5.97.0.8 port of RFAB Online:
 1. Validates that every row in docs/se-1597-id-map.csv has a valid SE 1.5.97 ID
-   and, if version-1-5-97-0.bin is provided via --addrlib, verifies that every
-   mapped ID exists in version-1-5-97-0.bin and matches its recorded RVA.
-2. Scans all C/C++ sources under Code/ for POINTER_SKYRIMSE(...) and
-   VersionDbPtr<...>(...) references and reports how many are already migrated
-   to SE 1.5.97 IDs vs still carrying AE 1.6.x IDs.
-3. Checks critical 1.5.97 C++ struct size/offset assertions across Code/client/Games/Skyrim/.
+   and, when version-1-5-97-0.bin is passed via --addrlib, verifies byte-for-byte
+   that every ID exists in version-1-5-97-0.bin and matches its recorded RVA.
+2. Scans EVERY C/C++ source & header under Code/ for:
+   - POINTER_SKYRIMSE(type, var, ID)
+   - VersionDbPtr<type> var(ID)
+   - internal::DynamicCast(ID)
+   - registerRtti_*(ID)
+   and verifies that 100% of active IDs in Code/ belong to SE 1.5.97 (0 AE residue)
+   AND 100% exist in version-1-5-97-0.bin!
+3. Verifies critical 1.5.97 C++ struct size/offset assertions across Code/client/Games/Skyrim/.
 """
 
 from __future__ import annotations
@@ -24,6 +28,14 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MAP_CSV = REPO_ROOT / "docs" / "se-1597-id-map.csv"
+
+# Additional pure SE 1.5.97 IDs introduced when splitting AE-inlined / entry-hooked functions:
+#   75591 = BSGraphics::InitWindows (0xD71F00)
+#   79949 = UI::Register / MenuManager::RegisterMenuCreator (0xEBF9C0)
+EXTRA_VALID_SE_IDS = {
+    75591: 0xD71F00,
+    79949: 0xEBF9C0,
+}
 
 EXPECTED_STRUCT_ASSERTS = {
     "Code/client/Games/Skyrim/ExtraData/ExtraDataList.h": "sizeof(ExtraDataList) == 0x18",
@@ -137,8 +149,9 @@ def main() -> int:
     print(f"[id-map] Loaded {len(rows)} AE->SE entries from {MAP_CSV.relative_to(REPO_ROOT)}")
 
     ae_to_se = {int(r["ae_id"]): int(r["se_1_5_97_id"]) for r in rows}
-    se_set = set(ae_to_se.values())
+    se_set = set(ae_to_se.values()) | set(EXTRA_VALID_SE_IDS.keys())
 
+    se_rva: dict[int, int] | None = None
     if args.addrlib and args.addrlib.exists():
         se_rva = load_version_bin_v1(args.addrlib)
         print(f"[addrlib] Verified format-1 version-1-5-97-0.bin with {len(se_rva)} entries")
@@ -147,31 +160,50 @@ def main() -> int:
             if int(r["se_1_5_97_id"]) not in se_rva
             or se_rva[int(r["se_1_5_97_id"])] != int(r["se_rva_hex"], 16)
         ]
+        for extra_id, expected_rva in EXTRA_VALID_SE_IDS.items():
+            if se_rva.get(extra_id) != expected_rva:
+                print(f"[ERROR] Extra SE ID {extra_id} RVA mismatch: {se_rva.get(extra_id)} != {hex(expected_rva)}")
+                return 1
         if bad:
             print(f"[ERROR] {len(bad)} invalid entries against version-1-5-97-0.bin: {bad[:5]}")
             return 1
-        print("[addrlib] 100% of docs/se-1597-id-map.csv entries match version-1-5-97-0.bin byte-for-byte!")
+        print("[addrlib] 100% of docs/se-1597-id-map.csv + extra SE IDs match version-1-5-97-0.bin byte-for-byte!")
 
     pat_ptr = re.compile(r"\bPOINTER_SKYRIMSE\s*\([^,]+,[^,]+,\s*(\d+)\s*\)")
-    pat_vdb = re.compile(r"\bVersionDbPtr\s*<[^>]+>\s*\w+\s*\(\s*(\d+)\s*\)")
-    pat_rtti = re.compile(r"\{\s*0\s*,\s*(\d+)\s*,")
+    pat_vdb = re.compile(r"\bVersionDbPtr\s*<[^>]+>\s*[A-Za-z0-9_:]+\s*\(\s*(\d+)\s*\)")
+    pat_rtti = re.compile(r"\bregisterRtti_\w+\s*\(\s*(\d+)\s*\)")
 
-    found_ids: set[int] = set()
-    for p in (REPO_ROOT / "Code").rglob("*"):
+    found_sites: list[tuple[str, int, int]] = []
+    for p in sorted((REPO_ROOT / "Code").rglob("*")):
         if p.suffix not in {".h", ".hpp", ".inl", ".c", ".cpp"}:
             continue
         txt = p.read_text(encoding="utf-8", errors="replace")
-        for m in pat_ptr.finditer(txt):
-            found_ids.add(int(m.group(1)))
-        for m in pat_vdb.finditer(txt):
-            found_ids.add(int(m.group(1)))
-        if p.name == "RTTI.cpp":
-            for m in pat_rtti.finditer(txt):
-                found_ids.add(int(m.group(1)))
+        rel = str(p.relative_to(REPO_ROOT))
+        for lineno, line in enumerate(txt.splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("//"):
+                continue
+            for pat in (pat_ptr, pat_vdb, pat_rtti):
+                for m in pat.finditer(line):
+                    found_sites.append((rel, lineno, int(m.group(1))))
 
-    in_se = sum(1 for x in found_ids if x in se_set or x == 75591)
-    only_ae = sum(1 for x in found_ids if x in ae_to_se and x not in se_set)
-    print(f"[scan] Unique IDs in Code/: {len(found_ids)} | valid SE 1.5.97 IDs: {in_se} | still AE-only IDs: {only_ae}")
+    invalid_in_se = [(f, ln, v) for (f, ln, v) in found_sites if v not in se_set]
+    invalid_in_bin = (
+        [(f, ln, v) for (f, ln, v) in found_sites if se_rva is not None and v not in se_rva]
+        if se_rva is not None
+        else []
+    )
+    unique_ids = {v for (_, _, v) in found_sites}
+    print(
+        f"[scan] Total active ID call-sites in Code/: {len(found_sites)} ({len(unique_ids)} unique IDs) | "
+        f"valid SE 1.5.97 target IDs: {len(found_sites) - len(invalid_in_se)} | "
+        f"unmigrated AE-only sites: {len(invalid_in_se)}"
+    )
+    if invalid_in_se:
+        print(f"[scan] Sample unmigrated sites: {invalid_in_se[:10]}")
+    if invalid_in_bin:
+        print(f"[ERROR] Sites missing from version-1-5-97-0.bin: {invalid_in_bin[:10]}")
+        return 1
 
     missing_structs = []
     for rel_path, expected in EXPECTED_STRUCT_ASSERTS.items():
@@ -182,7 +214,7 @@ def main() -> int:
         if not ok:
             missing_structs.append(rel_path)
 
-    if args.strict_migrated and (only_ae > 0 or missing_structs):
+    if args.strict_migrated and (invalid_in_se or missing_structs):
         return 1
     return 0
 

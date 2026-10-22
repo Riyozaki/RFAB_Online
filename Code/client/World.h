@@ -4,6 +4,7 @@
 #include <Services/TransportService.h>
 #include <Services/PartyService.h>
 #include <Services/CharacterService.h>
+#include <Services/ActorValueService.h>
 #include <Services/OverlayService.h>
 #include <Services/CharacterService.h>
 #include <Services/MagicService.h>
@@ -28,6 +29,8 @@ struct World : entt::registry
     const PartyService& GetPartyService() const noexcept { return ctx().at<const PartyService>(); }
     CharacterService& GetCharacterService() noexcept { return ctx().at<CharacterService>(); }
     const CharacterService& GetCharacterService() const noexcept { return ctx().at<const CharacterService>(); }
+    ActorValueService& GetActorValueService() noexcept { return ctx().at<ActorValueService>(); }
+    const ActorValueService& GetActorValueService() const noexcept { return ctx().at<const ActorValueService>(); }
     OverlayService& GetOverlayService() noexcept { return ctx().at<OverlayService>(); }
     const OverlayService& GetOverlayService() const noexcept { return ctx().at<const OverlayService>(); }
     DebugService& GetDebugService() noexcept { return ctx().at<DebugService>(); }

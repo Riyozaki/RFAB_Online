@@ -46,7 +46,7 @@ TiltedOnlineApp::~TiltedOnlineApp() = default;
 
 void* TiltedOnlineApp::GetMainAddress() const
 {
-    POINTER_SKYRIMSE(void, winMain, 36544);
+    POINTER_SKYRIMSE(void, winMain, 35545);
 
     return winMain.GetPtr();
 }
@@ -89,7 +89,7 @@ void TiltedOnlineApp::Update()
     // 
  
     // Make sure the window stays active
-    POINTER_SKYRIMSE(uint32_t, bAlwaysActive, 380768);
+    POINTER_SKYRIMSE(uint32_t, bAlwaysActive, 508799);
 
     *bAlwaysActive = 1;
 

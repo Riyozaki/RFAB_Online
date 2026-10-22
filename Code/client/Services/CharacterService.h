@@ -64,8 +64,9 @@ struct CharacterService
     void OnActorAdded(const ActorAddedEvent& acEvent) noexcept;
     void OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acUpdateEvent) noexcept;
-    void OnConnected(const ConnectedEvent& acConnectedEvent) const noexcept;
-    void OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) const noexcept;
+    void OnConnected(const ConnectedEvent& acConnectedEvent) noexcept;
+    void OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept;
+    void NotifyRemoteQuestStageApplied() noexcept;
     void OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept;
     void OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept;
     void OnReferencesMoveRequest(const ServerReferencesMoveRequest& acMessage) const noexcept;
@@ -118,6 +119,11 @@ private:
     float m_cachedExperience = 0.f;
     int32_t m_lastRfabExperience = 0;
     bool m_rfabExperienceInitialized = false;
+    std::chrono::steady_clock::time_point m_remoteQuestXpWindowUntil{};
+    int32_t m_localQuestXpGainedInWindow = 0;
+    int32_t m_lastAppliedRemoteXpAmount = 0;
+    std::chrono::steady_clock::time_point m_lastAppliedRemoteXpTime{};
+    int32_t m_creditToRefundOnLocalQuestXp = 0;
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

@@ -27,7 +27,7 @@ void* TP_MAKE_THISCALL(HookInitializeSummonCreatureEffect, Actor, MagicItem* apS
 static TiltedPhoques::Initializer s_summonCreatureEffectsHooks(
     []()
     {
-        POINTER_SKYRIMSE(TInitializeSummonCreatureEffect, s_start, 34989);
+        POINTER_SKYRIMSE(TInitializeSummonCreatureEffect, s_start, 34193);
 
         RealInitializeSummonCreatureEffect = s_start.Get();
 

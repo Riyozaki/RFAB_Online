@@ -16,7 +16,7 @@ struct Memory
     template <class T, class... TArgs> static T* New(TArgs... args) noexcept
     {
         auto pMemory = static_cast<T*>(Allocate(sizeof(T)));
-        return new (Allocate<T>()) T(std::forward<TArgs>(args)...);
+        return new (pMemory) T(std::forward<TArgs>(args)...);
     }
 
     template <class T> static T* NewArray(const size_t aCount) noexcept
@@ -24,7 +24,7 @@ struct Memory
         auto pMemory = static_cast<T*>(Allocate(sizeof(T) * aCount));
         for (size_t i = 0; i < aCount; ++i)
         {
-            new (pMemory[i]) T;
+            new (&pMemory[i]) T;
         }
 
         return pMemory;
@@ -32,7 +32,8 @@ struct Memory
 
     template <class T> static void Delete(T* apMemory) noexcept
     {
-        assert(apMemory != nullptr);
+        if (!apMemory)
+            return;
 
         Free(apMemory);
     }

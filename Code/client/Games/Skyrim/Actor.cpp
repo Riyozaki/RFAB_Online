@@ -149,7 +149,7 @@ void Actor::SetSpeed(float aSpeed) noexcept
 uint16_t Actor::GetLevel() const noexcept
 {
     TP_THIS_FUNCTION(TGetLevel, uint16_t, const Actor);
-    POINTER_SKYRIMSE(TGetLevel, s_getLevel, 37334);
+    POINTER_SKYRIMSE(TGetLevel, s_getLevel, 36344);
     return TiltedPhoques::ThisCall(s_getLevel, this);
 }
 
@@ -168,7 +168,7 @@ void Actor::QueueUpdate() noexcept
     pSetting->data = 0;
 
     TP_THIS_FUNCTION(TQueueUpdate, void, Actor, bool);
-    POINTER_SKYRIMSE(TQueueUpdate, QueueUpdate, 40255);
+    POINTER_SKYRIMSE(TQueueUpdate, QueueUpdate, 39181);
 
     TiltedPhoques::ThisCall(QueueUpdate, this, true);
 
@@ -219,7 +219,7 @@ GamePtr<Actor> Actor::Spawn(uint32_t aBaseFormId) noexcept
 void Actor::SetLevelMod(uint32_t aLevel) noexcept
 {
     TP_THIS_FUNCTION(TActorSetLevelMod, void, ExtraDataList, uint32_t);
-    POINTER_SKYRIMSE(TActorSetLevelMod, realSetLevelMod, 11806);
+    POINTER_SKYRIMSE(TActorSetLevelMod, realSetLevelMod, 11660);
 
     const auto pExtraDataList = &extraData;
 
@@ -308,7 +308,7 @@ void Actor::SetEssentialEx(bool aSet) noexcept
 void Actor::SetNoBleedoutRecovery(bool aSet) noexcept
 {
     TP_THIS_FUNCTION(TSetNoBleedoutRecovery, void, Actor, bool);
-    POINTER_SKYRIMSE(TSetNoBleedoutRecovery, s_setNoBleedoutRecovery, 38533);
+    POINTER_SKYRIMSE(TSetNoBleedoutRecovery, s_setNoBleedoutRecovery, 37583);
     TiltedPhoques::ThisCall(s_setNoBleedoutRecovery, this, aSet);
 }
 
@@ -381,7 +381,7 @@ uint8_t Actor::GetPerkRank(uint32_t aPerkFormId) const noexcept
         return 0;
 
     TP_THIS_FUNCTION(TGetPerkRank, uint8_t, const Actor, BGSPerk*);
-    POINTER_SKYRIMSE(TGetPerkRank, getPerkRank, 37698);
+    POINTER_SKYRIMSE(TGetPerkRank, getPerkRank, 36690);
 
     return TiltedPhoques::ThisCall(getPerkRank, this, pPerk);
 }
@@ -449,7 +449,7 @@ void Actor::InterruptCast(bool abRefund) noexcept
 {
     TP_THIS_FUNCTION(TInterruptCast, void, Actor, bool abRefund);
 
-    POINTER_SKYRIMSE(TInterruptCast, s_interruptCast, 38757);
+    POINTER_SKYRIMSE(TInterruptCast, s_interruptCast, 37808);
 
     TiltedPhoques::ThisCall(s_interruptCast, this, abRefund);
 }
@@ -723,7 +723,7 @@ Inventory Actor::GetEquipment() const noexcept
 int32_t Actor::GetGoldAmount() const noexcept
 {
     TP_THIS_FUNCTION(TGetGoldAmount, int32_t, const Actor);
-    POINTER_SKYRIMSE(TGetGoldAmount, s_getGoldAmount, 37527);
+    POINTER_SKYRIMSE(TGetGoldAmount, s_getGoldAmount, 36527);
     return TiltedPhoques::ThisCall(s_getGoldAmount, this);
 }
 
@@ -812,7 +812,7 @@ void Actor::SetFactionRank(const TESFaction* apFaction, int8_t aRank) noexcept
 {
     TP_THIS_FUNCTION(TSetFactionRankInternal, void, Actor, const TESFaction*, int8_t);
 
-    POINTER_SKYRIMSE(TSetFactionRankInternal, s_setFactionRankInternal, 37677);
+    POINTER_SKYRIMSE(TSetFactionRankInternal, s_setFactionRankInternal, 36669);
 
     TiltedPhoques::ThisCall(s_setFactionRankInternal, this, apFaction, aRank);
 }
@@ -820,7 +820,7 @@ void Actor::SetFactionRank(const TESFaction* apFaction, int8_t aRank) noexcept
 void Actor::SetPlayerTeammate(bool aSet) noexcept
 {
     TP_THIS_FUNCTION(TSetPlayerTeammate, void, Actor, bool aSet, bool abCanDoFavor);
-    POINTER_SKYRIMSE(TSetPlayerTeammate, setPlayerTeammate, 37717);
+    POINTER_SKYRIMSE(TSetPlayerTeammate, setPlayerTeammate, 36707);
     return TiltedPhoques::ThisCall(setPlayerTeammate, this, aSet, true);
 }
 
@@ -1015,10 +1015,24 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     if (apHitter)
         World::Get().GetRunner().Trigger(HitEvent(apHitter->formID, apThis->formID));
 
-    float realDamage = GameplayFormulas::CalculateRealDamage(apThis, aDamage, aKillMove);
+    const float currentHealth = apThis->GetActorValue(ActorValueInfo::kHealth);
+    const float estimatedRealDamage = GameplayFormulas::CalculateRealDamage(apThis, aDamage, aKillMove);
+    const bool wouldKill = (currentHealth - estimatedRealDamage) <= 0.f;
 
-    float currentHealth = apThis->GetActorValue(ActorValueInfo::kHealth);
-    bool wouldKill = (currentHealth - realDamage) <= 0.f;
+    auto applyAuthoritativeDamage = [&]() -> bool
+    {
+        const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
+        const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
+        const float healthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
+        const float actualDelta = healthAfter - healthBefore;
+
+        // Broadcast the exact delta produced by SkyrimSE.exe + RFAB.dll so invulnerable/ethereal
+        // boss phases, Requiem armor/expertise/silver modifiers, damage caps, and ScriptDamage stay 100% synced.
+        if (actualDelta != 0.f)
+            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+
+        return result;
+    };
 
     const auto* pExHittee = apThis->GetExtension();
     if (pExHittee->IsLocalPlayer())
@@ -1029,8 +1043,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
                 return false;
         }
 
-        World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, -realDamage));
-        return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
+        return applyAuthoritativeDamage();
     }
     else if (pExHittee->IsRemotePlayer())
     {
@@ -1041,25 +1054,17 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     {
         const auto* pExHitter = apHitter->GetExtension();
         if (pExHitter->IsLocalPlayer())
-        {
-            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, -realDamage));
-            return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
-        }
+            return applyAuthoritativeDamage();
         if (pExHitter->IsRemotePlayer())
-        {
             return wouldKill;
-        }
     }
 
+    // Covers apHitter == nullptr (RFAB_PapyrusFunctions.ScriptDamage, runes, DoTs, traps) as well as
+    // summons, followers, and NPC-vs-NPC combat strictly on the single client owning apThis.
     if (pExHittee->IsLocal())
-    {
-        World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, -realDamage));
-        return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
-    }
-    else
-    {
-        return wouldKill;
-    }
+        return applyAuthoritativeDamage();
+
+    return wouldKill;
 }
 
 TP_THIS_FUNCTION(TApplyActorEffect, void, ActiveEffect, Actor* apTarget, float aEffectValue, unsigned int unk1);
@@ -1185,6 +1190,7 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
     if (!pObject)
     {
         spdlog::warn("Object to drop not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
+        ExtraDataList::Delete(pExtraData);
         return;
     }
 
@@ -1282,7 +1288,7 @@ float Actor::SpeakSound(const char* pFile)
 bool Actor::IsTalking() noexcept
 {
     TP_THIS_FUNCTION(TIsTalking, bool, Actor);
-    POINTER_SKYRIMSE(TIsTalking, s_IsTalking, 37266);
+    POINTER_SKYRIMSE(TIsTalking, s_IsTalking, 36277);
     return TiltedPhoques::ThisCall(s_IsTalking, this);
 }
 
@@ -1364,28 +1370,28 @@ bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
 static TiltedPhoques::Initializer s_actorHooks(
     []()
     {
-        POINTER_SKYRIMSE(TActorProcess, s_actorProcess, 37356);
-        POINTER_SKYRIMSE(TSetPosition, s_setPosition, 19790);
-        POINTER_SKYRIMSE(TRemoveSpell, s_removeSpell, 38717);
-        POINTER_SKYRIMSE(TCharacterConstructor, s_characterCtor, 40245);
-        POINTER_SKYRIMSE(TCharacterConstructor2, s_characterCtor2, 40246);
-        POINTER_SKYRIMSE(TCharacterDestructor, s_characterDtor, 37175);
-        POINTER_SKYRIMSE(TGetLocation, s_GetActorLocation, 19812);
-        POINTER_SKYRIMSE(TForceState, s_ForceState, 37313);
-        POINTER_SKYRIMSE(TSpawnActorInWorld, s_SpawnActorInWorld, 19742);
-        POINTER_SKYRIMSE(TDamageActor, s_damageActor, 37335);
-        POINTER_SKYRIMSE(TApplyActorEffect, s_applyActorEffect, 35086);
-        POINTER_SKYRIMSE(TRegenAttributes, s_regenAttributes, 37448);
-        POINTER_SKYRIMSE(TAddInventoryItem, s_addInventoryItem, 37525);
-        POINTER_SKYRIMSE(TPickUpObject, s_pickUpObject, 37521);
-        POINTER_SKYRIMSE(TDropObject, s_dropObject, 40454);
-        POINTER_SKYRIMSE(TUpdateDetectionState, s_updateDetectionState, 42704);
-        POINTER_SKYRIMSE(TProcessResponse, s_processResponse, 39643);
-        POINTER_SKYRIMSE(TInitiateMountPackage, s_initiateMountPackage, 37905);
-        POINTER_SKYRIMSE(TUnequipObject, s_unequipObject, 37975);
-        POINTER_SKYRIMSE(TSpeakSoundFunction, s_speakSoundFunction, 37542);
-        POINTER_SKYRIMSE(TAddDeathItems, addDeathItems, 37198);
-        POINTER_SKYRIMSE(TIsFleeing, isFleeing, 37577);
+        POINTER_SKYRIMSE(TActorProcess, s_actorProcess, 36365);
+        POINTER_SKYRIMSE(TSetPosition, s_setPosition, 19363);
+        POINTER_SKYRIMSE(TRemoveSpell, s_removeSpell, 37772);
+        POINTER_SKYRIMSE(TCharacterConstructor, s_characterCtor, 39171);
+        POINTER_SKYRIMSE(TCharacterConstructor2, s_characterCtor2, 39172);
+        POINTER_SKYRIMSE(TCharacterDestructor, s_characterDtor, 36196);
+        POINTER_SKYRIMSE(TGetLocation, s_GetActorLocation, 19385);
+        POINTER_SKYRIMSE(TForceState, s_ForceState, 36323);
+        POINTER_SKYRIMSE(TSpawnActorInWorld, s_SpawnActorInWorld, 19315);
+        POINTER_SKYRIMSE(TDamageActor, s_damageActor, 36345);
+        POINTER_SKYRIMSE(TApplyActorEffect, s_applyActorEffect, 34286);
+        POINTER_SKYRIMSE(TRegenAttributes, s_regenAttributes, 37513);
+        POINTER_SKYRIMSE(TAddInventoryItem, s_addInventoryItem, 36525);
+        POINTER_SKYRIMSE(TPickUpObject, s_pickUpObject, 36521);
+        POINTER_SKYRIMSE(TDropObject, s_dropObject, 39382);
+        POINTER_SKYRIMSE(TUpdateDetectionState, s_updateDetectionState, 41626);
+        POINTER_SKYRIMSE(TProcessResponse, s_processResponse, 38612);
+        POINTER_SKYRIMSE(TInitiateMountPackage, s_initiateMountPackage, 36881);
+        POINTER_SKYRIMSE(TUnequipObject, s_unequipObject, 36950);
+        POINTER_SKYRIMSE(TSpeakSoundFunction, s_speakSoundFunction, 36541);
+        POINTER_SKYRIMSE(TAddDeathItems, addDeathItems, 36218);
+        POINTER_SKYRIMSE(TIsFleeing, isFleeing, 36575);
 
         RealActorProcess = s_actorProcess.Get();
         RealSetPosition = s_setPosition.Get();

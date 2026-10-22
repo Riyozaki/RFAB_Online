@@ -11,5 +11,5 @@ bool IsDllBlocked(std::wstring_view dllName);
 bool IsSoulsRE(std::wstring_view dllName);
 
 // Global flag indicating whether Skyrim Souls RE is active.
-bool g_IsSoulsREActive{};
+inline bool g_IsSoulsREActive{};
 } // namespace stubs
