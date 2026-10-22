@@ -39,7 +39,12 @@ uint64_t NowUnixMs() noexcept
 ProgressionService::ProgressionService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
 {
-    m_path = (std::filesystem::current_path() / "Data" / "progress" / "progress.jsonl").string();
+    std::error_code pathEc;
+    auto workingDirectory = std::filesystem::current_path(pathEc);
+    if (pathEc)
+        workingDirectory = ".";
+
+    m_path = (workingDirectory / "Data" / "progress" / "progress.jsonl").string();
 
     if (bEnableProgressionLedger.value_as<bool>())
         Load();
@@ -79,17 +84,27 @@ void ProgressionService::Load() noexcept
     spdlog::info("Progression: loaded {} player record(s) from {}", count, m_path);
 }
 
-void ProgressionService::OnAward(Player& aPlayer, uint32_t aAmount) noexcept
+void ProgressionService::OnAward(uint32_t aAmount) noexcept
 {
     if (!bEnableProgressionLedger.value_as<bool>() || aAmount == 0)
         return;
 
-    // The server total tracks what the player has: their reported baseline plus
-    // everything awarded to them since they connected.
-    aPlayer.AddRfabXp(static_cast<int32_t>(std::min<uint32_t>(aAmount, 1'000'000)));
+    const int32_t amount = static_cast<int32_t>(std::min<uint32_t>(aAmount, 1'000'000));
 
-    Gameplay::Progression::PlayerRecord record = MakeRecord(aPlayer);
-    m_ledger.Upsert(record);
+    // Every connected player received this award (the fan-out is server wide by
+    // default), so every connected player's total grows by it. In party-only
+    // mode this over-credits players outside the party, which is harmless: the
+    // ledger is only ever used to top a *lower* client up, and a client that
+    // never received the award still reports its own (lower) total.
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        if (pPlayer == nullptr)
+            continue;
+
+        pPlayer->AddRfabXp(amount);
+        m_ledger.Upsert(MakeRecord(*pPlayer));
+    }
+
     m_dirty = true;
 }
 

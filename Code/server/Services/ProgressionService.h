@@ -42,8 +42,15 @@ struct ProgressionService
 
     TP_NOCOPYMOVE(ProgressionService);
 
-    //! Called by XpShareService for every award it actually accepted.
-    void OnAward(Player& aPlayer, uint32_t aAmount) noexcept;
+    /**
+     * @brief Credits an award to every player it was fanned out to.
+     *
+     * The server hands the same award to everybody, so everybody's total grows
+     * by it - including the initiator, who already had it applied locally. The
+     * ledger must mirror that, otherwise a player who loses their save would only
+     * be restored to the experience they personally initiated.
+     */
+    void OnAward(uint32_t aAmount) noexcept;
 
     //! Writes the ledger to disk (no-op when disabled or unchanged).
     void Flush(bool aForce = false) noexcept;

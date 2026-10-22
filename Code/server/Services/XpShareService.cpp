@@ -92,10 +92,6 @@ void XpShareService::OnShareRequest(const PacketEvent<SyncRfabExperienceRequest>
     ++m_stats.ReportsAccepted;
     m_stats.TotalAwarded += amount;
 
-    // The progression ledger remembers this award, so a player who loses their
-    // save can be topped back up on the next connect.
-    m_world.GetProgressionService().OnAward(*pSender, amount);
-
     // Layer 2: heuristic cross-player dedup. When the game itself synchronises a
     // quest/kill, every client runs its own RFAB handler and reports the same
     // amount almost simultaneously. Only the first report is fanned out.
@@ -107,6 +103,10 @@ void XpShareService::OnShareRequest(const PacketEvent<SyncRfabExperienceRequest>
         spdlog::debug("XP share: suppressed duplicate amount {} from {:X}", amount, pSender->GetConnectionId());
         return;
     }
+
+    // The ledger is credited only for awards that were actually fanned out: a
+    // suppressed duplicate never reached anybody's client.
+    m_world.GetProgressionService().OnAward(amount);
 
     NotifySyncRfabExperience notify{};
     notify.Experience = amount;
