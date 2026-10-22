@@ -132,6 +132,13 @@ foreach ($cursorFile in @("cursor.png", "cursor.dds")) {
     }
 }
 
+$CursorPngRel = Join-Path $ModSourceDir "SkyrimTogetherReborn\assets\images\cursor.png"
+if (-not (Test-Path -LiteralPath $CursorPngRel)) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $CursorPngRel) -Force | Out-Null
+    [System.IO.File]::WriteAllBytes($CursorPngRel, [Convert]::FromBase64String("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"))
+    Write-Ok "Автоматически восстановлен курсор оверлея: $CursorPngRel"
+}
+
 $RequiredModFiles = @(
     "SkyrimTogether.esp",
     "SKSE\Plugins\RFAB_Online_Bindings.json",
@@ -140,8 +147,7 @@ $RequiredModFiles = @(
     "SkyrimTogetherReborn\EarlyLoad.dll",
     "SkyrimTogetherReborn\libcef.dll",
     "SkyrimTogetherReborn\UI\index.html",
-    "SkyrimTogetherReborn\assets\images\cursor.png",
-    "SkyrimTogetherReborn\assets\images\cursor.dds"
+    "SkyrimTogetherReborn\assets\images\cursor.png"
 )
 foreach ($rel in $RequiredModFiles) {
     $full = Join-Path $ModSourceDir $rel
@@ -308,6 +314,37 @@ if ([System.IO.Path]::GetFullPath($ModSourceDir) -ne [System.IO.Path]::GetFullPa
     }
 }
 Write-Ok "Мод RFAB_Online успешно скопирован в $TargetModDir"
+
+# Авто-исправление бинарника старой сборки (SE ID 75595 -> 75445 для BSGraphics::Renderer::Init)
+foreach ($exeRel in @("SkyrimTogetherReborn\SkyrimTogether.exe", "SkyrimTogetherReborn\SkyrimSE.exe")) {
+    $exeTarget = Join-Path $TargetModDir $exeRel
+    if (Test-Path -LiteralPath $exeTarget) {
+        $bytes = [System.IO.File]::ReadAllBytes($exeTarget)
+        $patchedCount = 0
+        $pos = 0
+        while (($i = [Array]::IndexOf($bytes, [byte]0x4B, $pos)) -ge 0 -and $i -lt ($bytes.Length - 4)) {
+            $pos = $i + 1
+            if ($bytes[$i+1] -eq 0x27 -and $bytes[$i+2] -eq 0x01 -and $bytes[$i+3] -eq 0x00) {
+                $lo = [Math]::Max(0, $i - 2048)
+                $hi = [Math]::Min($bytes.Length - 4, $i + 2048)
+                $jp = $lo
+                while (($j = [Array]::IndexOf($bytes, [byte]0xC5, $jp, ($hi - $jp + 1))) -ge 0) {
+                    $jp = $j + 1
+                    if ($bytes[$j+1] -eq 0x26 -and $bytes[$j+2] -eq 0x01 -and $bytes[$j+3] -eq 0x00) {
+                        $bytes[$i] = 0xB5
+                        $bytes[$i+1] = 0x26
+                        $patchedCount++
+                        break
+                    }
+                }
+            }
+        }
+        if ($patchedCount -gt 0) {
+            [System.IO.File]::WriteAllBytes($exeTarget, $bytes)
+            Write-Ok "Авто-хотфикс Renderer::Init (75595 -> 75445) применён к $exeTarget ($patchedCount мест)"
+        }
+    }
+}
 
 # 6. Активация мода и плагина во всех профилях MO2 + генерация точного loadorder.txt для сервера
 Write-Step "Шаг 4/7. Включение +RFAB_Online и *SkyrimTogether.esp в профиле MO2"

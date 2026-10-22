@@ -82,7 +82,8 @@ static TiltedPhoques::Initializer s_viewportHooks(
     []()
     {
         // Note: in Skyrim SE 1.5.97, BSGraphics::InitWindows (SE 75591 @ 0xD71F00) and
-        // BSGraphics::Renderer::Init (SE 75595 @ 0xD72810) are separate functions.
+        // BSGraphics::Renderer::Init (SE 75445 @ 0xD68DD0) are separate functions
+        // (whereas AE 77226 inlined InitWindows + D3DInit into Renderer::Init).
         // Only override dwStyle when explicitly requested via +force_windowed so we do not
         // break SSEDisplayTweaks.dll Borderless Fullscreen window sizing & cursor hitboxes in RFAB.
         const wchar_t* pCmdLine = GetCommandLineW();
@@ -99,9 +100,9 @@ static TiltedPhoques::Initializer s_viewportHooks(
             mem::pointer(windowLoc.GetPtr()) + 0x55 + 2,
             /*strip DISCL_EXCLUSIVE bits and append DISCL_NONEXCLUSIVE*/ 3);
 
-        // BSGraphics::Renderer::End (SE 75461 @ 0xD6A2B0) and BSGraphics::Renderer::Init (SE 75595 @ 0xD72810)
+        // BSGraphics::Renderer::End (SE 75461 @ 0xD6A2B0) and BSGraphics::Renderer::Init (SE 75445 @ 0xD68DD0)
         const VersionDbPtr<void> renderEnd(75461);
-        const VersionDbPtr<void> renderInit(75595);
+        const VersionDbPtr<void> renderInit(75445);
 
         Renderer_End = static_cast<decltype(Renderer_End)>(renderEnd.GetPtr());
         Renderer_Init = static_cast<decltype(Renderer_Init)>(renderInit.GetPtr());

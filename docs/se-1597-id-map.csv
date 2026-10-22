@@ -217,7 +217,7 @@ ae_id,se_1_5_97_id,se_rva_hex,kind,ref_count,first_reference,source,symbol
 70640,69270,0xC66580,pointer,1,Code/client/Games/Skyrim/NetImmerse/NiCamera.cpp:23,clibng:relocation,
 70717,69335,0xC68D20,pointer,1,Code/client/Systems/FaceGenSystem.cpp:62,phase0,
 76207,74481,0xD41970,pointer,1,Code/client/Systems/FaceGenSystem.cpp:25,phase0,NiAVObject::LookupBoneNodeByName_140D41970
-77226,75595,0xD72810,versiondb,2,Code/client/Games/Skyrim/BSGraphics/BSGraphicsRenderer.cpp:83,audit:split_ae_inline,BSGraphics::Renderer::Init @ 0xD72810 (NOTE: BSGraphicsRenderer.cpp:82 initWindowLoc MUST use SE 75591 @ 0xD71F00 + 0xA9 + 1!)
+77226,75445,0xD68DD0,versiondb,2,Code/client/Games/Skyrim/BSGraphics/BSGraphicsRenderer.cpp:83,clibng:relocation,BSGraphics::Renderer::Init @ 0xD68DD0 (initWindowLoc uses SE 75591 @ 0xD71F00 + 0xA9 + 1)
 77246,75461,0xD6A2B0,versiondb,1,Code/client/Games/Skyrim/BSGraphics/BSGraphicsRenderer.cpp:96,clibng:relocation,
 77299,75507,0xD6DBC0,pointer,1,Code/client/Systems/FaceGenSystem.cpp:63,se_ae.csv,RE::RendererData::CreateRenderTexture
 82074,79937,0xEBE150,pointer,1,Code/client/Games/Skyrim/Interface/UI.cpp:24,phase0,MenuManager::IsMenuOpen_140EBE150
