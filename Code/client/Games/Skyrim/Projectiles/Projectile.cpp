@@ -13,14 +13,33 @@
 TP_THIS_FUNCTION(TLaunch, BSPointerHandle<Projectile>*, BSPointerHandle<Projectile>, Projectile::LaunchData& arData);
 static TLaunch* RealLaunch = nullptr;
 
-TP_THIS_FUNCTION(TActorMagicCasterFire, bool, ActorMagicCaster, void* apArg1, void* apArg2, void* apArg3);
+TP_THIS_FUNCTION(TActorMagicCasterFire, bool, MagicCaster);
 static TActorMagicCasterFire* RealActorMagicCasterFire = nullptr;
+
+extern "C" bool ShouldBlockRemoteMagicProjectile(MagicCaster* apCaster) noexcept
+{
+    if (!apCaster)
+        return false;
+
+    const auto* pActorCaster = Cast<ActorMagicCaster>(apCaster);
+    if (!pActorCaster || !pActorCaster->pCasterActor)
+        return false;
+
+    const auto* pExtension = pActorCaster->pCasterActor->GetExtension();
+    if (!pExtension || !pExtension->IsRemote())
+        return false;
+
+    const auto* pSpell = Cast<SpellItem>(apCaster->pCurrentSpell);
+    if (pSpell && pSpell->eCastingType == MagicSystem::CastingType::CONCENTRATION)
+        return false;
+
+    return true;
+}
 
 BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apResult, LaunchData& apLaunchData) noexcept
 {
     BSPointerHandle<Projectile>* result = TiltedPhoques::ThisCall(RealLaunch, apResult, apLaunchData);
 
-    TP_ASSERT(result, "No projectile handle returned.");
     if (!result)
     {
         spdlog::error("No projectile handle returned.");
@@ -30,7 +49,6 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
-    TP_ASSERT(pProjectile, "No projectile found.");
     if (!pProjectile)
     {
         spdlog::error("No projectile found.");
@@ -40,24 +58,6 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
     pProjectile->fPower = apLaunchData.fPower;
 
     return result;
-}
-
-bool TP_MAKE_THISCALL(HookActorMagicCasterFire, ActorMagicCaster, void* apArg1, void* apArg2, void* apArg3)
-{
-    // Non-concentration spell projectiles fired by remote actors are spawned strictly via
-    // NotifyProjectileLaunch on receiving clients. Returning false at ActorMagicCaster::Fire
-    // function entry prevents the caller from dereferencing a null projectile handle without
-    // needing any fragile AE stack-frame unwind Xbyak trampoline.
-    if (apThis && apThis->pCasterActor && apThis->pCasterActor->GetExtension()->IsRemote())
-    {
-        const auto* pSpell = Cast<SpellItem>(apThis->pCurrentSpell);
-        if (!pSpell || pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION)
-        {
-            return false;
-        }
-    }
-
-    return TiltedPhoques::ThisCall(RealActorMagicCasterFire, apThis, apArg1, apArg2, apArg3);
 }
 
 BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projectile>, Projectile::LaunchData& arData)
@@ -119,7 +119,6 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 
     auto result = TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
 
-    TP_ASSERT(result, "No projectile handle returned.");
     if (!result)
     {
         spdlog::error("HookLaunch: no projectile handle returned.");
@@ -129,7 +128,6 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
-    TP_ASSERT(pProjectile, "No projectile found.");
     if (pProjectile)
         Event.Power = pProjectile->fPower;
 
@@ -141,13 +139,57 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 static TiltedPhoques::Initializer s_projectileHooks(
     []()
     {
-        // Projectile::Launch (SE 42928 @ 0x74B170) & ActorMagicCaster::Fire (SE 33672 @ 0x5506C0)
+        // Projectile::Launch (SE 42928 @ 0x74B170) & MagicCaster::FireProjectile (SE 33672 @ 0x5506C0)
         POINTER_SKYRIMSE(TLaunch, s_launch, 42928);
         POINTER_SKYRIMSE(TActorMagicCasterFire, s_actorMagicCasterFire, 33672);
+
+        struct FireEntryStub : TiltedPhoques::CodeGenerator
+        {
+            FireEntryStub()
+            {
+                // Entry RSP has 8-byte return address pushed (RSP % 16 == 8).
+                // Sub 0x88 makes RSP 16-byte aligned and reserves 0x20 callee shadow space + register save slots
+                // without touching caller's return address [S0] or stack arguments [S0 + 0x28+].
+                sub(rsp, 0x88);
+                mov(ptr[rsp + 0x20], rcx);
+                mov(ptr[rsp + 0x28], rdx);
+                mov(ptr[rsp + 0x30], r8);
+                mov(ptr[rsp + 0x38], r9);
+                movups(ptr[rsp + 0x40], xmm0);
+                movups(ptr[rsp + 0x50], xmm1);
+                movups(ptr[rsp + 0x60], xmm2);
+                movups(ptr[rsp + 0x70], xmm3);
+
+                mov(rax, reinterpret_cast<uintptr_t>(&ShouldBlockRemoteMagicProjectile));
+                call(rax);
+
+                mov(rcx, ptr[rsp + 0x20]);
+                mov(rdx, ptr[rsp + 0x28]);
+                mov(r8, ptr[rsp + 0x30]);
+                mov(r9, ptr[rsp + 0x38]);
+                movups(xmm0, ptr[rsp + 0x40]);
+                movups(xmm1, ptr[rsp + 0x50]);
+                movups(xmm2, ptr[rsp + 0x60]);
+                movups(xmm3, ptr[rsp + 0x70]);
+                add(rsp, 0x88);
+
+                cmp(al, 0);
+                jz("call_real");
+
+                mov(al, 0);
+                ret();
+
+                L("call_real");
+                mov(rax, reinterpret_cast<uintptr_t>(&RealActorMagicCasterFire));
+                mov(rax, ptr[rax]);
+                jmp(rax);
+            }
+        };
+        static FireEntryStub s_fireEntryStub;
 
         RealLaunch = s_launch.Get();
         RealActorMagicCasterFire = s_actorMagicCasterFire.Get();
 
         TP_HOOK(&RealLaunch, HookLaunch);
-        TP_HOOK(&RealActorMagicCasterFire, HookActorMagicCasterFire);
+        TP_HOOK(&RealActorMagicCasterFire, s_fireEntryStub.getCode<TActorMagicCasterFire*>());
     });

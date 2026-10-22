@@ -466,7 +466,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     if (remoteItor != std::end(remoteView))
     {
-        spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+        spdlog::debug("Character with remote id {:X} is already spawned.", acMessage.ServerId);
         return;
     }
 

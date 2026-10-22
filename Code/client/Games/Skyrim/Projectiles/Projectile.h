@@ -49,10 +49,10 @@ struct Projectile : TESObjectREFR
         bool bForceConeOfFire;       // unsure // usually false
     };
 
-    uint8_t unkA0[0x120 - sizeof(TESObjectREFR)];
+    uint8_t unk98[0x118 - sizeof(TESObjectREFR)];
     void* pActorCause;
     uint32_t hShooter;
-    uint8_t unk[0x190 - 0x12C];
+    uint8_t unk124[0x188 - 0x124];
     float fPower;
     float fSpeedMult;
     float fRange;
@@ -63,4 +63,8 @@ struct Projectile : TESObjectREFR
 };
 
 static_assert(sizeof(Projectile::LaunchData) == 0xA8);
-static_assert(offsetof(Projectile, fPower) == 0x190);
+static_assert(offsetof(Projectile, pActorCause) == 0x118);
+static_assert(offsetof(Projectile, hShooter) == 0x120);
+static_assert(offsetof(Projectile, fPower) == 0x188);
+static_assert(offsetof(Projectile, fRange) == 0x190);
+static_assert(offsetof(Projectile, fDamage) == 0x198);
