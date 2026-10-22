@@ -50,6 +50,8 @@
 | `Gameplay:bEnableMiscQuestSync` | `false` | (Экспериментально) синхронизация мелких квестов. |
 | `GameServer:uQuestHistoryExpiration` | `30000` | Окно дедупликации квестов, мс. |
 | `ModPolicy:bEnableModCheck` | `false` | Проверка модов (заблокировано: только через код). |
+| `ModPolicy:bAllowSKSE` | `true` | Пускать ли клиентов с активным SKSE (заблокировано). |
+| `ModPolicy:bAllowMO2` | `true` | Пускать ли клиентов, запущенных через Mod Organizer 2 (заблокировано). |
 | `LiveServices:bAnnounceServer` | `false` | Публикация в списке серверов. |
 
 ## 2. Клиентский `RFABOnline.ini`

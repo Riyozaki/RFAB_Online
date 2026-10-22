@@ -985,7 +985,7 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
 
     if (award.LevelUp)
     {
-        Utils::ShowHudMessage("Level up");
+        Utils::ShowHudMessage(String("Level up"));
         spdlog::info("Shared RFAB XP crossed a level threshold (total {})", award.Total);
     }
 

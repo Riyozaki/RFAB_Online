@@ -6,6 +6,7 @@
 #include <World.h>
 
 #include <Forms/TESGlobal.h>
+#include <Games/References.h>
 #include <Games/TES.h>
 #include <PlayerCharacter.h>
 

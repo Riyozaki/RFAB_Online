@@ -27,6 +27,11 @@
   с последним pre-AE коммитом upstream (`5c5837f6`), ловит AE-раскладки,
   просочившиеся в порт;
 - `tools/run_pure_tests.sh` — сборка и запуск хостовых тестов чистой логики
-  (`Code/tests/pure/`), без Windows и без игры.
+  (`Code/tests/pure/`), без Windows и без игры;
+- `tools/check_settings.py` — сверка настроек сервера в коде с
+  `docs/configuration.md` в обе стороны (ловит и недокументированные ключи, и
+  устаревшую документацию);
+- `tools/run_checks.sh` — все проверки, возможные без Windows и игры (тесты +
+  настройки + раскладки структур).
 
 Данные-фикстуры и сторонние бинарники — см. [`../RFAB_extract/README.md`](../RFAB_extract/README.md).

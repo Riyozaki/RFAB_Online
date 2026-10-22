@@ -22,7 +22,10 @@
 #include <Setting.h>
 namespace
 {
-Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
+// Declared in GameServer.cpp. A second Console::Setting with the same name would
+// be a *different* object: "set Gameplay:bAutoPartyJoin false" (and the ini)
+// would only update one of them, so the setting would silently half-work.
+extern Console::Setting bAutoPartyJoin;
 }
 
 PartyService::PartyService(World& aWorld, entt::dispatcher& aDispatcher) noexcept

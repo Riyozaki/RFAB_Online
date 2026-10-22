@@ -103,7 +103,8 @@ void Player::AddRfabXp(int32_t aAmount) noexcept
         return;
 
     // The same ceiling the client award path uses (a float GlobalVariable).
-    m_rfabXpTotal = std::min<int64_t>(static_cast<int64_t>(m_rfabXpTotal) + aAmount, 10'000'000);
+    const int64_t total = static_cast<int64_t>(m_rfabXpTotal) + aAmount;
+    m_rfabXpTotal = static_cast<int32_t>(std::min<int64_t>(total, 10'000'000));
 }
 
 void Player::SetCellComponent(const CellIdComponent& aCellComponent) noexcept

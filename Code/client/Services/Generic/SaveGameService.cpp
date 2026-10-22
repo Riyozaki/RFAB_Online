@@ -289,5 +289,5 @@ void SaveGameService::RecordSave(const std::filesystem::path& acPath, bool aNoti
 
 void SaveGameService::Notify(const std::string& acMessage) const noexcept
 {
-    Utils::ShowHudMessage(acMessage.c_str());
+    Utils::ShowHudMessage(String(acMessage));
 }
