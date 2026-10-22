@@ -575,7 +575,7 @@ inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acG
 
     // Hide NetScriptFramework's BetterStealing.dll (conflicts with ST add-item prologue hook SE 36525)
     // while keeping ActorLimitPlugin.dll, BugFixesSSE.dll, GamePlayTweaks.dll, and CustomSkills.dll active.
-    const std::filesystem::path betterStealing = aRootPath / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll";
+    const std::filesystem::path betterStealing = acGameOrMo2Root / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll";
     if (std::filesystem::exists(betterStealing, ec))
     {
         std::filesystem::rename(betterStealing, std::filesystem::path(betterStealing.wstring() + L".mohidden"), ec);
