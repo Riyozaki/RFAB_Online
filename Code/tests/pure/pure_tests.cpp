@@ -612,6 +612,15 @@ void TestProgressionRecord()
 
     // Re-serialising a restored ledger is stable.
     CHECK(restored.Serialize() == text);
+
+    // The total feeds the "average experience" newcomer grant and ignores
+    // negative records (they cannot exist, but the ledger must not go negative).
+    CHECK(ledger.TotalXp() == 1234ull + 20ull);
+    PlayerRecord negative;
+    negative.Username = "Negative";
+    negative.RfabXp = -500;
+    ledger.Upsert(negative);
+    CHECK(ledger.TotalXp() == 1234ull + 20ull);
 }
 
 void TestHealthRestore()
@@ -712,6 +721,28 @@ void TestRateLimiter()
     CHECK(longIdle.Available() <= 5);
 }
 
+void TestXpAverageShare()
+{
+    BeginCase("XpShare::AverageShare");
+
+    using Gameplay::XpShare::AverageShare;
+    using Gameplay::XpShare::kMaxSingleReport;
+
+    CHECK(AverageShare(0, 4) == 0);
+    CHECK(AverageShare(1000, 0) == 0);
+    CHECK(AverageShare(1000, 4) == 250);
+    CHECK(AverageShare(1001, 4) == 250); // integer division, no rounding up
+
+    // A single player's ledger must not hand out their whole history twice.
+    CHECK(AverageShare(1000, 1) == 1000);
+
+    // The grant is a single award, so it obeys the same per-message cap.
+    CHECK(AverageShare(100ull * kMaxSingleReport, 2) == kMaxSingleReport);
+
+    // Absurd totals cannot overflow the cast.
+    CHECK(AverageShare(0xFFFF'FFFF'FFFF'FFFFull, 1) == kMaxSingleReport);
+}
+
 void TestActorValueIds()
 {
     BeginCase("ActorValue ids are the Skyrim SE ones");
@@ -745,6 +776,7 @@ int main()
     TestProgressionRecord();
     TestRateLimiter();
     TestHealthRestore();
+    TestXpAverageShare();
     TestSanitise();
     TestActorValueIds();
 

@@ -461,6 +461,19 @@ const PlayerRecord* Ledger::Find(std::string_view acUsername) const noexcept
     return it != m_records.end() ? &*it : nullptr;
 }
 
+uint64_t Ledger::TotalXp() const noexcept
+{
+    uint64_t total = 0;
+
+    for (const auto& record : m_records)
+    {
+        if (record.RfabXp > 0)
+            total += static_cast<uint64_t>(record.RfabXp);
+    }
+
+    return total;
+}
+
 std::string Ledger::Serialize() const
 {
     std::string text;

@@ -96,6 +96,9 @@ public:
     size_t Deserialize(std::string_view acText);
 
     [[nodiscard]] size_t Size() const noexcept { return m_records.size(); }
+
+    //! Sum of every remembered experience total (used for the newcomer average).
+    [[nodiscard]] uint64_t TotalXp() const noexcept;
     void Clear() noexcept { m_records.clear(); }
 
 private:

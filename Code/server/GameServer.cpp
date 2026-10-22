@@ -388,6 +388,44 @@ void GameServer::BindServerCommands()
             m_pResources->ForEachManifest([&](const auto& aManifest) { out->info("{} -> {}", aManifest.Name.c_str(), aManifest.Description.c_str()); });
         });
 
+    m_commands.RegisterCommand<>(
+        "rfabstats",
+        "Show RFAB Online gameplay state: health multiplier, XP sharing counters, progression ledger",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+
+            // Health scaling: the effective multiplier and how it was derived.
+            const auto& healthScaling = m_pWorld->GetHealthScalingService();
+            out->info("Health scaling: x{:.2f} for {} player(s) (effective NPC max health multiplier, "
+                      "Gameplay:bEnableHealthScaling / Gameplay:bScalePlayerSummons)",
+                      healthScaling.GetMultiplier(),
+                      m_pWorld->GetPlayerManager().Count());
+
+            // Experience sharing: accepted / replayed / deduplicated / throttled.
+            const auto& stats = m_pWorld->GetXpShareService().GetStats();
+            out->info("XP sharing: {} accepted, {} replayed, {} duplicate amount(s) suppressed, {} throttled, {} XP fanned out",
+                      stats.ReportsAccepted,
+                      stats.ReportsRejected,
+                      stats.ReportsSuppressed,
+                      stats.ReportsThrottled,
+                      stats.TotalAwarded);
+
+            // Progression ledger: how many players the server can restore.
+            auto& progression = m_pWorld->GetProgressionService();
+            out->info("Progression ledger: {} player record(s), file: {}", progression.TrackedPlayers(), progression.GetPath().c_str());
+        });
+
+    m_commands.RegisterCommand<>(
+        "rfabflush",
+        "Write the progression ledger to disk now",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            m_pWorld->GetProgressionService().Flush(true);
+            out->info("Progression ledger written to {}", m_pWorld->GetProgressionService().GetPath().c_str());
+        });
+
     m_commands.RegisterCommand<>("quit", "Stop the server", [&](Console::ArgStack&) { Kill(); });
 
     m_commands.RegisterCommand<int64_t, int64_t>(

@@ -12,6 +12,7 @@
 #include <Events/PlayerLeaveEvent.h>
 #include <Events/UpdateEvent.h>
 
+#include <Gameplay/XpShare.h>
 #include <Messages/NotifySyncRfabExperience.h>
 
 #include <Services/ProgressionService.h>
@@ -22,6 +23,11 @@ Console::Setting bEnableProgressionLedger{"Gameplay:bEnableProgressionLedger",
                                           "Remember every player's RFAB experience and top returning players back up to it "
                                           "(protects against crashes and loading an older save)",
                                           true};
+
+Console::Setting bXpBalanceNewcomers{"Gameplay:bXpBalanceNewcomers",
+                                     "Start a player who has no ledger record at the average experience of the server "
+                                     "(so a newcomer is not hours behind), instead of zero",
+                                     true};
 
 uint64_t NowUnixMs() noexcept
 {
@@ -94,8 +100,35 @@ void ProgressionService::OnPlayerEnterWorld(const PlayerEnterWorldEvent& acEvent
 
     const Player& player = *acEvent.pPlayer;
     const auto* pRecord = m_ledger.Find(player.GetUsername().c_str());
+
     if (pRecord == nullptr)
+    {
+        // A player the server has never seen. Handing out zero means they start
+        // hours behind everybody else in a session that has been running for a
+        // while, which is exactly what "everyone progresses together" forbids.
+        if (!bXpBalanceNewcomers.value_as<bool>() || m_ledger.Size() == 0)
+            return;
+
+        const uint32_t share = Gameplay::XpShare::AverageShare(m_ledger.TotalXp(), static_cast<uint32_t>(m_ledger.Size()));
+        if (share == 0 || player.GetRfabXpTotal() >= static_cast<int32_t>(share))
+            return;
+
+        const uint32_t grant = share - static_cast<uint32_t>(std::max(0, player.GetRfabXpTotal()));
+
+        NotifySyncRfabExperience notify{};
+        notify.Experience = grant;
+        player.Send(notify);
+
+        if (Player* pMutable = m_world.GetPlayerManager().GetById(player.GetId()))
+        {
+            pMutable->SetRfabXpTotal(player.GetRfabXpTotal() + static_cast<int32_t>(grant));
+            m_ledger.Upsert(MakeRecord(*pMutable));
+            m_dirty = true;
+        }
+
+        spdlog::info("Progression: newcomer '{}' starts with the server average, granting {} XP", player.GetUsername().c_str(), grant);
         return;
+    }
 
     const int32_t catchUp = Gameplay::Progression::ComputeCatchUp(pRecord->RfabXp, player.GetRfabXpTotal());
     if (catchUp <= 0)

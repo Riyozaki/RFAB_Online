@@ -252,6 +252,28 @@ private:
 };
 
 /**
+ * @brief Fair share of a total for a player who joined the session late.
+ *
+ * Policy: a player who joins a session that has already progressed starts with
+ * the *average* experience per player in the ledger, not with zero and not with
+ * the maximum. Rationale: the requirement is that everyone progresses together;
+ * a fresh arrival stuck hours behind would never catch up, while handing out the
+ * maximum would reward never having played.
+ *
+ * @param aTotalXp     sum of every player's remembered experience
+ * @param aPlayerCount number of players the total is spread over
+ * @return the amount to top the player up to (0 when there is nothing to grant)
+ */
+inline uint32_t AverageShare(uint64_t aTotalXp, uint32_t aPlayerCount) noexcept
+{
+    if (aPlayerCount == 0 || aTotalXp == 0)
+        return 0;
+
+    const uint64_t share = aTotalXp / aPlayerCount;
+    return share > kMaxSingleReport ? kMaxSingleReport : static_cast<uint32_t>(share);
+}
+
+/**
  * @brief Sanitises an incoming amount.
  */
 inline uint32_t SanitiseAmount(uint32_t aAmount) noexcept
