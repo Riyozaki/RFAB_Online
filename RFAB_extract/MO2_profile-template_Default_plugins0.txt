@@ -1,0 +1,45 @@
+Skyrim.esm
+Update.esm
+Dawnguard.esm
+HearthFires.esm
+Dragonborn.esm
+Requiem Records Fix.esp 
+Unofficial Skyrim Special Edition Patch.esp 
+Skyrim Project Optimization - Full Version.esm 
+SkyUI_SE.esp 
+SkyHUD.esp 
+UIExtensions.esp 
+Extended UI.esp 
+RaceMenu.esp 
+RaceMenuPlugin.esp 
+Skyrim Mixed Enhanced Physics - Force and Projectiles.esp 
+AHZmoreHUDInventory.esp 
+tbmchrysamere.esp 
+UltimateDragons.esp 
+DeadlyDragons.esp 
+Apocalypse - The Spell Package.esp 
+Requiem.esp 
+RFAB_AE.esp 
+Umbra RFAB Edition.esp 
+RFAB XP.esp 
+RFAB_Origins.esp 
+RFAB_AutoLoot.esp 
+RFAB_Interface.esp 
+RFAB Horses.esp 
+RFAB_MCM.esp 
+RFAB_Deadlands.esp 
+RFAB_BountyHunt.esp 
+RFAB_Cartographer.esp 
+RFAB_FavorQuests.esp 
+RFAB_TrueCompanion.esp 
+RFAB_Dragons.esp 
+[RFAB] Fall Of The Thieves Guild.esp 
+RFAB_SolitudeSewers.esp 
+RFAB_ClassSystem.esp 
+Requiem for the Indifferent.esp 
+MCMHelper.esp 
+TrueHUD.esl 
+UntarnishedUI_Blur.esp 
+QuickLootEE.esp 
+BetterContainerControls.esp 
+RFAB WheelMenu.esp 

@@ -16,3 +16,6 @@
 [submodule "Libraries/cpp-httplib"]
 	path = Libraries/cpp-httplib
 	url = https://github.com/yhirose/cpp-httplib.git
+[submodule "RFAB_ref"]
+	path = RFAB_ref
+	url = https://github.com/drake1ch/RFAB.git
