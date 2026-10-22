@@ -120,6 +120,8 @@ private:
     float m_cachedExperience = 0.f;
     int32_t m_lastRfabExperience = 0;
     Gameplay::XpShare::EchoFilter m_rfabEchoFilter{};
+    // Sums shared awards so a busy fight shows one line instead of a dozen.
+    Gameplay::XpShare::HudAccumulator m_rfabXpHud{};
     bool m_rfabExperienceInitialized = false;
     // Monotonic per-session counter; the server uses it to drop replays and
     // duplicated reports. Restarts at 0 on reconnect.

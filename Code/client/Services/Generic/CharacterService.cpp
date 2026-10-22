@@ -1,3 +1,5 @@
+#include <cstdio>
+
 #include "Forms/TESObjectCELL.h"
 #include "Forms/TESWorldSpace.h"
 #include "Services/PapyrusService.h"
@@ -264,6 +266,16 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     RunExperienceUpdates();
     RunRfabExperienceUpdates();
     ApplyCachedWeaponDraws(acUpdateEvent);
+
+    // Shared XP from the server arrives in bursts (a quest completion, a boss
+    // kill); report it once per window instead of once per message.
+    const uint32_t sharedXp = m_rfabXpHud.Take(NowMs());
+    if (sharedXp != 0)
+    {
+        char buffer[64];
+        std::snprintf(buffer, sizeof(buffer), "RFAB XP +%u", sharedXp);
+        Utils::ShowHudMessage(String(buffer));
+    }
 }
 
 void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const noexcept
@@ -993,6 +1005,10 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     // straight back to the server by RunRfabExperienceUpdates().
     m_lastRfabExperience = award.Total;
     m_rfabExperienceInitialized = true;
+
+    // The award lands in the RFAB counter immediately; the HUD line is batched
+    // (see RunRfabExperienceUpdates) so simultaneous awards do not stack up.
+    m_rfabXpHud.Add(acMessage.Experience, NowMs());
 
     spdlog::debug("Received RFAB experience {} (total {})", delta, award.Total);
 }

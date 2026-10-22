@@ -743,6 +743,50 @@ void TestXpAverageShare()
     CHECK(AverageShare(0xFFFF'FFFF'FFFF'FFFFull, 1) == kMaxSingleReport);
 }
 
+void TestXpHudAccumulator()
+{
+    BeginCase("XpShare::HudAccumulator");
+
+    using Gameplay::XpShare::HudAccumulator;
+
+    HudAccumulator hud(2000);
+
+    // Nothing pending: nothing to show.
+    CHECK(hud.Take(0) == 0);
+
+    // The first award is reported after the window, not instantly.
+    hud.Add(100, 1000);
+    CHECK(hud.Pending() == 100);
+    CHECK(hud.Take(1500) == 0);
+    CHECK(hud.Take(3000) == 100);
+    CHECK(hud.Pending() == 0);
+
+    // Several awards inside the window are summed into one line: the window
+    // opened at 3000 (the last report), so nothing is due just before 5000.
+    hud.Add(10, 4000);
+    hud.Add(20, 4500);
+    hud.Add(0, 4600); // zero is ignored
+    CHECK(hud.Take(4999) == 0);
+    CHECK(hud.Take(5000) == 30);
+
+    // Flush ignores the window (used when the session ends).
+    hud.Add(5, 5500);
+    CHECK(hud.Flush() == 5);
+    CHECK(hud.Flush() == 0);
+
+    // A clock that jumps backwards drops the pending total instead of holding it.
+    hud.Add(7, 6000);
+    CHECK(hud.Pending() == 7);
+    hud.Add(7, 100);
+    CHECK(hud.Pending() == 0);
+
+    // Reset clears everything.
+    hud.Add(9, 5000);
+    CHECK(hud.Pending() == 9);
+    hud.Reset();
+    CHECK(hud.Pending() == 0);
+}
+
 void TestActorValueIds()
 {
     BeginCase("ActorValue ids are the Skyrim SE ones");
@@ -777,6 +821,7 @@ int main()
     TestRateLimiter();
     TestHealthRestore();
     TestXpAverageShare();
+    TestXpHudAccumulator();
     TestSanitise();
     TestActorValueIds();
 

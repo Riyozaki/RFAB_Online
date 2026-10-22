@@ -49,13 +49,19 @@
   `Gameplay:uXpReportsPerSecond`) — отчёт об опыте усиливается в рассылку всем.
 * **Диагностика**: консольные команды `rfabstats` (множитель HP, счётчики XP,
   размер реестра) и `rfabflush` (сброс реестра на диск).
-* **Тесты на хосте** (`tools/run_pure_tests.sh`, 235 проверок): HP-скейлинг,
-  дедупликация опыта, политика сохранений, JSON-индекс, арифметика начисления.
+* **HUD**: полученный от сервера опыт суммируется и показывается одной строкой
+  `RFAB XP +N` не чаще раза в 2 с, а не по строке на каждое событие.
+* **Тесты на хосте** (`tools/run_pure_tests.sh`, 248 проверок): HP-скейлинг,
+  дедупликация опыта, политика сохранений, JSON-индекс, арифметика начисления,
+  буфер HUD.
 * **Документация**: `docs/configuration.md`, `docs/RFAB-compatibility.md`,
   `docs/manual-test-checklist.md`, `docs/multiplayer-saves.md`,
   `docs/rfab-xp.md`.
 * **Инструменты**: `tools/struct_layout_diff.py` (сверка раскладок с pre-AE
-  эталоном), `tools/run_pure_tests.sh`.
+  эталоном), `tools/run_pure_tests.sh`, `tools/check_settings.py` (сверка
+  настроек с документацией; нашёл реальный баг — `Gameplay:bAutoPartyJoin` был
+  объявлен дважды, и переключатель работал наполовину), `tools/run_checks.sh`
+  (все проверки без Windows и игры).
 
 ### Известные ограничения
 

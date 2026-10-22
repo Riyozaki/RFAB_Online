@@ -274,6 +274,82 @@ inline uint32_t AverageShare(uint64_t aTotalXp, uint32_t aPlayerCount) noexcept
 }
 
 /**
+ * @brief Batches received awards for the HUD.
+ *
+ * A player who did not take part in an event still gets its experience; showing
+ * one HUD line per award would turn a fight into a wall of text, so the amounts
+ * are summed and reported at most once per window.
+ */
+class HudAccumulator
+{
+public:
+    static constexpr uint64_t kDefaultWindowMs = 2000;
+
+    explicit HudAccumulator(uint64_t aWindowMs = kDefaultWindowMs) noexcept
+        : m_windowMs(aWindowMs == 0 ? kDefaultWindowMs : aWindowMs)
+    {
+    }
+
+    //! Adds an award to the pending total.
+    void Add(uint32_t aAmount, uint64_t aNowMs) noexcept
+    {
+        if (aAmount == 0)
+            return;
+
+        // A clock that went backwards means "restart": drop the pending total
+        // instead of holding it forever.
+        if (aNowMs < m_lastReportMs)
+        {
+            m_pending = 0;
+            m_lastReportMs = aNowMs;
+            return;
+        }
+
+        m_pending += aAmount;
+
+        if (m_lastReportMs == 0)
+            m_lastReportMs = aNowMs;
+    }
+
+    /**
+     * @brief Returns the amount to report, or 0 when nothing is due.
+     */
+    uint32_t Take(uint64_t aNowMs) noexcept
+    {
+        if (m_pending == 0)
+            return 0;
+
+        if (aNowMs >= m_lastReportMs && aNowMs - m_lastReportMs < m_windowMs)
+            return 0;
+
+        const uint32_t amount = m_pending;
+        m_pending = 0;
+        m_lastReportMs = aNowMs;
+        return amount;
+    }
+
+    //! Flushes without waiting for the window (on disconnect, for example).
+    uint32_t Flush() noexcept
+    {
+        const uint32_t amount = m_pending;
+        m_pending = 0;
+        return amount;
+    }
+
+    [[nodiscard]] uint32_t Pending() const noexcept { return m_pending; }
+    void Reset() noexcept
+    {
+        m_pending = 0;
+        m_lastReportMs = 0;
+    }
+
+private:
+    uint64_t m_windowMs;
+    uint64_t m_lastReportMs{0};
+    uint32_t m_pending{0};
+};
+
+/**
  * @brief Sanitises an incoming amount.
  */
 inline uint32_t SanitiseAmount(uint32_t aAmount) noexcept
