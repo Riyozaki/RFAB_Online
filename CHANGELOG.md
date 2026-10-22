@@ -40,7 +40,16 @@
 * **Сохранения в мультиплеере** (`SaveGameService`, `RFABOnline.ini`): загрузка
   сейва в сессии закрывает соединение; сейвы, сделанные в сессии, помечаются в
   `RFABOnline_saves_index.jsonl`; см. `docs/multiplayer-saves.md`.
-* **Тесты на хосте** (`tools/run_pure_tests.sh`, 135 проверок): HP-скейлинг,
+* **Реестр прогресса** (`Gameplay:bEnableProgressionLedger`): сервер помнит
+  максимальный опыт каждого ника (`Data/progress/progress.jsonl`) и при входе
+  досылает разницу, если клиент потерял прогресс (краш, старое сохранение, новый
+  персонаж). Новый игрок при `Gameplay:bXpBalanceNewcomers` стартует со среднего
+  опыта по серверу. Протокол v3: `AuthenticationRequest.RfabXpTotal`.
+* **Анти-спам опыта**: token bucket на клиента (`Gameplay:uXpReportBurst`,
+  `Gameplay:uXpReportsPerSecond`) — отчёт об опыте усиливается в рассылку всем.
+* **Диагностика**: консольные команды `rfabstats` (множитель HP, счётчики XP,
+  размер реестра) и `rfabflush` (сброс реестра на диск).
+* **Тесты на хосте** (`tools/run_pure_tests.sh`, 235 проверок): HP-скейлинг,
   дедупликация опыта, политика сохранений, JSON-индекс, арифметика начисления.
 * **Документация**: `docs/configuration.md`, `docs/RFAB-compatibility.md`,
   `docs/manual-test-checklist.md`, `docs/multiplayer-saves.md`,
