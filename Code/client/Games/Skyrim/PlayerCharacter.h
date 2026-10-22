@@ -95,6 +95,15 @@ struct Skills
     uint32_t legendaryLevels[Skill::kTotal];
 };
 
+static_assert(sizeof(Skills) == 0x128);
+
+struct PlayerSkills
+{
+    Skills* data;
+};
+
+static_assert(sizeof(PlayerSkills) == 0x8);
+
 struct TESQuest;
 
 struct PlayerCharacter : Actor
@@ -112,7 +121,7 @@ struct PlayerCharacter : Actor
     void SetDifficulty(const int32_t aDifficulty, bool aForceUpdate = true, bool aExpectGameDataLoaded = true) noexcept;
 
     void AddSkillExperience(int32_t aSkill, float aExperience) noexcept;
-    float GetSkillExperience(Skills::Skill aSkill) const noexcept { return (*pSkills)->skills[aSkill].xp; }
+    float GetSkillExperience(Skills::Skill aSkill) const noexcept { return pSkills->data->skills[aSkill].xp; }
 
     NiPoint3 RespawnPlayer() noexcept;
 
@@ -137,10 +146,10 @@ struct PlayerCharacter : Actor
     uint8_t pad1[0x580 - sizeof(Actor)];
     GameArray<ObjectiveInstance> objectives;
     uint8_t pad598[0x9B0 - 0x598];
-    Skills** pSkills;
+    PlayerSkills* pSkills;
     uint8_t pad9B8[0xAC8 - 0x9B8];
     TESForm* locationForm;
-    uint8_t padAC8[0x28];
+    uint8_t padAD0[0x28];
     int32_t difficulty;
     uint8_t padAFC[0xB10 - 0xAFC];
     GameArray<TintMask*> baseTints;
@@ -152,6 +161,7 @@ struct PlayerCharacter : Actor
 static_assert(offsetof(PlayerCharacter, objectives) == 0x580);
 static_assert(offsetof(PlayerCharacter, pSkills) == 0x9B0);
 static_assert(offsetof(PlayerCharacter, locationForm) == 0xAC8);
+static_assert(offsetof(PlayerCharacter, difficulty) == 0xAF8);
 static_assert(offsetof(PlayerCharacter, baseTints) == 0xB10);
 static_assert(offsetof(PlayerCharacter, overlayTints) == 0xB28);
 static_assert(sizeof(PlayerCharacter) == 0xBE0);

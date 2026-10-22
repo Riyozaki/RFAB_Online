@@ -221,11 +221,18 @@ struct TESObjectREFR : TESForm
     TESObjectCELL* parentCell;
     void* loadedState;
     ExtraDataList extraData;
-    BSRecursiveLock refLock;
+    uint64_t unk88;
     uint16_t scale;
-    uint16_t referenceFlags;
+    uint8_t unk92;
+    uint8_t unk93;
 };
 
 // 0x98 on Skyrim SE 1.5.97 (pre-1.6.629 ExtraDataList without vtable).
 static_assert(sizeof(TESObjectREFR) == 0x98);
+static_assert(offsetof(TESObjectREFR, parentCell) == 0x60);
 static_assert(offsetof(TESObjectREFR, loadedState) == 0x68);
+static_assert(offsetof(TESObjectREFR, extraData) == 0x70);
+static_assert(offsetof(TESObjectREFR, unk88) == 0x88);
+static_assert(offsetof(TESObjectREFR, scale) == 0x90);
+static_assert(offsetof(TESObjectREFR, unk92) == 0x92);
+static_assert(offsetof(TESObjectREFR, unk93) == 0x93);

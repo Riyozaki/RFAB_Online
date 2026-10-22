@@ -384,6 +384,8 @@ public:
 // layout because TESObjectREFR's ExtraDataList has no vtable yet. Matches
 // CommonLibSSE-NG's versioned accessors for < SSE 1.6.629
 // (actorValueOwner 0xB0, actorState 0xB8, Actor runtime data 0xE0).
+static_assert(offsetof(Actor, magicTarget) == 0x98);
+static_assert(offsetof(Actor, addedSpells) == 0x188);
 static_assert(offsetof(Actor, currentProcess) == 0xF0);
 static_assert(offsetof(Actor, flags1) == 0xE0);
 static_assert(offsetof(Actor, actorValueOwner) == 0xB0);
