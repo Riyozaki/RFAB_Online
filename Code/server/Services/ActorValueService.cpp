@@ -98,6 +98,13 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
 
     if (it != actorValuesView.end())
     {
+        if (const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it))
+        {
+            // Never allow late in-flight regen/heal packets to add health above 0 on an already-dead non-player NPC.
+            if (!pCharacterComponent->IsPlayer() && pCharacterComponent->IsDead() && message.DeltaHealth > 0.f)
+                return;
+        }
+
         auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
         const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
         float updatedHealth = std::max(0.f, currentHealth + message.DeltaHealth);
@@ -128,6 +135,16 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     if (it != characterView.end())
     {
         auto& characterComponent = characterView.get<CharacterComponent>(*it);
+        const auto& ownerComponent = characterView.get<OwnerComponent>(*it);
+
+        // Any peer may deal the killing blow (IsDead == true), whereas resurrecting/respawning an already-dead NPC
+        // (IsDead == false) is accepted strictly from the authoritative owner to prevent stale non-owner resurrection!
+        if (!message.IsDead && characterComponent.IsDead() && ownerComponent.GetOwner() != acMessage.pPlayer)
+        {
+            spdlog::debug("Ignored stale non-owner resurrection on dead actor {:x}", message.Id);
+            return;
+        }
+
         characterComponent.SetDead(message.IsDead);
 
         if (message.IsDead)

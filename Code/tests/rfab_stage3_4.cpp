@@ -1,5 +1,7 @@
 #include <catch2/catch.hpp>
 
+#include <common/CoopFlightDigest.h>
+#include <common/CoopOwnership.h>
 #include <common/RfabModpackCompat.h>
 
 #include <Messages/ClientMessageFactory.h>
@@ -7,10 +9,7 @@
 #include <Structs/ServerSettings.h>
 
 #include <entt/entt.hpp>
-namespace TiltedPhoques
-{
-using ConnectionId_t = uint64_t;
-}
+#include <Server.hpp>
 
 #include <Services/EncounterService.h>
 #include <Services/RfabProgressionService.h>
@@ -429,3 +428,201 @@ TEST_CASE("Stage 4: RfabProgressionLedger deduplicates XP races, rebates duplica
     REQUIRE(ledger.FindMatchingRecentAmbush(2, cell, draugrBase, 106.f, 204.f, 0.f, 1110, 3000, 840.f) == 502);
     REQUIRE(ledger.FindMatchingRecentAmbush(2, cell, draugrBase, 111.f, 209.f, 0.f, 1120, 3000, 840.f) == 503);
 }
+
+TEST_CASE("Co-op Hardening & Mutation Twins: Epoch Ownership, Anti-Flap Hysteresis, Stale-Boss-Delete Guard & Monotonic Death",
+          "[rfab][coop_anything][ownership]")
+{
+    SECTION("Wire roundtrip preserves OwnershipEpoch across AssignCharacterResponse, NotifyOwnershipTransfer, NotifyRelinquishControl & RequestOwnershipTransfer")
+    {
+        AssignCharacterResponse assign{};
+        assign.Cookie = 77;
+        assign.ServerId = 0x2001;
+        assign.Owner = true;
+        assign.OwnershipEpoch = 42;
+        AssertServerPacketRoundtrip(assign);
+
+        NotifyOwnershipTransfer grant{};
+        grant.ServerId = 0x2001;
+        grant.OwnershipEpoch = 43;
+        AssertServerPacketRoundtrip(grant);
+
+        NotifyRelinquishControl relinquish{};
+        relinquish.ServerId = 0x2001;
+        relinquish.OwnershipEpoch = 44;
+        AssertServerPacketRoundtrip(relinquish);
+
+        RequestOwnershipTransfer handoff{};
+        handoff.ServerId = 0x2001;
+        handoff.OwnershipEpoch = 44;
+        AssertClientPacketRoundtrip(handoff);
+    }
+
+    SECTION("Mutation Twin #1 (stale_handoff_boss_delete): stale RequestOwnershipTransfer from former owner NEVER deletes live boss")
+    {
+        auto simulateHandoff = [](bool aEnableEpochAndOwnerGuard) -> bool {
+            uint32_t currentOwner = 2; // Boss already transferred from Player 1 -> Player 2
+            uint64_t currentEpoch = 2;
+            std::vector<uint32_t> invalidOwners{};
+
+            // Late packet from former owner Player 1 (epoch 1) arrives while only Players {1, 2} are online
+            const uint32_t lateSender = 1;
+            const uint64_t lateEpoch = 1;
+
+            if (aEnableEpochAndOwnerGuard &&
+                !CoopOwnership::ValidateHandoffFromOwner(currentOwner, currentEpoch, lateSender, lateEpoch))
+            {
+                return true; // Boss stays alive under Player 2!
+            }
+
+            invalidOwners.push_back(lateSender);
+            bool foundReplacement = false;
+            for (uint32_t candidate : {1u, 2u})
+            {
+                if (candidate == currentOwner)
+                    continue;
+                if (std::find(invalidOwners.begin(), invalidOwners.end(), candidate) != invalidOwners.end())
+                    continue;
+                foundReplacement = true;
+            }
+            return foundReplacement; // false == CharacterRemoveEvent destroys live boss!
+        };
+
+        // Prove oracle catches the unguarded upstream bug (Mutation Twin MUST fail!)
+        REQUIRE_FALSE(simulateHandoff(false));
+        // Prove our CoopOwnership guard saves the live boss 100% of the time
+        REQUIRE(simulateHandoff(true));
+    }
+
+    SECTION("Mutation Twin #2 (ownership_ping_pong, summon pin, downed-challenger block & monotonic death/damage preservation)")
+    {
+        CoopOwnership::PolicyConfig policy{};
+        policy.MinVoluntaryHoldMs = 1500;
+
+        // 100ms after Player 1 acquired boss, Player 2's competing claim is rejected by 1500ms anti-flap hysteresis
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 1100, false, false, true, false, false, policy) ==
+                CoopOwnership::ClaimDecision::kRejectHoldWindowActive);
+
+        // Once 1600ms pass (or if Player 1 falls on knee!), Player 2 cleanly takes control
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 2600, false, false, true, false, false, policy) ==
+                CoopOwnership::ClaimDecision::kAccept);
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 1100, false, false, true, true, false, policy) ==
+                CoopOwnership::ClaimDecision::kAccept);
+
+        // Player summons & avatars can NEVER be stolen, and a downed player NEVER steals AI from a standing ally
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 5000, false, true, true, false, false, policy) ==
+                CoopOwnership::ClaimDecision::kRejectSummonPinned);
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 5000, true, false, true, false, false, policy) ==
+                CoopOwnership::ClaimDecision::kRejectPlayerAvatar);
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 5000, false, false, true, false, true, policy) ==
+                CoopOwnership::ClaimDecision::kRejectChallengerDowned);
+
+        // Wounded boss (350 / 1200 HP) is NEVER healed back to 1200 HP when party leader walks into boss room
+        bool claimedDead = false;
+        float claimedHp = 1200.0f;
+        CoopOwnership::ReconcileClaimedState(false, 350.0f, true, claimedDead, claimedHp);
+        REQUIRE_FALSE(claimedDead);
+        REQUIRE(claimedHp == Approx(350.0f));
+
+        // Dead enemy on server (IsDead == true) is NEVER resurrected by a late claim snapshot with IsDead == false
+        bool lateClaimDead = false;
+        float lateClaimHp = 800.0f;
+        CoopOwnership::ReconcileClaimedState(true, 0.0f, true, lateClaimDead, lateClaimHp);
+        REQUIRE(lateClaimDead);
+        REQUIRE(lateClaimHp == Approx(0.0f));
+
+        // Out-of-order Grant(epoch 2) arriving AFTER Relinquish(epoch 3) is strictly rejected (zero two_owners split-brain)
+        CoopOwnership::ClientEpochTracker tracker{};
+        REQUIRE(tracker.AcceptGrant(0x99, 2));
+        REQUIRE(tracker.AcceptRelinquish(0x99, 3));
+        REQUIRE_FALSE(tracker.AcceptGrant(0x99, 2));
+        REQUIRE(tracker.AcceptGrant(0x99, 4));
+        REQUIRE_FALSE(tracker.AcceptRelinquish(0x99, 3));
+    }
+}
+
+TEST_CASE("Co-op Hardening: Monotonic WorldEpoch across Rollbacks, Distant-City Sub-Party Wipe & 256-Bucket Digest",
+          "[rfab][coop_anything][epoch_digest]")
+{
+    SECTION("Mutation Twin #3 (no_world_epoch): Rollback bumps WorldEpoch monotonically so pre-wipe packets are rejected")
+    {
+        SaveSnapshotCoordinator coord("EPOCHTEST", 3);
+        const auto b1 = coord.BeginBarrier({1, 2}, false, 1000);
+        REQUIRE(b1.has_value());
+        REQUIRE(coord.RecordClientAck(1, 1, true, "") == SaveSnapshotCoordinator::AckResolution::WaitingForMorePlayers);
+        REQUIRE(coord.RecordClientAck(2, 1, true, "") == SaveSnapshotCoordinator::AckResolution::ReadyToCommit);
+        coord.ConsumeAndCommit(1100);
+
+        const uint64_t preWipeWorldEpoch = coord.GetCurrentWorldEpoch();
+        REQUIRE(preWipeWorldEpoch == 1);
+
+        // Rollback to Epoch 1 MUST strictly advance GetCurrentWorldEpoch() (> preWipeWorldEpoch) while keeping slot Epoch 1
+        coord.NotifyRolledBackTo(1, "RFAB_MP_EPOCHTEST_Manual_0", 5000);
+        REQUIRE(coord.GetLastCommittedEpoch() == 1);
+        REQUIRE(coord.GetCurrentWorldEpoch() > preWipeWorldEpoch);
+    }
+
+    SECTION("Distant peaceful teammate crafting 5 km away NEVER deadlocks local combat party wipe in dungeon")
+    {
+        EncounterCoordinator::Config cfg{};
+        cfg.PartyWipeDelaySec = 3.0f;
+        cfg.LeashRadiusMeters = 120.0f;
+        EncounterCoordinator enc(cfg);
+
+        // Players 1 & 2 fight in Bleak Falls Barrow; Player 3 peacefully crafts in Riften 5000m away
+        enc.UpdatePlayerCombatReport(1, true, 4, 3.0f, false, 0.f, 0.f, 0.f, 1000);
+        enc.UpdatePlayerCombatReport(2, true, 4, 4.0f, false, 100.f, 0.f, 0.f, 1000);
+        enc.UpdatePlayerCombatReport(3, false, 0, 9999.f, false, RfabCompat::MetersToSkyrimUnits(5000.0f), 0.f, 0.f, 1000);
+
+        // Both dungeon fighters go down -> encounter wipe MUST fire cleanly despite Player 3 standing in Riften!
+        enc.SetPlayerDowned(1, true, 0.f, 0.f, 0.f, 4, 2000);
+        enc.SetPlayerDowned(2, true, 100.f, 0.f, 0.f, 4, 2100);
+
+        const auto warnTick = enc.Tick(2200);
+        REQUIRE(warnTick.PartyWipeWarningStarted);
+        REQUIRE_FALSE(warnTick.PartyWipeTriggered);
+
+        const auto wipeTick = enc.Tick(5300);
+        REQUIRE(wipeTick.PartyWipeTriggered);
+    }
+
+    SECTION("Order-independent 256-bucket FNV-1a world state digest & exact divergence pinpointing")
+    {
+        CoopFlight::BucketedStateDigest serverState;
+        CoopFlight::BucketedStateDigest clientState;
+
+        // Populate server forward (0..31) and client backward (31..0): root digests MUST match bit-for-bit!
+        for (int i = 0; i < 32; ++i)
+        {
+            serverState.Put(CoopFlight::StateCategory::kQuestStage, "MQ" + std::to_string(i), static_cast<uint64_t>(i * 10));
+            serverState.Put(CoopFlight::StateCategory::kSyncedGlobal, "RFAB_Global_" + std::to_string(i), static_cast<uint64_t>(i + 1));
+        }
+        for (int i = 31; i >= 0; --i)
+        {
+            clientState.Put(CoopFlight::StateCategory::kSyncedGlobal, "RFAB_Global_" + std::to_string(i), static_cast<uint64_t>(i + 1));
+            clientState.Put(CoopFlight::StateCategory::kQuestStage, "MQ" + std::to_string(i), static_cast<uint64_t>(i * 10));
+        }
+
+        REQUIRE(serverState.ComputeRootDigest() == clientState.ComputeRootDigest());
+        REQUIRE_FALSE(serverState.FirstDivergence(clientState).has_value());
+
+        // Introduce single subtle global desync on RFAB_Global_17 -> FirstDivergence immediately names exact key!
+        clientState.Put(CoopFlight::StateCategory::kSyncedGlobal, "RFAB_Global_17", 9999ULL);
+        REQUIRE(serverState.ComputeRootDigest() != clientState.ComputeRootDigest());
+        const auto diff = serverState.FirstDivergence(clientState);
+        REQUIRE(diff.has_value());
+        REQUIRE(diff->Key.find("RFAB_Global_17") != std::string::npos);
+        REQUIRE(diff->LocalValueHash == 18ULL);
+        REQUIRE(diff->RemoteValueHash == 9999ULL);
+
+        // Verify FlightRingBuffer wraparound preserves exact FIFO order of latest events
+        CoopFlight::FlightRingBuffer<8> ring{};
+        for (uint64_t seq = 1; seq <= 11; ++seq)
+            ring.Record(seq * 100, 2, CoopFlight::FlightEventKind::kOwnershipChanged, static_cast<uint32_t>(seq), seq);
+
+        const auto snap = ring.SnapshotRecent();
+        REQUIRE(snap.size() == 8);
+        REQUIRE(snap.front().Sequence == 4);
+        REQUIRE(snap.back().Sequence == 11);
+    }
+}
+

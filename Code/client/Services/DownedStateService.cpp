@@ -208,6 +208,9 @@ void DownedStateService::ApplyAuthoritativeRevive(
         }
     }
 
+    if (aShowPostCombatNotice)
+        m_encounterHostileFormIds.clear();
+
     pPlayer->SetNoBleedoutRecovery(false);
 
     SyncPlayerDownedState syncUp{};
@@ -232,6 +235,7 @@ void DownedStateService::ResetAllStates() noexcept
     m_channelTargetPlayerId = 0;
     m_channelElapsedSec = 0.0;
     m_bossDefeatedPendingReport = false;
+    m_encounterHostileFormIds.clear();
     m_liveBossesSeenInCombat.clear();
     m_remoteDownedByPlayerId.clear();
 
@@ -393,6 +397,8 @@ void DownedStateService::SendCombatEncounterReport() noexcept
     float nearestUnitsSq = std::numeric_limits<float>::max();
     const float maxUnits = RfabCompat::MetersToSkyrimUnits(kHostileScanRadiusMeters);
     const float maxUnitsSq = maxUnits * maxUnits;
+    const float leashUnits = RfabCompat::MetersToSkyrimUnits(m_world.GetServerSettings().CombatLeashRadiusMeters);
+    const float leashUnitsSq = leashUnits * leashUnits;
 
     auto view = m_world.view<FormIdComponent>();
     for (auto entity : view)
@@ -408,25 +414,44 @@ void DownedStateService::SendCombatEncounterReport() noexcept
 
         if (pNpc->IsDead())
         {
+            m_encounterHostileFormIds.erase(pNpc->formID);
             if (isBossTier && m_liveBossesSeenInCombat.erase(pNpc->formID) > 0)
                 m_bossDefeatedPendingReport = true;
             continue;
         }
 
-        if (!pNpc->IsInCombat())
-            continue;
-
-        if (isBossTier)
-            m_liveBossesSeenInCombat.insert(pNpc->formID);
-
         const float dx = pNpc->position.x - pPlayer->position.x;
         const float dy = pNpc->position.y - pPlayer->position.y;
         const float dz = pNpc->position.z - pPlayer->position.z;
         const float distSq = dx * dx + dy * dy + dz * dz;
-        if (distSq <= maxUnitsSq)
+
+        if (pNpc->IsInCombat())
         {
-            ++nearbyHostiles;
-            nearestUnitsSq = std::min(nearestUnitsSq, distSq);
+            m_encounterHostileFormIds.insert(pNpc->formID);
+            if (isBossTier)
+                m_liveBossesSeenInCombat.insert(pNpc->formID);
+
+            if (distSq <= maxUnitsSq)
+            {
+                ++nearbyHostiles;
+                nearestUnitsSq = std::min(nearestUnitsSq, distSq);
+            }
+            continue;
+        }
+
+        // Prevent RFAB invisibility potion / stealth / boss ethereal-phase or StopCombat() aggro-drop exploits:
+        // any hostile who engaged in this encounter stays unresolved until actually dead (pNpc->IsDead()) or beyond 120m leash!
+        if (m_encounterHostileFormIds.contains(pNpc->formID))
+        {
+            if (distSq <= leashUnitsSq)
+            {
+                ++nearbyHostiles;
+                nearestUnitsSq = std::min(nearestUnitsSq, distSq);
+            }
+            else
+            {
+                m_encounterHostileFormIds.erase(pNpc->formID);
+            }
         }
     }
 

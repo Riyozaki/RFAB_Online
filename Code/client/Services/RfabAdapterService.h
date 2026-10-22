@@ -41,8 +41,10 @@ public:
 
     [[nodiscard]] const RfabCompat::RfabBindingsConfig& GetBindings() const noexcept { return m_bindings; }
     [[nodiscard]] const RfabCompat::RfabLiveXpTable& GetLiveXpTable() const noexcept { return m_liveXpTable; }
+    [[nodiscard]] uint64_t GetCurrentWorldEpoch() const noexcept { return m_currentWorldEpoch; }
 
     void RefreshRuntimeBindings() noexcept;
+    void NotifySaveLoadReset() noexcept;
 
 private:
     void OnConnected(const ConnectedEvent& acEvent) noexcept;
@@ -74,6 +76,8 @@ private:
     bool m_autosaveSuppressed{false};
 
     double m_pollAccumulatorSec{0.0};
+    uint64_t m_currentWorldEpoch{1};
+    bool m_seededReadBooks{false};
     std::unordered_set<uint32_t> m_knownReadBookFormIds{};
     std::unordered_map<std::string, TESGlobal*> m_watchedGlobals{};
     std::unordered_map<std::string, float> m_lastGlobalValues{};

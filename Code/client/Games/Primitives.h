@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Games/Memory.h>
+#include <iterator>
 
 template <class T> struct GameArray
 {
@@ -21,23 +22,37 @@ template <class T> struct GameArray
 
     void Resize(size_t aLength) noexcept;
 
-    // Range for loop compatibility
+    // Range for loop & C++20 <algorithm> compatibility
     struct Iterator
     {
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = T;
+        using pointer = T*;
+        using reference = T&;
+
+        Iterator() = default;
         Iterator(T* apEntry)
             : m_pEntry(apEntry)
         {
         }
-        Iterator operator++()
+        Iterator& operator++()
         {
             ++m_pEntry;
             return *this;
         }
+        Iterator operator++(int)
+        {
+            Iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+        bool operator==(const Iterator& acRhs) const { return m_pEntry == acRhs.m_pEntry; }
         bool operator!=(const Iterator& acRhs) const { return m_pEntry != acRhs.m_pEntry; }
-        const T& operator*() const { return *m_pEntry; }
+        T& operator*() const { return *m_pEntry; }
 
     private:
-        T* m_pEntry;
+        T* m_pEntry{nullptr};
     };
 
     Iterator begin() { return Iterator(&data[0]); }
@@ -46,19 +61,33 @@ template <class T> struct GameArray
 
     struct ConstIterator
     {
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = T;
+        using pointer = const T*;
+        using reference = const T&;
+
+        ConstIterator() = default;
         ConstIterator(const T* apEntry)
             : m_pEntry(apEntry)
         {}
-        ConstIterator operator++()
+        ConstIterator& operator++()
         {
             ++m_pEntry;
             return *this;
         }
+        ConstIterator operator++(int)
+        {
+            ConstIterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+        bool operator==(const ConstIterator& acRhs) const { return m_pEntry == acRhs.m_pEntry; }
         bool operator!=(const ConstIterator& acRhs) const { return m_pEntry != acRhs.m_pEntry; }
         const T& operator*() const { return *m_pEntry; }
         
     private:
-        const T* m_pEntry;
+        const T* m_pEntry{nullptr};
     };
 
     ConstIterator begin() const { return ConstIterator(&data[0]); }

@@ -1,6 +1,7 @@
 #pragma once
 #include "Structs/Inventory.h"
 #include "Structs/ActorData.h"
+#include <CoopOwnership.h>
 
 struct ActorAddedEvent;
 struct ActorRemovedEvent;
@@ -59,7 +60,7 @@ struct CharacterService
 
     static void DeleteTempActor(const uint32_t aFormId) noexcept;
 
-    bool TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity) const noexcept;
+    bool TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity, uint64_t aOwnershipEpoch = 0) const noexcept;
 
     void OnActorAdded(const ActorAddedEvent& acEvent) noexcept;
     void OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept;
@@ -94,6 +95,7 @@ struct CharacterService
 
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
+    void NotifySaveLoadReset() noexcept;
 
 private:
     void MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
@@ -125,6 +127,7 @@ private:
     int32_t m_lastAppliedRemoteXpAmount = 0;
     std::chrono::steady_clock::time_point m_lastAppliedRemoteXpTime{};
     int32_t m_creditToRefundOnLocalQuestXp = 0;
+    mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

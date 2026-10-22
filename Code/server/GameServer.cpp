@@ -594,6 +594,60 @@ void GameServer::BindServerCommands()
 
             out->info("{}", output.c_str());
         });
+
+    m_commands.RegisterCommand<>(
+        "savecheckpoint", "Trigger a two-phase coordinated RFAB multiplayer checkpoint across all connected players",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            if (!m_pWorld)
+                return;
+            const bool started = m_pWorld->GetSaveSnapshotService().TriggerCoordinatedSave(false, nullptr);
+            out->info("[RFAB] savecheckpoint started={}", started);
+        });
+
+    m_commands.RegisterCommand<>(
+        "rollbackcheckpoint", "Synchronously roll back server state & all connected clients to the latest checkpoint",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            if (!m_pWorld)
+                return;
+            const bool ok = m_pWorld->GetSaveSnapshotService().TriggerRollbackToLatest(false);
+            out->info("[RFAB] rollbackcheckpoint triggered={}", ok);
+        });
+
+    m_commands.RegisterCommand<>(
+        "dumpflightstate", "Dump RFAB co-op WorldEpoch, 256-bucket state digest, and recent flight recorder events",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            if (!m_pWorld)
+                return;
+            const auto& snapSvc = m_pWorld->GetSaveSnapshotService();
+            const auto digest = snapSvc.BuildLiveWorldDigest();
+            const auto recent = snapSvc.GetCoordinator().GetFlightRing().SnapshotRecent(12);
+            out->info(
+                "[RFAB Flight] WorldEpoch={} LastSaveEpoch={} Slot='{}' Snapshots={} Keys={} Digest={} FlightRecords={}",
+                snapSvc.GetCurrentWorldEpoch(),
+                snapSvc.GetLastCommittedEpoch(),
+                snapSvc.GetLastCommittedSlot().empty() ? "none" : snapSvc.GetLastCommittedSlot().c_str(),
+                snapSvc.GetSnapshotCount(),
+                digest.Size(),
+                digest.ComputeHexDigest().c_str(),
+                snapSvc.GetCoordinator().GetFlightRing().TotalRecorded());
+            for (const auto& rec : recent)
+            {
+                out->info(
+                    "  #{} ts={}ms worldEpoch={} kind={} subj={:X} aux={}",
+                    rec.Sequence,
+                    rec.TimestampMs,
+                    rec.WorldEpoch,
+                    static_cast<uint32_t>(rec.Kind),
+                    rec.SubjectId,
+                    rec.AuxValue);
+            }
+        });
 }
 
 /* Update Info fields from user facing CVARS.*/

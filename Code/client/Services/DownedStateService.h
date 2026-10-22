@@ -89,6 +89,7 @@ private:
     double m_channelDurationSec{4.0};
 
     bool m_bossDefeatedPendingReport{false};
+    std::unordered_set<uint32_t> m_encounterHostileFormIds{};
     std::unordered_set<uint32_t> m_liveBossesSeenInCombat{};
     std::unordered_map<uint32_t, bool> m_remoteDownedByPlayerId{};
 

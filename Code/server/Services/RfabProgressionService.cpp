@@ -26,7 +26,20 @@ void RfabProgressionService::OnSyncProgressionEvent(const PacketEvent<SyncRfabPr
     if (!pSender)
         return;
 
-    const uint64_t currentEpoch = m_world.GetSaveSnapshotService().GetLastCommittedEpoch();
+    const uint64_t currentWorldEpoch = m_world.GetSaveSnapshotService().GetCurrentWorldEpoch();
+    if (pkt.EpochId != 0 && pkt.EpochId < currentWorldEpoch)
+    {
+        m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+            0, CoopFlight::FlightEventKind::kStaleEpochRejected, pSender->GetId(), pkt.EpochId);
+        spdlog::debug(
+            "[RFAB Progression] Discarded stale progression packet from player {} (pktEpoch={} < currentWorldEpoch={})",
+            pSender->GetId(),
+            pkt.EpochId,
+            currentWorldEpoch);
+        return;
+    }
+
+    const uint64_t currentEpoch = currentWorldEpoch;
     const std::string sourceKey(pkt.SourceKey.c_str(), pkt.SourceKey.size());
     const std::string editorId(pkt.EditorId.c_str(), pkt.EditorId.size());
 
@@ -117,7 +130,15 @@ void RfabProgressionService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexce
     if (!pNewPlayer)
         return;
 
-    const uint64_t currentEpoch = m_world.GetSaveSnapshotService().GetLastCommittedEpoch();
+    const uint64_t currentEpoch = m_world.GetSaveSnapshotService().GetCurrentWorldEpoch();
+
+    // Sync current WorldEpoch even if no books/globals have been recorded yet.
+    NotifyRfabProgressionEvent epochMarker{};
+    epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
+    epochMarker.EpochId = currentEpoch;
+    epochMarker.XpDelta = 0;
+    epochMarker.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
+    pNewPlayer->Send(epochMarker);
 
     // Sync all already-read XP books so the newly joined player adds them to XPBooksReaded immediately.
     for (const auto& bookId : m_ledger.GetReadBooks())

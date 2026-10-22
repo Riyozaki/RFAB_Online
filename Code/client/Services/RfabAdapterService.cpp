@@ -230,6 +230,11 @@ void RfabAdapterService::OnConnected(const ConnectedEvent&) noexcept
         m_pXpBooksFormList->ForEachFormId([this](uint32_t formId) {
             m_knownReadBookFormIds.insert(formId);
         });
+        m_seededReadBooks = true;
+    }
+    else
+    {
+        m_seededReadBooks = false;
     }
 }
 
@@ -247,6 +252,20 @@ void RfabAdapterService::OnDisconnected(const DisconnectedEvent&) noexcept
     m_watchedGlobals.clear();
     m_lastGlobalValues.clear();
     m_scannedGlobalsOnce = false;
+    m_seededReadBooks = false;
+    m_currentWorldEpoch = 1;
+}
+
+void RfabAdapterService::NotifySaveLoadReset() noexcept
+{
+    m_knownReadBookFormIds.clear();
+    m_watchedGlobals.clear();
+    m_lastGlobalValues.clear();
+    m_scannedGlobalsOnce = false;
+    m_seededReadBooks = false;
+    // Allow 2.0s post-load settle window so BGSSaveLoadManager finishes restoring ESS state
+    // and authoritative server resync packets land before we poll local FormLists/TESGlobals again.
+    m_pollAccumulatorSec = -2.0;
 }
 
 void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
@@ -273,6 +292,15 @@ void RfabAdapterService::PollReadXpBooks() noexcept
     if (!m_pXpBooksFormList)
         return;
 
+    if (!m_seededReadBooks)
+    {
+        m_pXpBooksFormList->ForEachFormId([this](uint32_t formId) {
+            m_knownReadBookFormIds.insert(formId);
+        });
+        m_seededReadBooks = true;
+        return;
+    }
+
     auto& modSystem = m_world.GetModSystem();
     m_pXpBooksFormList->ForEachFormId([this, &modSystem](uint32_t formId) {
         if (!m_knownReadBookFormIds.insert(formId).second)
@@ -287,6 +315,7 @@ void RfabAdapterService::PollReadXpBooks() noexcept
 
         SyncRfabProgressionEvent ev{};
         ev.Kind = SyncRfabProgressionEvent::EventKind::BookRead;
+        ev.EpochId = m_currentWorldEpoch;
         ev.SourceKey = String(keyBuf);
         ev.BookId = netBookId;
         ev.XpDelta = 0; // Numeric XP delta continues flowing smoothly; FormList prevents double-reading by peers!
@@ -336,6 +365,7 @@ void RfabAdapterService::PollSyncedGlobals() noexcept
 
         SyncRfabProgressionEvent ev{};
         ev.Kind = SyncRfabProgressionEvent::EventKind::GlobalValueSync;
+        ev.EpochId = m_currentWorldEpoch;
         ev.EditorId = String(editorId.c_str());
         ev.GlobalValue = currentVal;
         m_transport.Send(ev);
@@ -344,6 +374,9 @@ void RfabAdapterService::PollSyncedGlobals() noexcept
 
 void RfabAdapterService::OnNotifyProgressionEvent(const NotifyRfabProgressionEvent& acMessage) noexcept
 {
+    if (acMessage.EpochId > m_currentWorldEpoch)
+        m_currentWorldEpoch = acMessage.EpochId;
+
     switch (acMessage.Kind)
     {
     case NotifyRfabProgressionEvent::EventKind::BookRead:

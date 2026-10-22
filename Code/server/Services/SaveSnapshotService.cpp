@@ -11,6 +11,7 @@
 #include <Messages/NotifyExecuteLoad.h>
 #include <Messages/NotifyPrepareSave.h>
 #include <Messages/NotifyQuestUpdate.h>
+#include <Messages/NotifyRfabProgressionEvent.h>
 #include <Messages/RequestCoordinatedSaveLoad.h>
 #include <Services/CalendarService.h>
 #include <Services/EncounterService.h>
@@ -233,14 +234,22 @@ void SaveSnapshotService::AbortBarrier(const std::string& acReason) noexcept
 
 void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bool aIsPartyWipe) noexcept
 {
-    m_coordinator.NotifyRolledBackTo(acSnapshot.EpochId, acSnapshot.SlotName);
+    m_coordinator.NotifyRolledBackTo(acSnapshot.EpochId, acSnapshot.SlotName, NowSteadyMs());
 
     // 1. Restore RFAB progression ledger (so bosses/quests attempted AFTER this checkpoint award full XP again!)
     m_world.GetRfabProgressionService().GetLedger().RestoreSnapshot(acSnapshot.Progression);
 
-    // 2. Restore quest logs for connected players
+    // 2. Restore quest logs for connected players AND flush transient 30s QuestStageDedupHistory + SceneMaster
+    // so replaying a quest stage or dialogue scene right after F9 / Party Wipe is NEVER suppressed as a "duplicate"!
+    auto& partyService = m_world.GetPartyService();
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
+        if (PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer))
+        {
+            pParty->GetQuestStageDedupHistory().Reset();
+            pParty->GetQuestStageDedupHistory().ResetSceneMaster();
+        }
+
         if (const auto it = acSnapshot.QuestLogsByPlayerId.find(pPlayer->GetId()); it != acSnapshot.QuestLogsByPlayerId.end())
             pPlayer->GetQuestLogComponent().QuestContent = it->second;
         else
@@ -288,11 +297,36 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         : String("RFAB Online: Синхронная загрузка чекпоинта группы");
 
     GameServer::Get()->SendToPlayers(loadCmd, nullptr);
+
+    // Broadcast monotonic WorldGeneration marker & authoritative RFAB globals so every client immediately
+    // advances its local WorldEpoch and discards any pre-rollback progression events still in flight.
+    const uint64_t worldGen = m_coordinator.GetCurrentWorldEpoch();
+    auto& ledger = m_world.GetRfabProgressionService().GetLedger();
+    for (const auto& [editorId, val] : ledger.GetSyncedGlobals())
+    {
+        NotifyRfabProgressionEvent globalResync{};
+        globalResync.Kind = NotifyRfabProgressionEvent::EventKind::GlobalValueSync;
+        globalResync.EpochId = worldGen;
+        globalResync.EditorId = String(editorId.c_str());
+        globalResync.GlobalValue = val;
+        globalResync.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
+        GameServer::Get()->SendToPlayers(globalResync, nullptr);
+    }
+
+    NotifyRfabProgressionEvent epochMarker{};
+    epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
+    epochMarker.EpochId = worldGen;
+    epochMarker.XpDelta = 0;
+    epochMarker.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
+    GameServer::Get()->SendToPlayers(epochMarker, nullptr);
+
     spdlog::info(
-        "[RFAB SaveSnapshot] Rolled back server world & dispatched synchronous load to Epoch={} Slot='{}' (PartyWipe={})",
+        "[RFAB SaveSnapshot] Rolled back server world & dispatched synchronous load to Epoch={} WorldGen={} Slot='{}' (PartyWipe={}, Digest={})",
         acSnapshot.EpochId,
+        worldGen,
         acSnapshot.SlotName,
-        aIsPartyWipe);
+        aIsPartyWipe,
+        BuildLiveWorldDigest().ComputeHexDigest());
 }
 
 bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
@@ -305,7 +339,17 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
     }
 
     // Even if a wipe occurs BEFORE the first multiplayer checkpoint was created in this session,
-    // clear server downed/wipe state and instruct every client to reload its own PreJoin backup save!
+    // advance WorldGeneration, flush transient quest dedup cache, clear server downed/wipe state,
+    // and instruct every client to reload its PreJoin backup save!
+    m_coordinator.NotifyRolledBackTo(0, "", NowSteadyMs());
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        if (PartyService::Party* pParty = m_world.GetPartyService().GetPlayerParty(pPlayer))
+        {
+            pParty->GetQuestStageDedupHistory().Reset();
+            pParty->GetQuestStageDedupHistory().ResetSceneMaster();
+        }
+    }
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
 
     NotifyExecuteLoad fallbackLoad{};
@@ -315,6 +359,13 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
     fallbackLoad.AllowPreJoinFallback = true;
     fallbackLoad.Message = String("RFAB Online: Отряд пал — загрузка стартового сохранения сессии");
     GameServer::Get()->SendToPlayers(fallbackLoad, nullptr);
+
+    NotifyRfabProgressionEvent epochMarker{};
+    epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
+    epochMarker.EpochId = m_coordinator.GetCurrentWorldEpoch();
+    epochMarker.XpDelta = 0;
+    epochMarker.AuthoritativeTotalXp = m_world.GetRfabProgressionService().GetLedger().GetTotalSharedXp();
+    GameServer::Get()->SendToPlayers(epochMarker, nullptr);
 
     spdlog::info("[RFAB SaveSnapshot] Triggered pre-checkpoint session backup reload (PartyWipe={})", aIsPartyWipe);
     return true;
@@ -413,4 +464,53 @@ void SaveSnapshotService::OnSaveAck(const PacketEvent<CoordinatedSaveAck>& acMes
         FinalizeCommit();
     else if (res == SaveSnapshotCoordinator::AckResolution::Aborted)
         AbortBarrier(reason);
+}
+
+CoopFlight::BucketedStateDigest SaveSnapshotService::BuildLiveWorldDigest() const
+{
+    CoopFlight::BucketedStateDigest digest;
+
+    const auto& ledger = m_world.GetRfabProgressionService().GetLedger();
+    digest.Put(CoopFlight::StateCategory::kSharedXp, "total_xp", static_cast<uint64_t>(ledger.GetTotalSharedXp()));
+
+    for (const auto& bookId : ledger.GetReadBooks())
+    {
+        char key[32]{};
+        std::snprintf(key, sizeof(key), "%08X:%08X", bookId.ModId, bookId.BaseId);
+        digest.Put(CoopFlight::StateCategory::kReadBook, key, 1ULL);
+    }
+
+    for (const auto& [editorId, val] : ledger.GetSyncedGlobals())
+    {
+        const auto quantized = static_cast<uint64_t>(static_cast<int64_t>(val * 1000.0f));
+        digest.Put(CoopFlight::StateCategory::kSyncedGlobal, editorId, quantized);
+    }
+
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        for (const auto& q : pPlayer->GetQuestLogComponent().QuestContent.Entries)
+        {
+            char key[32]{};
+            std::snprintf(key, sizeof(key), "%08X:%08X", q.Id.ModId, q.Id.BaseId);
+            digest.Put(CoopFlight::StateCategory::kQuestStage, key, static_cast<uint64_t>(q.Stage));
+        }
+    }
+
+    auto ownerView = m_world.view<OwnerComponent>();
+    for (auto entity : ownerView)
+    {
+        const auto& ownerComp = ownerView.get<OwnerComponent>(entity);
+        char key[24]{};
+        std::snprintf(key, sizeof(key), "%08X", World::ToInteger(entity));
+        const uint32_t ownerId = ownerComp.GetOwner() ? ownerComp.GetOwner()->GetId() : 0;
+        const uint64_t combined = (ownerComp.Epoch << 16) ^ static_cast<uint64_t>(ownerId);
+        digest.Put(CoopFlight::StateCategory::kActorOwnership, key, combined);
+    }
+
+    digest.Put(
+        CoopFlight::StateCategory::kSaveCheckpoint,
+        m_coordinator.GetLastCommittedSlot().empty() ? "none" : m_coordinator.GetLastCommittedSlot(),
+        m_coordinator.GetLastCommittedEpoch());
+
+    return digest;
 }

@@ -39,6 +39,7 @@ public:
         uint32_t PlayerId{};
         bool IsDowned{false};
         bool HadHostilesWhenDowned{false};
+        bool ParticipatedInEncounter{false};
         bool InCombat{false};
         uint32_t NearbyHostileCount{0};
         float NearestHostileDistanceMeters{9999.0f};
@@ -100,12 +101,16 @@ public:
 
         if (aInCombat || aNearbyHostileCount > 0)
         {
+            rec.ParticipatedInEncounter = true;
             m_encounterActive = true;
             m_combatClearSinceMs.reset();
         }
-        else if (m_encounterActive && !m_combatClearSinceMs.has_value())
+        else if (m_encounterActive)
         {
-            m_combatClearSinceMs = aNowMs;
+            if (IsWithinLeashOfAnyParticipant(rec))
+                rec.ParticipatedInEncounter = true;
+            if (!m_combatClearSinceMs.has_value())
+                m_combatClearSinceMs = aNowMs;
         }
     }
 
@@ -131,6 +136,7 @@ public:
 
         if (aIsDowned)
         {
+            rec.ParticipatedInEncounter = true;
             rec.HadHostilesWhenDowned = (aNearbyHostiles > 0) || m_encounterActive;
             m_encounterActive = true;
             m_combatClearSinceMs.reset();
@@ -139,7 +145,7 @@ public:
         {
             rec.HadHostilesWhenDowned = false;
             m_channelsByTarget.erase(aPlayerId);
-            if (AreAnyPlayersAlive())
+            if (AreAnyEncounterParticipantsAlive())
                 m_wipeStartedAtMs.reset();
         }
 
@@ -230,8 +236,9 @@ public:
             ++it;
         }
 
-        // 2. Check Total Party Wipe (all tracked party members simultaneously downed)
-        if (!m_players.empty() && !AreAnyPlayersAlive() && CountDownedPlayers() > 0)
+        // 2. Check Total Encounter Wipe: triggers when all combatants in the active encounter have fallen
+        // (even if another party member is peacefully crafting 5 km away in another city and never entered the fight!).
+        if (!m_players.empty() && !AreAnyEncounterParticipantsAlive() && CountDownedPlayers() > 0)
         {
             if (!m_wipeStartedAtMs.has_value())
             {
@@ -299,6 +306,7 @@ public:
                 rec.HadHostilesWhenDowned = false;
                 events.PostCombatRevivedPlayers.push_back(playerId);
             }
+            rec.ParticipatedInEncounter = false;
         }
 
         m_channelsByTarget.clear();
@@ -316,6 +324,7 @@ public:
         {
             rec.IsDowned = false;
             rec.HadHostilesWhenDowned = false;
+            rec.ParticipatedInEncounter = false;
             rec.InCombat = false;
             rec.NearbyHostileCount = 0;
         }
@@ -342,11 +351,25 @@ private:
         return RfabCompat::SkyrimUnitsToMeters(skyrimUnits);
     }
 
-    [[nodiscard]] bool AreAnyPlayersAlive() const noexcept
+    [[nodiscard]] bool AreAnyEncounterParticipantsAlive() const noexcept
     {
         for (const auto& [_, rec] : m_players)
         {
-            if (!rec.IsDowned)
+            if (rec.ParticipatedInEncounter && !rec.IsDowned)
+                return true;
+            if (!rec.IsDowned && IsWithinLeashOfAnyParticipant(rec))
+                return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool IsWithinLeashOfAnyParticipant(const PlayerCombatRecord& acCandidate) const noexcept
+    {
+        for (const auto& [otherId, otherRec] : m_players)
+        {
+            if (otherId == acCandidate.PlayerId || !otherRec.ParticipatedInEncounter)
+                continue;
+            if (DistanceMeters(acCandidate, otherRec) <= m_config.LeashRadiusMeters)
                 return true;
         }
         return false;

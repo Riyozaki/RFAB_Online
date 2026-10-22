@@ -149,7 +149,7 @@ void CharacterService::DeleteRemoteEntityComponents(entt::entity aEntity) const 
     m_world.remove<FaceGenComponent, InterpolationComponent, RemoteAnimationComponent, RemoteComponent, CacheComponent, WaitingFor3D, PlayerComponent>(aEntity);
 }
 
-bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity) const noexcept
+bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity, uint64_t aOwnershipEpoch) const noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(acFormId));
     if (!pActor)
@@ -171,13 +171,17 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
         return false;
     }
 
+    if (aOwnershipEpoch != 0 && !m_ownershipEpochTracker.AcceptGrant(acServerId, aOwnershipEpoch))
+    {
+        spdlog::debug("Ignored stale TakeOwnership grant for {:X} (epoch {})", acServerId, aOwnershipEpoch);
+        return false;
+    }
+
     pExtension->SetRemote(false);
     pExtension->SetNakedDeadline();
 
-    // TODO(cosideci): this should be done differently.
-    // Send an ownership claim request, and have the server broadcast the result.
-    // Only then should components be added or removed.
-    m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId);
+    const uint64_t effectiveEpoch = aOwnershipEpoch != 0 ? aOwnershipEpoch : m_ownershipEpochTracker.GetEpoch(acServerId);
+    m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId, effectiveEpoch);
     m_world.emplace_or_replace<LocalAnimationComponent>(acEntity);
     DeleteRemoteEntityComponents(acEntity);
 
@@ -276,10 +280,7 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 
 void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexcept
 {
-    m_rfabExperienceInitialized = false;
-    m_localQuestXpGainedInWindow = 0;
-    m_lastAppliedRemoteXpAmount = 0;
-    m_creditToRefundOnLocalQuestXp = 0;
+    NotifySaveLoadReset();
 
     // Go through all the forms that were previously detected
     auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
@@ -304,10 +305,7 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
 
 void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
 {
-    m_rfabExperienceInitialized = false;
-    m_localQuestXpGainedInWindow = 0;
-    m_lastAppliedRemoteXpAmount = 0;
-    m_creditToRefundOnLocalQuestXp = 0;
+    NotifySaveLoadReset();
 
     auto remoteView = m_world.view<FormIdComponent, RemoteComponent>();
     for (auto entity : remoteView)
@@ -325,6 +323,16 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
     }
 
     m_world.clear<WaitingForAssignmentComponent, LocalComponent, RemoteComponent>();
+}
+
+void CharacterService::NotifySaveLoadReset() noexcept
+{
+    m_cachedExperience = 0.f;
+    m_rfabExperienceInitialized = false;
+    m_localQuestXpGainedInWindow = 0;
+    m_lastAppliedRemoteXpAmount = 0;
+    m_creditToRefundOnLocalQuestXp = 0;
+    m_ownershipEpochTracker.Clear();
 }
 
 void CharacterService::NotifyRemoteQuestStageApplied() noexcept
@@ -381,6 +389,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
     if (acMessage.Owner)
     {
+        m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch);
         spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm->GetName());
 
         // When taking ownership of an actor already tracked on the server (e.g. a party leader
@@ -399,7 +408,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
         }
 
-        m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId);
+        m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
         auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
 
         pActor->GetExtension()->SetRemote(false);
@@ -415,6 +424,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     }
     else
     {
+        m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch);
         spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm->GetName());
 
         m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id);
@@ -720,7 +730,7 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
 
             auto* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (!pActor)
-                return;
+                continue;
 
             auto& cacheComponent = view.get<CacheComponent>(*itor);
             cacheComponent.FactionsContent = factions;
@@ -732,6 +742,12 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
 
 void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) const noexcept
 {
+    if (!m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch))
+    {
+        spdlog::debug("Ignored stale NotifyOwnershipTransfer for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
+        return;
+    }
+
     // TODO(cosideci): handle case if no one has it, therefore no RemoteComponent
     auto view = m_world.view<RemoteComponent, FormIdComponent>();
 
@@ -741,9 +757,9 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
     {
         auto& formIdComponent = view.get<FormIdComponent>(*itor);
 
-        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor))
+        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor, acMessage.OwnershipEpoch))
         {
-            spdlog::info("Ownership claimed {:X}", acMessage.ServerId);
+            spdlog::info("Ownership claimed {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
             return;
         }
     }
@@ -752,12 +768,14 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
 
     RequestOwnershipTransfer request{};
     request.ServerId = acMessage.ServerId;
+    request.OwnershipEpoch = acMessage.OwnershipEpoch;
 
     m_transport.Send(request);
 }
 
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
 {
+    m_ownershipEpochTracker.Forget(acMessage.ServerId);
     auto view = m_world.view<RemoteComponent>();
 
     const auto itor = std::find_if(std::begin(view), std::end(view), [id = acMessage.ServerId, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == id; });
@@ -1250,6 +1268,12 @@ void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcep
 
 void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& acMessage) noexcept
 {
+    if (!m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch))
+    {
+        spdlog::debug("Ignored stale NotifyRelinquishControl for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
+        return;
+    }
+
     auto formView = m_world.view<FormIdComponent>();
     Vector<entt::entity> entities(formView.begin(), formView.end());
 
@@ -1580,6 +1604,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
 
         RequestOwnershipTransfer request{};
         request.ServerId = localComponent.Id;
+        request.OwnershipEpoch = localComponent.OwnershipEpoch;
 
         if (pActor)
         {

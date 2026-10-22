@@ -19,10 +19,14 @@ struct RequestOwnershipTransfer final : ClientMessage
     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
 
-    bool operator==(const RequestOwnershipTransfer& achRhs) const noexcept { return GetOpcode() == achRhs.GetOpcode() && ServerId == achRhs.ServerId && WorldSpaceId == achRhs.WorldSpaceId && CellId == achRhs.CellId && Position == achRhs.Position; }
+    bool operator==(const RequestOwnershipTransfer& achRhs) const noexcept
+    {
+        return GetOpcode() == achRhs.GetOpcode() && ServerId == achRhs.ServerId && WorldSpaceId == achRhs.WorldSpaceId && CellId == achRhs.CellId && Position == achRhs.Position && OwnershipEpoch == achRhs.OwnershipEpoch;
+    }
 
     uint32_t ServerId{};
     GameId WorldSpaceId{};
     GameId CellId{};
     Vector3_NetQuantize Position{};
+    uint64_t OwnershipEpoch{0};
 };

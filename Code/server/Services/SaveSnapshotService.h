@@ -4,6 +4,7 @@
 #include <Services/RfabProgressionService.h>
 #include <Structs/GameId.h>
 #include <Structs/QuestLog.h>
+#include <CoopFlightDigest.h>
 
 #include <cstdint>
 #include <deque>
@@ -60,6 +61,13 @@ public:
     [[nodiscard]] const std::optional<PendingBarrier>& GetPendingBarrier() const noexcept { return m_pending; }
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_lastCommittedEpoch; }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_lastCommittedSlot; }
+    [[nodiscard]] uint64_t GetCurrentWorldEpoch() const noexcept { return m_worldGeneration; }
+    [[nodiscard]] const CoopFlight::FlightRingBuffer<512>& GetFlightRing() const noexcept { return m_flightRing; }
+
+    void RecordFlightEvent(uint64_t aNowMs, CoopFlight::FlightEventKind aKind, uint32_t aSubjectId = 0, uint64_t aAuxValue = 0) noexcept
+    {
+        m_flightRing.Record(aNowMs, m_worldGeneration, aKind, aSubjectId, aAuxValue);
+    }
 
     std::optional<PendingBarrier> BeginBarrier(
         const std::vector<uint32_t>& acConnectedPlayerIds,
@@ -85,6 +93,7 @@ public:
         barrier.ExpectedPlayerIds.insert(acConnectedPlayerIds.begin(), acConnectedPlayerIds.end());
 
         m_pending = barrier;
+        RecordFlightEvent(aNowMs, CoopFlight::FlightEventKind::kSavePrepared, 0, epochId);
         return barrier;
     }
 
@@ -146,16 +155,20 @@ public:
 
         m_lastCommittedEpoch = finished.EpochId;
         m_lastCommittedSlot = finished.SlotName;
+        if (m_worldGeneration < finished.EpochId)
+            m_worldGeneration = finished.EpochId;
         if (finished.IsAutoCheckpoint)
             m_lastAutoSaveCommittedMs = aNowMs;
 
+        RecordFlightEvent(aNowMs, CoopFlight::FlightEventKind::kSaveCommitted, 0, finished.EpochId);
         return finished;
     }
 
-    PendingBarrier ConsumeAborted()
+    PendingBarrier ConsumeAborted(uint64_t aNowMs = 0)
     {
         PendingBarrier aborted = std::move(*m_pending);
         m_pending.reset();
+        RecordFlightEvent(aNowMs, CoopFlight::FlightEventKind::kSaveAborted, 0, aborted.EpochId);
         return aborted;
     }
 
@@ -178,23 +191,31 @@ public:
         return aNowMs >= m_lastAutoSaveCommittedMs && (aNowMs - m_lastAutoSaveCommittedMs) >= intervalMs;
     }
 
-    void NotifyRolledBackTo(uint64_t aEpochId, const std::string& acSlotName)
+    void NotifyRolledBackTo(uint64_t aEpochId, const std::string& acSlotName, uint64_t aNowMs = 0)
     {
         m_pending.reset();
         m_lastCommittedEpoch = aEpochId;
         m_lastCommittedSlot = acSlotName;
+        // World timeline epoch is strictly monotonic across rollbacks (cranebeaker/coop-anything Bug Class #12: no_world_epoch)
+        // so any packet sent on the wire BEFORE a checkpoint load is deterministically recognized as stale and discarded.
+        ++m_worldGeneration;
+        if (m_nextEpochId < m_worldGeneration)
+            m_nextEpochId = m_worldGeneration;
+        RecordFlightEvent(aNowMs, CoopFlight::FlightEventKind::kWorldRollback, 0, aEpochId);
     }
 
 private:
     std::string m_sessionTag;
     size_t m_ringSize;
     uint64_t m_nextEpochId{0};
+    uint64_t m_worldGeneration{1};
     size_t m_manualRingCursor{0};
     size_t m_autoRingCursor{0};
     uint64_t m_lastCommittedEpoch{0};
     std::string m_lastCommittedSlot{};
     uint64_t m_lastAutoSaveCommittedMs{0};
     std::optional<PendingBarrier> m_pending{};
+    CoopFlight::FlightRingBuffer<512> m_flightRing{};
 };
 
 class SaveSnapshotService
@@ -240,10 +261,14 @@ public:
 
     void NotifyEncounterVictory(bool aBossDefeated) noexcept;
 
+    [[nodiscard]] SaveSnapshotCoordinator& GetCoordinator() noexcept { return m_coordinator; }
+    [[nodiscard]] const SaveSnapshotCoordinator& GetCoordinator() const noexcept { return m_coordinator; }
+    [[nodiscard]] uint64_t GetCurrentWorldEpoch() const noexcept { return m_coordinator.GetCurrentWorldEpoch(); }
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_coordinator.GetLastCommittedEpoch(); }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_coordinator.GetLastCommittedSlot(); }
     [[nodiscard]] size_t GetSnapshotCount() const noexcept { return m_snapshots.size(); }
     [[nodiscard]] bool IsPlayerAuthorizedHost(Player* apPlayer) noexcept;
+    [[nodiscard]] CoopFlight::BucketedStateDigest BuildLiveWorldDigest() const;
 
 private:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;

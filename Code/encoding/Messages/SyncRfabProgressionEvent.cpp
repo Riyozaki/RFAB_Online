@@ -3,6 +3,7 @@
 void SyncRfabProgressionEvent::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, static_cast<uint64_t>(Kind));
+    Serialization::WriteVarInt(aWriter, EpochId);
     Serialization::WriteString(aWriter, SourceKey);
     Serialization::WriteString(aWriter, EditorId);
     BookId.Serialize(aWriter);
@@ -15,6 +16,7 @@ void SyncRfabProgressionEvent::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRe
     ClientMessage::DeserializeRaw(aReader);
 
     Kind = static_cast<EventKind>(Serialization::ReadVarInt(aReader) & 0xFF);
+    EpochId = Serialization::ReadVarInt(aReader);
     SourceKey = Serialization::ReadString(aReader);
     EditorId = Serialization::ReadString(aReader);
     BookId.Deserialize(aReader);

@@ -17,8 +17,10 @@
 #include <Messages/RequestCoordinatedSaveLoad.h>
 #include <PlayerCharacter.h>
 #include <SaveLoad.h>
+#include <Services/CharacterService.h>
 #include <Services/DownedStateService.h>
 #include <Services/PartyService.h>
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
 namespace
@@ -107,6 +109,8 @@ bool CoordinatedSaveService::ExecuteAuthorizedLoad(const std::string& acSlotName
         return false;
 
     m_world.GetDownedStateService().ResetAllStates();
+    m_world.GetCharacterService().NotifySaveLoadReset();
+    m_world.GetRfabAdapterService().NotifySaveLoadReset();
 
     ScopedSaveLoadAllowance guard;
     return pMgr->LoadNamed(acSlotName.c_str(), true);

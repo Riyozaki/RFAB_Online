@@ -26,6 +26,7 @@ struct SyncRfabProgressionEvent final : ClientMessage
     {
         return GetOpcode() == acRhs.GetOpcode() &&
                Kind == acRhs.Kind &&
+               EpochId == acRhs.EpochId &&
                SourceKey == acRhs.SourceKey &&
                EditorId == acRhs.EditorId &&
                BookId == acRhs.BookId &&
@@ -34,6 +35,7 @@ struct SyncRfabProgressionEvent final : ClientMessage
     }
 
     EventKind Kind{EventKind::LedgerXpGrant};
+    uint64_t EpochId{0};
     String SourceKey{};
     String EditorId{};
     GameId BookId{};

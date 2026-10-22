@@ -67,3 +67,23 @@ Data/SKSE/Plugins/RFAB_Online_Bindings.json
   ```bash
   python3 Tools/rfab/verify_se1597_port.py --strict-migrated --addrlib "/path/to/version-1-5-97-0.bin"
   ```
+
+---
+
+## 5. Усиление сетевого ядра (`CoopOwnership` & `CoopFlightDigest`) и консольные команды сервера
+
+По итогам аудита кодовой базы и интеграции co-op инвариантов (по архитектуре `cranebeaker/coop-anything`, MIT License) добавлены:
+
+1. **Эпоховое владение акторами (`Code/common/CoopOwnership.h`)**:
+   - монотонный `OwnershipEpoch` на каждую смену владельца NPC (`OwnerComponent`, `LocalComponent`, пакеты `AssignCharacterResponse`, `NotifyOwnershipTransfer`, `NotifyRelinquishControl`, `RequestOwnershipTransfer`);
+   - анти-флап гистерезис `1500 мс` против пинг-понга боссов между двумя игроками, жёсткое закрепление призывов (`IsPlayerSummon`) за заклинателем и защита от перехвата AI босса раненым на колене игроком;
+   - отклонение запоздавших `RequestOwnershipTransfer` бывшего владельца (предотвращает удаление живых боссов через `CharacterRemoveEvent`) и сохранение урона/смерти врага при смене владельца.
+2. **Монотонная мировая эпоха `WorldEpoch` при откатах сейвов + защита от эксплойтов боя**:
+   - `GetCurrentWorldEpoch()` монотонно увеличивается на каждом `Rollback`, отсекая запоздавшие пакеты из до-вайповой ветки времени;
+   - при загрузке сейва автоматически сбрасываются клиентские baseline-кэши `RFAB_XP_Amount`, `XPBooksReaded`, `TESGlobal` и серверный 30-секундный `QuestStageDedupHistory` / `SceneMaster` (исключает дюп потраченного в `RFAB_Menu` опыта и блокировку повторного прохождения стадий квестов после `F9`);
+   - `DownedStateService` удерживает живых врагов текущего энкаунтера (`m_encounterHostileFormIds`) активными вплоть до `IsDead() == true` (исключает абуз зелий невидимости `RFAB` / эфирных фаз боссов для бесплатного авто-воскрешения), а `EncounterCoordinator` изолирует локальную боевую группу в данже от мирного союзника в другом городе.
+3. **256-корзинный дайджест состояния и полётный самописец (`Code/common/CoopFlightDigest.h`) + админ-команды в консоли `STServer`**:
+   - `savecheckpoint` — принудительно запускает двухфазное сохранение для всей группы;
+   - `rollbackcheckpoint` — синхронно откатывает серверный мир и всех игроков к последнему чекпоинту;
+   - `dumpflightstate` — выводит `WorldEpoch`, `LastSaveEpoch`, активный слот, 64-битный `BucketedStateDigest` мира и последние записи полётного буфера событий.
+

@@ -6,6 +6,7 @@ void RequestOwnershipTransfer::SerializeRaw(TiltedPhoques::Buffer::Writer& aWrit
     WorldSpaceId.Serialize(aWriter);
     CellId.Serialize(aWriter);
     Position.Serialize(aWriter);
+    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
 }
 
 void RequestOwnershipTransfer::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -16,4 +17,5 @@ void RequestOwnershipTransfer::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRe
     WorldSpaceId.Deserialize(aReader);
     CellId.Deserialize(aReader);
     Position.Deserialize(aReader);
+    OwnershipEpoch = Serialization::ReadVarInt(aReader);
 }
