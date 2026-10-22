@@ -187,6 +187,13 @@ TEST_CASE("Server settings", "[encoding.server_settings]")
 
     REQUIRE(sendSettings == recvSettings);
     REQUIRE(recvSettings.HealthMultiplier == 2.5f);
+
+    // Every field must take part in the comparison, otherwise a server that
+    // only changes that setting never broadcasts its new settings.
+    ServerSettings calendarChanged = recvSettings;
+    calendarChanged.SyncPlayerCalendar = !recvSettings.SyncPlayerCalendar;
+    REQUIRE_FALSE(calendarChanged == recvSettings);
+    REQUIRE(calendarChanged != recvSettings);
 }
 
 TEST_CASE("Differential structures", "[encoding.differential]")
@@ -414,6 +421,7 @@ TEST_CASE("Packets", "[encoding.packets]")
 
         SyncRfabExperienceRequest sendMessage, recvMessage;
         sendMessage.Experience = 250;
+        sendMessage.Sequence = 4711;
 
         Buffer::Writer writer(&buff);
         sendMessage.Serialize(writer);

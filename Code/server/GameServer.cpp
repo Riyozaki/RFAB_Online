@@ -1,6 +1,7 @@
 #include <Components.h>
 #include <GameServer.h>
 #include <Packet.hpp>
+#include <ProtocolVersion.h>
 
 #include <algorithm>
 #include <cmath>
@@ -46,7 +47,11 @@ Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the 
 Console::Setting uTimeScale{"Gameplay:uTimeScale", "How many seconds pass ingame for every real second (0 to 1000). Changing this can make the game unstable", 20u};
 Console::Setting bSyncPlayerCalendar{"Gameplay:bSyncPlayerCalendar", "Syncs up all player calendars to be the same day, month, and year. This uses the date of the player with the furthest ahead date at connection.", false};
 Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
-Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Multiplies the max health of actors (0.1 to 10.0)", 1.0f};
+// Effective NPC health multiplier. It is computed by HealthScalingService from
+// the player count (N + 1) and only *published* through this setting, so that it
+// travels to clients inside ServerSettings. Editing it in the ini has no effect
+// while Gameplay:bEnableHealthScaling is on - use that switch instead.
+Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Effective NPC health multiplier (computed from the player count, read-only in practice)", 1.0f};
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
@@ -115,8 +120,9 @@ Console::Command<> ShowMoPoStatus(
     });
 
 // -- Constants --
-constexpr float kMinHealthMultiplier = 0.1f;
-constexpr float kMaxHealthMultiplier = 10.0f;
+constexpr float kMinHealthMultiplier = 1.0f;
+// Matches Gameplay::HealthScaling::kMaxMultiplier.
+constexpr float kMaxHealthMultiplier = 32.0f;
 
 static float GetHealthMultiplier()
 {
@@ -211,7 +217,7 @@ GameServer::GameServer(Console::ConsoleRegistry& aConsole) noexcept
     m_isPasswordProtected = strcmp(sPassword.value(), "") != 0;
 
     UpdateInfo();
-    spdlog::info("Server {} started on port {}", BUILD_COMMIT, GetPort());
+    spdlog::info("Server {} started on port {} (protocol v{})", BUILD_COMMIT, GetPort(), Protocol::kVersion);
     UpdateTitle();
 
     m_pWorld = MakeUnique<World>();
@@ -873,7 +879,13 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
     // to make our testing life a bit easier.
     if (acRequest->Version != BUILD_COMMIT)
     {
-        spdlog::info("New player {:x} '{}' tried to connect with client {} - Version mismatch", aConnectionId, remoteAddress, acRequest->Version.c_str());
+        spdlog::info(
+            "New player {:x} '{}' tried to connect with client {} - Version mismatch (server build {}, protocol v{})",
+            aConnectionId,
+            remoteAddress,
+            acRequest->Version.c_str(),
+            BUILD_COMMIT,
+            Protocol::kVersion);
         sendKick(RT::kWrongVersion);
         return;
     }
