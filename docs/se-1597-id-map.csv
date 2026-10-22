@@ -3083,3 +3083,4 @@ ae_id,se_1_5_97_id,se_rva_hex,kind,ref_count,first_reference,source,symbol
 411393,524907,0x3028490,pointer,1,Code/client/Systems/FaceGenSystem.cpp:65,se_ae.csv,RE::BSRenderManager::GetSingleton
 414391,527437,0x31D07A8,pointer,1,Code/client/Games/Skyrim/Misc/BSScript.cpp:108,diaphora-318,
 414675,527752,0x31D1AF8,pointer,1,Code/client/Systems/FaceGenSystem.cpp:61,clibng:variant,gNiRTTI_BSLightingShaderProperty_1431D1AF8
+21890,21416,0x2E75F0,versiondb,1,Code/client/Games/Skyrim/SaveLoad.cpp:52,clibng:relocation,Script::CompileAndRun_Impl @ 0x2E75F0

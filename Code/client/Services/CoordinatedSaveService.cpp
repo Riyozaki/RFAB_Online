@@ -92,10 +92,13 @@ bool CoordinatedSaveService::ExecuteAuthorizedSave(const std::string& acSlotName
     if (!pMgr)
         return false;
 
+    m_authorizedPendingSaveSlot = acSlotName;
     ScopedSaveLoadAllowance guard;
     const bool ok = pMgr->SaveNamed(acSlotName.c_str());
     if (ok)
         m_writtenSlotsInSession.insert(acSlotName);
+    else
+        m_authorizedPendingSaveSlot.clear();
     return ok;
 }
 
@@ -112,8 +115,12 @@ bool CoordinatedSaveService::ExecuteAuthorizedLoad(const std::string& acSlotName
     m_world.GetCharacterService().NotifySaveLoadReset();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
 
+    m_authorizedPendingLoadSlot = acSlotName;
     ScopedSaveLoadAllowance guard;
-    return pMgr->LoadNamed(acSlotName.c_str(), true);
+    const bool ok = pMgr->LoadNamed(acSlotName.c_str(), true);
+    if (!ok)
+        m_authorizedPendingLoadSlot.clear();
+    return ok;
 }
 
 bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) noexcept
@@ -121,10 +128,16 @@ bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) no
     if (ScopedSaveLoadAllowance::IsAllowed())
         return true;
 
+    const std::string fileName = acpFileName ? acpFileName : "";
+    if (!m_authorizedPendingSaveSlot.empty() &&
+        RfabCompat::Detail::ToLowerAscii(fileName) == RfabCompat::Detail::ToLowerAscii(m_authorizedPendingSaveSlot))
+    {
+        m_authorizedPendingSaveSlot.clear();
+        return true;
+    }
+
     if (!m_transport.IsConnected() || !m_world.GetServerSettings().CoordinatedSavesEnabled)
         return true;
-
-    const std::string fileName = acpFileName ? acpFileName : "";
 
     // Silently suppress uncoordinated solo autosaves (vanilla door autosaves & RFAB.dll combat autosaves).
     if (IsAutosaveName(fileName))
@@ -155,10 +168,16 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
     if (ScopedSaveLoadAllowance::IsAllowed())
         return true;
 
+    const std::string fileName = acpFileName ? acpFileName : "";
+    if (!m_authorizedPendingLoadSlot.empty() &&
+        RfabCompat::Detail::ToLowerAscii(fileName) == RfabCompat::Detail::ToLowerAscii(m_authorizedPendingLoadSlot))
+    {
+        m_authorizedPendingLoadSlot.clear();
+        return true;
+    }
+
     if (!m_transport.IsConnected() || !m_world.GetServerSettings().CoordinatedSavesEnabled)
         return true;
-
-    const std::string fileName = acpFileName ? acpFileName : "";
 
     if (IsLocalPlayerAuthorizedLeader())
     {
@@ -193,13 +212,19 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     m_writtenSlotsInSession.clear();
     m_lastCommittedEpoch = 0;
     m_lastCommittedSlot.clear();
+    m_authorizedPendingSaveSlot.clear();
+    m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
-    m_pendingPreJoinBackup = true;
+    // Do not force an immediate save right inside the connection frame (while the CEF overlay is open);
+    // existing solo saves remain untouched on disk and coordinated saves run on F5 / post-combat checkpoints.
+    m_pendingPreJoinBackup = false;
 }
 
 void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
     m_pendingPreJoinBackup = false;
+    m_authorizedPendingSaveSlot.clear();
+    m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
 }
 

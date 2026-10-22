@@ -23,10 +23,10 @@ TESForm* TESForm::GetByEditorId(const BSFixedString& acEditorId) noexcept
     if (!acEditorId.AsAscii() || acEditorId.AsAscii()[0] == '\0')
         return nullptr;
 
-    using TLookupByEditorId = TESForm*(const BSFixedString&);
+    using TLookupByEditorId = TESForm*(const char*);
     POINTER_SKYRIMSE(TLookupByEditorId, lookupByEditorId, 14464);
 
-    return lookupByEditorId.Get()(acEditorId);
+    return lookupByEditorId.Get()(acEditorId.AsAscii());
 }
 
 void BGSListForm::AddForm(TESForm* apForm) noexcept

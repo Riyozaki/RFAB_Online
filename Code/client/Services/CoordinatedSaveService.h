@@ -76,6 +76,8 @@ private:
 
     bool m_pendingPreJoinBackup{false};
     std::string m_preJoinBackupSlot{"RFAB_MP_PreJoin_Backup"};
+    std::string m_authorizedPendingSaveSlot{};
+    std::string m_authorizedPendingLoadSlot{};
     std::string m_deferredLoadSlot{};
     double m_lastInterceptNoticeCooldownSec{0.0};
 
