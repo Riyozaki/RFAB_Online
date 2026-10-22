@@ -13,4 +13,6 @@ target("TPTests")
         "catch2",
         "mimalloc",
         "glm",
-        "entt")
+        "entt",
+        "gamenetworkingsockets",
+        "libuv")

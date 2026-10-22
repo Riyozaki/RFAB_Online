@@ -1,3 +1,7 @@
+#include <TiltedCore/Stl.hpp>
+#include <TiltedCore/Buffer.hpp>
+#include <TiltedCore/Serialization.hpp>
+
 #include <catch2/catch.hpp>
 
 #include <common/CoopFlightDigest.h>
