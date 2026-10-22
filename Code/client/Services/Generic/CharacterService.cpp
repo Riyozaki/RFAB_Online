@@ -10,6 +10,7 @@
 #include <Games/References.h>
 #include <Games/Misc/SubtitleManager.h>
 
+#include <Forms/TESGlobal.h>
 #include <Forms/TESNPC.h>
 #include <Forms/TESQuest.h>
 
@@ -57,6 +58,8 @@
 #include <Messages/NotifyRespawn.h>
 #include <Messages/SyncExperienceRequest.h>
 #include <Messages/NotifySyncExperience.h>
+#include <Messages/SyncRfabExperienceRequest.h>
+#include <Messages/NotifySyncRfabExperience.h>
 #include <Messages/DialogueRequest.h>
 #include <Messages/NotifyDialogue.h>
 #include <Messages/SubtitleRequest.h>
@@ -66,6 +69,55 @@
 
 #include <World.h>
 #include <Games/TES.h>
+
+#include <cmath>
+
+namespace
+{
+constexpr uint32_t cMaxRfabXpDelta = 1'000'000;
+constexpr uint32_t cRfabXpAmountBaseId = 0xAD45BB;
+
+TESGlobal* GetRfabXpGlobal() noexcept
+{
+    static TESGlobal* s_pGlobal = nullptr;
+    if (s_pGlobal != nullptr)
+        return s_pGlobal;
+
+    auto* pModManager = ModManager::Get();
+    if (pModManager == nullptr)
+        return nullptr;
+
+    auto* pMod = pModManager->GetByName("RFAB.esp");
+    if (pMod == nullptr)
+        return nullptr;
+
+    s_pGlobal = Cast<TESGlobal>(TESForm::GetById(pMod->GetFormId(cRfabXpAmountBaseId)));
+    return s_pGlobal;
+}
+
+int32_t ReadRfabXp(TESGlobal* apGlobal) noexcept
+{
+    return static_cast<int32_t>(std::lround(std::max(0.0f, apGlobal->f)));
+}
+
+bool ApplyRfabExperience(TESGlobal* apRfabXp, int32_t aDelta, int32_t& aNewExperience) noexcept
+{
+    auto& papyrusService = World::Get().ctx().at<PapyrusService>();
+
+    const void* pGetExperience = papyrusService.Get("Game", "GetPlayerExperience");
+    const void* pSetExperience = papyrusService.Get("Game", "SetPlayerExperience");
+    if (pGetExperience == nullptr || pSetExperience == nullptr)
+        return false;
+
+    GlobalPapyrusFunction<float> getExperience(pGetExperience);
+    GlobalPapyrusFunction<void, float> setExperience(pSetExperience);
+
+    aNewExperience = ReadRfabXp(apRfabXp) + aDelta;
+    apRfabXp->f = static_cast<float>(aNewExperience);
+    setExperience(getExperience() + static_cast<float>(aDelta));
+    return true;
+}
+} // namespace
 
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -100,6 +152,7 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
 
     m_addExperienceEventConnection = m_dispatcher.sink<AddExperienceEvent>().connect<&CharacterService::OnAddExperienceEvent>(this);
     m_syncExperienceConnection = m_dispatcher.sink<NotifySyncExperience>().connect<&CharacterService::OnNotifySyncExperience>(this);
+    m_syncRfabExperienceConnection = m_dispatcher.sink<NotifySyncRfabExperience>().connect<&CharacterService::OnNotifySyncRfabExperience>(this);
 
     m_dialogueEventConnection = m_dispatcher.sink<DialogueEvent>().connect<&CharacterService::OnDialogueEvent>(this);
     m_dialogueSyncConnection = m_dispatcher.sink<NotifyDialogue>().connect<&CharacterService::OnNotifyDialogue>(this);
@@ -240,6 +293,7 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     RunFactionsUpdates();
     RunRemoteUpdates();
     RunExperienceUpdates();
+    RunRfabExperienceUpdates();
     ApplyCachedWeaponDraws(acUpdateEvent);
 }
 
@@ -915,6 +969,37 @@ void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMess
         return;
 
     pPlayer->AddSkillExperience(PlayerCharacter::LastUsedCombatSkill, acMessage.Experience);
+}
+
+void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience& acMessage) noexcept
+{
+    if (acMessage.Experience == 0 || acMessage.Experience > cMaxRfabXpDelta)
+        return;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    TESGlobal* pRfabXp = GetRfabXpGlobal();
+    if (pPlayer == nullptr || pRfabXp == nullptr)
+        return;
+
+    const int32_t delta = static_cast<int32_t>(acMessage.Experience);
+    const int32_t currentExperience = ReadRfabXp(pRfabXp);
+    int32_t newExperience = currentExperience;
+
+    if (!ApplyRfabExperience(pRfabXp, delta, newExperience))
+    {
+        spdlog::warn("Unable to apply RFAB XP: Game.SetPlayerExperience is unavailable");
+        return;
+    }
+
+    if (!m_rfabExperienceInitialized)
+    {
+        m_lastRfabExperience = currentExperience;
+        m_rfabExperienceInitialized = true;
+    }
+
+    m_lastRfabExperience += delta;
+
+    spdlog::debug("Received RFAB experience {} (total {})", delta, newExperience);
 }
 
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
@@ -1760,6 +1845,49 @@ void CharacterService::RunExperienceUpdates() noexcept
     m_transport.Send(message);
 
     spdlog::debug("Sending over experience {}", message.Experience);
+}
+
+void CharacterService::RunRfabExperienceUpdates() noexcept
+{
+    static std::chrono::steady_clock::time_point lastSendTimePoint;
+    constexpr auto cDelayBetweenSnapshots = 1000ms;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastSendTimePoint < cDelayBetweenSnapshots)
+        return;
+
+    lastSendTimePoint = now;
+
+    if (!m_transport.IsConnected())
+    {
+        m_rfabExperienceInitialized = false;
+        return;
+    }
+
+    TESGlobal* pRfabXp = GetRfabXpGlobal();
+    if (pRfabXp == nullptr)
+        return;
+
+    const int32_t currentExperience = ReadRfabXp(pRfabXp);
+    if (!m_rfabExperienceInitialized)
+    {
+        m_lastRfabExperience = currentExperience;
+        m_rfabExperienceInitialized = true;
+        return;
+    }
+
+    const int32_t delta = currentExperience - m_lastRfabExperience;
+    m_lastRfabExperience = currentExperience;
+
+    if (delta <= 0 || !World::Get().GetPartyService().IsInParty())
+        return;
+
+    SyncRfabExperienceRequest message;
+    message.Experience = static_cast<uint32_t>(std::min(delta, static_cast<int32_t>(cMaxRfabXpDelta)));
+
+    m_transport.Send(message);
+
+    spdlog::debug("Sending over RFAB experience {}", message.Experience);
 }
 
 void CharacterService::ApplyCachedWeaponDraws(const UpdateEvent& acUpdateEvent) noexcept
