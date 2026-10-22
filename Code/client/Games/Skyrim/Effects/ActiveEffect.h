@@ -40,24 +40,35 @@ struct ActiveEffect
 
     static ActiveEffect* Instantiate(Actor* apCaster, MagicItem* apSpell, EffectItem* apEffect);
 
+    // Skyrim SE 1.5.97 layout.
+    //
+    // Anchors taken from the upstream pre-AE header (commit 5c5837f6, written
+    // against the real 1.5.97 binary): pTarget is at 0x50, the magnitude float
+    // ("effectValue" there) at 0x78, and sizeof(ActiveEffect) == 0x80.
+    //
+    // AE (1.6.x) appended eConditionStatus / usUniqueID / eCastingSource, which
+    // grew the object to 0x90 and shifted every ActiveEffect array stride. Those
+    // tail fields do not exist on 1.5.97 and must not be read here.
+    // The individual field names between 0x58 and 0x74 follow the AE order; they
+    // are only used by admin debug views, the proven anchors are pTarget and
+    // fMagnitude.
     uint8_t pad8[0x34 - 0x8];
-    uint32_t hCaster;
-    NiNode* pSourceNode;
-    MagicItem* pSpell;
-    void* pEffect;
-    MagicTarget* pTarget;
-    TESBoundObject* pSource;
-    void* pHitEffects;
-    MagicItem* pDisplacementSpell;
-    float fElapsedSeconds;
-    float fDuration;
-    float fMagnitude;
-    uint32_t uiFlags;
-    uint32_t eConditionStatus;
-    uint16_t usUniqueID;
-    MagicSystem::CastingSource eCastingSource;
+    uint32_t hCaster;               // 0x34
+    NiNode* pSourceNode;            // 0x38
+    MagicItem* pSpell;              // 0x40
+    void* pEffect;                  // 0x48
+    MagicTarget* pTarget;           // 0x50 (verified)
+    TESBoundObject* pSource;        // 0x58
+    void* pHitEffects;              // 0x60
+    MagicItem* pDisplacementSpell;  // 0x68
+    float fElapsedSeconds;          // 0x70 (inferred, debug view only)
+    float fDuration;                // 0x74 (inferred, debug view only)
+    float fMagnitude;               // 0x78 (verified: pre-AE "effectValue")
+    uint32_t unk7C;                 // 0x7C (pre-AE: pad_007C)
 };
-static_assert(sizeof(ActiveEffect) == 0x90);
+static_assert(sizeof(ActiveEffect) == 0x80);
+static_assert(offsetof(ActiveEffect, pTarget) == 0x50);
+static_assert(offsetof(ActiveEffect, fMagnitude) == 0x78);
 
 namespace ActiveEffectFactory
 {
