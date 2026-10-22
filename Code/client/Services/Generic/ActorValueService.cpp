@@ -423,6 +423,24 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
     if (healthIt != acMessage.Values.end() && healthIt->second > 0.0f)
         RememberUnscaledHealth(acMessage.Id, pActor);
 
+    // Remember the server's value in the cached snapshot as well. Otherwise the
+    // periodic BroadcastActorValues() scan sees "the maximum changed" and sends
+    // the very value we were just told to use straight back to the server, which
+    // is pure noise (and one extra round trip per scaling change).
+    ActorValuesComponent* pActorValues = nullptr;
+    {
+        auto view = m_world.view<FormIdComponent>();
+        for (const auto entity : view)
+        {
+            const auto serverId = Utils::GetServerId(entity);
+            if (!serverId.has_value() || serverId.value() != acMessage.Id)
+                continue;
+
+            pActorValues = m_world.try_get<ActorValuesComponent>(entity);
+            break;
+        }
+    }
+
     for (const auto& [key, value] : acMessage.Values)
     {
         if (key == ActorValueInfo::kDragonSouls)
@@ -431,6 +449,9 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
         spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
 
         pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, key, value);
+
+        if (pActorValues != nullptr)
+            pActorValues->CurrentActorValues.ActorMaxValuesList[key] = value;
     }
 }
 
