@@ -55,6 +55,7 @@ enum ClientOpcode : unsigned char
     kRequestSetWaypoint,
     kRequestRemoveWaypoint,
     kSetTimeCommandRequest,
+    kSyncRfabExperienceRequest,
     kClientOpcodeMax
 };
 
@@ -117,5 +118,6 @@ enum ServerOpcode : unsigned char
     kNotifySetWaypoint,
     kNotifyRemoveWaypoint,
     kNotifySetTimeResult,
+    kNotifySyncRfabExperience,
     kServerOpcodeMax
 };
