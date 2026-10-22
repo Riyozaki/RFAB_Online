@@ -1,0 +1,7 @@
+session: 6 hours, long autonomous run
+start_utc_iso: 2026-10-22 02:41:52
+start_epoch: 1792636912
+deadline_utc_iso: 2026-10-22 08:41:52
+deadline_epoch: 1792658512
+branch: arena/ada174eb-rfab-online
+rules: no questions, safest option + ASSUMPTIONS.md, freeze 30 min before deadline
