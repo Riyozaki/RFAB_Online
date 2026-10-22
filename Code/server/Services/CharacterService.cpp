@@ -33,6 +33,8 @@
 #include <Messages/NotifyRespawn.h>
 #include <Messages/SyncExperienceRequest.h>
 #include <Messages/NotifySyncExperience.h>
+#include <Messages/SyncRfabExperienceRequest.h>
+#include <Messages/NotifySyncRfabExperience.h>
 #include <Messages/DialogueRequest.h>
 #include <Messages/NotifyDialogue.h>
 #include <Messages/SubtitleRequest.h>
@@ -44,6 +46,7 @@
 namespace
 {
 Console::Setting bEnableXpSync{"Gameplay:bEnableXpSync", "Syncs combat XP within the party", true};
+Console::Setting bEnableRfabXpSync{"Gameplay:bEnableRfabXpSync", "Syncs RFAB XP gains within the party", true};
 }
 
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -63,6 +66,7 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher)
     , m_newPackageConnection(aDispatcher.sink<PacketEvent<NewPackageRequest>>().connect<&CharacterService::OnNewPackageRequest>(this))
     , m_requestRespawnConnection(aDispatcher.sink<PacketEvent<RequestRespawn>>().connect<&CharacterService::OnRequestRespawn>(this))
     , m_syncExperienceConnection(aDispatcher.sink<PacketEvent<SyncExperienceRequest>>().connect<&CharacterService::OnSyncExperienceRequest>(this))
+    , m_syncRfabExperienceConnection(aDispatcher.sink<PacketEvent<SyncRfabExperienceRequest>>().connect<&CharacterService::OnSyncRfabExperienceRequest>(this))
     , m_dialogueConnection(aDispatcher.sink<PacketEvent<DialogueRequest>>().connect<&CharacterService::OnDialogueRequest>(this))
     , m_subtitleConnection(aDispatcher.sink<PacketEvent<SubtitleRequest>>().connect<&CharacterService::OnSubtitleRequest>(this))
 {
@@ -532,6 +536,24 @@ void CharacterService::OnSyncExperienceRequest(const PacketEvent<SyncExperienceR
 
     NotifySyncExperience notify;
     notify.Experience = acMessage.Packet.Experience;
+
+    const auto& partyComponent = acMessage.pPlayer->GetParty();
+    GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+}
+
+void CharacterService::OnSyncRfabExperienceRequest(const PacketEvent<SyncRfabExperienceRequest>& acMessage) const noexcept
+{
+    constexpr uint32_t cMaxXpDelta = 1'000'000;
+
+    if (!bEnableRfabXpSync)
+        return;
+
+    const uint32_t experience = std::min(acMessage.Packet.Experience, cMaxXpDelta);
+    if (experience == 0)
+        return;
+
+    NotifySyncRfabExperience notify;
+    notify.Experience = experience;
 
     const auto& partyComponent = acMessage.pPlayer->GetParty();
     GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());

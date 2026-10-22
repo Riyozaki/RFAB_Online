@@ -9,7 +9,7 @@ void DebugService::DrawSkillView()
     ImGui::Begin("Skills");
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    Skills* pSkills = *pPlayer->pSkills;
+    Skills* pSkills = pPlayer->pSkills->data;
 
     ImGui::InputFloat("Global XP", &pSkills->xp, 0, 0, "%.3f", ImGuiInputTextFlags_ReadOnly);
     ImGui::InputFloat("Global level threshold", &pSkills->levelThreshold, 0, 0, "%.3f", ImGuiInputTextFlags_ReadOnly);

@@ -174,11 +174,18 @@ public:
 
         std::ifstream file(acGamePath / "Data" / "SKSE" / "Plugins" / fileName, std::ios::binary);
         if (!file.good())
+        {
+            file.clear();
+            _snprintf_s(fileName, 256, "version-%d-%d-%d-%d.bin", major, minor, revision, build);
+            file.open(acGamePath / "Data" / "SKSE" / "Plugins" / fileName, std::ios::binary);
+        }
+
+        if (!file.good())
             return false;
 
         int format = read<int>(file);
 
-        if (format != 2)
+        if (format != 1 && format != 2)
             return false;
 
         for (int i = 0; i < 4; i++)

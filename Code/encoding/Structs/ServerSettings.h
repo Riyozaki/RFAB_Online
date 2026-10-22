@@ -17,4 +17,5 @@ struct ServerSettings
     bool DeathSystemEnabled{};
     bool SyncPlayerCalendar{};
     bool AutoPartyJoin{};
+    float HealthMultiplier{1.0f};
 };

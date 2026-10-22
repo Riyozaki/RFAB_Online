@@ -11,9 +11,8 @@ constexpr char kScriptExtenderEntrypoint[] = "StartSKSE";
 
 constexpr size_t kScriptExtenderNameLength = sizeof(kScriptExtenderName) / sizeof(wchar_t) - 1;
 
-// AE+ only
-// Use this to raise the SKSE baseline
-constexpr int kSKSEMinBuild = 20100;
+// Minimum supported SKSE version (SKSE64 2.0.20 for Skyrim 1.5.97)
+constexpr int kSKSEMinBuild = 20020;
 
 HMODULE g_SKSEModuleHandle{nullptr};
 
@@ -128,7 +127,7 @@ void LoadScriptExender()
     int SkseVCum = fileVersion.versions[0] * 1000000 + fileVersion.versions[1] * 10000 + fileVersion.versions[2] * 100 + fileVersion.versions[3];
     if (SkseVCum < kSKSEMinBuild)
     {
-        spdlog::error("Pre anniversary Script Extender is unsupported");
+        spdlog::error("Unsupported Script Extender version");
         return;
     }
 

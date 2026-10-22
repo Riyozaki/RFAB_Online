@@ -4,6 +4,7 @@
 
 struct TESObjectREFR;
 struct TESForm;
+struct BGSEncounterZone;
 
 enum class ExtraDataType : uint32_t
 {
@@ -20,6 +21,7 @@ enum class ExtraDataType : uint32_t
     CannotWear = 0x3D,
     Poison = 0x3E,
     Faction = 0x5B,
+    EncounterZone = 0x70,
     AliasInstanceArray = 0x88,
     OutfitItem = 0x8E,
     TextDisplayData = 0x99,
@@ -36,3 +38,10 @@ struct BSExtraData
 
     BSExtraData* next{};
 };
+
+struct ExtraEncounterZone : BSExtraData
+{
+    BGSEncounterZone* zone;
+};
+
+static_assert(sizeof(ExtraEncounterZone) == 0x18);

@@ -15,6 +15,7 @@
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
+#include <Structs/ServerSettings.h>
 #include <Structs/Vector2_NetQuantize.h>
 
 #include <TiltedCore/Math.hpp>
@@ -163,6 +164,29 @@ TEST_CASE("Static structures", "[encoding.static]")
             REQUIRE(sendObjects == recvObjects);
         }
     }
+}
+
+TEST_CASE("Server settings", "[encoding.server_settings]")
+{
+    ServerSettings sendSettings, recvSettings;
+    sendSettings.Difficulty = 3;
+    sendSettings.GreetingsEnabled = true;
+    sendSettings.PvpEnabled = true;
+    sendSettings.SyncPlayerHomes = true;
+    sendSettings.DeathSystemEnabled = false;
+    sendSettings.SyncPlayerCalendar = true;
+    sendSettings.AutoPartyJoin = false;
+    sendSettings.HealthMultiplier = 2.5f;
+
+    Buffer buff(1000);
+    Buffer::Writer writer(&buff);
+    sendSettings.Serialize(writer);
+
+    Buffer::Reader reader(&buff);
+    recvSettings.Deserialize(reader);
+
+    REQUIRE(sendSettings == recvSettings);
+    REQUIRE(recvSettings.HealthMultiplier == 2.5f);
 }
 
 TEST_CASE("Differential structures", "[encoding.differential]")
@@ -370,6 +394,46 @@ TEST_CASE("Packets", "[encoding.packets]")
         sendMessage.UserMods.ModList.push_back({"Hi", 14});
         sendMessage.UserMods.ModList.push_back({"Test", 8});
         sendMessage.UserMods.ModList.push_back({"Toast", 49});
+
+        Buffer::Writer writer(&buff);
+        sendMessage.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        uint64_t trash;
+        reader.ReadBits(trash, 8); // pop opcode
+
+        recvMessage.DeserializeRaw(reader);
+
+        REQUIRE(sendMessage == recvMessage);
+    }
+
+    SECTION("SyncRfabExperienceRequest")
+    {
+        Buffer buff(1000);
+
+        SyncRfabExperienceRequest sendMessage, recvMessage;
+        sendMessage.Experience = 250;
+
+        Buffer::Writer writer(&buff);
+        sendMessage.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        uint64_t trash;
+        reader.ReadBits(trash, 8); // pop opcode
+
+        recvMessage.DeserializeRaw(reader);
+
+        REQUIRE(sendMessage == recvMessage);
+    }
+
+    SECTION("NotifySyncRfabExperience")
+    {
+        Buffer buff(1000);
+
+        NotifySyncRfabExperience sendMessage, recvMessage;
+        sendMessage.Experience = 250;
 
         Buffer::Writer writer(&buff);
         sendMessage.Serialize(writer);

@@ -43,10 +43,12 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher, Trans
 
 bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
 {
-    if (pCell && pCell->loadedCellData && pCell->loadedCellData->encounterZone)
+    if (pCell)
     {
+        auto* pEncounterZone = static_cast<ExtraEncounterZone*>(pCell->extraData.GetByType(ExtraDataType::EncounterZone));
+
         // Only return true if cell has the NoResetZone encounter zone
-        if (pCell->loadedCellData->encounterZone->formID == 0xf90b1)
+        if (pEncounterZone && pEncounterZone->zone && pEncounterZone->zone->formID == 0xf90b1)
         {
             switch (pCell->formID)
             {
