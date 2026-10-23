@@ -13,6 +13,7 @@
 std::unique_ptr<TiltedOnlineApp> g_appInstance{nullptr};
 
 extern HICON g_SharedWindowIcon;
+extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
 
 namespace
 {
@@ -44,20 +45,189 @@ void WriteBootTraceRaw(const std::filesystem::path& aPath, const char* apMsg, bo
     }
 }
 
-void WriteBootTrace(const char* apMsg, bool aReset = false) noexcept
+void FormatAddrWithModulePod(uintptr_t aAddr, char* apOut, size_t aOutSz) noexcept
+{
+    if (!aOutSz)
+        return;
+    apOut[0] = '\0';
+
+    HMODULE hMod = nullptr;
+    char modBuf[MAX_PATH]{};
+    if (aAddr >= 0x10000 &&
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(aAddr), &hMod) &&
+        hMod != nullptr)
+    {
+        GetModuleFileNameA(hMod, modBuf, MAX_PATH - 1);
+        const char* slash = std::strrchr(modBuf, '\\');
+        const char* shortName = slash ? (slash + 1) : modBuf;
+        const uintptr_t rva = aAddr - reinterpret_cast<uintptr_t>(hMod);
+        std::snprintf(apOut, aOutSz, "%s+0x%llX (0x%llX)",
+                      shortName,
+                      static_cast<unsigned long long>(rva),
+                      static_cast<unsigned long long>(aAddr));
+        return;
+    }
+
+    std::snprintf(apOut, aOutSz, "0x%llX", static_cast<unsigned long long>(aAddr));
+}
+
+// Windows x64 MSVC __CxxThrowException ABI layout (frozen across all x64 MSVC versions since VS2005)
+struct MsvcX64TypeDescriptor
+{
+    const void* pVFTable;
+    void* spare;
+    char name[1];
+};
+struct MsvcX64PMD
+{
+    int mdisp;
+    int pdisp;
+    int vdisp;
+};
+struct MsvcX64CatchableType
+{
+    unsigned int properties;
+    int pTypeRva;
+    MsvcX64PMD thisDisplacement;
+    int sizeOrOffset;
+    int copyFunctionRva;
+};
+struct MsvcX64CatchableTypeArray
+{
+    int nCatchableTypes;
+    int arrayOfCatchableTypesRva[1];
+};
+struct MsvcX64ThrowInfo
+{
+    unsigned int attributes;
+    int pmfnUnwindRva;
+    int pForwardCompatRva;
+    int pCatchableTypeArrayRva;
+};
+
+// Pure POD helper (zero C++ destructors -> safe with MSVC __try / __except without C2712!)
+void DecodeCppExceptionAndStackPod(PEXCEPTION_POINTERS apInfo, char* apCppBuf, size_t aCppSz, char* apStackBuf, size_t aStackSz) noexcept
+{
+    apCppBuf[0] = '\0';
+    apStackBuf[0] = '\0';
+    if (!apInfo || !apInfo->ExceptionRecord)
+        return;
+
+    __try
+    {
+        const EXCEPTION_RECORD* rec = apInfo->ExceptionRecord;
+        if (rec->ExceptionCode == 0xE06D7363 && rec->NumberParameters >= 4)
+        {
+            const uintptr_t magic = rec->ExceptionInformation[0];
+            const uintptr_t pObj = rec->ExceptionInformation[1];
+            const uintptr_t pThrowInfoRaw = rec->ExceptionInformation[2];
+            const uintptr_t imgBase = rec->ExceptionInformation[3];
+
+            char originMod[192]{};
+            FormatAddrWithModulePod(imgBase, originMod, sizeof(originMod));
+
+            const char* rttiName = "<unknown>";
+            const char* whatText = "";
+
+            if (pThrowInfoRaw && imgBase)
+            {
+                const auto* pTI = reinterpret_cast<const MsvcX64ThrowInfo*>(pThrowInfoRaw);
+                if (pTI->pCatchableTypeArrayRva)
+                {
+                    const auto* pCTA = reinterpret_cast<const MsvcX64CatchableTypeArray*>(imgBase + pTI->pCatchableTypeArrayRva);
+                    if (pCTA->nCatchableTypes > 0)
+                    {
+                        const auto* pCT0 = reinterpret_cast<const MsvcX64CatchableType*>(imgBase + pCTA->arrayOfCatchableTypesRva[0]);
+                        if (pCT0 && pCT0->pTypeRva)
+                        {
+                            const auto* pTD0 = reinterpret_cast<const MsvcX64TypeDescriptor*>(imgBase + pCT0->pTypeRva);
+                            if (pTD0 && pTD0->name[0])
+                                rttiName = pTD0->name;
+                        }
+                    }
+
+                    for (int i = 0; i < pCTA->nCatchableTypes && i < 16; ++i)
+                    {
+                        const auto* pCT = reinterpret_cast<const MsvcX64CatchableType*>(imgBase + pCTA->arrayOfCatchableTypesRva[i]);
+                        if (!pCT || !pCT->pTypeRva)
+                            continue;
+                        const auto* pTD = reinterpret_cast<const MsvcX64TypeDescriptor*>(imgBase + pCT->pTypeRva);
+                        if (pTD && pTD->name[0] && std::strstr(pTD->name, "exception@std@@"))
+                        {
+                            const auto* pEx = reinterpret_cast<const std::exception*>(pObj + pCT->thisDisplacement.mdisp);
+                            if (pEx)
+                            {
+                                const char* w = pEx->what();
+                                if (w)
+                                    whatText = w;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            std::snprintf(apCppBuf, aCppSz,
+                          " | CppThrowOrigin=[%s] Magic=0x%llX Type=[%s] what()=[\"%s\"]",
+                          originMod,
+                          static_cast<unsigned long long>(magic),
+                          rttiName,
+                          whatText);
+        }
+
+        if (apInfo->ContextRecord)
+        {
+            const auto* sp = reinterpret_cast<const uintptr_t*>(apInfo->ContextRecord->Rsp);
+            size_t pos = 0;
+            int found = 0;
+            for (int slot = 0; slot < 96 && found < 10 && pos + 96 < aStackSz; ++slot)
+            {
+                const uintptr_t cand = sp[slot];
+                HMODULE hCand = nullptr;
+                if (cand >= 0x10000 &&
+                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCSTR>(cand), &hCand) &&
+                    hCand != nullptr)
+                {
+                    char frameDesc[160]{};
+                    FormatAddrWithModulePod(cand, frameDesc, sizeof(frameDesc));
+                    const int n = std::snprintf(apStackBuf + pos, aStackSz - pos, "\r\n    [stack #%d] %s", found, frameDesc);
+                    if (n > 0)
+                        pos += static_cast<size_t>(n);
+                    ++found;
+                }
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+} // namespace
+
+void WriteBootTrace(const char* apMsg, bool aReset = false)
 {
     if (!apMsg)
         return;
 
-    WriteBootTraceRaw(TiltedPhoques::GetPath() / L"RFAB_Online_Startup.log", apMsg, aReset);
-    if (!s_pendingGamePath.empty())
+    const wchar_t* pClientDir = GetTiltedClientDirW();
+    const std::filesystem::path clientPath = (pClientDir && *pClientDir)
+                                                 ? std::filesystem::path(pClientDir)
+                                                 : TiltedPhoques::GetPath();
+
+    WriteBootTraceRaw(clientPath / L"RFAB_Online_Startup.log", apMsg, aReset);
+    if (!s_pendingGamePath.empty() && s_pendingGamePath != clientPath)
         WriteBootTraceRaw(s_pendingGamePath / L"RFAB_Online_Startup.log", apMsg, aReset);
 }
-} // namespace
 
 void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
 {
     if (s_inCrashLogger || !apInfo || !apInfo->ExceptionRecord || !apInfo->ContextRecord)
+        return;
+
+    // Ignore benign Win32 informational codes (OutputDebugStringA / thread naming)
+    if (apInfo->ExceptionRecord->ExceptionCode < 0x80000000)
         return;
 
     s_inCrashLogger = true;
@@ -69,7 +239,8 @@ void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
     wchar_t modPath[MAX_PATH]{};
     uintptr_t modBase = 0;
     if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCWSTR>(rip), &hMod) && hMod)
+                           reinterpret_cast<LPCWSTR>(rip), &hMod) &&
+        hMod)
     {
         modBase = reinterpret_cast<uintptr_t>(hMod);
         GetModuleFileNameW(hMod, modPath, MAX_PATH - 1);
@@ -93,9 +264,13 @@ void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
                                     ? apInfo->ExceptionRecord->ExceptionInformation[1]
                                     : 0;
 
-    char crashBuf[1536];
+    char cppInfo[1024]{};
+    char stackInfo[2048]{};
+    DecodeCppExceptionAndStackPod(apInfo, cppInfo, sizeof(cppInfo), stackInfo, sizeof(stackInfo));
+
+    char crashBuf[4096];
     std::snprintf(crashBuf, sizeof(crashBuf),
-                  "[UNHANDLED_CRASH] Code=0x%08lX RIP=0x%llX FaultAddr=0x%llX Module='%s' Base=0x%llX RVA=+0x%llX RSP=0x%llX RAX=0x%llX RCX=0x%llX RDX=0x%llX Bytes=[%s]",
+                  "[UNHANDLED_CRASH] Code=0x%08lX RIP=0x%llX FaultAddr=0x%llX Module='%s' Base=0x%llX RVA=+0x%llX RSP=0x%llX RAX=0x%llX RCX=0x%llX RDX=0x%llX Bytes=[%s]%s%s",
                   static_cast<unsigned long>(code),
                   static_cast<unsigned long long>(rip),
                   static_cast<unsigned long long>(faultAddr),
@@ -106,7 +281,9 @@ void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
                   static_cast<unsigned long long>(apInfo->ContextRecord->Rax),
                   static_cast<unsigned long long>(apInfo->ContextRecord->Rcx),
                   static_cast<unsigned long long>(apInfo->ContextRecord->Rdx),
-                  hexBytes);
+                  hexBytes,
+                  cppInfo,
+                  stackInfo);
     WriteBootTrace(crashBuf, false);
 
     s_inCrashLogger = false;
@@ -129,6 +306,7 @@ void InstallRfabBootDiagnostics(const std::filesystem::path& acGamePath, const S
     std::call_once(s_crashHandlerOnce, [&]() {
         firstInit = true;
         SetUnhandledExceptionFilter(&EarlyUnhandledFilter);
+        AddVectoredContinueHandler(1, &EarlyUnhandledFilter);
     });
 
     char msg[512];
@@ -166,9 +344,9 @@ static void ShowUnsupportedVersionError(const std::string& acDetectedVersion)
     const std::wstring detected(acDetectedVersion.begin(), acDetectedVersion.end());
     auto errorDetail = fmt::format(L"Detected game version: {}. RFAB Online supports Skyrim SE 1.5.97 (SKSE64 2.0.20) only. Anniversary Edition (1.6.x) is not supported.", detected);
 
-    Base::TaskDialog dia(g_SharedWindowIcon, L"Error", L"Unsupported Skyrim Special Edition version", L"RFAB Online requires Skyrim SE 1.5.97", errorDetail.c_str());
+    Base::TaskDialog dia(g_SharedWindowIcon, L"Error", L"Unsupported Skyrim version",
+                         L"RFAB Online only supports Skyrim Special Edition 1.5.97 with SKSE64 2.0.20", errorDetail.c_str());
     dia.Show();
-
     exit(5);
 }
 
@@ -193,7 +371,7 @@ void EnsureTiltedInitialized()
 
         WriteBootTrace("[BOOT 3/4] Address Library SE 1.5.97 loaded; constructing TiltedOnlineApp...");
         g_appInstance = std::make_unique<TiltedOnlineApp>();
-        WriteBootTrace("[BOOT 3.1/4] Running TiltedPhoques::Initializer::RunAll() + DInputHook::Install()...");
+        WriteBootTrace("[BOOT 3.1/4] TiltedOnlineApp constructed; calling InstallHooks2()...");
 
         TiltedOnlineApp::InstallHooks2();
         WriteBootTrace("[BOOT 3.3/4] Committing delayed .text hooks...");

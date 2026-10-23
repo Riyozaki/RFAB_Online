@@ -679,6 +679,13 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     }
     if (!hasBPrefixV7)
     {
+        // Heal stale [SaveGameMaxSize] section header if created by earlier patcher version -> standard [Experimental]
+        if (const size_t wrongSec = aToml.find("[SaveGameMaxSize]"); wrongSec != std::string::npos)
+        {
+            aToml.replace(wrongSec, std::strlen("[SaveGameMaxSize]"), "[Experimental]");
+            changed = true;
+        }
+
         const bool hasMemMgr = patchKey("MemoryManager", "false");
         const bool hasScaleform = patchKey("ScaleformAllocator", "false");
         const bool hasQuicksaves = patchKey("RegularQuicksaves", "true");
@@ -699,7 +706,7 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
         insertUnderSection("Patches", missingPatches);
 
         if (!hasSaveMax)
-            insertUnderSection("SaveGameMaxSize", {{"SaveGameMaxSize", "true"}});
+            insertUnderSection("Experimental", {{"SaveGameMaxSize", "true"}});
     }
 
     return changed;

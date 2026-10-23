@@ -51,12 +51,15 @@ std::shared_ptr<spdlog::sinks::rotating_file_sink_mt> CreateClientLogSink(const 
 }
 } // namespace
 
+extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
+
 TiltedOnlineApp::TiltedOnlineApp()
 {
     // Set console code page to UTF-8 so console known how to interpret string data
     SetConsoleOutputCP(CP_UTF8);
 
-    auto logPath = TiltedPhoques::GetPath() / "logs";
+    const wchar_t* pClientDir = GetTiltedClientDirW();
+    auto logPath = (pClientDir && *pClientDir) ? (std::filesystem::path(pClientDir) / "logs") : (TiltedPhoques::GetPath() / "logs");
 
     std::error_code ec;
     create_directory(logPath, ec);

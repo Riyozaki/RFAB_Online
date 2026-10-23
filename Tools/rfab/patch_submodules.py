@@ -159,3 +159,29 @@ if "LoadLibraryA(\"dinput8.dll\")" not in di_txt:
     assert old_di in di_txt, "Failed to match DInputHook::Install in DInputHook.cpp!"
     di_path.write_text(di_txt.replace(old_di, new_di, 1), encoding="utf-8")
     print("[patch_submodules] Patched TiltedHooks DInputHook.cpp (DirectInput8Create fallback + null guard).")
+
+ui_win_inc = """#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+"""
+
+ui_replacement = """        wchar_t clientDirEnv[4096]{};
+        const DWORD envLen = GetEnvironmentVariableW(L"RFAB_TILTED_CLIENT_DIR", clientDirEnv, 4096);
+        const auto currentPath = (envLen > 0 && envLen < 4096)
+                                     ? std::filesystem::path(clientDirEnv)
+                                     : TiltedPhoques::GetPath();"""
+
+for ui_rel in (
+    ("Libraries", "TiltedUI", "Code", "ui", "src", "OverlayApp.cpp"),
+    ("Libraries", "TiltedUI", "Code", "ui", "src", "OverlayClient.cpp"),
+):
+    ui_file = ROOT.joinpath(*ui_rel)
+    raw_ui = ui_file.read_text(encoding="utf-8").replace("\r\n", "\n")
+    needle_ui = "        const auto currentPath = TiltedPhoques::GetPath();"
+    if "RFAB_TILTED_CLIENT_DIR" not in raw_ui:
+        assert needle_ui in raw_ui, f"Failed to match GetPath() in {ui_file}!"
+        patched_ui = ui_win_inc + raw_ui.replace(needle_ui, ui_replacement, 1)
+        ui_file.write_text(patched_ui, encoding="utf-8")
+        print(f"[patch_submodules] Patched {ui_file.name} (RFAB_TILTED_CLIENT_DIR real path for CEF UI & cursors).")
+

@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$RfabDir = "",
     [string]$ModSourceDir = "",
     [string]$ServerSourceDir = "",
@@ -812,7 +812,8 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
             @("MaxStdio", "8192")
         )
     }
-    $updated = Ensure-SectionKeys $updated "SaveGameMaxSize" @(
+    $updated = [regex]::Replace($updated, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
+    $updated = Ensure-SectionKeys $updated "Experimental" @(
         @("SaveGameMaxSize", "true")
     )
     if ($updated -ne $raw) {

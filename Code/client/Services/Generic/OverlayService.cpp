@@ -145,6 +145,7 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
         {
             spdlog::critical("CEF failed to initialize, exit code {}. See 'cef_types.h' for description", exitCode);
         }
+        return;
     }
 
     m_pOverlay->GetClient()->Create();
@@ -152,6 +153,9 @@ void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 
 void OverlayService::Render() noexcept
 {
+    if (!m_pOverlay || !m_pOverlay->GetClient())
+        return;
+
     auto pPlayer = PlayerCharacter::Get();
     bool inGame = pPlayer && pPlayer->GetNiNode();
     if (inGame && !m_inGame)

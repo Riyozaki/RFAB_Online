@@ -142,11 +142,26 @@ def main():
             if head.startswith(b"version https://git-lfs.github.com/spec/v1"):
                 raise RuntimeError(f"FATAL: Git LFS pointer stub found in release package: {p}")
 
-    # Verify SkyrimSE.exe == SkyrimTogether.exe byte-for-byte
+    # Verify SkyrimSE.exe == SkyrimTogether.exe byte-for-byte AND stamps VS_FIXEDFILEINFO 1.5.97.0
     se_bytes = open(os.path.join(client_bin, "SkyrimSE.exe"), "rb").read()
     st_bytes = open(os.path.join(client_bin, "SkyrimTogether.exe"), "rb").read()
     assert len(se_bytes) > 1_000_000, f"SkyrimSE.exe unexpectedly small ({len(se_bytes)} B)"
     assert se_bytes == st_bytes, "SkyrimSE.exe and SkyrimTogether.exe differ!"
+
+    expected_fixed_ver = struct.pack(
+        "<IIIIII",
+        0xFEEF04BD,  # dwSignature
+        0x00010000,  # dwStrucVersion
+        0x00010005,  # dwFileVersionMS    = 1.5
+        0x00610000,  # dwFileVersionLS    = 97.0
+        0x00010005,  # dwProductVersionMS = 1.5
+        0x00610000,  # dwProductVersionLS = 97.0
+    )
+    assert expected_fixed_ver in se_bytes, (
+        "FATAL: SkyrimSE.exe missing VS_FIXEDFILEINFO 1.5.97.0! "
+        "CommonLibSSE/CommonLibSSE-NG & EngineFixes plugins will read 0.0.0.0 and throw 0xE06D7363!"
+    )
+    print("[CLIENT] Verified VS_FIXEDFILEINFO == 1.5.97.0 inside SkyrimSE.exe & SkyrimTogether.exe (.rsrc).")
 
     # Verify both .esp files are genuine TES4 with SE 1.5.97 native HEDR == 1.7000
     for esp_name in ("SkyrimTogether.esp", "SkyrimTogetherQuestPatches.esp"):

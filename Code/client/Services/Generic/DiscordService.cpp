@@ -145,9 +145,12 @@ void DiscordService::WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 #endif
 }
 
+extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
+
 bool DiscordService::Init()
 {
-    auto dllPath = TiltedPhoques::GetPath().wstring() + L"\\discord_game_sdk.dll";
+    const wchar_t* pClientDir = GetTiltedClientDirW();
+    auto dllPath = ((pClientDir && *pClientDir) ? std::wstring(pClientDir) : TiltedPhoques::GetPath().wstring()) + L"\\discord_game_sdk.dll";
 
     // as we make the game sdk optional we need to dynamiclly resolve the export
     HMODULE pHandle = LoadLibraryW(dllPath.c_str());

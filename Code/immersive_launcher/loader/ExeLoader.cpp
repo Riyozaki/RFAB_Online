@@ -305,38 +305,38 @@ bool ExeLoader::Load(const uint8_t* apProgramBuffer)
     // store EP
     m_pEntryPoint = GetTargetRVA<void>(ntHeader->OptionalHeader.AddressOfEntryPoint);
 
-    // store these as they will get overridden by the target's header
-    // but we really need them in order to not break debugging for cosi.
-    auto sourceChecksum = sourceNtHeader->OptionalHeader.CheckSum;
-    auto sourceTimestamp = sourceNtHeader->FileHeader.TimeDateStamp;
-    auto sourceDebugDir = sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    // Preserve launcher's own header metadata (TLS, Debug directory, Export directory, CheckSum/TimeDateStamp)
+    // BEFORE copying SkyrimSE.exe's NT headers + IMAGE_SECTION_HEADER table onto 0x140000000.
+    // Copying SkyrimSE.exe's section headers BEFORE LoadImports() guarantees DINPUT8.dll / EngineFixes.dll
+    // (CommonLibSSE / CommonLibSSE-NG REL::Module::load_segments()) immediately see SkyrimSE.exe's real
+    // .text / .rdata / .data / .pdata / .tls sections instead of SkyrimImmersiveLauncher's smaller sections!
+    const IMAGE_NT_HEADERS savedLauncherNtHeader = *sourceNtHeader;
 
     LoadSections(ntHeader);
 
-    // skse64_plugin_preloader (proxy d3dx9_42_dll and others?) may hook
-    // _initterm_e during LoadImports(), so we have to ensure that IAT entry exists.
-    // The simplest way to make sure all SkyrimSE IAT entries exist when mods expect 
-    // them to is to switch to those headers earlier than we used to
+    const size_t ntCompleteHeaderSize = sizeof(IMAGE_NT_HEADERS) + (ntHeader->FileHeader.NumberOfSections * (sizeof(IMAGE_SECTION_HEADER)));
+
     DWORD oldProtect;
     VirtualProtect(sourceNtHeader, 0x1000, PAGE_EXECUTE_READWRITE, &oldProtect);
-    sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT] = ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    std::memcpy(sourceNtHeader, ntHeader, ntCompleteHeaderSize);
+
+    // Restore launcher debug/export metadata so crash PDB symbols & exports remain valid
+    sourceNtHeader->OptionalHeader.CheckSum = savedLauncherNtHeader.OptionalHeader.CheckSum;
+    sourceNtHeader->FileHeader.TimeDateStamp = savedLauncherNtHeader.FileHeader.TimeDateStamp;
+    sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG] =
+        savedLauncherNtHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+    if (savedLauncherNtHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress != 0)
+    {
+        sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT] =
+            savedLauncherNtHeader.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    }
 
     LoadImports(ntHeader);
 #if defined(_M_AMD64)
     LoadExceptionTable(ntHeader);
-    LoadTLS(ntHeader, sourceNtHeader);
+    LoadTLS(ntHeader, &savedLauncherNtHeader);
 #endif
 
-    const size_t ntCompleteHeaderSize = sizeof(IMAGE_NT_HEADERS) + (ntHeader->FileHeader.NumberOfSections * (sizeof(IMAGE_SECTION_HEADER)));
-
-    // overwrite our headers with the target headers
-    std::memcpy(sourceNtHeader, ntHeader, ntCompleteHeaderSize);
-
-    // good old switcheroo
-    // TODO: consider making this optional to allow loading the game's pdb.
-    sourceNtHeader->OptionalHeader.CheckSum = sourceChecksum;
-    sourceNtHeader->FileHeader.TimeDateStamp = sourceTimestamp;
-    sourceNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG] = sourceDebugDir;
     m_pBinary = nullptr;
 
     // Set a hook to check if anything loaded messes with critical hooks.

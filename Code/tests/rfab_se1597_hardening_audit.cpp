@@ -228,12 +228,14 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
     REQUIRE(RfabCompat::NormalizeServerEndpoint("26.160.34.131") == "26.160.34.131:10578");
     REQUIRE(RfabCompat::NormalizeServerEndpoint("26.160.34.131:10578:10578") == "26.160.34.131:10578");
 
-    std::string partialOverride = "[Patches]\r\nRegularQuicksaves = false\r\n";
+    std::string partialOverride = "[Patches]\r\nRegularQuicksaves = false\r\n\r\n[SaveGameMaxSize]\r\nSaveGameMaxSize = true\r\n";
     REQUIRE(RfabCompat::PatchEngineFixesTomlContent(partialOverride));
     REQUIRE(partialOverride.find("MemoryManager = false") != std::string::npos);
     REQUIRE(partialOverride.find("ScaleformAllocator = false") != std::string::npos);
     REQUIRE(partialOverride.find("RegularQuicksaves = true") != std::string::npos);
     REQUIRE(partialOverride.find("MaxStdio = 8192") != std::string::npos);
+    REQUIRE(partialOverride.find("[Experimental]") != std::string::npos);
+    REQUIRE(partialOverride.find("[SaveGameMaxSize]") == std::string::npos);
     REQUIRE_FALSE(RfabCompat::PatchEngineFixesTomlContent(partialOverride));
 
     std::string soulsIni = "[SLOWMOTION]\r\nfSlowMotionMultiplier = 0.250000\r\nbEnableSlowMotionInventoryMenu = true\r\n";
