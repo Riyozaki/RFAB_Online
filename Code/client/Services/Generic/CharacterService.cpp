@@ -336,10 +336,11 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
         {
             if (auto cacheIt = m_cachedRemoteSpawns.find(serverId); cacheIt != m_cachedRemoteSpawns.end())
             {
-                cacheIt->second.Position = pActor->position;
-                cacheIt->second.Rotation.x = pActor->rotation.x;
-                cacheIt->second.Rotation.y = pActor->rotation.z;
-                cacheIt->second.IsDead = pActor->IsDead();
+                auto& cached = cacheIt.value();
+                cached.Position = pActor->position;
+                cached.Rotation.x = pActor->rotation.x;
+                cached.Rotation.y = pActor->rotation.z;
+                cached.IsDead = pActor->IsDead();
             }
             pActor->Delete();
         }
