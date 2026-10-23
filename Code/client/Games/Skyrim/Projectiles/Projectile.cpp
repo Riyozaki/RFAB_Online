@@ -80,7 +80,7 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
         if (pActor)
         {
             ActorExtension* pExtendedActor = pActor->GetExtension();
-            if (pExtendedActor->IsRemote())
+            if (pExtendedActor && pExtendedActor->IsRemote())
             {
                 apThis->handle.iBits = 0;
                 return apThis;
@@ -145,7 +145,11 @@ static TiltedPhoques::Initializer s_projectileHooks(
 
         struct FireEntryStub : TiltedPhoques::CodeGenerator
         {
+            // IMPORTANT: TiltedPhoques::CodeGenerator defaults to 64 bytes, whereas this full x64
+            // register/XMM save+restore wrapper emits ~120 bytes (throwing Xbyak::Error "code is too big"
+            // -> 0xE06D7363 at startup if left at 64)! Allocate 512 bytes (power of 2) in .highrip.
             FireEntryStub()
+                : TiltedPhoques::CodeGenerator(512)
             {
                 // Entry RSP has 8-byte return address pushed (RSP % 16 == 8).
                 // Sub 0x88 makes RSP 16-byte aligned and reserves 0x20 callee shadow space + register save slots
@@ -186,6 +190,7 @@ static TiltedPhoques::Initializer s_projectileHooks(
             }
         };
         static FireEntryStub s_fireEntryStub;
+        FlushInstructionCache(GetCurrentProcess(), s_fireEntryStub.getCode<const void*>(), s_fireEntryStub.getSize());
 
         RealLaunch = s_launch.Get();
         RealActorMagicCasterFire = s_actorMagicCasterFire.Get();

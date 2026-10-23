@@ -185,3 +185,13 @@ for ui_rel in (
         ui_file.write_text(patched_ui, encoding="utf-8")
         print(f"[patch_submodules] Patched {ui_file.name} (RFAB_TILTED_CLIENT_DIR real path for CEF UI & cursors).")
 
+jit_path = ROOT / "Libraries" / "TiltedReverse" / "Code" / "reverse" / "include" / "JitAssembly.hpp"
+jit_txt = jit_path.read_text(encoding="utf-8")
+if "kDefaultAllocStubsize = 64;" in jit_txt:
+    jit_path.write_text(
+        jit_txt.replace("kDefaultAllocStubsize = 64;", "kDefaultAllocStubsize = 512;", 1),
+        encoding="utf-8",
+    )
+    print("[patch_submodules] Patched TiltedReverse JitAssembly.hpp (kDefaultAllocStubsize 64 -> 512 bytes).")
+
+
