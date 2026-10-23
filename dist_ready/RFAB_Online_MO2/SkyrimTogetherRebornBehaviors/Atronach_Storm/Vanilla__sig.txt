@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:6196965d74529888a791b5a96dcd43027e99dbc6fa2fe77d8dc932770b48780e
-size 27
+iState_AtronachStormDefault

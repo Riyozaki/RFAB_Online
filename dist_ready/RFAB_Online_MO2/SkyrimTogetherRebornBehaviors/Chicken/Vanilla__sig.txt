@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ca0b77870058d3e9ea0438fceee66ae661d4bf480168c1da09214b333eede3fc
-size 25
+iState_Chicken_Default_MT

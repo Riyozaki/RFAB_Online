@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:63e983be942f458a82ee800800a3c1893ab7217b8b3fc5ab99fa59856fbd77fe
-size 35
+iState_HorseDefault,!FemaleOffset

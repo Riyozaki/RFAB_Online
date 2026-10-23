@@ -1,3 +1,17 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:21f42b5dcc3c48419d4ecdd30857c9d01d746188a8b6fc8bd58011090617947d
-size 216
+bXingInquistor
+bUseAltGrip
+bUseAltMag
+bInquisitor
+bInqRecovery
+bWarLockOpen
+bCanWarLock
+bUseWLMag
+bDualCastPerk
+bWarlockDual
+bInWLWard
+bInWLAimCon
+bInWLTelek
+bInWLLevi
+bInWLSelfCon
+bCDWarLock
+bInWLShd

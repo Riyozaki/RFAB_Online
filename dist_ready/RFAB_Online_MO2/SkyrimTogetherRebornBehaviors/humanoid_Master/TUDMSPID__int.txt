@@ -1,3 +1,18 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:4a024b20893c17b4790accf045ade38d9059f728f9c1da8fba489cd7d18f8aa6
-size 206
+Stamina
+StaminaCostR
+StaminaCostS
+SneakKey
+DDodgeStyle
+chance6
+chance16
+frequency2
+frequency3
+staminacost
+pseudorandom16
+pseudorandom6
+NPCIFrame
+GPFlag
+DAFlag
+DodgeID
+playerSex
+warningcount

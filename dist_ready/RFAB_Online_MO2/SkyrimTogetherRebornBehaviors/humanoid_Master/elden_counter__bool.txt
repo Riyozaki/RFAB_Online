@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:c8e967b60e054f54f2fcb8bc19318ab7ffe2eed3220f7c9cd32534ccca8e7121
-size 19
+is_Guard_Countering

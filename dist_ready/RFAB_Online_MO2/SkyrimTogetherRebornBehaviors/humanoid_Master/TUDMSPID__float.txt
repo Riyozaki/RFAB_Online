@@ -1,3 +1,12 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:3f227fea5b23304f689e14d3e15603199b875c5249be52ebed663ba827506ac9
-size 140
+MaxSpeedPenalty
+DodgeSpeed
+IFrameR
+IFrameS
+distance
+dagger
+unarmed
+shield
+onehanded
+twohanded
+InvincibleFrameR
+InvincibleFrameS

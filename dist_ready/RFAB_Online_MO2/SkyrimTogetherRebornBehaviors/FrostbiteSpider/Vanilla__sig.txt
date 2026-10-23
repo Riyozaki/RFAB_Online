@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:46cec716f11421dbf4fccd2181c9689a9417252dcd9b7c6c08286d2f9d4a0974
-size 39
+iState_DefaultSpider_MT,!FootIKEnable

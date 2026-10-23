@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:19f47a114a46950a028cb1959be40dcccfefb775aa0756bd045c8b4c99863c7f
-size 25
+iState_VampireLordDefault

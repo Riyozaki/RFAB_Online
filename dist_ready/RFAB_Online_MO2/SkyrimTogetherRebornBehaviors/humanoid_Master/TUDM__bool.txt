@@ -1,3 +1,6 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:58fdf9c51fd0897f6f8066a6bf0447699cae0ad831a3a68e84df23b700d21ffe
-size 96
+rightRace
+StepdodgeStaminaFixEnabled
+registered
+Counted
+changedone
+CrouchSlideMod_Installed

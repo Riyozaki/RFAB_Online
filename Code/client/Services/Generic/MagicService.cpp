@@ -684,6 +684,8 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
     MagicTarget::AddTargetData data{};
     data.pSpell = pSpell;
     data.pEffectItem = pSpell->GetEffect((pSkyrimTogether->standardId << 24) | 0x1824);
+    if (!data.pEffectItem)
+        return;
     data.fMagnitude = 1.f;
     data.fUnkFloat1 = 1.f;
     data.eCastingSource = MagicSystem::CastingSource::CASTING_SOURCE_COUNT;

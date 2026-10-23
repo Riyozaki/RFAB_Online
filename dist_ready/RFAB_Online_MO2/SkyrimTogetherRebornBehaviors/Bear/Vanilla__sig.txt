@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:46e299b1658116b05a407b6f8e4a6a72c86328a9b5781d7459d3056e9f3c8c55
-size 61
+iState_BearDefault,iState_BearSwimDefault,km_hitSomething_3

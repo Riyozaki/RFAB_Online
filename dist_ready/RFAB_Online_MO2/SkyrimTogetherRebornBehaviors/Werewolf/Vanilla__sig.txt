@@ -1,3 +1,1 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:e6895b381e9ceecdcfa94b7ce9c29e62c2784ff3fe5e6f159a2fd4f87b5003d8
-size 27
+iState_WerewolfBeastDefault

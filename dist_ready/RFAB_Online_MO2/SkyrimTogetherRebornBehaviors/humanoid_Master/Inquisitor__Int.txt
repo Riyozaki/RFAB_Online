@@ -1,3 +1,5 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:f54fe6dcf46ceadfaa6b4cde3d47ce4c008c8cf63abdc8f27c5919fbbd11cbfb
-size 68
+xma_nextRight
+xma_nextLeft
+iDualWLArt
+iWLPoint
+iState_WLLeviMove

@@ -73,3 +73,9 @@ target("SkyrimImmersiveLauncher")
             os.cp(exe, alias)
         end
     end)
+    after_install(function (target)
+        local installed = path.join(target:installdir(), "bin", "SkyrimSE.exe")
+        if os.isfile(installed) then
+            os.cp(installed, path.join(target:installdir(), "bin", "SkyrimTogether.exe"))
+        end
+    end)
