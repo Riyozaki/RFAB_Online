@@ -34,7 +34,35 @@ private:
 
     static unsigned long long FromPointer(void* ptr) { return (unsigned long long)ptr; }
 
-    static bool ParseVersionFromString(const char* ptr, int& major, int& minor, int& revision, int& build) { return sscanf_s(ptr, "%d.%d.%d.%d", &major, &minor, &revision, &build) == 4 && ((major != 1 && major != 0) || minor != 0 || revision != 0 || build != 0); }
+    static bool ParseVersionFromString(const char* ptr, int& major, int& minor, int& revision, int& build)
+    {
+        if (!ptr || !*ptr)
+            return false;
+        int parts[4] = {0, 0, 0, 0};
+        int count = 0;
+        const char* p = ptr;
+        while (*p && count < 4)
+        {
+            while (*p && (*p < '0' || *p > '9'))
+                ++p;
+            if (!*p)
+                break;
+            int val = 0;
+            while (*p >= '0' && *p <= '9')
+            {
+                val = val * 10 + (*p - '0');
+                ++p;
+            }
+            parts[count++] = val;
+        }
+        if (count < 3)
+            return false;
+        major = parts[0];
+        minor = parts[1];
+        revision = parts[2];
+        build = parts[3];
+        return ((major != 1 && major != 0) || minor != 0 || revision != 0 || build != 0);
+    }
 
 public:
     const std::string& GetModuleName() const { return _moduleName; }

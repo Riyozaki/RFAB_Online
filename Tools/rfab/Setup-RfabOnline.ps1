@@ -218,6 +218,63 @@ if (-not $NonInteractive) {
 # 4. Умный поиск всех установок MO2/RFAB + удобное окно подтверждения/выбора папки (читает точный gamePath из ModOrganizer.ini!)
 Write-Step "Шаг 2/7. Определение папки сборки RFAB, Mod Organizer 2 и SkyrimSE.exe (1.5.97)"
 
+function Get-SkyrimExeDetails([string]$ExePath) {
+    if ([string]::IsNullOrWhiteSpace($ExePath) -or -not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+        return $null
+    }
+    $fullExe = [System.IO.Path]::GetFullPath($ExePath)
+    $exeDir  = Split-Path -Parent $fullExe
+
+    $probeFiles = @($fullExe)
+    $cdxSibling = [System.IO.Path]::ChangeExtension($fullExe, ".cdx")
+    if (Test-Path -LiteralPath $cdxSibling -PathType Leaf) {
+        $probeFiles += $cdxSibling
+    }
+
+    $realVersions = New-Object System.Collections.Generic.List[string]
+    foreach ($pf in $probeFiles) {
+        try {
+            $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($pf)
+            $rawCands = @(
+                "$($vi.ProductVersion)",
+                "$($vi.ProductMajorPart).$($vi.ProductMinorPart).$($vi.ProductBuildPart).$($vi.ProductPrivatePart)",
+                "$($vi.FileVersion)",
+                "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)"
+            )
+            foreach ($rc in $rawCands) {
+                if ([string]::IsNullOrWhiteSpace($rc)) { continue }
+                $nums = @([regex]::Matches($rc, '\d+') | ForEach-Object { [int]$_.Value })
+                if ($nums.Count -lt 3) { continue }
+                $p3 = if ($nums.Count -ge 4) { $nums[3] } else { 0 }
+                # Bethesda leaves FILEVERSION = 1.0.0.0 while storing 1.5.97.0 in ProductVersion / standalone wrappers
+                if (($nums[0] -eq 0 -or $nums[0] -eq 1) -and $nums[1] -eq 0 -and $nums[2] -eq 0 -and $p3 -eq 0) {
+                    continue
+                }
+                $norm = "$($nums[0]).$($nums[1]).$($nums[2]).$p3"
+                if (-not $realVersions.Contains($norm)) {
+                    $realVersions.Add($norm)
+                }
+            }
+        } catch {}
+    }
+
+    foreach ($v in $realVersions) {
+        if ($v -match '^1\.5\.97(\.|$)') {
+            return [PSCustomObject]@{ ExePath = $fullExe; Version = $v; IsSe1597 = $true }
+        }
+    }
+    if ($realVersions.Count -gt 0) {
+        return [PSCustomObject]@{ ExePath = $fullExe; Version = $realVersions[0]; IsSe1597 = $false }
+    }
+
+    if ((Test-Path -LiteralPath (Join-Path $exeDir "skse64_1_5_97.dll")) -or
+        (Test-Path -LiteralPath (Join-Path $exeDir "Data\SKSE\Plugins\version-1-5-97-0.bin"))) {
+        return [PSCustomObject]@{ ExePath = $fullExe; Version = "1.5.97.0 (Standalone)"; IsSe1597 = $true }
+    }
+
+    return [PSCustomObject]@{ ExePath = $fullExe; Version = "1.0.0.0"; IsSe1597 = $false }
+}
+
 function Resolve-Mo2AndSkyrimPreview([string]$InputPath) {
     if ([string]::IsNullOrWhiteSpace($InputPath)) { return $null }
     $p = $InputPath.Trim().Trim('"')
@@ -241,6 +298,7 @@ function Resolve-Mo2AndSkyrimPreview([string]$InputPath) {
     $iniFile = Join-Path $mo2Folder "ModOrganizer.ini"
     $gameExeFound = ""
     $gameVerFound = ""
+    $gameIs1597 = $false
     $isRfabPack = $false
 
     if (Test-Path -LiteralPath $iniFile) {
@@ -266,10 +324,11 @@ function Resolve-Mo2AndSkyrimPreview([string]$InputPath) {
         $parentM = Split-Path -Parent $mo2Folder
         if ($parentM) { $tryExes.Add((Join-Path $parentM "SkyrimSE.exe")) }
         foreach ($te in $tryExes) {
-            if ($te -and (Test-Path -LiteralPath $te)) {
-                $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($te)
-                $gameExeFound = [System.IO.Path]::GetFullPath($te)
-                $gameVerFound = "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)"
+            $det = Get-SkyrimExeDetails $te
+            if ($null -ne $det) {
+                $gameExeFound = $det.ExePath
+                $gameVerFound = $det.Version
+                $gameIs1597   = $det.IsSe1597
                 break
             }
         }
@@ -282,7 +341,7 @@ function Resolve-Mo2AndSkyrimPreview([string]$InputPath) {
         Mo2Exe   = $mo2
         SkyrimExe = $gameExeFound
         Version  = $gameVerFound
-        IsSe1597 = ($gameVerFound -like "1.5.97.*")
+        IsSe1597 = $gameIs1597
         IsRfab   = $isRfabPack
     }
 }
@@ -509,14 +568,14 @@ foreach ($sr in $SearchRoots) {
 $SkyrimExe = $null
 $BadVersionFound = ""
 foreach ($cand in ($SkyrimCandidates | Select-Object -Unique)) {
-    $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($cand)
-    $verText = "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)"
-    if ($vi.FileMajorPart -eq 1 -and $vi.FileMinorPart -eq 5 -and $vi.FileBuildPart -eq 97) {
-        $SkyrimExe = $cand
-        Write-Ok "Подтверждён SkyrimSE.exe версии $verText -> $SkyrimExe"
+    $det = Get-SkyrimExeDetails $cand
+    if ($null -eq $det) { continue }
+    if ($det.IsSe1597) {
+        $SkyrimExe = $det.ExePath
+        Write-Ok "Подтверждён SkyrimSE.exe версии $($det.Version) -> $SkyrimExe"
         break
-    } elseif ($cand -eq $SkyrimCandidates[0]) {
-        $BadVersionFound = "$verText ($cand)"
+    } elseif ([string]::IsNullOrWhiteSpace($BadVersionFound)) {
+        $BadVersionFound = "$($det.Version) ($($det.ExePath))"
     }
 }
 if (-not $SkyrimExe) {

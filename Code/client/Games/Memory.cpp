@@ -168,10 +168,16 @@ static TiltedPhoques::Initializer s_memoryHooks(
 using T_initterm_e = decltype(&_initterm_e);
 T_initterm_e Real_initterm_e = nullptr;
 
+extern void EnsureTiltedInitialized();
+
 // If EngineFixes loaded, and it changed our FormAllocate hook, 
 // reset it. Our hook works just fine chaining to theirs.
 int __cdecl Hook_initterm_e(_PIFV* apFirst, _PIFV* apLast)
 {
+    // Install .text hooks now that EntryPoint unpackers (SteamStub / standalone .cdx) have completed,
+    // and right before Real_initterm_e triggers skse64_plugin_preloader (EngineFixes PreLoad).
+    EnsureTiltedInitialized();
+
     // We want to run last, so pre-chain.
     auto retval = Real_initterm_e(apFirst, apLast); 
     

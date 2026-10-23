@@ -217,7 +217,7 @@ DWORD WINAPI TP_GetModuleFileNameA(HMODULE aModule, char* alpFileName, DWORD aBu
     if (RtlUnicodeStringToAnsiString(&dest, &source, FALSE) != 0)
         return 0;
 
-    return result;
+    return static_cast<DWORD>(dest.Length);
 }
 
 // we use this function to enforce the DLL load policy

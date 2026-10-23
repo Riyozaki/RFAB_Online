@@ -154,11 +154,14 @@ New-Item -ItemType Directory -Path `
 $DummyExe = Join-Path $MockRfab "SkyrimSE.exe"
 $CsCode = @'
 using System.Reflection;
-[assembly: AssemblyVersion("1.5.97.8")]
-[assembly: AssemblyFileVersion("1.5.97.8")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyInformationalVersion("1.0.0.0")]
 public class Program { public static void Main() {} }
 '@
 Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleApplication
+[System.IO.File]::Copy($DummyExe, (Join-Path $MockRfab "SkyrimSE.cdx"), $true)
+[System.IO.File]::WriteAllBytes((Join-Path $MockRfab "skse64_1_5_97.dll"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt"), "must be wiped")
