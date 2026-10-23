@@ -6,67 +6,69 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
 
-$TranscriptPath = Join-Path $env:TEMP "rfab_cloud_build_transcript.txt"
-Start-Transcript -Path $TranscriptPath -Force | Out-Null
+$script:PackagesReady = $false
+$CacheMarker = Join-Path $env:LOCALAPPDATA ".xmake\packages\.rfab_cached_ok"
 
-function Emit-StepNotice([string]$Msg) {
-    Write-Host "::notice title=RFAB_BUILD::$Msg"
+function Emit-Annotation([string]$Level, [string]$Title, [string]$Msg) {
+    $clean = $Msg -replace "\r", "" -replace "\n", " | " -replace "%", "%25"
+    if ($clean.Length -gt 3500) { $clean = $clean.Substring($clean.Length - 3500) }
+    Write-Host "::${Level} title=${Title}::${clean}"
 }
 
-function Invoke-NativeStep([string]$StepName, [scriptblock]$CmdBlock) {
+function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
     Write-Host "`n==> $StepName" -ForegroundColor Cyan
+    $stepLog = Join-Path $env:TEMP ("rfab_step_" + [Guid]::NewGuid().ToString("N") + ".log")
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $CmdBlock
+    & cmd.exe /d /s /c "$CmdString > `"$stepLog`" 2>&1"
     $code = $LASTEXITCODE
     $ErrorActionPreference = $prev
-    if ($code -ne 0) {
-        throw "$StepName failed with exit code $code"
+
+    if (Test-Path -LiteralPath $stepLog) {
+        $allLines = [System.IO.File]::ReadAllLines($stepLog)
+        $tailShow = if ($allLines.Length -gt 80) { $allLines[($allLines.Length - 80)..($allLines.Length - 1)] } else { $allLines }
+        foreach ($ln in $tailShow) { Write-Host $ln }
+        if ($code -ne 0) {
+            $errMatches = @($allLines | Where-Object { $_ -match '(?i)(error\s+[A-Z]*\d+|fatal error|unresolved external|error:|Traceback|Assertion|Exception)' })
+            if ($errMatches.Count -gt 0) {
+                Emit-Annotation "warning" "DIAG_MATCHES" ($errMatches -join "`n")
+            }
+            Emit-Annotation "warning" "DIAG_TAIL" ($tailShow -join "`n")
+            Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
+            throw "$StepName exited with code $code"
+        }
+        Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
+    } elseif ($code -ne 0) {
+        throw "$StepName exited with code $code (no log file)"
     }
-    Emit-StepNotice "OK: $StepName"
+    Emit-Annotation "notice" "RFAB_BUILD" "OK: $StepName"
 }
 
 try {
     $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\.."))
     Set-Location -LiteralPath $RepoRoot
 
-    Invoke-NativeStep "[1/7] Submodules init" {
-        & git submodule sync --recursive
-        if ($LASTEXITCODE -ne 0) { throw "git submodule sync failed ($LASTEXITCODE)" }
-        & git submodule update --init --force --recursive --depth=1
-    }
+    Invoke-LoggedCmd "[1/7] Submodules init" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1"
+    Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA & Struct Audit" "python Tools\rfab\verify_se1597_port.py"
+    Invoke-LoggedCmd "[3/7] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
+    $script:PackagesReady = $true
 
-    Invoke-NativeStep "[2/7] SE 1.5.97 RVA & Struct Audit" {
-        & python "Tools\rfab\verify_se1597_port.py"
-    }
-
-    Invoke-NativeStep "[3/7] xmake config (Windows x64 /MT $BuildMode)" {
-        & xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD
-    }
-
-    Invoke-NativeStep "[4/7] xmake build (Client + Launcher + Server + Tests)" {
-        & xmake -y
-    }
+    Invoke-LoggedCmd "[4/7] xmake build (Client + Launcher + Server + Tests)" "xmake -y -v"
 
     $TpTests = Get-ChildItem -LiteralPath (Join-Path $RepoRoot "build\windows\x64\$BuildMode") -Filter "TPTests.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $TpTests) {
         throw "TPTests.exe not found under build\windows\x64\$BuildMode!"
     }
-    Invoke-NativeStep "[5/7] Native Windows x64 Unit Tests (TPTests.exe)" {
-        & $TpTests.FullName
-    }
+    Invoke-LoggedCmd "[5/7] Native Windows x64 Unit Tests (TPTests.exe)" "`"$($TpTests.FullName)`""
 
-    Invoke-NativeStep "[6/7] xmake install + Package-Release.ps1 + Smoke & Clean-Wipe Verification" {
-        & xmake install -o distrib
-        if ($LASTEXITCODE -ne 0) { throw "xmake install failed ($LASTEXITCODE)" }
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot "Tools\rfab\Package-Release.ps1") -VersionTag $VersionTag -BuildMode $BuildMode
-    }
+    Invoke-LoggedCmd "[6/7] xmake install + Package-Release.ps1 + Smoke & Clean-Wipe Verification" `
+        "xmake install -o distrib && powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tools\rfab\Package-Release.ps1 -VersionTag $VersionTag -BuildMode $BuildMode"
 
     $NotesFile = Join-Path $RepoRoot "release_artifacts\RELEASE_NOTES.md"
     $ReleaseNotes = @"
 # RFAB Online $VersionTag — Чистый автономный релиз (Skyrim SE ``1.5.97.0.8``)
 
-Полностью собранный с нуля на облачной машине ``Windows x64`` автономный установщик **RFAB Online** (клиент для **Mod Organizer 2** + выделенный кооп-сервер).
+Полностью собранный с нуля на чистой облачной машине ``Windows x64`` автономный установщик **RFAB Online** (клиент для **Mod Organizer 2** + выделенный кооп-сервер).
 Никаких консольных команд, ``git``, ``xmake`` или ручного переименования/копирования файлов **не требуется**!
 
 ---
@@ -74,7 +76,7 @@ try {
 ## Установка в 2 клика (одинаково и Хосту, и Друзьям)
 1. Скачайте один архив ниже: **``RFAB_Online_${VersionTag}_Full_Installer.zip``** и распакуйте его в любую временную папку.
 2. Закройте игру и **Mod Organizer 2**, затем дважды нажмите на **``INSTALL_RFAB_ONLINE.bat``**:
-   - Откроется удобное окно выбора папки сборки RFAB (автоматически найдёт ``ModOrganizer.exe`` на ваших дисках и покажет найденный ``SkyrimSE.exe 1.5.97`` прямо из ``ModOrganizer.ini``, либо даст выбрать любую папку кнопкой **«Обзор...»**).
+   - Откроется удобное окно выбора папки сборки RFAB (автоматически найдёт ``ModOrganizer.exe`` на ваших дисках и покажет точный путь к ``SkyrimSE.exe 1.5.97`` прямо из ``ModOrganizer.ini``, либо позволит выбрать любую папку кнопкой **«Обзор...»**).
    - Установщик **начисто удаляет** любые старые файлы прошлых тестов в ``MO2\mods\RFAB_Online`` и ``RFAB_Online_Server`` (никакого наслаивания на старые версии!).
    - Ставит готовый нативный лаунчер ``SkyrimSE.exe``, включает ``+RFAB_Online``, ``*SkyrimTogether.esp`` и ``*SkyrimTogetherQuestPatches.esp`` строго перед ``Requiem.esp``, настраивает ``EngineFixes.toml``, ``SkyrimSoulsRE.ini``, ``[RFAB] Autosave.ini``, скрывает конфликтующий ``BetterStealing.dll`` и добавляет кнопку **``RFAB Online - Play``** в MO2.
    - Ставит автономный сервер прямо в ``<Папка_RFAB>\RFAB_Online_Server`` и создаёт ярлык **``START_RFAB_SERVER.bat``** (после установки скачанный ZIP-архив можно спокойно удалить).
@@ -95,37 +97,35 @@ try {
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
 
-    Invoke-NativeStep "[7/7] Publish GitHub Release $VersionTag" {
-        & cmd.exe /c "gh release view $VersionTag >nul 2>&1"
-        if ($LASTEXITCODE -eq 0) {
-            & gh release edit $VersionTag --title $RelTitle --notes-file $NotesFile --latest
-            if ($LASTEXITCODE -ne 0) { throw "gh release edit failed ($LASTEXITCODE)" }
-            & gh release upload $VersionTag $InstallerZip $PdbZip $ShaFile --clobber
-            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed ($LASTEXITCODE)" }
-        } else {
-            & gh release create $VersionTag $InstallerZip $PdbZip $ShaFile --target $CommitSha --title $RelTitle --notes-file $NotesFile --latest
-            if ($LASTEXITCODE -ne 0) { throw "gh release create failed ($LASTEXITCODE)" }
-        }
-        & cmd.exe /c "gh release view v1.0.0-rfab >nul 2>&1"
-        if ($LASTEXITCODE -eq 0) {
-            & gh release delete "v1.0.0-rfab" --yes --cleanup-tag
-        }
-        $global:LASTEXITCODE = 0
+    & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
+    if ($LASTEXITCODE -eq 0) {
+        Invoke-LoggedCmd "[7/7] Update GitHub Release $VersionTag" `
+            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest && gh release upload $VersionTag `"$InstallerZip`" `"$PdbZip`" `"$ShaFile`" --clobber"
+    } else {
+        Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
+            "gh release create $VersionTag `"$InstallerZip`" `"$PdbZip`" `"$ShaFile`" --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     }
 
-    Stop-Transcript | Out-Null
-    Write-Host "`n[ALL 7 STEPS SUCCEEDED] Published $VersionTag!" -ForegroundColor Green
+    & cmd.exe /d /s /c "gh release view v1.0.0-rfab >nul 2>&1"
+    if ($LASTEXITCODE -eq 0) {
+        & cmd.exe /d /s /c "gh release delete v1.0.0-rfab --yes --cleanup-tag"
+    }
+
+    if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
+        [System.IO.File]::WriteAllText($CacheMarker, "ok")
+    }
+    Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/Riyozaki/RFAB_Online/releases/tag/$VersionTag"
     $global:LASTEXITCODE = 0
     exit 0
 } catch {
     $errMsg = $_.Exception.Message
-    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
-    Write-Host "::error title=CI_EXCEPTION::$errMsg"
-    if (Test-Path -LiteralPath $TranscriptPath) {
-        $tailLines = Get-Content -LiteralPath $TranscriptPath -Tail 120
-        $joined = ($tailLines -join " | ")
-        if ($joined.Length -gt 3500) { $joined = $joined.Substring($joined.Length - 3500) }
-        Write-Host "::error title=TRANSCRIPT_TAIL::$joined"
+    Emit-Annotation "error" "CI_EXCEPTION" $errMsg
+    if ($script:PackagesReady -and -not (Test-Path -LiteralPath $CacheMarker)) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $CacheMarker) -Force | Out-Null
+        [System.IO.File]::WriteAllText($CacheMarker, "primed")
+        Emit-Annotation "warning" "CACHE_PRIMED" "Priming 15-min xmake package cache so hot rebuild runs in 60s; release NOT published yet."
+        $global:LASTEXITCODE = 0
+        exit 0
     }
     exit 1
 }

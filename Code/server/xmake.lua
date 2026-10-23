@@ -30,7 +30,6 @@ local function build_server()
         "gamenetworkingsockets",
         "spdlog",
         "hopscotch-map",
-        "sqlite3",
         "lua",
         "sol2",
         "glm",

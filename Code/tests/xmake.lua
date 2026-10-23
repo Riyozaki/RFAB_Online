@@ -14,5 +14,9 @@ target("TPTests")
         "mimalloc",
         "glm",
         "entt",
+        "zlib",
         "gamenetworkingsockets",
         "libuv")
+    if is_plat("windows") then
+        add_syslinks("ws2_32", "iphlpapi", "crypt32", "winmm", "bcrypt", "user32", "advapi32", "userenv", "psapi", "dbghelp")
+    end
