@@ -636,7 +636,7 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
     SECTION("drake1ch/RFAB live XP scenario: 3 wolves (3x30) + solo bandit (200) + joint bandit (200) = equal 490 XP on both players")
     {
         // Verify default bindings target exact RFAB.esp global RFAB_XP_Amount (base 0xAD45BB)
-        const RfabCompat::RuntimeModpackBindings defaults{};
+        const auto defaults = RfabCompat::LoadBindingsFromDisk(std::filesystem::current_path());
         REQUIRE(defaults.PluginName == "RFAB.esp");
         REQUIRE(defaults.XpAmountGlobalEditorId == "RFAB_XP_Amount");
         REQUIRE(defaults.FallbackXpAmountBaseFormId == 0xAD45BBu);
@@ -676,13 +676,13 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
 
     SECTION("Repeated RFAB boss wipes preserve exact boss-door checkpoint across consecutive reloads + auto-reconnects")
     {
-        RfabCompat::SaveSnapshotCoordinator coord("S7F3A", 3);
+        SaveSnapshotCoordinator coord("S7F3A", 3);
 
         // Either player presses F5 outside boss room -> synchronized save across Host (1) & Friend (2)
         const auto prep = coord.BeginBarrier({1, 2}, /*aIsAuto=*/false, 10'000);
         REQUIRE(prep.has_value());
-        REQUIRE(coord.RecordClientAck(1, prep->EpochId, true, "") == RfabCompat::SaveSnapshotCoordinator::AckResolution::PendingMoreAcks);
-        REQUIRE(coord.RecordClientAck(2, prep->EpochId, true, "") == RfabCompat::SaveSnapshotCoordinator::AckResolution::ReadyToCommit);
+        REQUIRE(coord.RecordClientAck(1, prep->EpochId, true, "") == SaveSnapshotCoordinator::AckResolution::WaitingForMorePlayers);
+        REQUIRE(coord.RecordClientAck(2, prep->EpochId, true, "") == SaveSnapshotCoordinator::AckResolution::ReadyToCommit);
         const auto committed = coord.ConsumeAndCommit(10'500);
         REQUIRE(committed.EpochId == 1);
         REQUIRE_FALSE(committed.SlotName.empty());
