@@ -6,6 +6,18 @@
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+function Invoke-RobocopySafe([string]$Src, [string]$Dst, [string[]]$ExtraArgs = @("/E")) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & robocopy ($Src.TrimEnd('\')) ($Dst.TrimEnd('\')) @ExtraArgs /NFL /NDL /NJH /NJS /NP /R:2 /W:1 | Out-Null
+    $rc = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    $global:LASTEXITCODE = 0
+    if ($rc -ge 8) {
+        throw "robocopy failed ($rc): '$Src' -> '$Dst'"
+    }
+}
+
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\.."))
 Set-Location -LiteralPath $RepoRoot
 
@@ -34,13 +46,13 @@ $PdbDir      = Join-Path $StageOuter "PDB_Symbols"
 New-Item -ItemType Directory -Path $StageClient, $StageServer, $StageTools, $PdbDir, $OutDir -Force | Out-Null
 
 Write-Host "==> [1/6] Staging GameFiles/Skyrim & RFAB_Online_Bindings.json..." -ForegroundColor Cyan
-& robocopy ($GameFiles.TrimEnd('\')) ($StageMo2.TrimEnd('\')) /E /NFL /NDL /NJH /NJS /NP | Out-Null
+Invoke-RobocopySafe -Src $GameFiles -Dst $StageMo2 -ExtraArgs @("/E")
 New-Item -ItemType Directory -Path (Join-Path $StageMo2 "SKSE\Plugins") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "Data\SKSE\Plugins\RFAB_Online_Bindings.json") `
           -Destination (Join-Path $StageMo2 "SKSE\Plugins\RFAB_Online_Bindings.json") -Force
 
 Write-Host "==> [2/6] Staging Client binaries, CEF, Discord SDK, Cursors & Offline UI..." -ForegroundColor Cyan
-& robocopy ($DistribBin.TrimEnd('\')) ($StageClient.TrimEnd('\')) /E /XF "SkyrimTogetherServer.exe" "STServer.dll" "*Tests.exe" "*.pdb" "*.lib" "*.exp" /NFL /NDL /NJH /NJS /NP | Out-Null
+Invoke-RobocopySafe -Src $DistribBin -Dst $StageClient -ExtraArgs @("/E", "/XF", "SkyrimTogetherServer.exe", "STServer.dll", "*Tests.exe", "*.pdb", "*.lib", "*.exp")
 
 foreach ($binName in @("SkyrimSE.exe", "EarlyLoad.dll", "TPProcess.exe")) {
     $dstBin = Join-Path $StageClient $binName
@@ -54,7 +66,7 @@ Copy-Item -LiteralPath (Join-Path $StageClient "SkyrimSE.exe") `
 
 if (-not (Test-Path -LiteralPath (Join-Path $StageClient "UI\index.html"))) {
     $FallbackUi = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2\SkyrimTogetherReborn\UI"
-    & robocopy ($FallbackUi.TrimEnd('\')) ((Join-Path $StageClient "UI").TrimEnd('\')) /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    Invoke-RobocopySafe -Src $FallbackUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/E")
 }
 
 Write-Host "==> [3/6] Staging Standalone Dedicated Server (RFAB_Online_Server)..." -ForegroundColor Cyan
@@ -97,31 +109,33 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "PROCHTI_MENYA.txt") `
 
 Write-Host "==> [4/6] Running PE64 Transitive DLL Import Auto-Bundler & Integrity Gate..." -ForegroundColor Cyan
 $XmakePkgDir = Join-Path $env:LOCALAPPDATA ".xmake\packages"
+$ErrorActionPreference = "Continue"
 & python (Join-Path $RepoRoot "Tools\rfab\verify_release_bundle.py") $StageRoot $DistribBin $BuildRel $XmakePkgDir
-if ($LASTEXITCODE -ne 0) { throw "verify_release_bundle.py failed!" }
+$pyCode = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($pyCode -ne 0) { throw "verify_release_bundle.py failed ($pyCode)!" }
 
 Write-Host "==> [5/6] Live Windows x64 Server Smoke-Boot & Clean-Wipe Installer Verification..." -ForegroundColor Cyan
 $SmokeDir = Join-Path $env:TEMP ("rfab_srv_smoke_" + [Guid]::NewGuid().ToString("N"))
-& robocopy ($StageServer.TrimEnd('\')) ($SmokeDir.TrimEnd('\')) /E /NFL /NDL /NJH /NJS /NP | Out-Null
+Invoke-RobocopySafe -Src $StageServer -Dst $SmokeDir -ExtraArgs @("/E")
+[System.IO.File]::WriteAllText((Join-Path $SmokeDir "Data\loadorder.txt"), "Skyrim.esm`nSkyrimTogether.esp`n", (New-Object System.Text.UTF8Encoding($false)))
 $env:TILTED_ACCEPT_EULA = "true"
 $proc = Start-Process -FilePath (Join-Path $SmokeDir "SkyrimTogetherServer.exe") `
                       -WorkingDirectory $SmokeDir `
                       -RedirectStandardOutput (Join-Path $SmokeDir "stdout.txt") `
                       -RedirectStandardError  (Join-Path $SmokeDir "stderr.txt") `
                       -PassThru -NoNewWindow
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 4
 if ($proc.HasExited) {
     $so = Get-Content -LiteralPath (Join-Path $SmokeDir "stdout.txt") -Raw -ErrorAction SilentlyContinue
     $se = Get-Content -LiteralPath (Join-Path $SmokeDir "stderr.txt") -Raw -ErrorAction SilentlyContinue
-    throw "SkyrimTogetherServer.exe exited prematurely with code $($proc.ExitCode)!`nSTDOUT:`n$so`nSTDERR:`n$se"
+    throw "SkyrimTogetherServer.exe exited prematurely with code $($proc.ExitCode)! STDOUT: $so | STDERR: $se"
 }
 Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-$SmokeOut = Get-Content -LiteralPath (Join-Path $SmokeDir "stdout.txt") -Raw -ErrorAction SilentlyContinue
-Write-Host "  [OK] Server booted cleanly and stayed alive on clean Windows x64! Log preview:" -ForegroundColor Green
-Write-Host $SmokeOut
 Remove-Item -LiteralPath $SmokeDir -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "  [OK] Server booted cleanly and stayed alive on clean Windows x64!" -ForegroundColor Green
 
-# End-to-end test of INSTALL_RFAB_ONLINE.bat over a simulated dirty old RFAB + MO2 directory
+# End-to-end test of Setup-RfabOnline.ps1 over a simulated dirty old RFAB + MO2 directory
 $MockRfab = Join-Path $env:TEMP ("rfab_clean_wipe_e2e_" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path `
     (Join-Path $MockRfab "Data\SKSE\Plugins"), `
@@ -133,7 +147,6 @@ New-Item -ItemType Directory -Path `
     (Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins"), `
     (Join-Path $MockRfab "MO2\profiles\RFAB") -Force | Out-Null
 
-# Stamp a genuine 1.5.97.8 versioned dummy SkyrimSE.exe for installer detection check
 $DummyExe = Join-Path $MockRfab "SkyrimSE.exe"
 $CsCode = @'
 using System.Reflection;
@@ -143,20 +156,23 @@ public class Program { public static void Main() {} }
 '@
 Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleApplication
 
+[System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online_MO2\STALE_LEGACY_DIR.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnabled = true`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll"), "stub")
-[System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\ModOrganizer.ini"), "[General]`r`nselected_profile=@ByteArray(RFAB)`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\modlist.txt"), "-RFAB_Online`r`n+Requiem`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\plugins.txt"), "*Requiem.esp`r`n*[RFAB] Balance.esp`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\loadorder.txt"), "Skyrim.esm`r`nUpdate.esm`r`nDawnguard.esm`r`nHearthFires.esm`r`nDragonborn.esm`r`nRequiem.esp`r`n[RFAB] Balance.esp`r`n")
 
-& cmd.exe /c "`"$(Join-Path $StageRoot 'INSTALL_RFAB_ONLINE.bat')`" -RfabDir `"$MockRfab`" -NonInteractive"
-if ($LASTEXITCODE -ne 0) { throw "End-to-end INSTALL_RFAB_ONLINE.bat test failed ($LASTEXITCODE)!" }
+$ErrorActionPreference = "Continue"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $StageTools "Setup-RfabOnline.ps1") -RfabDir $MockRfab -NonInteractive
+$e2eCode = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($e2eCode -ne 0) { throw "End-to-end Setup-RfabOnline.ps1 test failed ($e2eCode)!" }
 
 if (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt")) {
     throw "Clean wipe failed: old file inside MO2\mods\RFAB_Online survived!"
