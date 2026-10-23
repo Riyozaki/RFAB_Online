@@ -54,7 +54,7 @@ try {
     $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\.."))
     Set-Location -LiteralPath $RepoRoot
 
-    Invoke-LoggedCmd "[1/7] Submodules init" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1"
+    Invoke-LoggedCmd "[1/7] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
     Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA & Struct Audit" "python Tools\rfab\verify_se1597_port.py"
     Invoke-LoggedCmd "[3/7] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
     $script:PackagesReady = $true

@@ -21,7 +21,6 @@ String s_pendingExeVersion;
 std::once_flag s_tiltedInitOnce;
 std::once_flag s_crashHandlerOnce;
 thread_local bool s_inCrashLogger = false;
-int s_loggedExceptions = 0;
 
 void WriteBootTraceRaw(const std::filesystem::path& aPath, const char* apMsg, bool aReset) noexcept
 {
@@ -54,29 +53,16 @@ void WriteBootTrace(const char* apMsg, bool aReset = false) noexcept
     if (!s_pendingGamePath.empty())
         WriteBootTraceRaw(s_pendingGamePath / L"RFAB_Online_Startup.log", apMsg, aReset);
 }
+} // namespace
 
-LONG WINAPI RfabStartupVectoredHandler(EXCEPTION_POINTERS* apInfo) noexcept
+void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
 {
     if (s_inCrashLogger || !apInfo || !apInfo->ExceptionRecord || !apInfo->ContextRecord)
-        return EXCEPTION_CONTINUE_SEARCH;
-
-    const DWORD code = apInfo->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ACCESS_VIOLATION &&
-        code != EXCEPTION_ILLEGAL_INSTRUCTION &&
-        code != EXCEPTION_PRIV_INSTRUCTION &&
-        code != EXCEPTION_STACK_OVERFLOW &&
-        code != EXCEPTION_IN_PAGE_ERROR &&
-        code != EXCEPTION_INT_DIVIDE_BY_ZERO)
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    if (s_loggedExceptions >= 16)
-        return EXCEPTION_CONTINUE_SEARCH;
+        return;
 
     s_inCrashLogger = true;
-    ++s_loggedExceptions;
 
+    const DWORD code = apInfo->ExceptionRecord->ExceptionCode;
     const uintptr_t rip = apInfo->ContextRecord->Rip;
 
     HMODULE hMod = nullptr;
@@ -109,8 +95,7 @@ LONG WINAPI RfabStartupVectoredHandler(EXCEPTION_POINTERS* apInfo) noexcept
 
     char crashBuf[1536];
     std::snprintf(crashBuf, sizeof(crashBuf),
-                  "[EXCEPTION #%d] Code=0x%08lX RIP=0x%llX FaultAddr=0x%llX Module='%s' Base=0x%llX RVA=+0x%llX RSP=0x%llX RAX=0x%llX RCX=0x%llX RDX=0x%llX Bytes=[%s]",
-                  s_loggedExceptions,
+                  "[UNHANDLED_CRASH] Code=0x%08lX RIP=0x%llX FaultAddr=0x%llX Module='%s' Base=0x%llX RVA=+0x%llX RSP=0x%llX RAX=0x%llX RCX=0x%llX RDX=0x%llX Bytes=[%s]",
                   static_cast<unsigned long>(code),
                   static_cast<unsigned long long>(rip),
                   static_cast<unsigned long long>(faultAddr),
@@ -125,9 +110,13 @@ LONG WINAPI RfabStartupVectoredHandler(EXCEPTION_POINTERS* apInfo) noexcept
     WriteBootTrace(crashBuf, false);
 
     s_inCrashLogger = false;
+}
+
+static LONG WINAPI EarlyUnhandledFilter(EXCEPTION_POINTERS* apInfo) noexcept
+{
+    LogUnhandledCrashToBootFile(apInfo);
     return EXCEPTION_CONTINUE_SEARCH;
 }
-} // namespace
 
 void InstallRfabBootDiagnostics(const std::filesystem::path& acGamePath, const String& aExeVersion)
 {
@@ -139,7 +128,7 @@ void InstallRfabBootDiagnostics(const std::filesystem::path& acGamePath, const S
     bool firstInit = false;
     std::call_once(s_crashHandlerOnce, [&]() {
         firstInit = true;
-        AddVectoredExceptionHandler(1, RfabStartupVectoredHandler);
+        SetUnhandledExceptionFilter(&EarlyUnhandledFilter);
     });
 
     char msg[512];
@@ -202,10 +191,12 @@ void EnsureTiltedInitialized()
             }
         }
 
-        WriteBootTrace("[BOOT 3/4] Address Library SE 1.5.97 loaded; installing hooks...");
+        WriteBootTrace("[BOOT 3/4] Address Library SE 1.5.97 loaded; constructing TiltedOnlineApp...");
         g_appInstance = std::make_unique<TiltedOnlineApp>();
+        WriteBootTrace("[BOOT 3.1/4] Running TiltedPhoques::Initializer::RunAll() + DInputHook::Install()...");
 
         TiltedOnlineApp::InstallHooks2();
+        WriteBootTrace("[BOOT 3.3/4] Committing delayed .text hooks...");
         TP_HOOK_COMMIT;
         WriteBootTrace("[BOOT 3.5/4] All .text hooks committed successfully!");
     });
