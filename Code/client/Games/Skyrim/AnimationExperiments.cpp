@@ -233,17 +233,15 @@ uint32_t BSAnimationGraphManager::ReSendEvent(BSFixedString* apEventName)
 
 bool IAnimationGraphManagerHolder::ReSendAnimationEvent(BSFixedString* apAnimEvent)
 {
-    BSAnimationGraphManager* pAnimationGraph = nullptr;
-    auto result = GetBSAnimationGraph(&pAnimationGraph);
+    BSTSmartPointer<BSAnimationGraphManager> spAnimationGraph;
+    auto result = GetBSAnimationGraph(spAnimationGraph);
 
     TP_THIS_FUNCTION(TBSSendEvent, uint32_t, BSAnimationGraphManager, BSFixedString*);
     POINTER_SKYRIMSE(TBSSendEvent, BSSendEvent, 62420);
 
-    if (pAnimationGraph)
+    if (spAnimationGraph)
     {
-        result = pAnimationGraph->ReSendEvent(apAnimEvent) != 0;
-
-        pAnimationGraph->Release();
+        result = spAnimationGraph->ReSendEvent(apAnimEvent) != 0;
     }
 
     return result;
