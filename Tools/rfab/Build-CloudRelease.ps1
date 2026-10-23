@@ -105,12 +105,33 @@ try {
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
 
     & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
-    if ($LASTEXITCODE -eq 0) {
-        Invoke-LoggedCmd "[7/7] Update GitHub Release $VersionTag" `
-            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest && gh release upload $VersionTag `"$InstallerZip`" `"$QuickUpdZip`" `"$PdbZip`" `"$ShaFile`" --clobber"
-    } else {
+    if ($LASTEXITCODE -ne 0) {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
-            "gh release create $VersionTag `"$InstallerZip`" `"$QuickUpdZip`" `"$PdbZip`" `"$ShaFile`" --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+            "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+    } else {
+        Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag" `
+            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+    }
+
+    foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {
+        $assetName = Split-Path -Leaf $assetPath
+        $uploadedOk = $false
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+            Write-Host "::group::Upload $assetName (attempt $attempt/4)"
+            & cmd.exe /d /s /c "gh release upload $VersionTag `"$assetPath`" --clobber 2>&1"
+            $upCode = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($upCode -eq 0) {
+                Emit-Annotation "notice" "RFAB_UPLOAD" "OK: Uploaded $assetName (attempt $attempt)"
+                $uploadedOk = $true
+                break
+            }
+            Write-Warning "Transient upload failure for $assetName (attempt $attempt/4, exit $upCode); retrying in 4s..."
+            Start-Sleep -Seconds 4
+        }
+        if (-not $uploadedOk) {
+            throw "[7/7] Failed to upload $assetName after 4 attempts"
+        }
     }
 
     & cmd.exe /d /s /c "gh release view v1.0.0-rfab >nul 2>&1"
