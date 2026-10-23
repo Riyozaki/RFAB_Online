@@ -188,6 +188,12 @@ def main():
         full = os.path.join(stage_dir, rel)
         assert os.path.isfile(full) and os.path.getsize(full) > 20, f"Missing or empty release file: {full}"
 
+    # Windows PowerShell 5.1 requires UTF-8 BOM (EF BB BF) on Cyrillic .ps1 files (otherwise 0x84 = „ closes quotes!)
+    ps1_full = os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1")
+    assert open(ps1_full, "rb").read(3) == b"\xef\xbb\xbf", (
+        "FATAL: Setup-RfabOnline.ps1 is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
+    )
+
     print(f"[RELEASE GATE PASSED] All {total_files} files in {stage_dir} verified 100% genuine & self-contained!")
 
 
