@@ -11,5 +11,6 @@ struct CEGLocationInfo
     mem::region textSeg;
 };
 
+bool HasSteamStubV31(const uint8_t* apEntryPtr) noexcept;
 uintptr_t CrackCEGInPlace(const CEGLocationInfo&);
 } // namespace steam

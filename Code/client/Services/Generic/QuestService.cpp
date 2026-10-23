@@ -152,6 +152,8 @@ BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDi
 {
     GameId Id;
     auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
+    if (!pScene)
+        return BSTEventResult::kOk;
     auto pQuest = pScene->owningQuest;
     if (pQuest == nullptr || QuestService::IsNonSyncableQuest(pQuest) || !m_world.Get().GetPartyService().IsInParty() || !m_world.GetModSystem().GetServerModId(pQuest->formID, Id))
         return BSTEventResult::kOk;
@@ -342,6 +344,8 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
                          "{}, questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
             aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
             pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+    else
+        m_world.GetCharacterService().NotifyRemoteQuestStageApplied();
 }
 
 void QuestService::OnQuestSceneUpdate(const NotifyQuestSceneUpdate& aUpdate) noexcept
@@ -424,11 +428,10 @@ static constexpr std::array kNonSyncableQuestIds = std::to_array<uint32_t>({
 
 bool QuestService::IsNonSyncableQuest(TESQuest* apQuest)
 {
-    // Quests with no quest stages are never synced (check both lists). 
-    // Most TESQues::Type:: quests should be synced, including Type::None 
-    // and Type::Miscellaneous, but there are a few // known exceptions to exclude.
-    bool noStages = !apQuest->pExecutedStages || apQuest->pExecutedStages->Empty();
-    noStages = noStages || !apQuest->pWaitingStages || apQuest->pWaitingStages->Empty();
+    // Quests with no quest stages in BOTH executed and waiting lists are handler/MCM quests and never synced.
+    const bool noExecutedStages = !apQuest->pExecutedStages || apQuest->pExecutedStages->Empty();
+    const bool noWaitingStages = !apQuest->pWaitingStages || apQuest->pWaitingStages->Empty();
+    const bool noStages = noExecutedStages && noWaitingStages;
     return noStages || std::find(kNonSyncableQuestIds.begin(), kNonSyncableQuestIds.end(), apQuest->formID) != kNonSyncableQuestIds.end();
 }
 

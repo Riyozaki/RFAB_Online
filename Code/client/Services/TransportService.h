@@ -34,7 +34,26 @@ struct TransportService : Client
     void OnUpdate() override;
 
     [[nodiscard]] bool IsOnline() const noexcept { return m_connected; }
-    void SetServerPassword(const std::string& acPassword) noexcept { m_serverPassword = acPassword; }
+    void SetServerPassword(const std::string& acPassword) noexcept
+    {
+        m_serverPassword = acPassword;
+        m_lastServerPassword = acPassword;
+    }
+    bool ConnectToServer(const std::string& acEndpoint, const std::string& acPassword = "") noexcept
+    {
+        m_lastServerEndpoint = acEndpoint;
+        m_lastServerPassword = acPassword;
+        m_serverPassword = acPassword;
+        return Connect(acEndpoint);
+    }
+    [[nodiscard]] bool HasLastServerEndpoint() const noexcept { return !m_lastServerEndpoint.empty(); }
+    bool ReconnectToLastServer() noexcept
+    {
+        if (m_lastServerEndpoint.empty())
+            return false;
+        m_serverPassword = m_lastServerPassword;
+        return Connect(m_lastServerEndpoint);
+    }
     const uint32_t& GetLocalPlayerId() const noexcept { return m_localPlayerId; }
 
 protected:
@@ -52,6 +71,8 @@ private:
     entt::dispatcher& m_dispatcher;
     bool m_connected;
     String m_serverPassword{};
+    std::string m_lastServerEndpoint{};
+    std::string m_lastServerPassword{};
     uint32_t m_localPlayerId;
 
     entt::scoped_connection m_updateConnection;

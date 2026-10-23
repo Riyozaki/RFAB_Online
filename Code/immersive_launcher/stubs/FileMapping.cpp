@@ -19,6 +19,8 @@ extern bool IsGameMemoryAddress(const uint8_t* apAddress);
 
 extern "C" __declspec(dllimport) NTSTATUS WINAPI LdrGetDllFullName(HMODULE, PUNICODE_STRING);
 
+extern "C" __declspec(dllexport) const wchar_t* GetTiltedClientDirW() noexcept;
+
 namespace
 {
 std::wstring s_OverridePath;
@@ -32,6 +34,116 @@ NTSTATUS(WINAPI* RealLdrGetDllHandle)(PWSTR, PULONG, PUNICODE_STRING, PVOID*) = 
 NTSTATUS(WINAPI* RealLdrGetDllFullName)(HMODULE, PUNICODE_STRING) = nullptr;
 NTSTATUS(WINAPI* RealLdrGetDllHandleEx)
 (ULONG Flags, PWSTR DllPath, PULONG DllCharacteristics, UNICODE_STRING* DllName, PVOID* DllHandle) = nullptr;
+
+DWORD(WINAPI* RealGetFileVersionInfoSizeW)(LPCWSTR, LPDWORD) = nullptr;
+BOOL(WINAPI* RealGetFileVersionInfoW)(LPCWSTR, DWORD, DWORD, LPVOID) = nullptr;
+DWORD(WINAPI* RealGetFileVersionInfoSizeExW)(DWORD, LPCWSTR, LPDWORD) = nullptr;
+BOOL(WINAPI* RealGetFileVersionInfoExW)(DWORD, LPCWSTR, DWORD, DWORD, LPVOID) = nullptr;
+
+bool IsSkyrimExeTargetQuery(LPCWSTR lptstrFilename, std::wstring& aOutRedirectPath) noexcept
+{
+    if (!lptstrFilename || !*lptstrFilename)
+        return false;
+
+    std::wstring_view sv(lptstrFilename);
+    const size_t slash = sv.find_last_of(L"/\\");
+    const std::wstring_view leaf = (slash == std::wstring_view::npos) ? sv : sv.substr(slash + 1);
+
+    if (_wcsicmp(std::wstring(leaf).c_str(), L"SkyrimSE.exe") != 0 &&
+        _wcsicmp(std::wstring(leaf).c_str(), L"SkyrimTogether.exe") != 0)
+    {
+        return false;
+    }
+
+    // If sibling SkyrimSE.cdx exists in game directory (standalone/CODEX repack where SkyrimSE.exe stub has 1.0.0.0),
+    // prefer reading version block from SkyrimSE.cdx or our own 1.5.97.0 launcher resource!
+    std::error_code ec;
+    if (auto* LC = launcher::GetLaunchContext(); LC && !LC->gamePath.empty())
+    {
+        const auto cdx = LC->gamePath / L"SkyrimSE.cdx";
+        if (std::filesystem::exists(cdx, ec))
+        {
+            aOutRedirectPath = cdx.wstring();
+            return true;
+        }
+    }
+
+    if (!s_OverridePath.empty())
+    {
+        const std::filesystem::path selfExe = std::filesystem::path(s_OverridePath) / L"SkyrimSE.exe";
+        if (std::filesystem::exists(selfExe, ec))
+        {
+            aOutRedirectPath = selfExe.wstring();
+            return true;
+        }
+    }
+
+    aOutRedirectPath = lptstrFilename;
+    return true;
+}
+
+void PatchFixedVersionTo1597(LPVOID lpData) noexcept
+{
+    if (!lpData)
+        return;
+
+    VS_FIXEDFILEINFO* pFixed = nullptr;
+    UINT uLen = 0;
+    if (VerQueryValueW(lpData, L"\\", reinterpret_cast<LPVOID*>(&pFixed), &uLen) &&
+        pFixed && uLen >= sizeof(VS_FIXEDFILEINFO) && pFixed->dwSignature == 0xFEEF04BD)
+    {
+        pFixed->dwFileVersionMS = 0x00010005;    // 1.5
+        pFixed->dwFileVersionLS = 0x00610000;    // 97.0
+        pFixed->dwProductVersionMS = 0x00010005; // 1.5
+        pFixed->dwProductVersionLS = 0x00610000; // 97.0
+    }
+}
+
+DWORD WINAPI TP_GetFileVersionInfoSizeW(LPCWSTR lptstrFilename, LPDWORD lpdwHandle)
+{
+    std::wstring redirected;
+    if (IsSkyrimExeTargetQuery(lptstrFilename, redirected))
+        return RealGetFileVersionInfoSizeW(redirected.c_str(), lpdwHandle);
+
+    return RealGetFileVersionInfoSizeW(lptstrFilename, lpdwHandle);
+}
+
+BOOL WINAPI TP_GetFileVersionInfoW(LPCWSTR lptstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData)
+{
+    std::wstring redirected;
+    if (IsSkyrimExeTargetQuery(lptstrFilename, redirected))
+    {
+        const BOOL ok = RealGetFileVersionInfoW(redirected.c_str(), dwHandle, dwLen, lpData);
+        if (ok)
+            PatchFixedVersionTo1597(lpData);
+        return ok;
+    }
+
+    return RealGetFileVersionInfoW(lptstrFilename, dwHandle, dwLen, lpData);
+}
+
+DWORD WINAPI TP_GetFileVersionInfoSizeExW(DWORD dwFlags, LPCWSTR lpwstrFilename, LPDWORD lpdwHandle)
+{
+    std::wstring redirected;
+    if (IsSkyrimExeTargetQuery(lpwstrFilename, redirected))
+        return RealGetFileVersionInfoSizeExW(dwFlags, redirected.c_str(), lpdwHandle);
+
+    return RealGetFileVersionInfoSizeExW(dwFlags, lpwstrFilename, lpdwHandle);
+}
+
+BOOL WINAPI TP_GetFileVersionInfoExW(DWORD dwFlags, LPCWSTR lpwstrFilename, DWORD dwHandle, DWORD dwLen, LPVOID lpData)
+{
+    std::wstring redirected;
+    if (IsSkyrimExeTargetQuery(lpwstrFilename, redirected))
+    {
+        const BOOL ok = RealGetFileVersionInfoExW(dwFlags, redirected.c_str(), dwHandle, dwLen, lpData);
+        if (ok)
+            PatchFixedVersionTo1597(lpData);
+        return ok;
+    }
+
+    return RealGetFileVersionInfoExW(dwFlags, lpwstrFilename, dwHandle, dwLen, lpData);
+}
 
 inline bool IsUsingMO2()
 {
@@ -112,7 +224,6 @@ HMODULE WINAPI TP_GetModuleHandleA(LPCSTR lpModuleName)
 // some mods do GetModuleHandle("SkyrimSE.exe") for some reason instead of GetModuleHandle(nullptr)
 NTSTATUS WINAPI TP_LdrGetDllHandle(PWSTR DllPath, PULONG DllCharacteristics, PUNICODE_STRING DllName, PVOID* DllHandle)
 {
-    // no need to check for nullptr here, this is handeled by the higher level GetModuleHandle function.
     TP_EMPTY_HOOK_PLACEHOLDER;
 
     if (std::wcsncmp(TARGET_NAME L".exe", DllName->Buffer, DllName->Length) == 0)
@@ -139,10 +250,6 @@ NTSTATUS WINAPI TP_LdrGetDllFullName(HMODULE Module, PUNICODE_STRING DllName)
 {
     TP_EMPTY_HOOK_PLACEHOLDER;
 
-    void* rsp = _ReturnAddress();
-
-    // we need to detect if GetModuleFileName(null) was called from our own code or the game code/other modules
-    // if (!GetTls()->inLoadDll)
     if (launcher::GetLaunchContext())
     {
         if (Module == nullptr || Module == NtInternal::ThePeb()->pImageBase)
@@ -195,10 +302,6 @@ DWORD WINAPI TP_GetModuleFileNameA(HMODULE aModule, char* alpFileName, DWORD aBu
 
     wchar_t* pBuffer = static_cast<wchar_t*>(wideBuffer.m_pBlock);
 
-    // Under MO2, there's a bug caused when calling RealGetModuleFileNameW on XAudio2_7.dll,
-    // it crashes in usvfs. This only happens during the thread shutdown paths 
-    // of quitting, so just avoid the bug. 
-    // TODO: Further analysis of what is under MO2 USVFS and what is needed.
     DWORD result = 0;
     HMODULE tMod = RealGetModuleHandleW(L"XAudio2_7.dll");
     if (tMod == nullptr || aModule != tMod)
@@ -217,7 +320,7 @@ DWORD WINAPI TP_GetModuleFileNameA(HMODULE aModule, char* alpFileName, DWORD aBu
     if (RtlUnicodeStringToAnsiString(&dest, &source, FALSE) != 0)
         return 0;
 
-    return result;
+    return static_cast<DWORD>(dest.Length);
 }
 
 // we use this function to enforce the DLL load policy
@@ -245,49 +348,74 @@ NTSTATUS WINAPI TP_LdrLoadDll(const wchar_t* apPath, uint32_t* apFlags, UNICODE_
 }
 } // namespace
 
+extern "C" __declspec(dllexport) const wchar_t* GetTiltedClientDirW() noexcept
+{
+    return s_OverridePath.c_str();
+}
+
 #define VALIDATE(x) \
     if (x != MH_OK) \
         Die(L"CoreStubsInit(): Fatal Minhook error.", true);
 
-// pre eat hook?? loadmodule hook??
-// the idea would be to link against an external dll, which in its init routine then hooks, so we execute before mo2?
 void CoreStubsInit()
 {
     s_OverridePath = TiltedPhoques::GetPath().wstring();
     std::replace(s_OverridePath.begin(), s_OverridePath.end(), L'/', L'\\');
+    SetEnvironmentVariableW(L"RFAB_TILTED_CLIENT_DIR", s_OverridePath.c_str());
 
     VALIDATE(MH_Initialize());
 
     if (!IsUsingMO2())
     {
-        // we need two hooks here, even if this is kinda redundant, since we want to capture the RBP register
-        // to detect if its game code, or launcher code being executed
         VALIDATE(MH_CreateHookApi(L"KernelBase.dll", "GetModuleFileNameW", &TP_GetModuleFileNameW, (void**)&RealGetModuleFileNameW));
         VALIDATE(MH_CreateHookApi(L"KernelBase.dll", "GetModuleFileNameA", &TP_GetModuleFileNameA, (void**)&RealGetModuleFileNameA));
     }
     else
     {
-        // https://github.com/ModOrganizer2/usvfs/blob/master/src/usvfs_dll/hooks/kernel32.h#L42
         VALIDATE(MH_CreateHookApi(L"usvfs_x64.dll", "?hook_GetModuleFileNameW@usvfs@@YAKPEAUHINSTANCE__@@PEA_WK@Z", &TP_GetModuleFileNameW, (void**)&RealGetModuleFileNameW));
         VALIDATE(MH_CreateHookApi(L"KernelBase.dll", "GetModuleFileNameA", &TP_GetModuleFileNameA, (void**)&RealGetModuleFileNameA));
     }
 
-    // SKSE calls
-    // https://github.com/ianpatt/skse64/blob/d79e8f081194f538c24d493e1b57331d837a25c0/skse64_common/Utilities.cpp#L11
-
-    // VALIDATE(MH_CreateHookApi(L"ntdll.dll", "LdrGetDllHandle", &TP_LdrGetDllHandle, (void**)&RealLdrGetDllHandle));
     VALIDATE(MH_CreateHookApi(L"ntdll.dll", "LdrGetDllHandleEx", &TP_LdrGetDllHandleEx, (void**)&RealLdrGetDllHandleEx));
-
-    // TODO(Vince): we need some check if usvfs already fucked with this?
-    // MH_CreateHookApi(L"ntdll.dll", "LdrGetDllFullName", &TP_LdrGetDllFullName, (void**)&RealLdrGetDllFullName);
     VALIDATE(MH_CreateHookApi(L"ntdll.dll", "LdrLoadDll", &TP_LdrLoadDll, (void**)&RealLdrLoadDll));
 
-    // Starting with Windows 11 24H2 the call stack has changed and GetModuleHandle() no longer
-    // downcalls to LdrGetDllHandleEx, so we have to hook this too.
     VALIDATE(MH_CreateHookApi(L"kernel32.dll", "GetModuleHandleW", &TP_GetModuleHandleW, (void**)&RealGetModuleHandleW));
     VALIDATE(MH_CreateHookApi(L"kernel32.dll", "GetModuleHandleA", &TP_GetModuleHandleA, (void**)&RealGetModuleHandleA));
+
+    // Spoof VS_FIXEDFILEINFO (1.5.97.0) for any SKSE / CommonLibSSE / CommonLibSSE-NG plugin querying SkyrimSE.exe
+    // even when game root SkyrimSE.exe is a standalone/CODEX stub whose disk header carries FILEVERSION 1.0.0.0!
+    MH_CreateHookApi(L"KernelBase.dll", "GetFileVersionInfoSizeW", &TP_GetFileVersionInfoSizeW, (void**)&RealGetFileVersionInfoSizeW);
+    MH_CreateHookApi(L"KernelBase.dll", "GetFileVersionInfoW", &TP_GetFileVersionInfoW, (void**)&RealGetFileVersionInfoW);
+    MH_CreateHookApi(L"KernelBase.dll", "GetFileVersionInfoSizeExW", &TP_GetFileVersionInfoSizeExW, (void**)&RealGetFileVersionInfoSizeExW);
+    MH_CreateHookApi(L"KernelBase.dll", "GetFileVersionInfoExW", &TP_GetFileVersionInfoExW, (void**)&RealGetFileVersionInfoExW);
 
     VALIDATE(MH_EnableHook(nullptr));
 }
 
 #undef VALIDATE
+
+void SpoofPebMainModuleName(const std::filesystem::path& acExePath)
+{
+    static std::wstring s_spoofFullPath;
+    static std::wstring s_spoofBaseName;
+    s_spoofFullPath = acExePath.wstring();
+    s_spoofBaseName = acExePath.filename().wstring();
+
+    auto* pPeb = reinterpret_cast<PEB*>(NtInternal::ThePeb());
+    if (!pPeb || !pPeb->Ldr)
+        return;
+
+    LIST_ENTRY* pHead = &pPeb->Ldr->InMemoryOrderModuleList;
+    for (LIST_ENTRY* pEntry = pHead->Flink; pEntry && pEntry != pHead; pEntry = pEntry->Flink)
+    {
+        auto* pMod = CONTAINING_RECORD(pEntry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+        if (pMod->DllBase == NtInternal::ThePeb()->pImageBase)
+        {
+            RtlInitUnicodeString(&pMod->FullDllName, s_spoofFullPath.c_str());
+            auto* pBaseDllName = reinterpret_cast<UNICODE_STRING*>(
+                reinterpret_cast<uint8_t*>(&pMod->FullDllName) + sizeof(UNICODE_STRING));
+            RtlInitUnicodeString(pBaseDllName, s_spoofBaseName.c_str());
+            break;
+        }
+    }
+}

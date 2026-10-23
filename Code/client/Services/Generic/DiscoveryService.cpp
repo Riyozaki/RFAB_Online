@@ -254,35 +254,23 @@ BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDis
 {
     spdlog::info("Finished loading, triggering visit cell");
 
-    const TiltedPhoques::String defaultModlist[7] = {"Skyrim.esm",        "Update.esm",     "Dawnguard.esm",
-                                                    "HearthFires.esm",   "Dragonborn.esm", "_ResourcePack.esl",
-                                                    "SkyrimTogether.esp"};
-
-    auto& currentModlist = ModManager::Get()->mods;
-
-    bool isModlistEqual = currentModlist.Size() == 7;
-
-    if (isModlistEqual)
+    // RFAB Online: RFAB runs hundreds of Requiem/SKSE plugins by design.
+    // Only warn if SkyrimTogether.esp itself was not enabled in MO2's load order;
+    // never spam the upstream vanilla-only "non_default_install" popup on save load.
+    Mod* pSkyrimTogether = ModManager::Get()->GetByName("SkyrimTogether.esp");
+    if (!pSkyrimTogether)
     {
-        int i = 0;
-        for (const auto& currentMod : currentModlist)
-        {
-            if (currentMod->filename != defaultModlist[i])
-            {
-                isModlistEqual = false;
-                break;
-            }
-
-            i++;
-        }
-    }
-
-    if (!isModlistEqual)
-    {
+        spdlog::warn("[RFAB] SkyrimTogether.esp is missing from active load order ({} mods loaded)!",
+                     ModManager::Get()->mods.Size());
         ConnectionErrorEvent errorEvent{};
         errorEvent.ErrorDetail = "{\"error\": \"non_default_install\"}";
 
         m_world.GetRunner().Trigger(errorEvent);
+    }
+    else
+    {
+        spdlog::info("[RFAB] SkyrimTogether.esp verified active (slot {:02X}) across {} loaded mods.",
+                     pSkyrimTogether->standardId, ModManager::Get()->mods.Size());
     }
 
     VisitCell(true);

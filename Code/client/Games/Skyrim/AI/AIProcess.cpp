@@ -1,8 +1,14 @@
 #include "AIProcess.h"
+#include <Misc/MiddleProcess.h>
+
+bhkCharacterController* AIProcess::GetCharController() noexcept
+{
+    return middleProcess ? middleProcess->charController : nullptr;
+}
 
 void AIProcess::KnockExplosion(Actor* apActor, const NiPoint3* aSourceLocation, float afMagnitude)
 {
     TP_THIS_FUNCTION(TKnockExplosion, void, AIProcess, Actor*, const NiPoint3*, float);
-    POINTER_SKYRIMSE(TKnockExplosion, knockExplosion, 39895);
+    POINTER_SKYRIMSE(TKnockExplosion, knockExplosion, 38858);
     TiltedPhoques::ThisCall(knockExplosion, this, apActor, aSourceLocation, afMagnitude);
 }

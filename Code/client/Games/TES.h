@@ -1,10 +1,15 @@
 #pragma once
 
+#include <NetImmerse/NiPointer.h>
+
 struct NEW_REFR_DATA;
 struct TESObjectCELL;
 struct TESWorldSpace;
 struct NiPoint3;
 struct TESForm;
+struct TESGlobal;
+struct TESQuest;
+struct BGSListForm;
 struct Actor;
 struct ImageSpaceModifierInstance;
 
@@ -109,12 +114,19 @@ struct ModManager
     Mod* GetByName(const char* acpName) const noexcept;
     TESObjectCELL* GetCellFromCoordinates(int32_t aX, int32_t aY, TESWorldSpace* aWorldSpace, bool aSpawnCell) noexcept;
 
-    uint8_t pad0[0x748];
+    uint8_t pad0[0x0E8];
+    GameArray<TESGlobal*> globals;
+    uint8_t pad100[0x748 - 0x100];
     GameArray<TESQuest*> quests;
-    uint8_t pad760[0xD60 - 0x760];
+    uint8_t pad760[0x898 - 0x760];
+    GameArray<BGSListForm*> formLists;
+    uint8_t pad8B0[0xD60 - 0x8B0];
     GameList<Mod> mods;
 };
 
+static_assert(offsetof(ModManager, globals) == 0x0E8);
+static_assert(offsetof(ModManager, quests) == 0x748);
+static_assert(offsetof(ModManager, formLists) == 0x898);
 static_assert(offsetof(ModManager, mods) == 0xD60);
 
 struct Setting

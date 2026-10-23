@@ -58,6 +58,12 @@
 #include <Messages/RequestSetWaypoint.h>
 #include <Messages/RequestRemoveWaypoint.h>
 #include <Messages/SyncRfabExperienceRequest.h>
+#include <Messages/RequestCoordinatedSaveLoad.h>
+#include <Messages/CoordinatedSaveAck.h>
+#include <Messages/SyncPlayerDownedState.h>
+#include <Messages/ReviveActionRequest.h>
+#include <Messages/CombatEncounterStateReport.h>
+#include <Messages/SyncRfabProgressionEvent.h>
 
 using TiltedPhoques::UniquePtr;
 
@@ -72,7 +78,8 @@ struct ClientMessageFactory
             PartyChangeLeaderRequest, PartyKickRequest, RequestActorValueChanges, RequestActorMaxValueChanges, EnterExteriorCellRequest, RequestHealthChangeBroadcast, ActivateRequest, LockChangeRequest, AssignObjectsRequest, RequestDeathStateChange, ShiftGridCellRequest,
             RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest, ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn, SyncExperienceRequest,
             RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest, PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
-            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, SyncRfabExperienceRequest>;
+            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, SyncRfabExperienceRequest,
+            RequestCoordinatedSaveLoad, CoordinatedSaveAck, SyncPlayerDownedState, ReviveActionRequest, CombatEncounterStateReport, SyncRfabProgressionEvent>;
 
         return s_visitor(std::forward<T>(func));
     }

@@ -104,10 +104,22 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
 
     Projectile::LaunchData launchData{};
 
+    launchData.pShooter = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
+    if (!launchData.pShooter)
+    {
+        spdlog::warn("Cannot launch projectile, invalid shooter form id: {:X}", formIdComponent.Id);
+        return;
+    }
+
     // Projectile::Launch relies on pParentCell being valid.
-    // TODO: it's possible that more of these values must have a value, should probably check for that in the game code.
+    // Exterior wilderness cells have dynamic 0xFFxxxxxx FormIDs that differ across clients;
+    // fall back to the remote shooter's active local parentCell when lookup returns null.
     const uint32_t cParentCellId = modSystem.GetGameId(acMessage.ParentCellID);
     launchData.pParentCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
+    if (!launchData.pParentCell)
+    {
+        launchData.pParentCell = launchData.pShooter->parentCell;
+    }
 
     if (!launchData.pParentCell)
     {
@@ -115,14 +127,17 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
         return;
     }
 
-    launchData.pShooter = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
-
     launchData.Origin.x = acMessage.OriginX;
     launchData.Origin.y = acMessage.OriginY;
     launchData.Origin.z = acMessage.OriginZ;
 
     const uint32_t cProjectileBaseId = modSystem.GetGameId(acMessage.ProjectileBaseID);
     launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
+    if (!launchData.pProjectileBase)
+    {
+        spdlog::warn("Cannot launch projectile, invalid projectile base id: {:X}", cProjectileBaseId);
+        return;
+    }
 
     const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
     launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));

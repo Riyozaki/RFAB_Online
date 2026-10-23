@@ -5,14 +5,17 @@
 
 #include <Services/CharacterService.h>
 #include <Services/QuestService.h>
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
 #include <Games/References.h>
 #include <Games/Misc/SubtitleManager.h>
 
+#include <Forms/ActorValueInfo.h>
 #include <Forms/TESGlobal.h>
 #include <Forms/TESNPC.h>
 #include <Forms/TESQuest.h>
+#include <Misc/ActorValueOwner.h>
 
 #include <BranchInfo.h>
 #include <Components.h>
@@ -75,47 +78,21 @@
 namespace
 {
 constexpr uint32_t cMaxRfabXpDelta = 1'000'000;
-constexpr uint32_t cRfabXpAmountBaseId = 0xAD45BB;
 
 TESGlobal* GetRfabXpGlobal() noexcept
 {
-    static TESGlobal* s_pGlobal = nullptr;
-    if (s_pGlobal != nullptr)
-        return s_pGlobal;
-
-    auto* pModManager = ModManager::Get();
-    if (pModManager == nullptr)
-        return nullptr;
-
-    auto* pMod = pModManager->GetByName("RFAB.esp");
-    if (pMod == nullptr)
-        return nullptr;
-
-    s_pGlobal = Cast<TESGlobal>(TESForm::GetById(pMod->GetFormId(cRfabXpAmountBaseId)));
-    return s_pGlobal;
+    return World::Get().GetRfabAdapterService().GetRfabXpGlobal();
 }
 
 int32_t ReadRfabXp(TESGlobal* apGlobal) noexcept
 {
-    return static_cast<int32_t>(std::lround(std::max(0.0f, apGlobal->f)));
+    return RfabAdapterService::ReadRfabXp(apGlobal);
 }
 
 bool ApplyRfabExperience(TESGlobal* apRfabXp, int32_t aDelta, int32_t& aNewExperience) noexcept
 {
-    auto& papyrusService = World::Get().ctx().at<PapyrusService>();
-
-    const void* pGetExperience = papyrusService.Get("Game", "GetPlayerExperience");
-    const void* pSetExperience = papyrusService.Get("Game", "SetPlayerExperience");
-    if (pGetExperience == nullptr || pSetExperience == nullptr)
-        return false;
-
-    GlobalPapyrusFunction<float> getExperience(pGetExperience);
-    GlobalPapyrusFunction<void, float> setExperience(pSetExperience);
-
-    aNewExperience = ReadRfabXp(apRfabXp) + aDelta;
-    apRfabXp->f = static_cast<float>(aNewExperience);
-    setExperience(getExperience() + static_cast<float>(aDelta));
-    return true;
+    (void)apRfabXp;
+    return World::Get().GetRfabAdapterService().ApplyDualPoolExperienceDelta(aDelta, aNewExperience);
 }
 } // namespace
 
@@ -172,7 +149,7 @@ void CharacterService::DeleteRemoteEntityComponents(entt::entity aEntity) const 
     m_world.remove<FaceGenComponent, InterpolationComponent, RemoteAnimationComponent, RemoteComponent, CacheComponent, WaitingFor3D, PlayerComponent>(aEntity);
 }
 
-bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity) const noexcept
+bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity, uint64_t aOwnershipEpoch) const noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(acFormId));
     if (!pActor)
@@ -194,13 +171,18 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
         return false;
     }
 
+    if (aOwnershipEpoch != 0 && !m_ownershipEpochTracker.AcceptGrant(acServerId, aOwnershipEpoch))
+    {
+        spdlog::debug("Ignored stale TakeOwnership grant for {:X} (epoch {})", acServerId, aOwnershipEpoch);
+        return false;
+    }
+
     pExtension->SetRemote(false);
     pExtension->SetNakedDeadline();
 
-    // TODO(cosideci): this should be done differently.
-    // Send an ownership claim request, and have the server broadcast the result.
-    // Only then should components be added or removed.
-    m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId);
+    const uint64_t effectiveEpoch = aOwnershipEpoch != 0 ? aOwnershipEpoch : m_ownershipEpochTracker.GetEpoch(acServerId);
+    m_cachedRemoteSpawns.erase(acServerId);
+    m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId, effectiveEpoch);
     m_world.emplace_or_replace<LocalAnimationComponent>(acEntity);
     DeleteRemoteEntityComponents(acEntity);
 
@@ -291,14 +273,21 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     RunSpawnUpdates();
     RunLocalUpdates();
     RunFactionsUpdates();
+    if (m_pendingPostSaveRemoteRestore)
+        RestorePurgedRemoteActorsAfterSave();
+
     RunRemoteUpdates();
     RunExperienceUpdates();
     RunRfabExperienceUpdates();
     ApplyCachedWeaponDraws(acUpdateEvent);
 }
 
-void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const noexcept
+void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexcept
 {
+    m_pendingPostSaveRemoteRestore = false;
+    m_cachedRemoteSpawns.clear();
+    NotifySaveLoadReset();
+
     // Go through all the forms that were previously detected
     auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     Vector<entt::entity> entities(view.begin(), view.end());
@@ -307,7 +296,7 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const
     {
         auto& formIdComponent = m_world.get<FormIdComponent>(entity);
         // Delete all temporary actors on connect
-        if (formIdComponent.Id > 0xFF000000)
+        if ((formIdComponent.Id & 0xFF000000) == 0xFF000000)
         {
             Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (pActor)
@@ -320,24 +309,165 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) const
     }
 }
 
-void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) const noexcept
+void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
 {
+    PurgeAllDynamicActorsForWorldLoad();
+}
+
+void CharacterService::PreSavePurgeDynamicActors() noexcept
+{
+    // Update live coordinates of all active dynamic remote spawns (players AND random world encounters such as
+    // "Охотник" FF000862), delete their temporary 0xFFxxxxxx Actor instances BEFORE BGSSaveLoadGame serializes
+    // the world so ZERO heap-allocated TESNPC clones ever enter any .ess file, and flag immediate restoration
+    // for the very next frame after saving completes!
     auto remoteView = m_world.view<FormIdComponent, RemoteComponent>();
+    Vector<entt::entity> remoteEntitiesToDestroy;
+
     for (auto entity : remoteView)
     {
-        auto& formIdComponent = remoteView.get<FormIdComponent>(entity);
+        const uint32_t formId = remoteView.get<FormIdComponent>(entity).Id;
+        const uint32_t serverId = remoteView.get<RemoteComponent>(entity).Id;
 
-        auto pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if ((formId & 0xFF000000) != 0xFF000000)
+            continue;
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formId));
+        if (pActor)
+        {
+            if (auto cacheIt = m_cachedRemoteSpawns.find(serverId); cacheIt != m_cachedRemoteSpawns.end())
+            {
+                auto& cached = cacheIt.value();
+                cached.Position = pActor->position;
+                cached.Rotation.x = pActor->rotation.x;
+                cached.Rotation.y = pActor->rotation.z;
+                cached.IsDead = pActor->IsDead();
+            }
+            pActor->Delete();
+        }
+
+        remoteEntitiesToDestroy.push_back(entity);
+    }
+
+    for (entt::entity entity : remoteEntitiesToDestroy)
+    {
+        if (m_world.valid(entity))
+            m_world.destroy(entity);
+    }
+
+    // Also sweep any unowned stray 0xFFxxxxxx actor tracked in FormIdComponent (never 0x14).
+    auto allForms = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    for (auto entity : allForms)
+    {
+        const uint32_t formId = allForms.get<FormIdComponent>(entity).Id;
+        if (formId != 0x14 && (formId & 0xFF000000) == 0xFF000000)
+        {
+            if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
+                pActor->Delete();
+        }
+    }
+
+    if (!m_cachedRemoteSpawns.empty() && m_transport.IsConnected())
+        m_pendingPostSaveRemoteRestore = true;
+}
+
+void CharacterService::RestorePurgedRemoteActorsAfterSave() noexcept
+{
+    m_pendingPostSaveRemoteRestore = false;
+    if (!m_transport.IsConnected() || m_cachedRemoteSpawns.empty())
+        return;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+        return;
+
+    Vector<CharacterSpawnRequest> snapshots;
+    snapshots.reserve(m_cachedRemoteSpawns.size());
+    for (const auto& [serverId, req] : m_cachedRemoteSpawns)
+    {
+        if (req.FormId == GameId{})
+            snapshots.push_back(req);
+    }
+
+    for (const auto& req : snapshots)
+        OnCharacterSpawn(req);
+}
+
+void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
+{
+    m_pendingPostSaveRemoteRestore = false;
+    m_cachedRemoteSpawns.clear();
+    m_weaponDrawUpdates.clear();
+    NotifySaveLoadReset();
+
+    // Delete EVERY dynamic 0xFFxxxxxx actor (both remote players AND dynamic non-player encounters like FF000862
+    // whose heap TESNPC would otherwise trigger a 0xC0000005 UAF inside SkyrimSE.exe+0x26693B on world revert!).
+    auto remoteView = m_world.view<FormIdComponent, RemoteComponent>();
+    Vector<entt::entity> dynamicEntities;
+    for (auto entity : remoteView)
+    {
+        const uint32_t formId = remoteView.get<FormIdComponent>(entity).Id;
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formId));
         if (!pActor)
             continue;
 
-        if (pActor->GetExtension()->IsRemotePlayer())
+        if ((formId & 0xFF000000) == 0xFF000000 || pActor->GetExtension()->IsRemotePlayer())
+        {
             pActor->Delete();
+            dynamicEntities.push_back(entity);
+        }
         else
+        {
             pActor->GetExtension()->SetRemote(false);
+        }
     }
 
-    m_world.clear<WaitingForAssignmentComponent, LocalComponent, RemoteComponent>();
+    for (entt::entity entity : dynamicEntities)
+    {
+        if (m_world.valid(entity))
+            m_world.destroy(entity);
+    }
+
+    auto formView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    for (auto entity : formView)
+    {
+        const uint32_t formId = formView.get<FormIdComponent>(entity).Id;
+        if (formId != 0x14 && (formId & 0xFF000000) == 0xFF000000)
+        {
+            if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
+                pActor->Delete();
+        }
+    }
+
+    m_world.clear<
+        WaitingFor3D,
+        WaitingForAssignmentComponent,
+        LocalComponent,
+        LocalAnimationComponent,
+        RemoteComponent,
+        InterpolationComponent,
+        RemoteAnimationComponent>();
+}
+
+void CharacterService::NotifySaveLoadReset() noexcept
+{
+    m_cachedExperience = 0.f;
+    m_rfabExperienceInitialized = false;
+    m_localQuestXpGainedInWindow = 0;
+    m_lastAppliedRemoteXpAmount = 0;
+    m_creditToRefundOnLocalQuestXp = 0;
+    m_ownershipEpochTracker.Clear();
+}
+
+void CharacterService::NotifyRemoteQuestStageApplied() noexcept
+{
+    const auto now = std::chrono::steady_clock::now();
+    m_remoteQuestXpWindowUntil = now + 4000ms;
+
+    if (m_lastAppliedRemoteXpAmount > 0 && (now - m_lastAppliedRemoteXpTime) <= 3000ms)
+    {
+        m_creditToRefundOnLocalQuestXp += m_lastAppliedRemoteXpAmount;
+        m_lastAppliedRemoteXpAmount = 0;
+    }
 }
 
 void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept
@@ -382,9 +512,31 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
     if (acMessage.Owner)
     {
+        m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch);
         spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm->GetName());
 
-        m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId);
+        // When taking ownership of an actor already tracked on the server (e.g. a party leader
+        // entering a dungeon room where another party member already damaged, looted, or killed an NPC),
+        // apply the server's authoritative state BEFORE constructing LocalComponent so we never
+        // heal or resurrect wounded/dead enemies!
+        if (acMessage.PlayerId == 0 && !acMessage.AllActorValues.ActorValuesList.empty())
+        {
+            pActor->SetActorValues(acMessage.AllActorValues);
+            pActor->SetActorInventory(acMessage.CurrentInventory);
+
+            if (pActor->IsDead() != acMessage.IsDead)
+            {
+                if (acMessage.IsDead)
+                    pActor->Kill();
+                else
+                    spdlog::info("Keeping local actor {:X} dead instead of Respawn() to prevent leveled re-roll duplication", pActor->formID);
+            }
+
+            m_weaponDrawUpdates[pActor->formID] = {acMessage.IsWeaponDrawn};
+            MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
+        }
+
+        m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
         auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
 
         pActor->GetExtension()->SetRemote(false);
@@ -400,6 +552,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     }
     else
     {
+        m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch);
         spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm->GetName());
 
         m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id);
@@ -414,6 +567,12 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 #if (!IS_MASTER)
         m_world.emplace_or_replace<ReplayedActionsDebugComponent>(cEntity, acMessage.ActionsToReplay);
 #endif
+
+        if (const auto maxHealthIt = acMessage.AllActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+            maxHealthIt != acMessage.AllActorValues.ActorMaxValuesList.end())
+        {
+            m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+        }
 
         pActor->SetActorValues(acMessage.AllActorValues);
         pActor->SetActorInventory(acMessage.CurrentInventory);
@@ -435,7 +594,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     if (remoteItor != std::end(remoteView))
     {
-        spdlog::warn("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+        spdlog::debug("Character with remote id {:X} is already spawned.", acMessage.ServerId);
         return;
     }
 
@@ -460,6 +619,11 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             }
 
             pNpc = Cast<TESNPC>(TESForm::GetById(cNpcId));
+            if (!pNpc)
+            {
+                spdlog::error("Form {:X} is not a TESNPC, skipping remote spawn", cNpcId);
+                return;
+            }
             pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
         }
         else
@@ -494,6 +658,13 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             return;
         }
 
+        // Moving an uninitialized reference crashes (e.g. null race); local cell discovery will assign it once loaded.
+        if (pActor->IsStillLoading())
+        {
+            spdlog::info("Skipped spawn for actor {:X} because its cell ref is still loading, server id: {:X}", cActorId, acMessage.ServerId);
+            return;
+        }
+
         const auto view = m_world.view<FormIdComponent>();
         const auto itor = std::find_if(std::begin(view), std::end(view), [cActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == cActorId; });
 
@@ -522,18 +693,40 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
     pActor->MoveTo(PlayerCharacter::Get()->parentCell, acMessage.Position);
+    pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
+
+    if (!acMessage.IsPlayer)
+    {
+        if (const auto maxHealthIt = acMessage.InitialActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+            maxHealthIt != acMessage.InitialActorValues.ActorMaxValuesList.end())
+        {
+            m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+        }
+    }
+
     pActor->SetActorValues(acMessage.InitialActorValues);
 
-    pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
     if (acMessage.IsPlayer)
     {
         pActor->SetIgnoreFriendlyHit(true);
         pActor->SetPlayerRespawnMode();
         m_world.emplace_or_replace<PlayerComponent>(*entity, acMessage.PlayerId);
+        if (m_world.GetDownedStateService().IsRemotePlayerDowned(acMessage.PlayerId))
+            m_world.GetDownedStateService().ApplyRemoteActorDownedPosture(pActor, true);
     }
 
     if (pActor->IsDead() != acMessage.IsDead)
-        acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+    {
+        if (acMessage.IsDead)
+        {
+            pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+            pActor->Kill();
+        }
+        else
+        {
+            pActor->Respawn();
+        }
+    }
 
     spdlog::info("Spawn Request Is summon {}", acMessage.IsPlayerSummon);
 
@@ -550,6 +743,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     AnimationSystem::Setup(m_world, *entity);
 
+    m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
     m_world.emplace_or_replace<WaitingFor3D>(*entity, acMessage);
 
     auto& remoteAnimationComponent = m_world.get<RemoteAnimationComponent>(*entity);
@@ -674,7 +868,7 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
 
             auto* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (!pActor)
-                return;
+                continue;
 
             auto& cacheComponent = view.get<CacheComponent>(*itor);
             cacheComponent.FactionsContent = factions;
@@ -686,6 +880,12 @@ void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) c
 
 void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) const noexcept
 {
+    if (!m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch))
+    {
+        spdlog::debug("Ignored stale NotifyOwnershipTransfer for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
+        return;
+    }
+
     // TODO(cosideci): handle case if no one has it, therefore no RemoteComponent
     auto view = m_world.view<RemoteComponent, FormIdComponent>();
 
@@ -695,9 +895,9 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
     {
         auto& formIdComponent = view.get<FormIdComponent>(*itor);
 
-        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor))
+        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor, acMessage.OwnershipEpoch))
         {
-            spdlog::info("Ownership claimed {:X}", acMessage.ServerId);
+            spdlog::info("Ownership claimed {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
             return;
         }
     }
@@ -706,12 +906,15 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
 
     RequestOwnershipTransfer request{};
     request.ServerId = acMessage.ServerId;
+    request.OwnershipEpoch = acMessage.OwnershipEpoch;
 
     m_transport.Send(request);
 }
 
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
 {
+    m_ownershipEpochTracker.Forget(acMessage.ServerId);
+    m_cachedRemoteSpawns.erase(acMessage.ServerId);
     auto view = m_world.view<RemoteComponent>();
 
     const auto itor = std::find_if(std::begin(view), std::end(view), [id = acMessage.ServerId, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == id; });
@@ -958,14 +1161,25 @@ void CharacterService::OnNotifyNewPackage(const NotifyNewPackage& acMessage) con
 
 void CharacterService::OnAddExperienceEvent(const AddExperienceEvent& acEvent) noexcept
 {
+    // When drake1ch/RFAB is loaded (RFAB_XP_Amount global present), progression is governed strictly by
+    // RFAB's XP pool rather than vanilla skill-use ticks — never leak spurious skill XP packets across party!
+    if (GetRfabXpGlobal() != nullptr)
+    {
+        m_cachedExperience = 0.f;
+        return;
+    }
+
     m_cachedExperience += acEvent.Experience;
 }
 
 void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMessage) noexcept
 {
+    if (GetRfabXpGlobal() != nullptr)
+        return;
+
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
-    if (PlayerCharacter::LastUsedCombatSkill == -1)
+    if (!pPlayer || PlayerCharacter::LastUsedCombatSkill == -1)
         return;
 
     pPlayer->AddSkillExperience(PlayerCharacter::LastUsedCombatSkill, acMessage.Experience);
@@ -981,7 +1195,20 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     if (pPlayer == nullptr || pRfabXp == nullptr)
         return;
 
-    const int32_t delta = static_cast<int32_t>(acMessage.Experience);
+    const auto now = std::chrono::steady_clock::now();
+    int32_t delta = static_cast<int32_t>(acMessage.Experience);
+
+    // If a synced quest stage already executed locally on this client, absorb the matching quest XP delta
+    // so both players get exact 1x quest XP rather than 2x.
+    if (now <= m_remoteQuestXpWindowUntil && m_localQuestXpGainedInWindow > 0)
+    {
+        const int32_t absorbed = std::min(delta, m_localQuestXpGainedInWindow);
+        m_localQuestXpGainedInWindow -= absorbed;
+        delta -= absorbed;
+        if (delta <= 0)
+            return;
+    }
+
     const int32_t currentExperience = ReadRfabXp(pRfabXp);
     int32_t newExperience = currentExperience;
 
@@ -998,8 +1225,30 @@ void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience
     }
 
     m_lastRfabExperience += delta;
+    m_lastAppliedRemoteXpAmount = delta;
+    m_lastAppliedRemoteXpTime = now;
 
     spdlog::debug("Received RFAB experience {} (total {})", delta, newExperience);
+}
+
+void CharacterService::ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept
+{
+    if (aDelta == 0)
+        return;
+
+    TESGlobal* pRfabXp = GetRfabXpGlobal();
+    if (pRfabXp == nullptr)
+        return;
+
+    const int32_t currentExperience = ReadRfabXp(pRfabXp);
+    int32_t newExperience = currentExperience;
+    if (!ApplyRfabExperience(pRfabXp, aDelta, newExperience))
+        return;
+
+    m_lastRfabExperience = newExperience;
+    m_rfabExperienceInitialized = true;
+    m_lastAppliedRemoteXpAmount = aDelta;
+    m_lastAppliedRemoteXpTime = std::chrono::steady_clock::now();
 }
 
 void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
@@ -1169,6 +1418,12 @@ void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcep
 
 void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& acMessage) noexcept
 {
+    if (!m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch))
+    {
+        spdlog::debug("Ignored stale NotifyRelinquishControl for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
+        return;
+    }
+
     auto formView = m_world.view<FormIdComponent>();
     Vector<entt::entity> entities(formView.begin(), formView.end());
 
@@ -1499,6 +1754,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
 
         RequestOwnershipTransfer request{};
         request.ServerId = localComponent.Id;
+        request.OwnershipEpoch = localComponent.OwnershipEpoch;
 
         if (pActor)
         {
@@ -1850,7 +2106,7 @@ void CharacterService::RunExperienceUpdates() noexcept
 void CharacterService::RunRfabExperienceUpdates() noexcept
 {
     static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenSnapshots = 1000ms;
+    constexpr auto cDelayBetweenSnapshots = 250ms;
 
     const auto now = std::chrono::steady_clock::now();
     if (now - lastSendTimePoint < cDelayBetweenSnapshots)
@@ -1862,6 +2118,12 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
     {
         m_rfabExperienceInitialized = false;
         return;
+    }
+
+    if (now > m_remoteQuestXpWindowUntil)
+    {
+        m_localQuestXpGainedInWindow = 0;
+        m_creditToRefundOnLocalQuestXp = 0;
     }
 
     TESGlobal* pRfabXp = GetRfabXpGlobal();
@@ -1876,11 +2138,32 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
         return;
     }
 
-    const int32_t delta = currentExperience - m_lastRfabExperience;
+    int32_t delta = currentExperience - m_lastRfabExperience;
     m_lastRfabExperience = currentExperience;
 
-    if (delta <= 0 || !World::Get().GetPartyService().IsInParty())
+    if (delta <= 0)
         return;
+
+    // Suppress echo & double-award when a synced quest stage fragment awarded XP locally on this client
+    if (now <= m_remoteQuestXpWindowUntil)
+    {
+        if (m_creditToRefundOnLocalQuestXp > 0)
+        {
+            const int32_t refund = std::min(delta, m_creditToRefundOnLocalQuestXp);
+            int32_t adjustedExperience = currentExperience;
+            if (ApplyRfabExperience(pRfabXp, -refund, adjustedExperience))
+            {
+                m_creditToRefundOnLocalQuestXp -= refund;
+                m_lastRfabExperience = adjustedExperience;
+            }
+            delta -= refund;
+        }
+
+        if (delta > 0)
+            m_localQuestXpGainedInWindow += delta;
+
+        return;
+    }
 
     SyncRfabExperienceRequest message;
     message.Experience = static_cast<uint32_t>(std::min(delta, static_cast<int32_t>(cMaxRfabXpDelta)));

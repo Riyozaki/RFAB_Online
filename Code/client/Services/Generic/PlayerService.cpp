@@ -62,11 +62,11 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
     // TODO: SkyrimTogether.esm
-    TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 0.f;
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
+        pKillMove->f = 0.f;
 
-    TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-    pWorldEncountersEnabled->f = 0.f;
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+        pWorldEncountersEnabled->f = 0.f;
 }
 
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
@@ -76,15 +76,15 @@ void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 
     ToggleDeathSystem(false);
 
-    TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19));
-    pKillMove->f = 1.f;
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
+        pKillMove->f = 1.f;
 
     // Restore to the default value (150 in skyrim, 175 in fallout 4)
-    float* greetDistance = Settings::GetGreetDistance();
-    *greetDistance = 150.f;
+    if (float* greetDistance = Settings::GetGreetDistance())
+        *greetDistance = 150.f;
 
-    TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-    pWorldEncountersEnabled->f = 1.f;
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+        pWorldEncountersEnabled->f = 1.f;
 }
 
 void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) noexcept
@@ -178,8 +178,8 @@ void PlayerService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
     // TODO: this can be done a bit prettier
     if (acEvent.IsLeader)
     {
-        TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-        pWorldEncountersEnabled->f = 1.f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+            pWorldEncountersEnabled->f = 1.f;
     }
 }
 
@@ -188,14 +188,14 @@ void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
     // TODO: this can be done a bit prettier
     if (World::Get().GetTransport().IsConnected())
     {
-        TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
-        pWorldEncountersEnabled->f = 0.f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+            pWorldEncountersEnabled->f = 0.f;
     }
 }
 
 void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 {
-    if (!m_isDeathSystemEnabled)
+    if (!m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled)
         return;
 
     static bool s_startTimer = false;
@@ -254,7 +254,7 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 // Doesn't seem to respawn quite yet
 void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
 {
-    if (!m_isDeathSystemEnabled)
+    if (!m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled)
         return;
 
     // If a player dies in ragdoll, it gets stuck.

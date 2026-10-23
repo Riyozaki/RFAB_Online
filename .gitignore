@@ -88,3 +88,26 @@ distrib_releasedbg/
 new_addresses.txt
 
 packaged/*
+
+# Binary game / modpack / Address Library artifacts (never commit binaries to Git)
+*.esp
+!GameFiles/Skyrim/**/*.esp
+!GameFiles/Skyrim/*.esp
+*.esm
+*.esl
+*.bsa
+*.ba2
+*.pex
+!GameFiles/Skyrim/**/*.pex
+!GameFiles/Skyrim/*.pex
+version-*.bin
+versionlib-*.bin
+NetScriptFramework.*.bin
+Unselected files/
+RFAB_extract/
+RFAB_ref/
+
+# Packaged RFAB release artifacts are stored via Git LFS
+!dist_ready/**/*.esp
+!dist_ready/**/*.pex
+

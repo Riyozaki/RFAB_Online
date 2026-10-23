@@ -2,6 +2,8 @@
 #include "BuildInfo.h"
 
 VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,5,97,0
+PRODUCTVERSION 1,5,97,0
 FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
 FILEFLAGS 0x1L
@@ -16,11 +18,12 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "Together Team"
-            VALUE "ProductName", "TogetherOnline"
-            VALUE "FileDescription", "Multiplayer mod for Bethesda games"
-            VALUE "OriginalFilename", "launcher.exe"
-            VALUE "ProductVersion",	BUILD_BRANCH "@" BUILD_COMMIT
+            VALUE "CompanyName", "Bethesda Softworks"
+            VALUE "ProductName", "The Elder Scrolls V: Skyrim Special Edition"
+            VALUE "FileDescription", "Skyrim Special Edition (RFAB Online " BUILD_BRANCH "@" BUILD_COMMIT ")"
+            VALUE "FileVersion", "1.5.97.0"
+            VALUE "ProductVersion", "1.5.97.0"
+            VALUE "OriginalFilename", "SkyrimSE.exe"
         END
     END
     BLOCK "VarFileInfo"

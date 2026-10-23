@@ -15,6 +15,7 @@
 #include <PlayerCharacter.h>
 
 #include <Effects/ActiveEffect.h>
+#include <Forms/SpellItem.h>
 
 TP_THIS_FUNCTION(TAddTarget, bool, MagicTarget, MagicTarget::AddTargetData& arData);
 TP_THIS_FUNCTION(TCheckAddEffectTargetData, bool, MagicTarget::AddTargetData, void* arArgs, float afResistance);
@@ -38,7 +39,7 @@ static thread_local bool s_applyStaminaPerkBonus = false;
 void MagicTarget::DispelAllSpells(bool aNow) noexcept
 {
     TP_THIS_FUNCTION(TDispelAllSpells, void, MagicTarget, bool aNow);
-    POINTER_SKYRIMSE(TDispelAllSpells, dispelAllSpells, 34512);
+    POINTER_SKYRIMSE(TDispelAllSpells, dispelAllSpells, 33728);
     TiltedPhoques::ThisCall(dispelAllSpells, this, aNow);
 }
 
@@ -59,6 +60,14 @@ bool MagicTarget::AddTarget(AddTargetData& arData, bool aApplyHealPerkBonus, boo
 
 bool MagicTarget::AddTargetData::ShouldSync()
 {
+    // Constant-effect slow time abilities (e.g. Requiem/RFAB Evasion Quick Reflexes) are added and removed locally by
+    // each client's own scripts, so syncing them would leave allies permanently stuck in slow motion.
+    if (pEffectItem && pEffectItem->IsSlowEffect())
+    {
+        if (SpellItem* pSpellItem = Cast<SpellItem>(pSpell); pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT)
+            return false;
+    }
+
     return !pEffectItem->IsSummonEffect() && !pSpell->IsInvisibilitySpell() && !pSpell->IsWardSpell();
 }
 
@@ -74,7 +83,7 @@ bool MagicTarget::AddTargetData::IsForbiddenEffect(Actor* apTarget)
 Actor* MagicTarget::GetTargetAsActor()
 {
     TP_THIS_FUNCTION(TGetTargetAsActor, Actor*, MagicTarget);
-    POINTER_SKYRIMSE(TGetTargetAsActor, getTargetAsActor, 34529);
+    POINTER_SKYRIMSE(TGetTargetAsActor, getTargetAsActor, 33745);
     return TiltedPhoques::ThisCall(getTargetAsActor, this);
 }
 
@@ -227,12 +236,12 @@ uint8_t TP_MAKE_THISCALL(HookGetPerkRank, Actor, TESForm* apPerk)
 }
 
 static TiltedPhoques::Initializer s_magicTargetHooks([]() {
-    POINTER_SKYRIMSE(TAddTarget, addTarget, 34526);
-    POINTER_SKYRIMSE(TCheckAddEffectTargetData, checkAddEffectTargetData, 34525);
-    POINTER_SKYRIMSE(TFindTargets, findTargets, 34410);
-    POINTER_SKYRIMSE(TAdjustForPerks, adjustForPerks, 34053);
-    POINTER_SKYRIMSE(THasPerk, hasPerk, 21622);
-    POINTER_SKYRIMSE(TGetPerkRank, getPerkRank, 37698);
+    POINTER_SKYRIMSE(TAddTarget, addTarget, 33742);
+    POINTER_SKYRIMSE(TCheckAddEffectTargetData, checkAddEffectTargetData, 33741);
+    POINTER_SKYRIMSE(TFindTargets, findTargets, 33632);
+    POINTER_SKYRIMSE(TAdjustForPerks, adjustForPerks, 33278);
+    POINTER_SKYRIMSE(THasPerk, hasPerk, 21167);
+    POINTER_SKYRIMSE(TGetPerkRank, getPerkRank, 36690);
 
     RealAddTarget = addTarget.Get();
     RealCheckAddEffectTargetData = checkAddEffectTargetData.Get();

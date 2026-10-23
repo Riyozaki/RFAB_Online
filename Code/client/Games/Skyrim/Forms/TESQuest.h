@@ -165,6 +165,7 @@ struct TESQuest : BGSStoryManagerTreeForm
     bool IsAnyCutscenePlaying();    
 };
 
+#ifdef _MSC_VER
 static_assert(sizeof(TESQuest) == 0x268);
 static_assert(offsetof(TESQuest, fullName) == 0x28);
 static_assert(offsetof(TESQuest, flags) == 0xDC);
@@ -172,3 +173,12 @@ static_assert(offsetof(TESQuest, pExecutedStages) == 0xE8);
 static_assert(offsetof(TESQuest, objectives) == 0xF8);
 static_assert(offsetof(TESQuest, currentStage) == 0x228);
 static_assert(offsetof(TESQuest, unkFlags) == 0x248);
+#else
+static_assert(sizeof(TESQuest) == 0x260);
+static_assert(offsetof(TESQuest, fullName) == 0x20);
+static_assert(offsetof(TESQuest, flags) == 0xD4);
+static_assert(offsetof(TESQuest, pExecutedStages) == 0xE0);
+static_assert(offsetof(TESQuest, objectives) == 0xF0);
+static_assert(offsetof(TESQuest, currentStage) == 0x220);
+static_assert(offsetof(TESQuest, unkFlags) == 0x240);
+#endif

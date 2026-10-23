@@ -107,7 +107,7 @@ TESObjectREFR* TESObjectREFR::GetByHandle(uint32_t aHandle) noexcept
 
     using TGetRefrByHandle = void(uint32_t & aHandle, TESObjectREFR * &apResult);
 
-    POINTER_SKYRIMSE(TGetRefrByHandle, s_getRefrByHandle, 17201);
+    POINTER_SKYRIMSE(TGetRefrByHandle, s_getRefrByHandle, 16828);
 
     s_getRefrByHandle.Get()(aHandle, pResult);
 
@@ -120,7 +120,7 @@ TESObjectREFR* TESObjectREFR::GetByHandle(uint32_t aHandle) noexcept
 BSPointerHandle<TESObjectREFR> TESObjectREFR::GetHandle() const noexcept
 {
     TP_THIS_FUNCTION(TGetHandle, BSPointerHandle<TESObjectREFR>, const TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult);
-    POINTER_SKYRIMSE(TGetHandle, s_getHandle, 19846);
+    POINTER_SKYRIMSE(TGetHandle, s_getHandle, 19418);
 
     BSPointerHandle<TESObjectREFR> result{};
     TiltedPhoques::ThisCall(s_getHandle, this, &result);
@@ -130,7 +130,7 @@ BSPointerHandle<TESObjectREFR> TESObjectREFR::GetHandle() const noexcept
 
 uint32_t* TESObjectREFR::GetNullHandle() noexcept
 {
-    POINTER_SKYRIMSE(uint32_t, s_nullHandle, 400312);
+    POINTER_SKYRIMSE(uint32_t, s_nullHandle, 514164);
 
     return s_nullHandle.Get();
 }
@@ -144,11 +144,32 @@ void TESObjectREFR::SetRotation(float aX, float aY, float aZ) noexcept
 
 using TiltedPhoques::Serialization;
 
+namespace
+{
+// Descriptor indices are only valid for the behavior project they came from, and an Actor can switch projects
+// (e.g. creature re-roll, werewolf/vampire transform), so recompute whenever the behavior project changes.
+void UpdateGraphDescriptorHash(Actor* apActor, BSAnimationGraphManager* apManager, int aForceIndex) noexcept
+{
+    auto* pExtension = apActor->GetExtension();
+    const auto cProjectKey = apManager->GetProjectKey(aForceIndex);
+    if (pExtension->GraphDescriptorHash != 0 && pExtension->GraphDescriptorProjectKey == cProjectKey)
+        return;
+
+    const auto cPreviousHash = pExtension->GraphDescriptorHash;
+    pExtension->GraphDescriptorHash = apManager->GetDescriptorKey(aForceIndex);
+    pExtension->GraphDescriptorProjectKey = cProjectKey;
+
+    if (cPreviousHash != 0)
+        spdlog::info("Animation graph project of actor {:X} changed, graph descriptor {} -> {}", apActor->formID, cPreviousHash, pExtension->GraphDescriptorHash);
+}
+} // namespace
+
 void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const noexcept
 {
-    BSAnimationGraphManager* pManager = nullptr;
-    if (animationGraphHolder.GetBSAnimationGraph(&pManager))
+    const auto spManager = animationGraphHolder.GetAnimationGraphManagerPtr();
+    if (spManager)
     {
+        BSAnimationGraphManager* pManager = spManager.get();
         BSScopedLock<BSRecursiveLock> _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
@@ -170,15 +191,9 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
             if (!pGraph->behaviorGraph || !pGraph->behaviorGraph->stateMachine || !pGraph->behaviorGraph->stateMachine->name)
                 return;
 
+            // Force third person graph to be used on player
+            UpdateGraphDescriptorHash(pActor, pManager, pActor->formID == 0x14 ? 0 : -1);
             auto* pExtendedActor = pActor->GetExtension();
-            if (pExtendedActor->GraphDescriptorHash == 0)
-            {
-                // Force third person graph to be used on player
-                if (pActor->formID == 0x14)
-                    pExtendedActor->GraphDescriptorHash = pManager->GetDescriptorKey(0);
-                else
-                    pExtendedActor->GraphDescriptorHash = pManager->GetDescriptorKey();
-            }
 
             auto pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(pExtendedActor->GraphDescriptorHash);
 
@@ -202,7 +217,7 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
             {
                 const auto idx = pDescriptor->BooleanLookUpTable[i];
 
-                if (pVariableSet->data[idx] != 0)
+                if (pVariableSet->size > idx && pVariableSet->data[idx] != 0)
                     aVariables.Booleans[i] = true;
             }
 
@@ -210,26 +225,27 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
             {
                 const auto idx = pDescriptor->FloatLookupTable[i];
 
-                aVariables.Floats[i] = *reinterpret_cast<float*>(&pVariableSet->data[idx]);
+                if (pVariableSet->size > idx)
+                    aVariables.Floats[i] = *reinterpret_cast<float*>(&pVariableSet->data[idx]);
             }
 
             for (size_t i = 0; i < pDescriptor->IntegerLookupTable.size(); ++i)
             {
                 const auto idx = pDescriptor->IntegerLookupTable[i];
 
-                aVariables.Integers[i] = *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]);
+                if (pVariableSet->size > idx)
+                    aVariables.Integers[i] = *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]);
             }
         }
-
-        pManager->Release();
     }
 }
 
 void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables) const noexcept
 {
-    BSAnimationGraphManager* pManager = nullptr;
-    if (animationGraphHolder.GetBSAnimationGraph(&pManager))
+    const auto spManager = animationGraphHolder.GetAnimationGraphManagerPtr();
+    if (spManager)
     {
+        BSAnimationGraphManager* pManager = spManager.get();
         BSScopedLock<BSRecursiveLock> _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
@@ -246,9 +262,8 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
             if (!pActor)
                 return;
 
+            UpdateGraphDescriptorHash(pActor, pManager, -1);
             auto* pExtendedActor = pActor->GetExtension();
-            if (pExtendedActor->GraphDescriptorHash == 0)
-                pExtendedActor->GraphDescriptorHash = pManager->GetDescriptorKey();
 
             auto pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(pExtendedActor->GraphDescriptorHash);
 
@@ -259,16 +274,19 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
             if (!pDescriptor)
                 return;
 
-            const auto* pVariableSet = pGraph->behaviorGraph->animationVariables;
+            const auto* pBehaviorGraph = pGraph->behaviorGraph;
+            const auto* pVariableSet = pBehaviorGraph->animationVariables;
 
             if (!pVariableSet)
                 return;
 
+            // Never write into a variable whose word is an index: writing scalar data into a pointer/vector slot
+            // corrupts Havok bound-node lookups during behavior evaluation.
             for (size_t i = 0; i < pDescriptor->BooleanLookUpTable.size(); ++i)
             {
                 const auto idx = pDescriptor->BooleanLookUpTable[i];
 
-                if (pVariableSet->size > idx)
+                if (pVariableSet->size > idx && pBehaviorGraph->IsWordVariable(idx))
                 {
                     pVariableSet->data[idx] = aVariables.Booleans.size() > i ? aVariables.Booleans[i] : false;
                 }
@@ -278,18 +296,22 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
             {
                 const auto idx = pDescriptor->FloatLookupTable[i];
 
-                *reinterpret_cast<float*>(&pVariableSet->data[idx]) = aVariables.Floats.size() > i ? aVariables.Floats[i] : 0.f;
+                if (pVariableSet->size > idx && pBehaviorGraph->IsWordVariable(idx))
+                {
+                    *reinterpret_cast<float*>(&pVariableSet->data[idx]) = aVariables.Floats.size() > i ? aVariables.Floats[i] : 0.f;
+                }
             }
 
             for (size_t i = 0; i < pDescriptor->IntegerLookupTable.size(); ++i)
             {
                 const auto idx = pDescriptor->IntegerLookupTable[i];
 
-                *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]) = aVariables.Integers.size() > i ? aVariables.Integers[i] : 0;
+                if (pVariableSet->size > idx && pBehaviorGraph->IsWordVariable(idx))
+                {
+                    *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]) = aVariables.Integers.size() > i ? aVariables.Integers[i] : 0;
+                }
             }
         }
-
-        pManager->Release();
     }
 }
 
@@ -352,7 +374,7 @@ void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) co
 
     TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);
 
-    POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56626);
+    POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
 
     TiltedPhoques::ThisCall(s_internalMoveTo, this, GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
 }
@@ -366,14 +388,14 @@ void TESObjectREFR::PayGold(int32_t aAmount) noexcept
 void TESObjectREFR::PayGoldToContainer(TESObjectREFR* pContainer, int32_t aAmount) noexcept
 {
     TP_THIS_FUNCTION(TPayGoldToContainer, void, TESObjectREFR, TESObjectREFR*, int32_t);
-    POINTER_SKYRIMSE(TPayGoldToContainer, s_payGoldToContainer, 37511);
+    POINTER_SKYRIMSE(TPayGoldToContainer, s_payGoldToContainer, 36511);
     TiltedPhoques::ThisCall(s_payGoldToContainer, this, pContainer, aAmount);
 }
 
 Lock* TESObjectREFR::GetLock() const noexcept
 {
     TP_THIS_FUNCTION(TGetLock, Lock*, const TESObjectREFR);
-    POINTER_SKYRIMSE(TGetLock, realGetLock, 20223);
+    POINTER_SKYRIMSE(TGetLock, realGetLock, 19818);
 
     return TiltedPhoques::ThisCall(realGetLock, this);
 }
@@ -381,7 +403,7 @@ Lock* TESObjectREFR::GetLock() const noexcept
 Lock* TESObjectREFR::CreateLock() noexcept
 {
     TP_THIS_FUNCTION(TCreateLock, Lock*, TESObjectREFR);
-    POINTER_SKYRIMSE(TCreateLock, realCreateLock, 20221);
+    POINTER_SKYRIMSE(TCreateLock, realCreateLock, 19816);
 
     return TiltedPhoques::ThisCall(realCreateLock, this);
 }
@@ -410,7 +432,7 @@ ExtraContainerChanges::Data* TESObjectREFR::GetContainerChanges() const noexcept
 {
     TP_THIS_FUNCTION(TGetContainterChanges, ExtraContainerChanges::Data*, const TESObjectREFR);
 
-    POINTER_SKYRIMSE(TGetContainterChanges, s_getContainerChangs, 16040);
+    POINTER_SKYRIMSE(TGetContainterChanges, s_getContainerChangs, 15802);
 
     return TiltedPhoques::ThisCall(s_getContainerChangs, this);
 }
@@ -430,7 +452,7 @@ TESContainer* TESObjectREFR::GetContainer() const noexcept
 {
     TP_THIS_FUNCTION(TGetContainer, TESContainer*, const TESObjectREFR);
 
-    POINTER_SKYRIMSE(TGetContainer, s_getContainer, 19702);
+    POINTER_SKYRIMSE(TGetContainer, s_getContainer, 19276);
 
     return TiltedPhoques::ThisCall(s_getContainer, this);
 }
@@ -890,7 +912,7 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
 void TESObjectREFR::UpdateItemList(TESForm* pUnkForm) noexcept
 {
     TP_THIS_FUNCTION(TUpdateItemList, void, TESObjectREFR, TESForm*);
-    POINTER_SKYRIMSE(TUpdateItemList, updateItemList, 52849);
+    POINTER_SKYRIMSE(TUpdateItemList, updateItemList, 51911);
     TiltedPhoques::ThisCall(updateItemList, this, pUnkForm);
 }
 
@@ -905,7 +927,7 @@ void TESObjectREFR::EnableImpl() noexcept
 {
     TP_THIS_FUNCTION(TEnableImpl, void, TESObjectREFR, bool aResetInventory);
 
-    POINTER_SKYRIMSE(TEnableImpl, s_enable, 19800);
+    POINTER_SKYRIMSE(TEnableImpl, s_enable, 19373);
 
     TiltedPhoques::ThisCall(s_enable, this, false);
 }
@@ -1099,15 +1121,15 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
 static TiltedPhoques::Initializer s_objectReferencesHooks(
     []()
     {
-        POINTER_SKYRIMSE(TLockChange, s_lockChange, 19512);
-        POINTER_SKYRIMSE(TRotate, s_rotateX, 19787);
-        POINTER_SKYRIMSE(TRotate, s_rotateY, 19788);
-        POINTER_SKYRIMSE(TRotate, s_rotateZ, 19789);
-        POINTER_SKYRIMSE(TActivate, s_activate, 19796);
-        POINTER_SKYRIMSE(TAddInventoryItem, s_addInventoryItem, 19708);
-        POINTER_SKYRIMSE(TRemoveInventoryItem, s_removeInventoryItem, 19689);
-        POINTER_SKYRIMSE(TPlayAnimationAndWait, s_playAnimationAndWait, 56206);
-        POINTER_SKYRIMSE(TPlayAnimation, s_playAnimation, 56205);
+        POINTER_SKYRIMSE(TLockChange, s_lockChange, 19110);
+        POINTER_SKYRIMSE(TRotate, s_rotateX, 19360);
+        POINTER_SKYRIMSE(TRotate, s_rotateY, 19361);
+        POINTER_SKYRIMSE(TRotate, s_rotateZ, 19362);
+        POINTER_SKYRIMSE(TActivate, s_activate, 19369);
+        POINTER_SKYRIMSE(TAddInventoryItem, s_addInventoryItem, 19282);
+        POINTER_SKYRIMSE(TRemoveInventoryItem, s_removeInventoryItem, 19263);
+        POINTER_SKYRIMSE(TPlayAnimationAndWait, s_playAnimationAndWait, 55675);
+        POINTER_SKYRIMSE(TPlayAnimation, s_playAnimation, 55674);
 
         RealLockChange = s_lockChange.Get();
         RealRotateX = s_rotateX.Get();

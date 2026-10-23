@@ -14,7 +14,11 @@ struct NotifyRelinquishControl final : ServerMessage
     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
 
-    bool operator==(const NotifyRelinquishControl& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && ServerId == acRhs.ServerId; }
+    bool operator==(const NotifyRelinquishControl& acRhs) const noexcept
+    {
+        return GetOpcode() == acRhs.GetOpcode() && ServerId == acRhs.ServerId && OwnershipEpoch == acRhs.OwnershipEpoch;
+    }
 
-    uint32_t ServerId;
+    uint32_t ServerId{};
+    uint64_t OwnershipEpoch{0};
 };

@@ -1,0 +1,4 @@
+;Please indicate your agreement to the Tilted platform service agreement
+;by setting bConfirmEULA to true
+[EULA]
+bConfirmEULA=true

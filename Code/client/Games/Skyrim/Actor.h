@@ -47,7 +47,7 @@ struct Actor : TESObjectREFR
     virtual void SetWeaponDrawn(bool aDraw);
     virtual void sub_A7();
     virtual void sub_A8();
-    virtual void SetPosition(const NiPoint3& acPoint, bool aSyncHavok = true);
+    virtual void SetPosition(const NiPoint3& acPoint, bool aUpdateCharController = true);
     virtual void sub_AA();
     virtual void Resurrect(bool aResetInventory);
     virtual void sub_AC();
@@ -245,7 +245,7 @@ struct Actor : TESObjectREFR
     void GenerateMagicCasters() noexcept;
     void DispelAllSpells(bool aNow = false) noexcept;
     void Reset() noexcept;
-    void Kill() noexcept;
+    void Kill(Actor* apKiller = nullptr) noexcept;
     void Respawn() noexcept;
     void PickUpObject(TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2) noexcept;
     void DropObject(TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation) noexcept;
@@ -261,11 +261,14 @@ struct Actor : TESObjectREFR
     void SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit = false);
     void EquipOutfit(bool aIsSleepOutfit = false) noexcept;
 
-    enum ActorBoolBits
+    enum ActorBoolBits : uint32_t
     {
         kNone = 0,
         kHasSceneExtra = 1 << 3,
+        kPlayerTeammate = 1 << 26,
     };
+
+    [[nodiscard]] bool IsPlayerTeammate() const noexcept { return (flags1 & ActorBoolBits::kPlayerTeammate) != 0; }
 
     enum ActorFlags
     {

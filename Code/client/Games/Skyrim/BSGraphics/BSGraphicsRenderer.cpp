@@ -7,6 +7,8 @@
 #include "BSGraphics/BSGraphicsRenderer.h"
 #include "BSRandom/BSRandom.h"
 
+#include <cwchar>
+
 // shared resource by launcher
 extern HICON g_SharedWindowIcon;
 
@@ -65,40 +67,47 @@ void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData,
     g_sRs->OnDeviceCreation(renderer.RenderWindowA[0].pSwapChain, renderer.pForwarder, renderer.pContext);
 }
 
-void (*StopTimer)(int) = nullptr;
+static void (*Renderer_End)(void*, uint32_t) = nullptr;
 
-// Insert us at the End
-void Hook_StopTimer(int type)
+// Draw the D3D11 overlay right before BSGraphics::Renderer::End presents the frame
+static void Hook_Renderer_End(void* apSelf, uint32_t aTimer)
 {
     if (g_sRs)
         g_sRs->OnRender();
 
-    StopTimer(type);
+    Renderer_End(apSelf, aTimer);
 }
 
 static TiltedPhoques::Initializer s_viewportHooks(
     []()
     {
-        const VersionDbPtr<void> initWindowLoc(77226);
-        // patch dwStyle in BSGraphics::InitWindows
-        TiltedPhoques::Put(mem::pointer(initWindowLoc.GetPtr()) + 0x174 + 1, WS_OVERLAPPEDWINDOW);
+        // Note: in Skyrim SE 1.5.97, BSGraphics::InitWindows (SE 75591 @ 0xD71F00) and
+        // BSGraphics::Renderer::Init (SE 75445 @ 0xD68DD0) are separate functions
+        // (whereas AE 77226 inlined InitWindows + D3DInit into Renderer::Init).
+        // Only override dwStyle when explicitly requested via +force_windowed so we do not
+        // break SSEDisplayTweaks.dll Borderless Fullscreen window sizing & cursor hitboxes in RFAB.
+        const wchar_t* pCmdLine = GetCommandLineW();
+        if (pCmdLine && std::wcsstr(pCmdLine, L"+force_windowed"))
+        {
+            const VersionDbPtr<void> initWindowLoc(75591);
+            TiltedPhoques::Put(mem::pointer(initWindowLoc.GetPtr()) + 0xA9 + 1, WS_OVERLAPPEDWINDOW);
+        }
 
-        const VersionDbPtr<void> windowLoc(68781);
-        // TODO: move me to input patches.
-        // don't let the game steal the media keys in windowed mode
+        // BSWin32KeyboardDevice::Initialize (SE 67471 @ 0xC1A060):
+        // don't let the game steal media keys in windowed mode
+        const VersionDbPtr<void> windowLoc(67471);
         TiltedPhoques::Put(
             mem::pointer(windowLoc.GetPtr()) + 0x55 + 2,
             /*strip DISCL_EXCLUSIVE bits and append DISCL_NONEXCLUSIVE*/ 3);
 
-        const VersionDbPtr<void> timerLoc(77246);
-        const VersionDbPtr<void> renderInit(77226);
+        // BSGraphics::Renderer::End (SE 75461 @ 0xD6A2B0) and BSGraphics::Renderer::Init (SE 75445 @ 0xD68DD0)
+        const VersionDbPtr<void> renderEnd(75461);
+        const VersionDbPtr<void> renderInit(75445);
 
-        TiltedPhoques::SwapCall(mem::pointer(timerLoc.GetPtr()) + 9, StopTimer, &Hook_StopTimer);
-
+        Renderer_End = static_cast<decltype(Renderer_End)>(renderEnd.GetPtr());
         Renderer_Init = static_cast<decltype(Renderer_Init)>(renderInit.GetPtr());
 
-        // Once we find a proper way to locate it for different versions, go back to swapcall
-        // TiltedPhoques::SwapCall(mem::pointer(initLoc.GetPtr()) + 0xD1A, Renderer_Init, &Hook_Renderer_Init);
+        TP_HOOK_IMMEDIATE(&Renderer_End, &Hook_Renderer_End);
         TP_HOOK_IMMEDIATE(&Renderer_Init, &Hook_Renderer_Init);
     });
 } // namespace BSGraphics

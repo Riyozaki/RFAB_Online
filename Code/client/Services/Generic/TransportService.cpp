@@ -120,47 +120,62 @@ void TransportService::OnConnected()
     m_serverPassword = "";
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+    {
+        spdlog::error("TransportService::OnConnected: PlayerCharacter::Get() is null; aborting handshake cleanly.");
+        Close();
+        return;
+    }
 
-    // null if discord is not active
-    // TODO: think about user opt out
-    request.DiscordId = m_world.ctx().at<DiscordService>().GetUser().id;
-    auto* pNpc = Cast<TESNPC>(pPlayer->baseForm);
-    if (pNpc)
+    if (m_world.ctx().contains<DiscordService>())
+        request.DiscordId = m_world.ctx().at<DiscordService>().GetUser().id;
+
+    auto* pNpc = pPlayer->baseForm ? Cast<TESNPC>(pPlayer->baseForm) : nullptr;
+    if (pNpc && pNpc->fullName.value.AsAscii())
     {
         request.Username = pNpc->fullName.value.AsAscii();
     }
     else
     {
-        request.Username = "Some dragon boi";
+        request.Username = "Dragonborn";
     }
 
-    auto* const cpModManager = ModManager::Get();
-
-    for (auto* pMod : cpModManager->mods)
+    if (auto* const cpModManager = ModManager::Get())
     {
-        if (!pMod->IsLoaded())
-            continue;
+        for (auto* pMod : cpModManager->mods)
+        {
+            if (!pMod || !pMod->IsLoaded())
+                continue;
 
-        auto& entry = request.UserMods.ModList.emplace_back();
-        entry.Id = pMod->GetId();
-        entry.IsLite = pMod->IsLite();
-        entry.Filename = pMod->filename;
+            auto& entry = request.UserMods.ModList.emplace_back();
+            entry.Id = pMod->GetId();
+            entry.IsLite = pMod->IsLite();
+            entry.Filename = pMod->filename;
+        }
     }
 
     auto& modSystem = m_world.GetModSystem();
-    if (pPlayer->GetWorldSpace())
-        modSystem.GetServerModId(pPlayer->GetWorldSpace()->formID, request.WorldSpaceId);
+    if (auto* pWorldSpace = pPlayer->GetWorldSpace())
+        modSystem.GetServerModId(pWorldSpace->formID, request.WorldSpaceId);
 
-    modSystem.GetServerModId(pPlayer->parentCell->formID, request.CellId);
+    if (pPlayer->parentCell)
+        modSystem.GetServerModId(pPlayer->parentCell->formID, request.CellId);
 
     request.Level = pPlayer->GetLevel();
 
-    auto* pGameTime = TimeData::Get();
-    request.PlayerTime.TimeScale = pGameTime->TimeScale->f;
-    request.PlayerTime.Time = pGameTime->GameHour->f;
-    request.PlayerTime.Year = pGameTime->GameYear->f;
-    request.PlayerTime.Month = pGameTime->GameMonth->f;
-    request.PlayerTime.Day = pGameTime->GameDay->f;
+    if (auto* pGameTime = TimeData::Get())
+    {
+        if (pGameTime->TimeScale)
+            request.PlayerTime.TimeScale = pGameTime->TimeScale->f;
+        if (pGameTime->GameHour)
+            request.PlayerTime.Time = pGameTime->GameHour->f;
+        if (pGameTime->GameYear)
+            request.PlayerTime.Year = pGameTime->GameYear->f;
+        if (pGameTime->GameMonth)
+            request.PlayerTime.Month = pGameTime->GameMonth->f;
+        if (pGameTime->GameDay)
+            request.PlayerTime.Day = pGameTime->GameDay->f;
+    }
 
     Send(request);
 }

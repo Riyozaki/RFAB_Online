@@ -26,7 +26,14 @@ bool TESFile::LoadFile(const std::filesystem::path& acPath) noexcept
 {
     m_filename = acPath.filename().string();
 
-    const uintmax_t fileSize = std::filesystem::file_size(acPath);
+    std::error_code ec;
+    const uintmax_t fileSize = std::filesystem::file_size(acPath, ec);
+    if (ec)
+    {
+        spdlog::error("Failed to query plugin size {}: {}", m_filename, ec.message());
+        return false;
+    }
+
     m_buffer.Resize(fileSize);
 
     std::ifstream file(acPath, std::ios::binary);
@@ -38,7 +45,7 @@ bool TESFile::LoadFile(const std::filesystem::path& acPath) noexcept
 
     file.read(reinterpret_cast<char*>(m_buffer.GetWriteData()), fileSize);
 
-    return true;
+    return !file.bad();
 }
 
 bool TESFile::IndexRecords(RecordCollection& aRecordCollection) noexcept

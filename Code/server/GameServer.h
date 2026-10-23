@@ -83,6 +83,7 @@ struct GameServer final : Server
     };
     Uptime GetUptime() const noexcept;
 
+    bool HasWorld() const noexcept { return m_pWorld != nullptr; }
     World& GetWorld() const noexcept { return *m_pWorld; }
 
     [[nodiscard]] const TiltedPhoques::Set<ConnectionId_t>& GetAdminSessions() const noexcept { return m_adminSessions; }

@@ -20,10 +20,8 @@
 #include <Messages/NotifyPlayerJoined.h>
 
 #include <Setting.h>
-namespace
-{
-Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
-}
+
+extern Console::Setting<bool> bAutoPartyJoin;
 
 PartyService::PartyService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -218,26 +216,39 @@ void PartyService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 
     GameServer::Get()->SendToPlayers(notify, acEvent.pPlayer);
 
-    if (m_parties.size() == 1 && bAutoPartyJoin)
+    if (bAutoPartyJoin)
     {
-        for (Player* player : m_world.GetPlayerManager())
+        if (m_parties.empty() && !acEvent.pPlayer->GetParty().JoinedPartyId.has_value())
         {
-            if (IsPlayerInParty(player))
+            const uint32_t partyId = m_nextId++;
+            Party& party = m_parties[partyId];
+            party.Members.push_back(acEvent.pPlayer);
+            party.LeaderPlayerId = acEvent.pPlayer->GetId();
+            acEvent.pPlayer->GetParty().JoinedPartyId = partyId;
+
+            spdlog::info("[PartyService]: Auto-created co-op party {} with host {} as leader", partyId, acEvent.pPlayer->GetUsername().c_str());
+            SendPartyJoinedEvent(party, acEvent.pPlayer);
+            BroadcastPartyInfo(partyId);
+        }
+        else if (m_parties.size() == 1 && !acEvent.pPlayer->GetParty().JoinedPartyId.has_value())
+        {
+            for (Player* player : m_world.GetPlayerManager())
             {
-                auto& playerPartyComponent = player->GetParty();
-                Party& party = m_parties[*playerPartyComponent.JoinedPartyId];
+                if (IsPlayerInParty(player))
+                {
+                    auto& playerPartyComponent = player->GetParty();
+                    Party& party = m_parties[*playerPartyComponent.JoinedPartyId];
 
-                party.Members.push_back(acEvent.pPlayer);
-                acEvent.pPlayer->GetParty().JoinedPartyId = *playerPartyComponent.JoinedPartyId;
+                    party.Members.push_back(acEvent.pPlayer);
+                    acEvent.pPlayer->GetParty().JoinedPartyId = *playerPartyComponent.JoinedPartyId;
 
-                SendPartyJoinedEvent(party, acEvent.pPlayer);
-
-                BroadcastPartyInfo(*playerPartyComponent.JoinedPartyId);
-
-                break;
+                    spdlog::info("[PartyService]: Auto-added {} to co-op party {}", acEvent.pPlayer->GetUsername().c_str(), *playerPartyComponent.JoinedPartyId);
+                    SendPartyJoinedEvent(party, acEvent.pPlayer);
+                    BroadcastPartyInfo(*playerPartyComponent.JoinedPartyId);
+                    break;
+                }
             }
         }
-        
     }
 }
 

@@ -6,6 +6,7 @@
 #include <Services/ActorValueService.h>
 #include <World.h>
 #include <Forms/ActorValueInfo.h>
+#include <Games/Overrides.h>
 #include <Games/References.h>
 #include <Components.h>
 
@@ -24,10 +25,10 @@
 #include <Messages/NotifyDeathStateChange.h>
 #include <Messages/RequestDeathStateChange.h>
 
-#include <misc/ActorValueOwner.h>
+#include <Misc/ActorValueOwner.h>
 
 static constexpr float kMinHealthMultiplier = 0.1f;
-static constexpr float kMaxHealthMultiplier = 10.0f;
+static constexpr float kMaxHealthMultiplier = 20.0f;
 
 static float GetHealthMultiplier(const ServerSettings& acSettings) noexcept
 {
@@ -36,6 +37,34 @@ static float GetHealthMultiplier(const ServerSettings& acSettings) noexcept
         return 1.0f;
 
     return std::clamp(value, kMinHealthMultiplier, kMaxHealthMultiplier);
+}
+
+static bool ShouldScaleActorHealth(Actor* apActor) noexcept
+{
+    if (!apActor)
+        return false;
+
+    auto* pExtension = apActor->GetExtension();
+    if (!pExtension || pExtension->IsPlayer())
+        return false;
+
+    return !apActor->IsPlayerTeammate() && !apActor->IsPlayerSummon() && !apActor->IsCommandedActor() && !apActor->IsMount();
+}
+
+// Applies (desiredMax, desiredHealth) without ever transiently driving GetActorValue(kHealth) <= 0
+// when scaling down (e.g. 3x -> 1x on disconnect while DamageMod < -unscaledMax), preventing engine instant-kill.
+static void SetScaledHealthSafely(Actor* apActor, float aCurrentMax, float aDesiredMax, float aDesiredHealth) noexcept
+{
+    if (aDesiredMax >= aCurrentMax)
+    {
+        apActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, aDesiredMax);
+        apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, aDesiredHealth);
+    }
+    else
+    {
+        apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, aCurrentMax + (aDesiredHealth - aDesiredMax));
+        apActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, aDesiredMax);
+    }
 }
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
@@ -53,6 +82,18 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
     m_dispatcher.sink<HealthChangeEvent>().connect<&ActorValueService::OnHealthChange>(this);
     m_dispatcher.sink<NotifyHealthChangeBroadcast>().connect<&ActorValueService::OnHealthChangeBroadcast>(this);
     m_dispatcher.sink<NotifyDeathStateChange>().connect<&ActorValueService::OnDeathStateChange>(this);
+}
+
+void ActorValueService::SeedUnscaledMaxHealthFromRemote(uint32_t aFormId, float aScaledMaxHealth) noexcept
+{
+    if (aFormId == 0 || aScaledMaxHealth <= 0.0f)
+        return;
+
+    if (m_unscaledMaxHealth.find(aFormId) != m_unscaledMaxHealth.end())
+        return;
+
+    const float multiplier = m_transport.IsConnected() ? GetHealthMultiplier(m_world.GetServerSettings()) : 1.0f;
+    m_unscaledMaxHealth[aFormId] = aScaledMaxHealth / multiplier;
 }
 
 void ActorValueService::CreateActorValuesComponent(const entt::entity aEntity, Actor* apActor) noexcept
@@ -83,42 +124,37 @@ void ActorValueService::OnLocalComponentAdded(entt::registry& aRegistry, const e
 
         auto& actorValuesComponent = aRegistry.get<ActorValuesComponent>(aEntity);
         const float healthMultiplier = m_transport.IsConnected() ? GetHealthMultiplier(m_world.GetServerSettings()) : 1.0f;
-
-        if (aRegistry.all_of<RemoteComponent>(aEntity) && healthMultiplier != 1.0f)
-        {
-            const float currentMax = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
-            actorValuesComponent.AppliedHealthBonus = currentMax - currentMax / healthMultiplier;
-        }
-
         ApplyHealthMultiplier(pActor, actorValuesComponent, healthMultiplier);
     }
 }
 
 void ActorValueService::OnLocalComponentRemoved(entt::registry& aRegistry, const entt::entity aEntity) noexcept
 {
-    auto* pActorValuesComponent = aRegistry.try_get<ActorValuesComponent>(aEntity);
-    if (!pActorValuesComponent)
-        return;
-
-    Actor* pActor = Cast<Actor>(TESForm::GetById(pActorValuesComponent->FormId));
-    if (!pActor)
-        return;
-
-    ApplyHealthMultiplier(pActor, *pActorValuesComponent, 1.0f);
+    // When ownership transfers to another connected player, keep the synced scaled max HP intact on
+    // the remote representation; only unscale on ActorRemovedEvent or DisconnectedEvent.
+    if (aRegistry.all_of<ActorValuesComponent>(aEntity))
+        aRegistry.remove<ActorValuesComponent>(aEntity);
 }
 
 void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
-    auto view = m_world.view<ActorValuesComponent>();
-    for (auto entity : view)
+    for (const auto& [formId, unscaledMax] : m_unscaledMaxHealth)
     {
-        auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
-        Actor* pActor = Cast<Actor>(TESForm::GetById(actorValuesComponent.FormId));
-        if (pActor)
-            ApplyHealthMultiplier(pActor, actorValuesComponent, 1.0f);
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formId));
+        if (!pActor || !ShouldScaleActorHealth(pActor) || unscaledMax <= 0.0f)
+            continue;
+
+        const float currentMax = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+        const float currentHealth = pActor->GetActorValue(ActorValueInfo::kHealth);
+        if (currentMax <= 0.0f || std::abs(currentMax - unscaledMax) <= 0.01f)
+            continue;
+
+        const float healthPercentage = std::clamp(currentHealth / currentMax, 0.0f, 1.0f);
+        SetScaledHealthSafely(pActor, currentMax, unscaledMax, unscaledMax * healthPercentage);
     }
 
-    // TODO: this crashes sometimes, no clue why
+    m_unscaledMaxHealth.clear();
+    m_smallHealthChanges.clear();
     m_world.clear<ActorValuesComponent>();
 }
 
@@ -126,7 +162,7 @@ void ActorValueService::ApplyHealthScaling() noexcept
 {
     const float healthMultiplier = m_transport.IsConnected() ? GetHealthMultiplier(m_world.GetServerSettings()) : 1.0f;
 
-    auto view = m_world.view<ActorValuesComponent>();
+    auto view = m_world.view<LocalComponent, ActorValuesComponent>();
     for (auto entity : view)
     {
         auto& actorValuesComponent = view.get<ActorValuesComponent>(entity);
@@ -138,6 +174,12 @@ void ActorValueService::ApplyHealthScaling() noexcept
 
 void ActorValueService::ApplyHealthMultiplier(Actor* apActor, ActorValuesComponent& aComponent, float aMultiplier) noexcept
 {
+    if (!ShouldScaleActorHealth(apActor))
+    {
+        aComponent.AppliedHealthBonus = 0.0f;
+        return;
+    }
+
     const float currentMax = apActor->GetActorPermanentValue(ActorValueInfo::kHealth);
     const float currentHealth = apActor->GetActorValue(ActorValueInfo::kHealth);
 
@@ -147,7 +189,11 @@ void ActorValueService::ApplyHealthMultiplier(Actor* apActor, ActorValuesCompone
         return;
     }
 
-    const float unscaledMax = currentMax - aComponent.AppliedHealthBonus;
+    auto baseIt = m_unscaledMaxHealth.find(apActor->formID);
+    if (baseIt == m_unscaledMaxHealth.end())
+        baseIt = m_unscaledMaxHealth.insert({apActor->formID, currentMax}).first;
+
+    const float unscaledMax = baseIt->second;
     if (unscaledMax <= 0.0f)
     {
         aComponent.AppliedHealthBonus = 0.0f;
@@ -156,25 +202,39 @@ void ActorValueService::ApplyHealthMultiplier(Actor* apActor, ActorValuesCompone
 
     const float desiredMax = unscaledMax * aMultiplier;
     const float desiredBonus = desiredMax - unscaledMax;
+    aComponent.AppliedHealthBonus = desiredBonus;
 
-    if (std::abs(desiredBonus - aComponent.AppliedHealthBonus) <= 0.01f)
+    if (std::abs(desiredMax - currentMax) <= 0.01f)
         return;
 
     const float healthPercentage = std::clamp(currentHealth / currentMax, 0.0f, 1.0f);
-
-    apActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, desiredMax);
-    apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, desiredMax * healthPercentage);
-
-    aComponent.AppliedHealthBonus = desiredBonus;
+    SetScaledHealthSafely(apActor, currentMax, desiredMax, desiredMax * healthPercentage);
 }
 
 void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 {
+    const uint32_t formId = acEvent.FormId;
+
+    const auto baseIt = m_unscaledMaxHealth.find(formId);
+    if (baseIt != m_unscaledMaxHealth.end())
+    {
+        if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)); pActor && ShouldScaleActorHealth(pActor) && baseIt->second > 0.0f)
+        {
+            const float currentMax = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+            const float currentHealth = pActor->GetActorValue(ActorValueInfo::kHealth);
+            if (currentMax > 0.0f && std::abs(currentMax - baseIt->second) > 0.01f)
+            {
+                const float healthPercentage = std::clamp(currentHealth / currentMax, 0.0f, 1.0f);
+                SetScaledHealthSafely(pActor, currentMax, baseIt->second, baseIt->second * healthPercentage);
+            }
+        }
+        m_unscaledMaxHealth.erase(baseIt);
+    }
+
     if (!m_transport.IsConnected())
         return;
 
     auto view = m_world.view<FormIdComponent>();
-    const uint32_t formId = acEvent.FormId;
 
     const auto it = std::find_if(
         std::begin(view), std::end(view),
@@ -386,23 +446,34 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
         return;
     }
 
-    const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
-    pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+    {
+        ScopedActorValueOverride avOverride;
+        const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+        pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+    }
 
     const float health = pActor->GetActorValue(ActorValueInfo::kHealth);
     if (!pActor->IsDead() && health <= 0.f)
     {
         ActorExtension* pExtension = pActor->GetExtension();
-        // Players should never be killed
         if (!pExtension->IsPlayer())
-            pActor->Kill();
+        {
+            if (pExtension->IsRemote())
+            {
+                // Non-owner peer: suppress duplicate local RFAB_XP_Alias.psc award via kInfamy = -1.
+                ScopedActorValueOverride avOverride;
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+                pActor->Kill(nullptr);
+            }
+            else
+            {
+                // Authoritative owner of this NPC when a party ally landed the final blow (joint kill!):
+                // credit PlayerCharacter::Get() as killer WITHOUT setting kInfamy = -1 so RFAB_XP_Alias.psc
+                // awards exact 1x RFAB kill XP here and SyncRfabExperienceRequest shares it with the whole party!
+                pActor->Kill(PlayerCharacter::Get());
+            }
+        }
     }
-
-    // TODO(cosideci): find fix for player health sync so this can be used again
-    /*
-    if (pActor->GetExtension()->IsRemotePlayer())
-        World::Get().GetOverlayService().SetPlayerHealthPercentage(pActor->formID);
-    */
 }
 
 void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMessage) const noexcept
@@ -457,6 +528,9 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
         if (key == ActorValueInfo::kDragonSouls)
             continue;
 
+        if (key == ActorValueInfo::kHealth && ShouldScaleActorHealth(pActor))
+            m_world.ctx().at<ActorValueService>().SeedUnscaledMaxHealthFromRemote(pActor->formID, value);
+
         spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
 
         pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, key, value);
@@ -484,5 +558,15 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
         return;
 
     if (pActor->IsDead() != acMessage.IsDead)
-        acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+    {
+        if (acMessage.IsDead)
+        {
+            pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+            pActor->Kill();
+        }
+        else
+        {
+            pActor->Respawn();
+        }
+    }
 }

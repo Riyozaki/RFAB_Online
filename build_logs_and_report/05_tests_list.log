@@ -1,0 +1,47 @@
+All available test cases:
+  Encoding factory
+      [encoding.factory]
+  Static structures
+      [encoding.static]
+  Server settings
+      [encoding.server_settings]
+  Differential structures
+      [encoding.differential]
+  Packets
+      [encoding.packets]
+  StringCache
+      [encoding.string_cache]
+  RFAB dynamic enemy HP scaling & ownership-transfer invariance
+      [rfab.scaling]
+  Server health delta sign, healing clamp, and AssignCharacterResponse payload
+    roundtrip
+      [rfab.health]
+  RFAB equal XP synchronization across kills, simultaneous multi-kills, books,
+    and quests in all packet orders
+      [rfab.xp]
+  EngineFixes.toml multiline grey-list validator accepts RFAB SSE Engine Fixes
+    config
+      [rfab.enginefixes]
+  Stage 3-4: All 12 new network messages & ServerSettings round-trip cleanly
+    via Factories
+      [encoding][rfab][stage3_4]
+  Stage 3: External RFAB bindings, EngineFixes override patcher & Autosave INI
+    suppression
+      [modpack][rfab][stage3_4]
+  Stage 3: Two-Phase SaveSnapshotCoordinator ring buffers, mid-save disconnect,
+    boss bypass & rollback
+      [rfab][saves][stage3_4]
+  Stage 3: EncounterCoordinator enforces 4.0s E-revive, Strict RFAB 120m Leash,
+    3-player isolation & Total Party Wipe
+      [downed][rfab][stage3_4]
+  Stage 4: RfabProgressionLedger deduplicates XP races, rebates duplicates,
+    restores on wipe & matches 1-to-1 ambushes
+      [progression][rfab][stage3_4]
+  Co-op Hardening & Mutation Twins: Epoch Ownership, Anti-Flap Hysteresis,
+    Stale-Boss-Delete Guard & Monotonic Death
+      [coop_anything][ownership][rfab]
+  Co-op Hardening: Monotonic WorldEpoch across Rollbacks, Distant-City Sub-
+    Party Wipe & 256-Bucket Digest
+      [coop_anything][epoch_digest][rfab]
+17 test cases
+

@@ -1,4 +1,4 @@
-set_xmakever("2.8.5")
+set_xmakever("3.0.0")
 
 -- If newer version of xmake, remove ccache until it actually works
 if set_policy ~= nil then
@@ -12,6 +12,7 @@ if is_plat("windows") then
     add_cxflags("/bigobj")
     add_syslinks("kernel32")
     set_arch("x64")
+    set_runtimes("MT")
 end
 
 if is_plat("linux") then
@@ -30,22 +31,21 @@ if has_config("unitybuild") then
     add_rules("c++.unity_build", {batchsize = 12})
 end
 
--- direct dependencies version pinning 
+-- direct dependencies version pinning
 add_requires(
-    "entt v3.10.0", 
-    "recastnavigation v1.6.0", 
-    "tiltedcore 0.2.8", 
-    "cryptopp 8.9.0", 
-    "spdlog v1.13.0", 
+    "entt v3.10.0",
+    "tiltedcore 0.2.9",
+    "cryptopp 8.9.0",
+    "spdlog v1.13.0",
     "cpp-httplib 0.14.0",
-    "gtest v1.14.0", 
-    "mem 1.0.0", 
-    "glm 0.9.9+8", 
+    "gtest v1.14.0",
+    "mem 1.0.0",
+    "glm 0.9.9+8",
     "zlib v1.3.1"
 )
 if is_plat("windows") then
     add_requires(
-        "discord 3.2.1", 
+        "discord 3.2.1",
         "imgui v1.89.7"
     )
 end
@@ -60,12 +60,6 @@ if is_plat("linux") then
 end
 
 add_requireconfs("cpp-httplib", {configs = {ssl = true}})
---[[
-add_requireconfs("magnum", { configs = { sdl2 = true }})
-add_requireconfs("magnum-integration",  { configs = { imgui = true }})
-add_requireconfs("magnum-integration.magnum",  { configs = { sdl2 = true }})
-add_requireconfs("magnum-integration.imgui", { override = true })
---]]
 
 before_build(function (target)
     import("modules.version")
@@ -76,9 +70,9 @@ before_build(function (target)
     #define IS_MASTER %d
     #define IS_BRANCH_BETA %d
     #define IS_BRANCH_PREREL %d
-    ]], 
-    bool_to_number[branch == "master"], 
-    bool_to_number[branch == "bluedove"], 
+    ]],
+    bool_to_number[branch == "master"],
+    bool_to_number[branch == "bluedove"],
     bool_to_number[branch == "prerel"])
 
     -- fix always-compiles problem by updating the file only if content has changed.

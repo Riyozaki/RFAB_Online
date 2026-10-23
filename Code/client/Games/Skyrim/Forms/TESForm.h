@@ -5,6 +5,7 @@
 
 enum class FormType : uint8_t
 {
+    Script = 19,
     Armor = 26,
     Book = 27,
     Container = 28,
@@ -37,9 +38,11 @@ struct TESForm : BaseFormComponent
     {
         DISABLED = 1 << 0xB,
         IGNORE_FRIENDLY_HITS = 1 << 0x14,
+        STILL_LOADING = 1 << 0x15,
     };
 
     static TESForm* GetById(uint32_t aId);
+    static TESForm* GetByEditorId(const BSFixedString& acEditorId) noexcept;
 
     virtual void sub_4();
     virtual void sub_5();
@@ -113,6 +116,7 @@ struct TESForm : BaseFormComponent
     }
 
     bool IsDisabled() const noexcept { return (flags & DISABLED) != 0; }
+    bool IsStillLoading() const noexcept { return (flags & STILL_LOADING) != 0; }
     bool IsTemporary() const noexcept { return formID >= 0xFF000000; }
     bool IsConsumable() const noexcept { return formType == FormType::Ingredient || formType == FormType::Alchemy; }
 

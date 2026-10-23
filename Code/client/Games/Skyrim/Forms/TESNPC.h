@@ -95,6 +95,12 @@ struct TESNPC : TESActorBase
     void Initialize() noexcept;
 };
 
+#ifdef _MSC_VER
 static_assert(offsetof(TESNPC, npcClass) == 0x1C0);
 static_assert(offsetof(TESNPC, color) == 0x246);
 static_assert(offsetof(TESNPC, relationships) == 0x250);
+#else
+static_assert(offsetof(TESNPC, npcClass) == 0x1B8);
+static_assert(offsetof(TESNPC, color) == 0x23E);
+static_assert(offsetof(TESNPC, relationships) == 0x248);
+#endif

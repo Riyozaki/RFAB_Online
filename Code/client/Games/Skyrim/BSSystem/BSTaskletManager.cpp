@@ -1,6 +1,8 @@
 
 #include <base/threading/ThreadUtils.h>
 
+#include <atomic>
+
 namespace
 {
 struct BSTaskletManager
@@ -9,28 +11,37 @@ struct BSTaskletManager
     void* threadHandles[6];
 };
 
-static void (*Construct_TaskletManager)(BSTaskletManager*);
+static BSTaskletManager* (*Real_GetTaskletManager)() = nullptr;
+static std::atomic_bool s_namedTaskletThreads{false};
 
-static void Hook_Construct_TaskletManager(BSTaskletManager* apSelf)
+static BSTaskletManager* Hook_GetTaskletManager()
 {
-    Construct_TaskletManager(apSelf);
+    auto* pSelf = Real_GetTaskletManager();
 
-    for (int i = 0; i < 6; i++)
+    if (pSelf && !s_namedTaskletThreads.exchange(true))
     {
-        if (!apSelf->threadHandles[i])
-            continue;
+        for (int i = 0; i < 6; i++)
+        {
+            if (!pSelf->threadHandles[i])
+                continue;
 
-        auto name = fmt::format("TaskletThread{}", i);
-        Base::SetThreadName(apSelf->threadHandles[i], name.c_str());
+            auto name = fmt::format("TaskletThread{}", i);
+            Base::SetThreadName(pSelf->threadHandles[i], name.c_str());
+        }
     }
+
+    return pSelf;
 }
 } // namespace
 
 static TiltedPhoques::Initializer s_BSThreadInit(
     []()
     {
-        const VersionDbPtr<uint8_t> getTaskletManagerInstance(69554);
+        // BSWin32TaskletManager::GetSingleton (SE 68203 @ 0xC39950):
+        // Hook at function entry (+0x0) instead of mid-function SwapCall so there is zero
+        // mid-function instruction offset sensitivity on Skyrim SE 1.5.97.
+        const VersionDbPtr<void> getTaskletManagerInstance(68203);
+        Real_GetTaskletManager = static_cast<decltype(Real_GetTaskletManager)>(getTaskletManagerInstance.GetPtr());
 
-        // tasklet naming
-        TiltedPhoques::SwapCall(getTaskletManagerInstance.Get() + 0x63, Construct_TaskletManager, &Hook_Construct_TaskletManager);
+        TP_HOOK_IMMEDIATE(&Real_GetTaskletManager, &Hook_GetTaskletManager);
     });

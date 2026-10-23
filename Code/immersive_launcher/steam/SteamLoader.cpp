@@ -24,10 +24,15 @@ void Load(const fs::path& aGameDir)
         fclose(f);
     }
 
+    // Standalone / offline builds with SkyrimSE.cdx bring their own self-contained offline steam_api64.dll;
+    // loading live Valve steamclient64.dll from C:\Program Files (x86)\Steam conflicts with standalone emulators.
+    std::error_code ec;
+    if (fs::exists(aGameDir / "SkyrimSE.cdx", ec))
+        return;
+
     fs::path steamPath = Registry::ReadString<wchar_t>(HKEY_CURRENT_USER, LR"(SOFTWARE\Valve\Steam)", L"SteamPath");
 
-    // wait what
-    if (!fs::exists(steamPath))
+    if (!fs::exists(steamPath, ec))
         return;
 
     AddDllDirectory(steamPath.c_str());

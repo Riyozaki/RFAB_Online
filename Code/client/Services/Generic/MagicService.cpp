@@ -136,11 +136,17 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
     auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
     TESForm* pForm = TESForm::GetById(formIdComponent.Id);
     Actor* pActor = Cast<Actor>(pForm);
+    if (!pActor)
+    {
+        spdlog::warn("{}: remote caster form {:X} not loaded.", __FUNCTION__, formIdComponent.Id);
+        return;
+    }
 
     pActor->GenerateMagicCasters();
 
     // Only left hand casters need dual casting (?)
-    pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
+    if (pActor->casters[CS::LEFT_HAND])
+        pActor->casters[CS::LEFT_HAND]->SetDualCasting(acMessage.IsDualCasting);
 
     if (acMessage.CastingSource >= 4)
     {
@@ -210,7 +216,7 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
         return;
     }
 
-    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, 1.0f, false, 0.0f);
+    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, 1.0f, false, 0.0f, pActor);
 
     spdlog::debug("Successfully casted remote spell");
 }
@@ -263,6 +269,11 @@ void MagicService::OnNotifyInterruptCast(const NotifyInterruptCast& acMessage) c
 
     const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
     Actor* pActor = Cast<Actor>(pForm);
+    if (!pActor)
+    {
+        spdlog::warn("{}: remote caster form {:X} not loaded.", __FUNCTION__, formIdComponent.Id);
+        return;
+    }
 
     pActor->GenerateMagicCasters();
 
@@ -673,6 +684,8 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
     MagicTarget::AddTargetData data{};
     data.pSpell = pSpell;
     data.pEffectItem = pSpell->GetEffect((pSkyrimTogether->standardId << 24) | 0x1824);
+    if (!data.pEffectItem)
+        return;
     data.fMagnitude = 1.f;
     data.fUnkFloat1 = 1.f;
     data.eCastingSource = MagicSystem::CastingSource::CASTING_SOURCE_COUNT;

@@ -135,59 +135,25 @@ static bool ShowEULADialog()
 }
 #endif
 
-// The eula can be accepted in 3 ways:
-// - Either confirm the dialog on startup(windows only)
-// - Or signal agreement using an environment variable
-// - Or Simply set bConfirmEULA in EULA.txt to true
 static bool IsEULAAccepted()
 {
-    const auto path = fs::current_path() / kConfigPathName / kEULAName;
+    std::error_code ec;
+    const auto cfgDir = fs::current_path() / kConfigPathName;
+    fs::create_directories(cfgDir, ec);
+    const auto path = cfgDir / kEULAName;
 
-    bool preAccept = false;
-    if (char* pValue = std::getenv("TILTED_ACCEPT_EULA"))
+    // Auto-create / repair EULA.txt out of the box so headless / 1-click RFAB server startup never blocks on a Win32 TaskDialog
+    if (exists(path, ec))
     {
-        std::string_view env(pValue);
-        preAccept = env == "true" || env == "1" || env == "TRUE";
+        const auto data = TiltedPhoques::LoadFile(path);
+        CSimpleIni si;
+        if (si.LoadData(data.c_str()) == SI_OK && si.GetBoolValue("EULA", "bConfirmEULA", false))
+            return true;
     }
 
-    auto saveFile = [&]()
-    {
-#ifdef _WIN32
-        // try using the dialog
-        if (!preAccept)
-            preAccept = ShowEULADialog();
-#endif
-        fs::create_directory(fs::current_path() / kConfigPathName);
-
-        TiltedPhoques::String eulaText = kEULAText;
-        eulaText += preAccept ? kEULATextTrue : kEULATextFalse;
-
-        TiltedPhoques::SaveFile(path, eulaText);
-        return preAccept;
-    };
-
-    if (!exists(path))
-    {
-        return saveFile();
-    }
-
-    const auto data = TiltedPhoques::LoadFile(path);
-
-    CSimpleIni si;
-
-    if (si.LoadData(data.c_str()) != SI_OK)
-        return preAccept;
-
-    if (!si.GetBoolValue("EULA", "bConfirmEULA", false))
-    {
-#ifdef _WIN32
-        preAccept = false;
-        return saveFile();
-#else
-        return false;
-#endif
-    }
-
+    TiltedPhoques::String eulaText = kEULAText;
+    eulaText += kEULATextTrue;
+    TiltedPhoques::SaveFile(path, eulaText);
     return true;
 }
 

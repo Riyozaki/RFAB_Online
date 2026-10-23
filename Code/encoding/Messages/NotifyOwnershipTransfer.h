@@ -15,7 +15,11 @@ struct NotifyOwnershipTransfer final : ServerMessage
     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
 
-    bool operator==(const NotifyOwnershipTransfer& achRhs) const noexcept { return ServerId == achRhs.ServerId && GetOpcode() == achRhs.GetOpcode(); }
+    bool operator==(const NotifyOwnershipTransfer& achRhs) const noexcept
+    {
+        return ServerId == achRhs.ServerId && OwnershipEpoch == achRhs.OwnershipEpoch && GetOpcode() == achRhs.GetOpcode();
+    }
 
-    uint32_t ServerId;
+    uint32_t ServerId{};
+    uint64_t OwnershipEpoch{0};
 };

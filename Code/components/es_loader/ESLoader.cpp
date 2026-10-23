@@ -65,40 +65,82 @@ bool ESLoader::LoadLoadOrder()
         return false;
     }
 
-    uint8_t standardId = 0x0;
+    uint32_t standardId = 0x0;
     uint16_t liteId = 0x0;
+    bool firstLine = true;
 
-    while (!loadOrderFile.eof())
+    String line;
+    while (std::getline(loadOrderFile, line))
     {
-        String line;
-        std::getline(loadOrderFile, line);
-        if (line[0] == '#' || line.empty())
+        // Strip UTF-8 BOM on line 1 if present (MO2 / Notepad saves)
+        if (firstLine)
+        {
+            firstLine = false;
+            if (line.size() >= 3 &&
+                static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF)
+            {
+                line.erase(0, 3);
+            }
+        }
+
+        // Strip CR (\r\n) and surrounding whitespace BEFORE copying into PluginData!
+        line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+            line.erase(line.begin());
+        while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
+            line.pop_back();
+
+        if (line.empty() || line[0] == '#')
+            continue;
+
+        // If user copied plugins.txt instead of loadorder.txt, ignore disabled lines and strip leading '*'
+        if (line[0] == '*')
+            line.erase(line.begin());
+
+        if (line.empty())
             continue;
 
         PluginData plugin;
         plugin.m_filename = line;
 
-        // On Linux, the carriage return won't be taken into account
-        line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
-
-        char extensionType = line.back();
+        const char extensionType = static_cast<char>(std::tolower(static_cast<unsigned char>(line.back())));
 
         switch (extensionType)
         {
-        case 'm': m_masterFiles[line] = standardId;
+        case 'm':
+            if (standardId < 0xFE)
+                m_masterFiles[line] = static_cast<uint8_t>(standardId);
+            [[fallthrough]];
         case 'p':
-            plugin.m_standardId = standardId;
-            standardId += 0x01;
-            plugin.m_isLite = false;
-            m_loadOrder.push_back(plugin);
+            if (standardId < 0xFE)
+            {
+                plugin.m_standardId = static_cast<uint8_t>(standardId);
+                ++standardId;
+                plugin.m_isLite = false;
+                m_loadOrder.push_back(plugin);
+            }
+            else if (liteId < 0x0FFF)
+            {
+                // ESL-flagged .esp/.esm in large MO2 modpacks (like drake1ch/RFAB with 500+ plugins):
+                // assign into FE light-plugin space instead of wrapping uint8_t back to 0x00 (Skyrim.esm)!
+                plugin.m_liteId = liteId++;
+                plugin.m_isLite = true;
+                m_loadOrder.push_back(plugin);
+            }
             break;
         case 'l':
-            plugin.m_liteId = liteId;
-            liteId += 0x0001;
-            plugin.m_isLite = true;
-            m_loadOrder.push_back(plugin);
+            if (liteId < 0x0FFF)
+            {
+                plugin.m_liteId = liteId++;
+                plugin.m_isLite = true;
+                m_loadOrder.push_back(plugin);
+            }
             break;
-        default: spdlog::error("Extension in loadorder.txt not recognized: {}", line);
+        default:
+            spdlog::warn("Extension in loadorder.txt not recognized: {}", line);
+            break;
         }
     }
 

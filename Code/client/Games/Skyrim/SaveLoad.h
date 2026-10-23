@@ -21,7 +21,12 @@ struct BGSSaveLoadManager
         char* saveName; // 0xBB0
     };
 
+    static BGSSaveLoadManager* Get() noexcept;
+    static void InstallUniversalPostSkseHooks() noexcept;
+
     void Save(SaveData* apData);
+    bool SaveNamed(const char* acpFileName) noexcept;
+    bool LoadNamed(const char* acpFileName, bool aCheckForMods = true) noexcept;
 
     struct Struct330
     {
@@ -142,7 +147,7 @@ static_assert(offsetof(BGSLoadFormBuffer, changeFlags) == 0x40);
 static_assert(offsetof(BGSLoadFormBuffer, loadFlag) == 0x4B);
 
 // TODO: mostly copied from fallout 4, needs to be validated
-struct __declspec(align(8)) BGSSaveLoadScrapBuffer
+struct alignas(8) BGSSaveLoadScrapBuffer
 {
     char* pBuffer;
     struct ScrapHeap* pScrapHeap;
@@ -162,7 +167,7 @@ struct BGSLoadGameBuffer
 
 static_assert(sizeof(BGSLoadGameBuffer) == 0x28);
 
-struct __declspec(align(8)) BGSLoadFormData
+struct alignas(8) BGSLoadFormData
 {
     uint32_t iFormID;
     uint32_t uiDataSize;

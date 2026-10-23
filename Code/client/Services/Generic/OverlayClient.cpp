@@ -10,6 +10,9 @@
 #include <Messages/TeleportRequest.h>
 
 #include <Events/SetTimeCommandEvent.h>
+#include <PlayerCharacter.h>
+#include <Utils.h>
+#include <common/RfabModpackCompat.h>
 
 #include <World.h>
 
@@ -89,18 +92,27 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
 
 void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
 {
-    std::string baseIp = aEventArgs->GetString(0);
-    if (baseIp == "localhost")
-    {
-        baseIp = "127.0.0.1";
-    }
+    const std::string rawIp = aEventArgs->GetString(0).ToString();
+    const uint16_t fallbackPort = aEventArgs->GetInt(1) ? static_cast<uint16_t>(aEventArgs->GetInt(1)) : 10578;
+    const std::string password = aEventArgs->GetString(2).ToString();
 
-    uint16_t port = aEventArgs->GetInt(1) ? aEventArgs->GetInt(1) : 10578;
-    World::Get().GetTransport().SetServerPassword(aEventArgs->GetString(2));
+    const std::string endpoint = RfabCompat::NormalizeServerEndpoint(rawIp, fallbackPort);
+    spdlog::info("[RFAB Connect] Normalized connect target '{}' (port={}) -> '{}'", rawIp, fallbackPort, endpoint);
 
-    std::string endpoint = baseIp + ":" + std::to_string(port);
+    World::Get().GetTransport().SetServerPassword(password);
 
-    World::Get().GetRunner().Queue([endpoint] { World::Get().GetTransport().Connect(endpoint); });
+    World::Get().GetRunner().Queue(
+        [endpoint, password]()
+        {
+            PlayerCharacter* pPlayer = PlayerCharacter::Get();
+            if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+            {
+                spdlog::warn("[RFAB Connect] Connect requested before save loaded into world; prompting player.");
+                Utils::ShowHudMessage(String("Сначала загрузите сохранение или начните новую игру, затем нажмите F2 -> Connect"));
+                return;
+            }
+            World::Get().GetTransport().ConnectToServer(endpoint, password);
+        });
 }
 
 void OverlayClient::ProcessDisconnectMessage()

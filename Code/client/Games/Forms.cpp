@@ -2,6 +2,7 @@
 
 #include <PlayerCharacter.h>
 #include <Forms/BGSHeadPart.h>
+#include <Forms/BGSListForm.h>
 #include <Forms/TESNPC.h>
 
 #include <Games/IFormFactory.h>
@@ -12,9 +13,30 @@
 TESForm* TESForm::GetById(const uint32_t aId)
 {
     using TGetFormById = TESForm*(uint32_t);
-    POINTER_SKYRIMSE(TGetFormById, getFormById, 14617);
+    POINTER_SKYRIMSE(TGetFormById, getFormById, 14461);
 
     return getFormById.Get()(aId);
+}
+
+TESForm* TESForm::GetByEditorId(const BSFixedString& acEditorId) noexcept
+{
+    if (!acEditorId.AsAscii() || acEditorId.AsAscii()[0] == '\0')
+        return nullptr;
+
+    using TLookupByEditorId = TESForm*(const char*);
+    POINTER_SKYRIMSE(TLookupByEditorId, lookupByEditorId, 14464);
+
+    return lookupByEditorId.Get()(acEditorId.AsAscii());
+}
+
+void BGSListForm::AddForm(TESForm* apForm) noexcept
+{
+    if (!apForm)
+        return;
+
+    TP_THIS_FUNCTION(TAddForm, void, BGSListForm, TESForm* apForm);
+    POINTER_SKYRIMSE(TAddForm, s_addForm, 20470);
+    TiltedPhoques::ThisCall(s_addForm, this, apForm);
 }
 
 void TESNPC::Serialize(String* apSaveBuffer) const noexcept
@@ -48,6 +70,9 @@ void TESNPC::Deserialize(const String& acBuffer, uint32_t aChangeFlags) noexcept
     Load(&loadBuffer);
 
     loadBuffer.buffer = nullptr;
+
+    if (const uint32_t cRemoved = spellList.RemoveNullEntries())
+        spdlog::warn("Removed {} unresolved spell/shout entries from NPC {:X}", cRemoved, formID);
 }
 
 void TESNPC::Initialize() noexcept
@@ -99,9 +124,9 @@ uint32_t TESForm::GetChangeFlags() const noexcept
 
     TP_THIS_FUNCTION(InternalGetChangeFlags, bool, void, uint32_t formId, ChangeFlags& changeFlags);
 
-    POINTER_SKYRIMSE(InternalGetChangeFlags, internalGetChangeFlags, 35503);
+    POINTER_SKYRIMSE(InternalGetChangeFlags, internalGetChangeFlags, 34582);
 
-    POINTER_SKYRIMSE(Unk*, s_singleton, 403330);
+    POINTER_SKYRIMSE(Unk*, s_singleton, 516851);
 
     const auto pUnk = *(s_singleton.Get());
 

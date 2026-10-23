@@ -34,7 +34,35 @@ private:
 
     static unsigned long long FromPointer(void* ptr) { return (unsigned long long)ptr; }
 
-    static bool ParseVersionFromString(const char* ptr, int& major, int& minor, int& revision, int& build) { return sscanf_s(ptr, "%d.%d.%d.%d", &major, &minor, &revision, &build) == 4 && ((major != 1 && major != 0) || minor != 0 || revision != 0 || build != 0); }
+    static bool ParseVersionFromString(const char* ptr, int& major, int& minor, int& revision, int& build)
+    {
+        if (!ptr || !*ptr)
+            return false;
+        int parts[4] = {0, 0, 0, 0};
+        int count = 0;
+        const char* p = ptr;
+        while (*p && count < 4)
+        {
+            while (*p && (*p < '0' || *p > '9'))
+                ++p;
+            if (!*p)
+                break;
+            int val = 0;
+            while (*p >= '0' && *p <= '9')
+            {
+                val = val * 10 + (*p - '0');
+                ++p;
+            }
+            parts[count++] = val;
+        }
+        if (count < 3)
+            return false;
+        major = parts[0];
+        minor = parts[1];
+        revision = parts[2];
+        build = parts[3];
+        return ((major != 1 && major != 0) || minor != 0 || revision != 0 || build != 0);
+    }
 
 public:
     const std::string& GetModuleName() const { return _moduleName; }
@@ -175,19 +203,25 @@ public:
         // Accept either file name for the requested game version.
         const auto pluginsPath = acGamePath / "Data" / "SKSE" / "Plugins";
 
-        static const char* namePatterns[] = {"versionlib-%d-%d-%d-%d.bin", "version-%d-%d-%d-%d.bin"};
+        static const char* namePatterns[] = {"version-%d-%d-%d-%d.bin", "versionlib-%d-%d-%d-%d.bin"};
+        const int candidateBuilds[2] = {build, 0};
+        const int numBuilds = (build != 0) ? 2 : 1;
 
         std::ifstream file;
-        for (const char* namePattern : namePatterns)
+        for (int bi = 0; bi < numBuilds && !file.is_open(); ++bi)
         {
-            char fileName[256];
-            _snprintf_s(fileName, 256, namePattern, major, minor, revision, build);
+            for (const char* namePattern : namePatterns)
+            {
+                char fileName[256];
+                _snprintf_s(fileName, 256, namePattern, major, minor, revision, candidateBuilds[bi]);
 
-            file.open(pluginsPath / fileName, std::ios::binary);
-            if (file.good())
-                break;
+                file.open(pluginsPath / fileName, std::ios::binary);
+                if (file.good())
+                    break;
 
-            file.clear();
+                file.close();
+                file.clear();
+            }
         }
 
         if (!file.good())
@@ -313,7 +347,11 @@ public:
                 d2 = read<unsigned int>(file);
                 q2 = d2;
                 break;
-            default: throw std::exception();
+            default:
+            {
+                Clear();
+                return false;
+            }
             }
 
             if ((high & 8) != 0)
@@ -365,7 +403,7 @@ template <class T> struct VersionDbPtr
 
     T* operator->() const noexcept { return Get(); }
 
-    T* Get() const noexcept { return static_cast<T*>(GetPtr()); }
+    T* Get() const noexcept { return reinterpret_cast<T*>(GetPtr()); }
 
     void* GetPtr() const noexcept
     {

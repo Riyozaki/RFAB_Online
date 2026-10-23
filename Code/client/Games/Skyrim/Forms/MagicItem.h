@@ -26,4 +26,8 @@ struct MagicItem : TESBoundObject
     void* pPreloadItem;
 };
 
+#ifdef _MSC_VER
 static_assert(sizeof(MagicItem) == 0x90);
+#else
+static_assert(sizeof(MagicItem) == 0x88);
+#endif

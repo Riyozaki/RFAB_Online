@@ -2,6 +2,7 @@
 #include <Games/Skyrim/Forms/TESObjectWEAP.h>
 #include <Games/Skyrim/Forms/MagicItem.h>
 #include <Games/Skyrim/Forms/TESAmmo.h>
+#include <Magic/ActorMagicCaster.h>
 #include <Actor.h>
 #include <Games/ActorExtension.h>
 #include <World.h>
@@ -12,11 +13,33 @@
 TP_THIS_FUNCTION(TLaunch, BSPointerHandle<Projectile>*, BSPointerHandle<Projectile>, Projectile::LaunchData& arData);
 static TLaunch* RealLaunch = nullptr;
 
+TP_THIS_FUNCTION(TActorMagicCasterFire, bool, MagicCaster);
+static TActorMagicCasterFire* RealActorMagicCasterFire = nullptr;
+
+extern "C" bool ShouldBlockRemoteMagicProjectile(MagicCaster* apCaster) noexcept
+{
+    if (!apCaster)
+        return false;
+
+    const auto* pActorCaster = Cast<ActorMagicCaster>(apCaster);
+    if (!pActorCaster || !pActorCaster->pCasterActor)
+        return false;
+
+    const auto* pExtension = pActorCaster->pCasterActor->GetExtension();
+    if (!pExtension || !pExtension->IsRemote())
+        return false;
+
+    const auto* pSpell = Cast<SpellItem>(apCaster->pCurrentSpell);
+    if (pSpell && pSpell->eCastingType == MagicSystem::CastingType::CONCENTRATION)
+        return false;
+
+    return true;
+}
+
 BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apResult, LaunchData& apLaunchData) noexcept
 {
     BSPointerHandle<Projectile>* result = TiltedPhoques::ThisCall(RealLaunch, apResult, apLaunchData);
 
-    TP_ASSERT(result, "No projectile handle returned.");
     if (!result)
     {
         spdlog::error("No projectile handle returned.");
@@ -26,7 +49,6 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
-    TP_ASSERT(pProjectile, "No projectile found.");
     if (!pProjectile)
     {
         spdlog::error("No projectile found.");
@@ -58,7 +80,7 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
         if (pActor)
         {
             ActorExtension* pExtendedActor = pActor->GetExtension();
-            if (pExtendedActor->IsRemote())
+            if (pExtendedActor && pExtendedActor->IsRemote())
             {
                 apThis->handle.iBits = 0;
                 return apThis;
@@ -97,14 +119,17 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 
     auto result = TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
 
-    TP_ASSERT(result, "No projectile handle returned.");
+    if (!result)
+    {
+        spdlog::error("HookLaunch: no projectile handle returned.");
+        return nullptr;
+    }
 
     TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
     Projectile* pProjectile = Cast<Projectile>(pObject);
 
-    TP_ASSERT(pProjectile, "No projectile found.");
-
-    Event.Power = pProjectile->fPower;
+    if (pProjectile)
+        Event.Power = pProjectile->fPower;
 
     World::Get().GetRunner().Trigger(Event);
 
@@ -114,41 +139,62 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
 static TiltedPhoques::Initializer s_projectileHooks(
     []()
     {
-        POINTER_SKYRIMSE(TLaunch, s_launch, 44108);
+        // Projectile::Launch (SE 42928 @ 0x74B170) & MagicCaster::FireProjectile (SE 33672 @ 0x5506C0)
+        POINTER_SKYRIMSE(TLaunch, s_launch, 42928);
+        POINTER_SKYRIMSE(TActorMagicCasterFire, s_actorMagicCasterFire, 33672);
+
+        struct FireEntryStub : TiltedPhoques::CodeGenerator
+        {
+            // IMPORTANT: TiltedPhoques::CodeGenerator defaults to 64 bytes, whereas this full x64
+            // register/XMM save+restore wrapper emits ~120 bytes (throwing Xbyak::Error "code is too big"
+            // -> 0xE06D7363 at startup if left at 64)! Allocate 512 bytes (power of 2) in .highrip.
+            FireEntryStub()
+                : TiltedPhoques::CodeGenerator(512)
+            {
+                // Entry RSP has 8-byte return address pushed (RSP % 16 == 8).
+                // Sub 0x88 makes RSP 16-byte aligned and reserves 0x20 callee shadow space + register save slots
+                // without touching caller's return address [S0] or stack arguments [S0 + 0x28+].
+                sub(rsp, 0x88);
+                mov(ptr[rsp + 0x20], rcx);
+                mov(ptr[rsp + 0x28], rdx);
+                mov(ptr[rsp + 0x30], r8);
+                mov(ptr[rsp + 0x38], r9);
+                movups(ptr[rsp + 0x40], xmm0);
+                movups(ptr[rsp + 0x50], xmm1);
+                movups(ptr[rsp + 0x60], xmm2);
+                movups(ptr[rsp + 0x70], xmm3);
+
+                mov(rax, reinterpret_cast<uintptr_t>(&ShouldBlockRemoteMagicProjectile));
+                call(rax);
+
+                mov(rcx, ptr[rsp + 0x20]);
+                mov(rdx, ptr[rsp + 0x28]);
+                mov(r8, ptr[rsp + 0x30]);
+                mov(r9, ptr[rsp + 0x38]);
+                movups(xmm0, ptr[rsp + 0x40]);
+                movups(xmm1, ptr[rsp + 0x50]);
+                movups(xmm2, ptr[rsp + 0x60]);
+                movups(xmm3, ptr[rsp + 0x70]);
+                add(rsp, 0x88);
+
+                cmp(al, 0);
+                jz("call_real");
+
+                mov(al, 0);
+                ret();
+
+                L("call_real");
+                mov(rax, reinterpret_cast<uintptr_t>(&RealActorMagicCasterFire));
+                mov(rax, ptr[rax]);
+                jmp(rax);
+            }
+        };
+        static FireEntryStub s_fireEntryStub;
+        FlushInstructionCache(GetCurrentProcess(), s_fireEntryStub.getCode<const void*>(), s_fireEntryStub.getSize());
 
         RealLaunch = s_launch.Get();
+        RealActorMagicCasterFire = s_actorMagicCasterFire.Get();
 
         TP_HOOK(&RealLaunch, HookLaunch);
-
-        VersionDbPtr<uint8_t> hookLoc(34452);
-
-        struct C : TiltedPhoques::CodeGenerator
-        {
-            C(uint8_t* apLoc)
-            {
-                // replicate
-                mov(rbx, ptr[rsp + 0x50]);
-
-                // nullptr check
-                cmp(rbx, 0);
-                jz("exit");
-                // jump back
-                jmp_S(apLoc + 0x379);
-
-                L("exit");
-                // return false; scratch space from the registers
-                mov(al, 0);
-                add(rsp, 0x138);
-                pop(r15);
-                pop(r14);
-                pop(r13);
-                pop(r12);
-                pop(rdi);
-                pop(rsi);
-                pop(rbx);
-                pop(rbp);
-                ret();
-            }
-        } gen(hookLoc.Get());
-        TiltedPhoques::Jump(hookLoc.Get() + 0x374, gen.getCode());
+        TP_HOOK(&RealActorMagicCasterFire, s_fireEntryStub.getCode<TActorMagicCasterFire*>());
     });

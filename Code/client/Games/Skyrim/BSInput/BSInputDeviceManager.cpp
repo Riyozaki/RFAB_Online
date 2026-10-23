@@ -7,7 +7,8 @@ void (*BSInputDeviceManager_PollInputDevices)(BSInputDeviceManager*, float) = nu
 
 void Hook_BSInputDeviceManager_PollInputDevices(BSInputDeviceManager* inputDeviceMgr, float afDelta)
 {
-    if (!BSGraphics::GetMainWindow()->IsForeground())
+    auto* pMainWindow = BSGraphics::GetMainWindow();
+    if (!pMainWindow || !pMainWindow->IsForeground())
         return;
 
     BSInputDeviceManager_PollInputDevices(inputDeviceMgr, afDelta);
@@ -16,7 +17,7 @@ void Hook_BSInputDeviceManager_PollInputDevices(BSInputDeviceManager* inputDevic
 static TiltedPhoques::Initializer s_initInputDeviceManager(
     []()
     {
-        const VersionDbPtr<void> pollInputDevices(68617);
+        const VersionDbPtr<void> pollInputDevices(67315);
 
         BSInputDeviceManager_PollInputDevices = static_cast<decltype(BSInputDeviceManager_PollInputDevices)>(pollInputDevices.GetPtr());
 

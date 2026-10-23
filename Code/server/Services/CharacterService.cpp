@@ -43,10 +43,23 @@
 #include <Messages/NotifyRelinquishControl.h>
 
 #include <Setting.h>
+#include <CoopFlightDigest.h>
+#include <CoopOwnership.h>
+#include <chrono>
+
 namespace
 {
 Console::Setting bEnableXpSync{"Gameplay:bEnableXpSync", "Syncs combat XP within the party", true};
 Console::Setting bEnableRfabXpSync{"Gameplay:bEnableRfabXpSync", "Syncs RFAB XP gains within the party", true};
+constexpr uint32_t kHealthActorValueIndex = 24;
+
+uint64_t SteadyClockMs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 }
 
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -220,12 +233,34 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             if (partyService.IsPlayerInParty(acMessage.pPlayer) && partyService.IsPlayerLeader(acMessage.pPlayer) && !characterComponent.IsMount())
             {
                 PartyService::Party* pParty = partyService.GetPlayerParty(acMessage.pPlayer);
-                Player* pOwningPlayer = view.get<OwnerComponent>(*itor).GetOwner();
+                auto& existingOwnerComp = view.get<OwnerComponent>(*itor);
+                Player* pOwningPlayer = existingOwnerComp.GetOwner();
 
-                // Transfer ownership if owning player is in the same party as the owner
-                if (std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end())
+                const bool ownerValidInRange = pOwningPlayer != nullptr &&
+                                               pOwningPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon());
+                const bool ownerDowned = pOwningPlayer != nullptr &&
+                                         m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pOwningPlayer->GetId());
+                const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
+
+                const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
+                    pOwningPlayer ? pOwningPlayer->GetId() : 0,
+                    acMessage.pPlayer->GetId(),
+                    existingOwnerComp.LastChangedAtMs,
+                    SteadyClockMs(),
+                    characterComponent.IsPlayer(),
+                    characterComponent.IsPlayerSummon(),
+                    ownerValidInRange,
+                    ownerDowned,
+                    challengerDowned);
+
+                // Transfer ownership if owning player is in the same party as the leader and passes anti-flap/summon/downed rules.
+                // Preserve the server's authoritative battle-damaged/dead/looted state instead of
+                // overwriting it with the newly arriving party leader's untouched local NPC state!
+                if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
+                    std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end())
                 {
-                    TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), acMessage.Packet.CurrentActorData);
+                    const ActorData authoritativeActorData = BuildActorData(*itor);
+                    TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), authoritativeActorData);
                     isOwner = true;
                 }
             }
@@ -234,6 +269,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             response.Cookie = message.Cookie;
             response.ServerId = World::ToInteger(*itor);
             response.Owner = isOwner;
+            response.OwnershipEpoch = view.get<OwnerComponent>(*itor).Epoch;
             response.AllActorValues = actorValuesComponent.CurrentActorValues;
             response.CurrentInventory = inventoryComponent.Content;
             response.IsDead = characterComponent.IsDead();
@@ -254,6 +290,72 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
         }
     }
 
+    // Deduplicate dynamic scripted ambush spawns (e.g. RFAB_AmbushScript::PlaceActorAtMe producing 0xFF000000 actors)
+    // across peers in the same cell & radius within 3s so 2 players fight 1x enemy with 3x HP instead of 2x clones,
+    // while strictly preserving multi-actor ambushes from the SAME owner (PlaceActorAtMe(Wolf, 3)) and player summons!
+    const bool isTemporarySpawn = (refId.ModId == std::numeric_limits<uint32_t>::max());
+    if (isTemporarySpawn && !isPlayer && !message.IsPlayerSummon && message.FormId != GameId{})
+    {
+        constexpr uint64_t kAmbushDedupWindowMs = 3000;
+        constexpr float kAmbushDedupRadiusUnits = RfabCompat::MetersToSkyrimUnits(12.0f);
+        const uint64_t nowMs = SteadyClockMs();
+
+        const uint32_t existingServerId = m_world.GetRfabProgressionService().GetLedger().FindMatchingRecentAmbush(
+            acMessage.pPlayer->GetId(),
+            message.CellId,
+            message.FormId,
+            message.Position.x,
+            message.Position.y,
+            message.Position.z,
+            nowMs,
+            kAmbushDedupWindowMs,
+            kAmbushDedupRadiusUnits);
+
+        if (existingServerId != 0)
+        {
+            const entt::entity existingEntity = static_cast<entt::entity>(existingServerId);
+            if (m_world.valid(existingEntity))
+            {
+                const auto* pChar = m_world.try_get<CharacterComponent>(existingEntity);
+                const auto* pAv = m_world.try_get<ActorValuesComponent>(existingEntity);
+                const auto* pInv = m_world.try_get<InventoryComponent>(existingEntity);
+                const auto* pMove = m_world.try_get<MovementComponent>(existingEntity);
+                const auto* pCell = m_world.try_get<CellIdComponent>(existingEntity);
+                const auto* pOwner = m_world.try_get<OwnerComponent>(existingEntity);
+
+                if (pChar && pAv && pInv && pMove && pCell)
+                {
+                    AssignCharacterResponse response{};
+                    response.Cookie = message.Cookie;
+                    response.ServerId = existingServerId;
+                    response.Owner = false;
+                    response.OwnershipEpoch = pOwner ? pOwner->Epoch : 0;
+                    response.AllActorValues = pAv->CurrentActorValues;
+                    response.CurrentInventory = pInv->Content;
+                    response.IsDead = pChar->IsDead();
+                    response.IsWeaponDrawn = pChar->IsWeaponDrawn();
+                    response.PlayerId = pChar->PlayerId;
+                    response.Position = pMove->Position;
+                    response.CellId = pCell->Cell;
+                    response.WorldSpaceId = pCell->WorldSpaceId;
+                    if (auto* pAnim = m_world.try_get<AnimationComponent>(existingEntity))
+                        response.ActionsToReplay = pAnim->ActionsReplayCache.FormRefinedReplayChain();
+
+                    acMessage.pPlayer->Send(response);
+                    m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+                        nowMs, CoopFlight::FlightEventKind::kAmbushDeduplicated, existingServerId, acMessage.pPlayer->GetId());
+                    spdlog::debug(
+                        "[RFAB AmbushDedup] Bound peer {} dynamic ambush NPC {:X}:{:X} to existing ServerId {:X}",
+                        acMessage.pPlayer->GetId(),
+                        message.FormId.ModId,
+                        message.FormId.BaseId,
+                        existingServerId);
+                    return;
+                }
+            }
+        }
+    }
+
     // This entity has no owner create it
     CreateCharacter(acMessage);
 }
@@ -270,6 +372,40 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
         return;
     }
 
+    auto* pCharacterOwnerComponent = m_world.try_get<OwnerComponent>(cEntity);
+    if (!pCharacterOwnerComponent)
+        return;
+
+    const Player* pCurrentOwner = pCharacterOwnerComponent->GetOwner();
+    const uint32_t currentOwnerId = pCurrentOwner ? pCurrentOwner->GetId() : 0;
+    const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
+
+    if (!CoopOwnership::ValidateHandoffFromOwner(
+            currentOwnerId,
+            pCharacterOwnerComponent->Epoch,
+            senderId,
+            message.OwnershipEpoch))
+    {
+        // Stale handoff from a former owner after ownership already moved to another peer:
+        // reject immediately so we NEVER clobber position/InvalidOwners or destroy a live boss via CharacterRemoveEvent!
+        NotifyRelinquishControl relinquish{};
+        relinquish.ServerId = message.ServerId;
+        relinquish.OwnershipEpoch = pCharacterOwnerComponent->Epoch;
+        if (acMessage.pPlayer)
+            acMessage.pPlayer->Send(relinquish);
+
+        m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+            SteadyClockMs(), CoopFlight::FlightEventKind::kStaleEpochRejected, message.ServerId, senderId);
+        spdlog::debug(
+            "[Ownership] Rejected stale RequestOwnershipTransfer for {:X} from player {} (pktEpoch={}, authEpoch={}, authOwner={})",
+            message.ServerId,
+            senderId,
+            message.OwnershipEpoch,
+            pCharacterOwnerComponent->Epoch,
+            currentOwnerId);
+        return;
+    }
+
     if (auto* pCharacterComponent = m_world.try_get<CharacterComponent>(cEntity))
     {
         if (pCharacterComponent->IsPlayerSummon())
@@ -282,28 +418,33 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
 
     if (message.WorldSpaceId || message.CellId)
     {
-        auto& formIdComponent = m_world.get<FormIdComponent>(cEntity);
+        if (auto* pCellIdComponent = m_world.try_get<CellIdComponent>(cEntity))
+        {
+            pCellIdComponent->WorldSpaceId = message.WorldSpaceId;
+            pCellIdComponent->Cell = message.CellId;
+            pCellIdComponent->CenterCoords = GridCellCoords::CalculateGridCellCoords(message.Position);
+        }
 
-        NotifyActorTeleport notify{};
-        notify.FormId = formIdComponent.Id;
-        notify.WorldSpaceId = message.WorldSpaceId;
-        notify.CellId = message.CellId;
-        notify.Position = message.Position;
+        if (auto* pMovementComponent = m_world.try_get<MovementComponent>(cEntity))
+        {
+            pMovementComponent->Position = message.Position;
+            pMovementComponent->Sent = true;
+        }
 
-        auto& cellIdComponent = m_world.get<CellIdComponent>(cEntity);
-        cellIdComponent.WorldSpaceId = message.WorldSpaceId;
-        cellIdComponent.Cell = message.CellId;
-        cellIdComponent.CenterCoords = GridCellCoords::CalculateGridCellCoords(message.Position);
+        // Dynamic temporary spawns (0xFFxxxxxx) do not carry FormIdComponent on the server.
+        if (const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(cEntity))
+        {
+            NotifyActorTeleport notify{};
+            notify.FormId = pFormIdComponent->Id;
+            notify.WorldSpaceId = message.WorldSpaceId;
+            notify.CellId = message.CellId;
+            notify.Position = message.Position;
 
-        auto& movementComponent = m_world.get<MovementComponent>(cEntity);
-        movementComponent.Position = message.Position;
-        movementComponent.Sent = true;
-
-        GameServer::Get()->SendToPlayers(notify, acMessage.pPlayer);
+            GameServer::Get()->SendToPlayers(notify, acMessage.pPlayer);
+        }
     }
 
-    auto& characterOwnerComponent = m_world.get<OwnerComponent>(cEntity);
-    characterOwnerComponent.InvalidOwners.push_back(acMessage.pPlayer);
+    pCharacterOwnerComponent->InvalidOwners.push_back(acMessage.pPlayer);
 
     m_world.GetDispatcher().trigger(OwnershipTransferEvent(cEntity));
 }
@@ -311,6 +452,8 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
 void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& acEvent) const noexcept
 {
     const auto view = m_world.view<OwnerComponent, CharacterComponent, CellIdComponent>();
+    if (!view.contains(acEvent.Entity))
+        return;
 
     auto& characterComponent = view.get<CharacterComponent>(acEvent.Entity);
     auto& ownerComponent = view.get<OwnerComponent>(acEvent.Entity);
@@ -319,7 +462,8 @@ void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& ac
     NotifyOwnershipTransfer response;
     response.ServerId = World::ToInteger(acEvent.Entity);
 
-    bool foundOwner = false;
+    Player* pBestStandingCandidate = nullptr;
+    Player* pFallbackDownedCandidate = nullptr;
     for (auto pPlayer : m_world.GetPlayerManager())
     {
         if (ownerComponent.GetOwner() == pPlayer)
@@ -339,22 +483,38 @@ void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& ac
         if (!pPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon()))
             continue;
 
-        ownerComponent.SetOwner(pPlayer);
+        if (!m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pPlayer->GetId()))
+        {
+            pBestStandingCandidate = pPlayer;
+            break;
+        }
 
-        pPlayer->Send(response);
-
-        foundOwner = true;
-        break;
+        if (!pFallbackDownedCandidate)
+            pFallbackDownedCandidate = pPlayer;
     }
 
-    if (!foundOwner)
-        m_world.GetDispatcher().trigger(CharacterRemoveEvent(response.ServerId));
+    Player* pSelectedOwner = pBestStandingCandidate ? pBestStandingCandidate : pFallbackDownedCandidate;
+    if (pSelectedOwner)
+    {
+        const uint64_t nowMs = SteadyClockMs();
+        response.OwnershipEpoch = ownerComponent.SetOwner(pSelectedOwner, nowMs);
+        pSelectedOwner->Send(response);
+
+        m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+            nowMs, CoopFlight::FlightEventKind::kOwnershipChanged, response.ServerId, pSelectedOwner->GetId());
+        return;
+    }
+
+    m_world.GetDispatcher().trigger(CharacterRemoveEvent(response.ServerId));
 }
 
 void CharacterService::OnCharacterRemoveEvent(const CharacterRemoveEvent& acEvent) const noexcept
 {
     const auto view = m_world.view<OwnerComponent>();
     const auto it = view.find(static_cast<entt::entity>(acEvent.ServerId));
+    if (it == view.end())
+        return;
+
     const auto& characterOwnerComponent = view.get<OwnerComponent>(*it);
 
     GameServer::Get()->GetWorld().GetScriptService().HandleCharacterDestoy(*it);
@@ -376,7 +536,82 @@ void CharacterService::OnCharacterRemoveEvent(const CharacterRemoveEvent& acEven
 
 void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershipClaim>& acMessage) const noexcept
 {
-    TransferOwnership(acMessage.pPlayer, acMessage.Packet.ServerId, acMessage.Packet.NewActorData);
+    if (!acMessage.pPlayer)
+        return;
+
+    const entt::entity cEntity = static_cast<entt::entity>(acMessage.Packet.ServerId);
+    if (!m_world.valid(cEntity))
+        return;
+
+    auto* pOwnerComp = m_world.try_get<OwnerComponent>(cEntity);
+    const auto* pCharComp = m_world.try_get<CharacterComponent>(cEntity);
+    const auto* pCellComp = m_world.try_get<CellIdComponent>(cEntity);
+    if (!pOwnerComp || !pCharComp || !pCellComp)
+        return;
+
+    const Player* pCurrentOwner = pOwnerComp->GetOwner();
+    const bool currentOwnerInRange = pCurrentOwner != nullptr &&
+                                     pCurrentOwner->GetCellComponent().IsInRange(*pCellComp, pCharComp->IsDragon());
+    const bool currentOwnerDowned = pCurrentOwner != nullptr &&
+                                    m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pCurrentOwner->GetId());
+    const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
+    const uint64_t nowMs = SteadyClockMs();
+
+    const auto decision = CoopOwnership::EvaluateVoluntaryClaim(
+        pCurrentOwner ? pCurrentOwner->GetId() : 0,
+        acMessage.pPlayer->GetId(),
+        pOwnerComp->LastChangedAtMs,
+        nowMs,
+        pCharComp->IsPlayer(),
+        pCharComp->IsPlayerSummon(),
+        currentOwnerInRange,
+        currentOwnerDowned,
+        challengerDowned);
+
+    if (decision != CoopOwnership::ClaimDecision::kAccept && decision != CoopOwnership::ClaimDecision::kAlreadyOwner)
+    {
+        // Reject optimistic client claim cleanly by issuing NotifyRelinquishControl with current authoritative epoch
+        // so the challenger immediately reverts its optimistic LocalComponent -> RemoteComponent (zero split-brain!).
+        NotifyRelinquishControl reject{};
+        reject.ServerId = acMessage.Packet.ServerId;
+        reject.OwnershipEpoch = pOwnerComp->Epoch;
+        acMessage.pPlayer->Send(reject);
+
+        m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+            nowMs, CoopFlight::FlightEventKind::kOwnershipRejected, acMessage.Packet.ServerId, acMessage.pPlayer->GetId());
+        spdlog::debug(
+            "[Ownership] Rejected claim on {:X} from player {} (reason={})",
+            acMessage.Packet.ServerId,
+            acMessage.pPlayer->GetId(),
+            static_cast<uint32_t>(decision));
+        return;
+    }
+
+    ActorData sanitizedData = acMessage.Packet.NewActorData;
+    bool hasServerHealth = false;
+    float serverHealth = 0.0f;
+    if (const auto* pAvComp = m_world.try_get<ActorValuesComponent>(cEntity))
+    {
+        const auto hpIt = pAvComp->CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
+        if (hpIt != pAvComp->CurrentActorValues.ActorValuesList.end())
+        {
+            hasServerHealth = true;
+            serverHealth = hpIt->second;
+        }
+    }
+
+    auto claimedHpIt = sanitizedData.InitialActorValues.ActorValuesList.find(kHealthActorValueIndex);
+    float claimedHealth = (claimedHpIt != sanitizedData.InitialActorValues.ActorValuesList.end()) ? claimedHpIt->second : serverHealth;
+    CoopOwnership::ReconcileClaimedState(
+        pCharComp->IsDead(),
+        serverHealth,
+        hasServerHealth,
+        sanitizedData.IsDead,
+        claimedHealth);
+    if (claimedHpIt != sanitizedData.InitialActorValues.ActorValuesList.end() || hasServerHealth)
+        sanitizedData.InitialActorValues.ActorValuesList[kHealthActorValueIndex] = claimedHealth;
+
+    TransferOwnership(acMessage.pPlayer, acMessage.Packet.ServerId, sanitizedData);
 }
 
 void CharacterService::OnCharacterSpawned(const CharacterSpawnedEvent& acEvent) const noexcept
@@ -404,7 +639,7 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         auto itor = view.find(entity);
         if (itor == std::end(view))
         {
-            spdlog::debug("{:x} requested move of {:x} but does not exist", acMessage.pPlayer->GetConnectionId(), World::ToInteger(*itor));
+            spdlog::debug("{:x} requested move of {:x} but is not the owner or entity does not exist", acMessage.pPlayer->GetConnectionId(), entry.first);
             continue;
         }
 
@@ -503,7 +738,8 @@ void CharacterService::OnRequestRespawn(const PacketEvent<RequestRespawn>& acMes
     auto& ownerComponent = view.get<OwnerComponent>(*it);
 
     // Replay cache needs to be cleared when a character respawns
-    m_world.try_get<AnimationComponent>(*it)->ActionsReplayCache.Clear();
+    if (auto* pAnimationComponent = m_world.try_get<AnimationComponent>(*it))
+        pAnimationComponent->ActionsReplayCache.Clear();
 
     if (ownerComponent.GetOwner() == acMessage.pPlayer)
     {
@@ -538,7 +774,10 @@ void CharacterService::OnSyncExperienceRequest(const PacketEvent<SyncExperienceR
     notify.Experience = acMessage.Packet.Experience;
 
     const auto& partyComponent = acMessage.pPlayer->GetParty();
-    GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+    if (partyComponent.JoinedPartyId.has_value())
+        GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+    else
+        GameServer::Get()->SendToPlayers(notify, acMessage.GetSender());
 }
 
 void CharacterService::OnSyncRfabExperienceRequest(const PacketEvent<SyncRfabExperienceRequest>& acMessage) const noexcept
@@ -556,7 +795,10 @@ void CharacterService::OnSyncRfabExperienceRequest(const PacketEvent<SyncRfabExp
     notify.Experience = experience;
 
     const auto& partyComponent = acMessage.pPlayer->GetParty();
-    GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+    if (partyComponent.JoinedPartyId.has_value())
+        GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+    else
+        GameServer::Get()->SendToPlayers(notify, acMessage.GetSender());
 }
 
 void CharacterService::OnDialogueRequest(const PacketEvent<DialogueRequest>& acMessage) const noexcept
@@ -610,8 +852,9 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     }
 
     auto* const pServer = GameServer::Get();
+    const uint64_t spawnNowMs = SteadyClockMs();
 
-    m_world.emplace<OwnerComponent>(cEntity, acMessage.pPlayer);
+    auto& ownerComponent = m_world.emplace<OwnerComponent>(cEntity, acMessage.pPlayer, spawnNowMs);
 
     auto& cellIdComponent = m_world.emplace<CellIdComponent>(cEntity, message.CellId);
     if (message.WorldSpaceId != GameId{})
@@ -667,6 +910,22 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     response.ServerId = World::ToInteger(cEntity);
     response.PlayerId = characterComponent.PlayerId;
     response.Owner = true;
+    response.OwnershipEpoch = ownerComponent.Epoch;
+
+    if (isTemporary && !isPlayer && !message.IsPlayerSummon && baseId != GameId{})
+    {
+        constexpr uint64_t kAmbushDedupWindowMs = 3000;
+        m_world.GetRfabProgressionService().GetLedger().RegisterAmbushSpawn(
+            World::ToInteger(cEntity),
+            acMessage.pPlayer->GetId(),
+            message.CellId,
+            baseId,
+            message.Position.x,
+            message.Position.y,
+            message.Position.z,
+            spawnNowMs,
+            kAmbushDedupWindowMs);
+    }
 
     pServer->Send(acMessage.pPlayer->GetConnectionId(), response);
 
@@ -677,7 +936,9 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
 void CharacterService::TransferOwnership(Player* apPlayer, const uint32_t acServerId,
                                          const ActorData& acActorData) const noexcept
 {
-    // const OwnerView<CharacterComponent, CellIdComponent> view(m_world, acMessage.GetSender());
+    if (!apPlayer)
+        return;
+
     auto view = m_world.view<OwnerComponent>();
     const auto it = view.find(static_cast<entt::entity>(acServerId));
     if (it == view.end())
@@ -687,20 +948,24 @@ void CharacterService::TransferOwnership(Player* apPlayer, const uint32_t acServ
     }
 
     auto& characterOwnerComponent = view.get<OwnerComponent>(*it);
-
-    if (characterOwnerComponent.GetOwner() != apPlayer)
-    {
-        NotifyRelinquishControl notify;
-        notify.ServerId = acServerId;
-        characterOwnerComponent.pOwner->Send(notify);
-    }
-
-    characterOwnerComponent.SetOwner(apPlayer);
+    Player* pPreviousOwner = characterOwnerComponent.GetOwner();
+    const uint64_t nowMs = SteadyClockMs();
+    const uint64_t newEpoch = characterOwnerComponent.SetOwner(apPlayer, nowMs);
     characterOwnerComponent.InvalidOwners.clear();
 
-    BroadcastActorData(apPlayer, *it, acActorData);
+    if (pPreviousOwner && pPreviousOwner != apPlayer)
+    {
+        NotifyRelinquishControl notify{};
+        notify.ServerId = acServerId;
+        notify.OwnershipEpoch = newEpoch;
+        pPreviousOwner->Send(notify);
+    }
 
-    spdlog::debug("\tOwnership claimed {:X}", acServerId);
+    BroadcastActorData(apPlayer, *it, acActorData);
+    m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+        nowMs, CoopFlight::FlightEventKind::kOwnershipChanged, acServerId, apPlayer->GetId());
+
+    spdlog::debug("\tOwnership claimed {:X} (epoch {})", acServerId, newEpoch);
 }
 
 ActorData CharacterService::BuildActorData(const entt::entity acEntity) const noexcept

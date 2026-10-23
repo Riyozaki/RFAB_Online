@@ -56,6 +56,12 @@ enum ClientOpcode : unsigned char
     kRequestRemoveWaypoint,
     kSetTimeCommandRequest,
     kSyncRfabExperienceRequest,
+    kRequestCoordinatedSaveLoad,
+    kCoordinatedSaveAck,
+    kSyncPlayerDownedState,
+    kReviveActionRequest,
+    kCombatEncounterStateReport,
+    kSyncRfabProgressionEvent,
     kClientOpcodeMax
 };
 
@@ -119,5 +125,11 @@ enum ServerOpcode : unsigned char
     kNotifyRemoveWaypoint,
     kNotifySetTimeResult,
     kNotifySyncRfabExperience,
+    kNotifyPrepareSave,
+    kNotifyCommitSave,
+    kNotifyExecuteLoad,
+    kNotifyPlayerDownedState,
+    kNotifyReviveState,
+    kNotifyRfabProgressionEvent,
     kServerOpcodeMax
 };

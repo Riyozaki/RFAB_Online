@@ -1,6 +1,8 @@
 #pragma once
 #include "Structs/Inventory.h"
 #include "Structs/ActorData.h"
+#include <Messages/CharacterSpawnRequest.h>
+#include <CoopOwnership.h>
 
 struct ActorAddedEvent;
 struct ActorRemovedEvent;
@@ -59,13 +61,14 @@ struct CharacterService
 
     static void DeleteTempActor(const uint32_t aFormId) noexcept;
 
-    bool TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity) const noexcept;
+    bool TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity, uint64_t aOwnershipEpoch = 0) const noexcept;
 
     void OnActorAdded(const ActorAddedEvent& acEvent) noexcept;
     void OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acUpdateEvent) noexcept;
-    void OnConnected(const ConnectedEvent& acConnectedEvent) const noexcept;
-    void OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) const noexcept;
+    void OnConnected(const ConnectedEvent& acConnectedEvent) noexcept;
+    void OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept;
+    void NotifyRemoteQuestStageApplied() noexcept;
     void OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept;
     void OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept;
     void OnReferencesMoveRequest(const ServerReferencesMoveRequest& acMessage) const noexcept;
@@ -92,6 +95,11 @@ struct CharacterService
     void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
 
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
+    void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
+    void NotifySaveLoadReset() noexcept;
+    void PreSavePurgeDynamicActors() noexcept;
+    void RestorePurgedRemoteActorsAfterSave() noexcept;
+    void PurgeAllDynamicActorsForWorldLoad() noexcept;
 
 private:
     void MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
@@ -118,6 +126,14 @@ private:
     float m_cachedExperience = 0.f;
     int32_t m_lastRfabExperience = 0;
     bool m_rfabExperienceInitialized = false;
+    std::chrono::steady_clock::time_point m_remoteQuestXpWindowUntil{};
+    int32_t m_localQuestXpGainedInWindow = 0;
+    int32_t m_lastAppliedRemoteXpAmount = 0;
+    std::chrono::steady_clock::time_point m_lastAppliedRemoteXpTime{};
+    int32_t m_creditToRefundOnLocalQuestXp = 0;
+    mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
+    mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
+    bool m_pendingPostSaveRemoteRestore{false};
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

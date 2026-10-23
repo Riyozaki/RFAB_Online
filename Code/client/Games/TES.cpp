@@ -4,14 +4,14 @@
 
 TES* TES::Get() noexcept
 {
-    POINTER_SKYRIMSE(TES*, tes, 400441);
+    POINTER_SKYRIMSE(TES*, tes, 514281);
 
     return *tes.Get();
 }
 
 ProcessLists* ProcessLists::Get() noexcept
 {
-    POINTER_SKYRIMSE(ProcessLists*, processLists, 400315);
+    POINTER_SKYRIMSE(ProcessLists*, processLists, 514167);
 
     return *processLists.Get();
 }

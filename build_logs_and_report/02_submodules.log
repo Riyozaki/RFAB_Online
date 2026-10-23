@@ -1,0 +1,24 @@
+Cloning into 'Libraries\TiltedConnect'...
+Note: switching to '293fab99288b7414bd129ace25ae018114cefb2a'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+HEAD is now at 293fab9 Merge pull request #11 from rfortier/master
+=== Submodules verification ===
+TiltedConnect HEAD: 293fab99288b7414bd129ace25ae018114cefb2a (expected 293fab99288b7414bd129ace25ae018114cefb2a; xmake.lua=True)
+TiltedHooks   HEAD: d7c175b86975679eb05883c097d7eb1c2165226a (expected d7c175b86975679eb05883c097d7eb1c2165226a; xmake.lua=True)
+TiltedReverse HEAD: 55ee3f29c62fea247148e57b94ec4941055139ed (expected 55ee3f29c62fea247148e57b94ec4941055139ed; xmake.lua=True)
+TiltedUI      HEAD: a2b9a671626d6489e6e2d9ee02adf61d7d9673dd (expected a2b9a671626d6489e6e2d9ee02adf61d7d9673dd; xmake.lua=True)

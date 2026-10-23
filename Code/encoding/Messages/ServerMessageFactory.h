@@ -62,6 +62,12 @@
 #include <Messages/NotifyRemoveWaypoint.h>
 #include <Messages/NotifySetTimeResult.h>
 #include <Messages/NotifySyncRfabExperience.h>
+#include <Messages/NotifyPrepareSave.h>
+#include <Messages/NotifyCommitSave.h>
+#include <Messages/NotifyExecuteLoad.h>
+#include <Messages/NotifyPlayerDownedState.h>
+#include <Messages/NotifyReviveState.h>
+#include <Messages/NotifyRfabProgressionEvent.h>
 
 using TiltedPhoques::UniquePtr;
 
@@ -76,7 +82,8 @@ struct ServerMessageFactory
             NotifyActorValueChanges, NotifyPartyJoined, NotifyPartyLeft, NotifyActorMaxValueChanges, NotifyHealthChangeBroadcast, NotifySpawnData, NotifyActivate, NotifyLockChange, AssignObjectsResponse, NotifyDeathStateChange, NotifyOwnershipTransfer, NotifyObjectInventoryChanges, NotifySpellCast,
             NotifyProjectileLaunch, NotifyInterruptCast, NotifyAddTarget, NotifyScriptAnimation, NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse, NotifyPlayerRespawn, NotifyDialogue,
             NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyRelinquishControl, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange,
-            NotifyWeatherChange, NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifySyncRfabExperience>;
+            NotifyWeatherChange, NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifySyncRfabExperience,
+            NotifyPrepareSave, NotifyCommitSave, NotifyExecuteLoad, NotifyPlayerDownedState, NotifyReviveState, NotifyRfabProgressionEvent>;
 
         return s_visitor(std::forward<T>(func));
     }

@@ -14,10 +14,10 @@ uint32_t UnsignedInt(uint32_t aMin, uint32_t aMax)
 static TiltedPhoques::Initializer s_randomInit(
     []()
     {
-        const VersionDbPtr<void> unsignedInt(68276);
+        const VersionDbPtr<void> unsignedInt(67018);
         Real_UnsignedInt = static_cast<decltype(Real_UnsignedInt)>(unsignedInt.GetPtr());
 
-        const VersionDbPtr<void> getGenerator(14774);
+        const VersionDbPtr<void> getGenerator(14599);
         GetGenerator = static_cast<decltype(GetGenerator)>(getGenerator.GetPtr());
     });
 

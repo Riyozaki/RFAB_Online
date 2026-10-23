@@ -38,60 +38,15 @@ void Hook_SetThreadName(uint32_t aThreadId, const char* apThreadName)
     else
         spdlog::warn("Hook_SetThreadName(): Unable to query thread handle :(");
 }
-
-// experimental stuff..
-#if 0
-typedef struct
-{
-    DWORD dwType;     // Must be 0x1000.
-    LPCSTR szName;    // Pointer to name (in user addr space).
-    DWORD dwThreadID; // Thread ID (-1=caller thread).
-    DWORD dwFlags;    // Reserved for future use, must be zero.
-} THREADNAME_INFO;
-
-void Hook_RaiseException(DWORD, DWORD, DWORD, const THREADNAME_INFO* lpArguments)
-{
-    base::SetCurrentThreadName(lpArguments->szName);
-}
-
-HANDLE WINAPI Hook_CreateThread(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize,
-                                LPTHREAD_START_ROUTINE lpStartAddress, LPVOID lpParameter, DWORD dwCreationFlags,
-                                LPDWORD lpThreadId)
-{
-    auto hThread =
-        CreateThread(lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId);
-
-    if (hThread && lpThreadId)
-    {
-        auto name = fmt::format("BNetThread{}", *lpThreadId);
-        base::SetThreadName(hThread, name.c_str());
-    }
-
-    return hThread;
-}
-#endif
 } // namespace
 
 static TiltedPhoques::Initializer s_BSThreadInit(
     []()
     {
-        const VersionDbPtr<uint8_t> threadInit(68261);
+        const VersionDbPtr<uint8_t> threadInit(67003);
         BSThread_Initialize = static_cast<decltype(BSThread_Initialize)>(threadInit.GetPtr());
-        // need to detour this for now :/
         TP_HOOK_IMMEDIATE(&BSThread_Initialize, &Hook_BSThread_Initialize);
 
-        const VersionDbPtr<uint8_t> setThreadName(69066);
+        const VersionDbPtr<uint8_t> setThreadName(67740);
         TiltedPhoques::Jump(setThreadName.Get(), &Hook_SetThreadName);
-
-#if 0
-    const VersionDbPtr<uint8_t> createHavokThread(57704);
-    // relatively safe to do, since this is unlikely to ever change, as beth wont update havok
-    TiltedPhoques::Nop(createHavokThread.Get() + 0x81, 6);
-
-    TiltedPhoques::PutCall(createHavokThread.Get() + 0x81, &Hook_RaiseException);
-
-
-    TiltedPhoques::Nop(0x1411F0FD4, 6);
-    TiltedPhoques::PutCall(0x1411F0FD4, &Hook_CreateThread);
-#endif
     });

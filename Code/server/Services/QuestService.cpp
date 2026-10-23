@@ -38,8 +38,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     auto playerTypeString = isLeader ? "leader" : "player";
     auto partyId = pPlayer->GetParty().JoinedPartyId;
     PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
-    Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
-    auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+    Player* pLeader = isLeader ? pPlayer : (pParty ? m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId) : nullptr);
 
     // Find the corresponding quest log entry
     auto& questComponent = pPlayer->GetQuestLogComponent();
@@ -49,8 +48,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     NotifyQuestUpdate notify{};
     notify.Id = message.Id;
     notify.Stage = message.Stage;
-    // notify.Status = message.Status;  // Now set correctly in switch
-    notify.SceneMaster = dedupHistory.GetSceneMaster();
+    notify.SceneMaster = pParty ? pParty->GetQuestStageDedupHistory().GetSceneMaster() : 0;
     notify.ClientQuestType = message.ClientQuestType;
 
     // Update QuestComponent. In order to prevent bugs when
@@ -109,8 +107,9 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
     }
 
     // All side effects have been generated. Now just logging and a forwarding decision left.
-    if (inParty)
+    if (inParty && pParty)
     {
+        auto& dedupHistory = pParty->GetQuestStageDedupHistory();
         if (notify.ClientQuestType == 0 ||
             notify.ClientQuestType == 6) // Types None or Miscellaneous. Hard-coded to avoid including client header file.
         {
@@ -212,6 +211,9 @@ void QuestService::OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate
         return;
 
     PartyService::Party* pParty = partyService.GetPlayerParty(pPlayer);
+    if (!pParty)
+        return;
+
     Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
     auto& dedupHistory = pParty->GetQuestStageDedupHistory();
 

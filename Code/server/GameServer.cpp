@@ -22,6 +22,7 @@
 #include <Messages/NotifyPlayerJoined.h>
 #include <Messages/NotifyPlayerLeft.h>
 #include <Messages/NotifySettingsChange.h>
+#include <common/RfabModpackCompat.h>
 #include <console/ConsoleRegistry.h>
 #include <resources/ResourceCollection.h>
 
@@ -46,7 +47,11 @@ Console::Setting bEnableDeathSystem{"Gameplay:bEnableDeathSystem", "Enables the 
 Console::Setting uTimeScale{"Gameplay:uTimeScale", "How many seconds pass ingame for every real second (0 to 1000). Changing this can make the game unstable", 20u};
 Console::Setting bSyncPlayerCalendar{"Gameplay:bSyncPlayerCalendar", "Syncs up all player calendars to be the same day, month, and year. This uses the date of the player with the furthest ahead date at connection.", false};
 Console::Setting bAutoPartyJoin{"Gameplay:bAutoPartyJoin", "Join parties automatically, as long as there is only one party in the server", true};
-Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Multiplies the max health of actors (0.1 to 10.0)", 1.0f};
+Console::Setting fHealthMultiplier{"Gameplay:fHealthMultiplier", "Base max-health multiplier for non-player enemies (0.1 to 20.0)", 1.0f};
+Console::Setting bAutoScaleEnemyHealth{"Gameplay:bAutoScaleEnemyHealth", "Automatically scales enemy HP with connected player count (1p=1x, 2p=3x, 3p=4x, N>=2 -> (N+ExtraBase)x)", true};
+Console::Setting fHealthExtraBase{"Gameplay:fHealthExtraBase", "Extra baseline term added to connected player count for HP scaling (1.0 => 2p=3x, 3p=4x)", 1.0f};
+Console::Setting bEnableDownedSystem{"Gameplay:bEnableDownedSystem", "Enables RFAB 0-HP downed-on-knee bleedout, E-revive, strict combat leash, and party wipe checkpoint reload", true};
+Console::Setting bEnableCoordinatedSaves{"Gameplay:bEnableCoordinatedSaves", "Enables host-coordinated saves/loads and automatic post-combat world checkpoints", true};
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
@@ -116,7 +121,7 @@ Console::Command<> ShowMoPoStatus(
 
 // -- Constants --
 constexpr float kMinHealthMultiplier = 0.1f;
-constexpr float kMaxHealthMultiplier = 10.0f;
+constexpr float kMaxHealthMultiplier = 20.0f;
 
 static float GetHealthMultiplier()
 {
@@ -125,6 +130,19 @@ static float GetHealthMultiplier()
         return 1.0f;
 
     return std::clamp(value, kMinHealthMultiplier, kMaxHealthMultiplier);
+}
+
+static float GetEffectiveHealthMultiplier()
+{
+    size_t playerCount = 0;
+    if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
+        playerCount = pServer->GetWorld().GetPlayerManager().Count();
+
+    return ServerSettings::ComputeEffectiveHealthMultiplier(
+        GetHealthMultiplier(),
+        bAutoScaleEnemyHealth,
+        fHealthExtraBase.as_float(),
+        playerCount);
 }
 
 constexpr char kBypassMoPoWarning[]{"ModCheck is disabled. This can lead to desync and other oddities. Make sure you know what you are doing. We "
@@ -159,7 +177,18 @@ ServerSettings GetSettings()
     settings.DeathSystemEnabled = bEnableDeathSystem;
     settings.SyncPlayerCalendar = bSyncPlayerCalendar;
     settings.AutoPartyJoin = bAutoPartyJoin;
-    settings.HealthMultiplier = GetHealthMultiplier();
+    settings.HealthMultiplier = GetEffectiveHealthMultiplier();
+    settings.HealthExtraBase = std::isfinite(fHealthExtraBase.as_float()) ? std::clamp(fHealthExtraBase.as_float(), 0.0f, 10.0f) : 1.0f;
+    settings.DownedSystemEnabled = bEnableDownedSystem;
+    settings.CoordinatedSavesEnabled = bEnableCoordinatedSaves;
+    if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
+    {
+        const auto& encCfg = pServer->GetWorld().GetEncounterService().GetCoordinator().GetConfig();
+        settings.ReviveDurationSec = encCfg.ReviveDurationSec;
+        settings.ReviveHealthFraction = encCfg.ReviveHealthFraction;
+        settings.PostReviveGraceSec = encCfg.PostReviveGraceSec;
+        settings.CombatLeashRadiusMeters = encCfg.LeashRadiusMeters;
+    }
     return settings;
 }
 
@@ -321,6 +350,38 @@ void GameServer::BindMessageHandlers()
 
 void GameServer::BindServerCommands()
 {
+    m_commands.RegisterCommand<>(
+        "rfab_save", "Trigger a two-phase coordinated save checkpoint across all connected players",
+        [this](Console::ArgStack&)
+        {
+            const bool started = m_pWorld->GetSaveSnapshotService().TriggerCoordinatedSave(false, nullptr);
+            spdlog::get("ConOut")->info("[RFAB] Coordinated save {}", started ? "started" : "skipped (no players or save already in flight)");
+        });
+
+    m_commands.RegisterCommand<>(
+        "rfab_load", "Roll back server world snapshot and synchronously load latest checkpoint on all clients",
+        [this](Console::ArgStack&)
+        {
+            const bool started = m_pWorld->GetSaveSnapshotService().TriggerRollbackToLatest(false);
+            spdlog::get("ConOut")->info("[RFAB] Coordinated checkpoint load {}", started ? "dispatched" : "failed");
+        });
+
+    m_commands.RegisterCommand<>(
+        "rfab_snapshots", "Show current RFAB checkpoint epoch, slot name, and shared XP ledger",
+        [this](Console::ArgStack&)
+        {
+            const auto& snaps = m_pWorld->GetSaveSnapshotService();
+            const auto& ledger = m_pWorld->GetRfabProgressionService().GetLedger();
+            spdlog::get("ConOut")->info(
+                "[RFAB] Snapshots={} LastEpoch={} LastSlot='{}' SharedXP={} ReadBooks={} SyncedGlobals={}",
+                snaps.GetSnapshotCount(),
+                snaps.GetLastCommittedEpoch(),
+                snaps.GetLastCommittedSlot(),
+                ledger.GetTotalSharedXp(),
+                ledger.GetReadBooks().size(),
+                ledger.GetSyncedGlobals().size());
+        });
+
     m_commands.RegisterCommand<>(
         "uptime", "Show how long the server has been running for",
         [this](Console::ArgStack&)
@@ -534,6 +595,60 @@ void GameServer::BindServerCommands()
 
             out->info("{}", output.c_str());
         });
+
+    m_commands.RegisterCommand<>(
+        "savecheckpoint", "Trigger a two-phase coordinated RFAB multiplayer checkpoint across all connected players",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            if (!m_pWorld)
+                return;
+            const bool started = m_pWorld->GetSaveSnapshotService().TriggerCoordinatedSave(false, nullptr);
+            out->info("[RFAB] savecheckpoint started={}", started);
+        });
+
+    m_commands.RegisterCommand<>(
+        "rollbackcheckpoint", "Synchronously roll back server state & all connected clients to the latest checkpoint",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            if (!m_pWorld)
+                return;
+            const bool ok = m_pWorld->GetSaveSnapshotService().TriggerRollbackToLatest(false);
+            out->info("[RFAB] rollbackcheckpoint triggered={}", ok);
+        });
+
+    m_commands.RegisterCommand<>(
+        "dumpflightstate", "Dump RFAB co-op WorldEpoch, 256-bucket state digest, and recent flight recorder events",
+        [&](Console::ArgStack&)
+        {
+            auto out = spdlog::get("ConOut");
+            if (!m_pWorld)
+                return;
+            const auto& snapSvc = m_pWorld->GetSaveSnapshotService();
+            const auto digest = snapSvc.BuildLiveWorldDigest();
+            const auto recent = snapSvc.GetCoordinator().GetFlightRing().SnapshotRecent(12);
+            out->info(
+                "[RFAB Flight] WorldEpoch={} LastSaveEpoch={} Slot='{}' Snapshots={} Keys={} Digest={} FlightRecords={}",
+                snapSvc.GetCurrentWorldEpoch(),
+                snapSvc.GetLastCommittedEpoch(),
+                snapSvc.GetLastCommittedSlot().empty() ? "none" : snapSvc.GetLastCommittedSlot().c_str(),
+                snapSvc.GetSnapshotCount(),
+                digest.Size(),
+                digest.ComputeHexDigest().c_str(),
+                snapSvc.GetCoordinator().GetFlightRing().TotalRecorded());
+            for (const auto& rec : recent)
+            {
+                out->info(
+                    "  #{} ts={}ms worldEpoch={} kind={} subj={:X} aux={}",
+                    rec.Sequence,
+                    rec.TimestampMs,
+                    rec.WorldEpoch,
+                    static_cast<uint32_t>(rec.Kind),
+                    rec.SubjectId,
+                    rec.AuxValue);
+            }
+        });
 }
 
 /* Update Info fields from user facing CVARS.*/
@@ -673,6 +788,7 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
         m_pWorld->GetDispatcher().update();
 
         m_pWorld->GetPlayerManager().Remove(pPlayer);
+        UpdateSettings();
     }
 
     UpdateTitle();
@@ -870,12 +986,19 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
         Kick(aConnectionId);
     };
 #if 1
-    // to make our testing life a bit easier.
-    if (acRequest->Version != BUILD_COMMIT)
+    // Accept exact commit matches AND any builds within the same vMAJOR.MINOR protocol family
+    // (e.g. v1.0.0-6-g383738a6 <-> v1.0.0-8-g..., preventing client hotfixes from breaking co-op connections).
+    if (!RfabCompat::AreBuildVersionsProtocolCompatible(BUILD_COMMIT, acRequest->Version.c_str()))
     {
-        spdlog::info("New player {:x} '{}' tried to connect with client {} - Version mismatch", aConnectionId, remoteAddress, acRequest->Version.c_str());
+        spdlog::info("New player {:x} '{}' tried to connect with incompatible protocol version {} (server {})",
+                     aConnectionId, remoteAddress, acRequest->Version.c_str(), BUILD_COMMIT);
         sendKick(RT::kWrongVersion);
         return;
+    }
+    if (acRequest->Version != BUILD_COMMIT)
+    {
+        spdlog::info("Player {:x} '{}' connected with protocol-compatible build {} (server {})",
+                     aConnectionId, remoteAddress, acRequest->Version.c_str(), BUILD_COMMIT);
     }
 #endif
 
@@ -1013,6 +1136,17 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
 
         serverResponse.Type = AuthenticationResponse::ResponseType::kAccepted;
         Send(aConnectionId, serverResponse);
+
+        // Broadcast updated player-count health scaling to all already-connected peers as well
+        for (auto* pExisting : m_pWorld->GetPlayerManager())
+        {
+            if (pExisting != pPlayer)
+            {
+                NotifySettingsChange settingsNotify{};
+                settingsNotify.Settings = serverResponse.Settings;
+                pExisting->Send(settingsNotify);
+            }
+        }
 
         uint32_t startId = 0;
         auto initStringCache = StringCache::Get().Serialize(startId);

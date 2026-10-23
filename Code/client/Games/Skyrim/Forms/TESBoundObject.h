@@ -15,4 +15,8 @@ struct TESBoundObject : TESObject
     Bound lower;
 };
 
+#ifdef _MSC_VER
 static_assert(sizeof(TESBoundObject) == 0x30);
+#else
+static_assert(sizeof(TESBoundObject) == 0x28);
+#endif

@@ -1,16 +1,20 @@
 #include <Games/Skyrim/Interface/IMenu.h>
 #include <Games/Skyrim/Interface/UI.h>
+#include <Games/TES.h>
 #include <Misc/BSFixedString.h>
 #include <TiltedOnlinePCH.h>
 #include "immersive_launcher/stubs/DllBlocklist.h"
 
 #include <World.h>
 
+#include <cstring>
+#include <utility>
+
 static bool g_RequestUnpauseAll{false};
 
 UI* UI::Get()
 {
-    POINTER_SKYRIMSE(UI*, s_instance, 400327);
+    POINTER_SKYRIMSE(UI*, s_instance, 514178);
     return *s_instance.Get();
 }
 
@@ -20,7 +24,7 @@ bool UI::GetMenuOpen(const BSFixedString& acName) const
         return false;
 
     TP_THIS_FUNCTION(TMenuSystem_IsOpen, bool, const UI, const BSFixedString&);
-    POINTER_SKYRIMSE(TMenuSystem_IsOpen, s_isMenuOpen, 82074);
+    POINTER_SKYRIMSE(TMenuSystem_IsOpen, s_isMenuOpen, 79937);
 
     return TiltedPhoques::ThisCall(s_isMenuOpen.Get(), this, acName);
 }
@@ -28,7 +32,7 @@ bool UI::GetMenuOpen(const BSFixedString& acName) const
 void UI::CloseAllMenus()
 {
     TP_THIS_FUNCTION(TUI_CloseAll, void, const UI);
-    POINTER_SKYRIMSE(TUI_CloseAll, s_CloseAll, 82088);
+    POINTER_SKYRIMSE(TUI_CloseAll, s_CloseAll, 79951);
 
     TiltedPhoques::ThisCall(s_CloseAll.Get(), this);
 }
@@ -73,77 +77,85 @@ static void UnfreezeMenu(IMenu* apEntry)
         apEntry->ClearFlag(IMenu::kFreezeFramePause);
 }
 
+// Includes "CustomMenu" so RFAB_Menu (stats/perks menu in RFAB) also works smoothly while connected.
 static constexpr const char* kAllowList[] = {
     "TweenMenu",     "MagicMenu",     "StatsMenu",     "InventoryMenu", "MessageBoxMenu",
-    "ContainerMenu", "FavoritesMenu", "Tutorial Menu", "Console"
-    //"MapMenu", // MapMenu is disabled till we find a proper fix for first person.
-    //"Journal Menu", // Journal menu, aka pause menu, is disabled until we find a fix for manual save crashing while unpaused.
+    "ContainerMenu", "FavoritesMenu", "Tutorial Menu", "Console",       "CustomMenu"
 };
 
-static void* (*UI_AddToActiveQueue)(UI*, IMenu*, void*);
-
-static void* UI_AddToActiveQueue_Hook(UI* apSelf, IMenu* apMenu, void* apFoundItem /*In reality a reference*/)
+namespace
 {
-    // if the menu is empty we let the real function handle it.
-    if (!apMenu || !World::Get().GetTransport().IsConnected() || stubs::g_IsSoulsREActive)
-        return UI_AddToActiveQueue(apSelf, apMenu, apFoundItem);
+constexpr size_t kAllowListCount = sizeof(kAllowList) / sizeof(kAllowList[0]);
+static UI::TCreate* s_realCreators[kAllowListCount]{};
+static bool s_clearedIntroSequence = false;
 
-#if 0
-        if (auto* pName = apSelf->LookupMenuNameByInstance(apEntry))
-        {
-            spdlog::info("Menu requested {}", pName->AsAscii());
-        }
-#endif
-
-    // NOTE(Force): could also compare by RTTI later on...
-    for (const char* item : kAllowList)
+template <size_t Index>
+IMenu* WrappedMenuCreator(UIMessage* apMessage)
+{
+    IMenu* pMenu = s_realCreators[Index](apMessage);
+    if (pMenu && World::Get().GetTransport().IsConnected())
     {
-        if (auto* pMenu = apSelf->FindMenuByName(item))
+        UnfreezeMenu(pMenu);
+    }
+    return pMenu;
+}
+
+template <size_t... Indices>
+UI::TCreate* WrapCreatorImpl(const char* apName, UI::TCreate* apCreate, std::index_sequence<Indices...>)
+{
+    UI::TCreate* result = apCreate;
+    (
+        [&]()
         {
-            if (pMenu == apMenu)
-                UnfreezeMenu(apMenu);
+            if (std::strcmp(apName, kAllowList[Indices]) == 0)
+            {
+                s_realCreators[Indices] = apCreate;
+                result = &WrappedMenuCreator<Indices>;
+            }
+        }(),
+        ...);
+    return result;
+}
+
+using TUI_Register = void(UI*, const char*, UI::TCreate*);
+static TUI_Register* Real_UI_Register = nullptr;
+
+static void Hook_UI_Register(UI* apSelf, const char* apMenuName, UI::TCreate* apCreate)
+{
+    if (!s_clearedIntroSequence)
+    {
+        s_clearedIntroSequence = true;
+        if (auto* pIni = INISettingCollection::Get())
+        {
+            if (auto* pIntro = pIni->GetSetting("sIntroSequence:General"))
+                pIntro->data = reinterpret_cast<uint64_t>("");
         }
     }
 
-    return UI_AddToActiveQueue(apSelf, apMenu, apFoundItem);
-}
+    if (apMenuName && apCreate)
+    {
+        apCreate = WrapCreatorImpl(apMenuName, apCreate, std::make_index_sequence<kAllowListCount>{});
+    }
 
-using TCallback = void(void*, const BSFixedString*, uint32_t, void*);
-static TCallback* UIMessageQueue__AddMessage_Real;
-
-// Useful for debugging UI related issues.
-void UIMessageQueue__AddMessage(void* a1, const BSFixedString* a2, UIMessage::UI_MESSAGE_TYPE a3, void* a4)
-{
-    spdlog::info("Adding Message {} with prio {} from {}", a2->AsAscii(), a3, fmt::ptr(_ReturnAddress()));
-    UIMessageQueue__AddMessage_Real(a1, a2, a3, a4);
+    Real_UI_Register(apSelf, apMenuName, apCreate);
 }
+} // namespace
 
 static TiltedPhoques::Initializer s_s(
     []()
     {
-        // pray that this doesnt fail!
-        VersionDbPtr<uint8_t> ProcessHook(82082);
-        TiltedPhoques::SwapCall(ProcessHook.Get() + 0x682, UI_AddToActiveQueue, &UI_AddToActiveQueue_Hook);
+        // Hook UI::Register (SE 79949 @ 0xEBF9C0) at function entry (+0x0) so every unpaused menu
+        // clears kPausesGame / kFreezeFrame* right on creation before UI_AddToActiveQueue runs,
+        // with zero mid-function instruction offset sensitivity on Skyrim SE 1.5.97.
+        VersionDbPtr<TUI_Register> registerMenu(79949);
+        Real_UI_Register = registerMenu.Get();
+        TP_HOOK(&Real_UI_Register, Hook_UI_Register);
 
-        // Ignore startup movie
-        // TODO: Move me later.
-        VersionDbPtr<uint8_t> MainInit(36548);
-        TiltedPhoques::Put<uint8_t>(MainInit.Get() + 0xFE, 0xEB);
-
-        // Credits to Skyrim Souls RE for this fix.
-        // Allows the favorites menu to be numbered during connect.
-        VersionDbPtr<uint8_t> FavoritesCanProcess(51538);
-        TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
-
-        // Some experiments:
-        // POINTER_SKYRIMSE(TCallback, s_start, 13631);
-        // UIMessageQueue__AddMessage_Real = s_start.Get();
-        // TP_HOOK(&UIMessageQueue__AddMessage_Real, UIMessageQueue__AddMessage);
-
-        // This kills the loading spinner
-        // TiltedPhoques::Put<uint8_t>(0x1405D51C1, 0xEB);
-        // TiltedPhoques::Nop(0x1405D51A2, 5);
-
-        // use 8 threads by default!
-        // TiltedPhoques::Put<uint8_t>(0x141E45770, 8);
+        // Credits to Skyrim Souls RE (v2.1.3 Offsets::Menus::FavoritesMenu::CanProcess = SE 50644 + 0x15):
+        // Allows FavoritesMenu hotkeys 1..8 to work while unpaused unless SkyrimSoulsRE.dll is active.
+        if (!stubs::g_IsSoulsREActive && GetModuleHandleW(L"SkyrimSoulsRE.dll") == nullptr)
+        {
+            VersionDbPtr<uint8_t> FavoritesCanProcess(50644);
+            TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
+        }
     });

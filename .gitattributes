@@ -1,6 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-
 # Custom for Visual Studio
 *.cs     diff=csharp
 # Standard to msysgit
@@ -14,6 +13,22 @@
 *.PDF	 diff=astextplain
 *.rtf	 diff=astextplain
 *.RTF	 diff=astextplain
-
 # Custom for the project to build
 *.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 binary
+*.esp binary
+*.esl binary
+*.esm binary
+*.pex binary
+*.nif binary
+*.dds binary
+*.png binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+PROCHTI_MENYA.txt text eol=crlf

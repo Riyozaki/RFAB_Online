@@ -10,6 +10,7 @@ struct EnchantmentItem;
 struct ExtraDataList
 {
     static ExtraDataList* New() noexcept;
+    static void Delete(ExtraDataList* apList) noexcept;
 
     bool Contains(ExtraDataType aType) const;
     void Set(ExtraDataType aType, bool aSet);
