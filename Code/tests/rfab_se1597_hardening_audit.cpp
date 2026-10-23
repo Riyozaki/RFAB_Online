@@ -227,6 +227,10 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
     REQUIRE(RfabCompat::NormalizeServerEndpoint("") == "127.0.0.1:10578");
     REQUIRE(RfabCompat::NormalizeServerEndpoint("26.160.34.131") == "26.160.34.131:10578");
     REQUIRE(RfabCompat::NormalizeServerEndpoint("26.160.34.131:10578:10578") == "26.160.34.131:10578");
+    REQUIRE(RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0-6-g383738a6", "v1.0.0-7-gc0b262aa"));
+    REQUIRE(RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0", "v1.0.9-12-gabcdef0"));
+    REQUIRE_FALSE(RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0", "v1.1.0"));
+    REQUIRE_FALSE(RfabCompat::AreBuildVersionsProtocolCompatible("383738a6", "c0b262aa"));
 
     std::string partialOverride = "[Patches]\r\nRegularQuicksaves = false\r\n\r\n[SaveGameMaxSize]\r\nSaveGameMaxSize = true\r\n";
     REQUIRE(RfabCompat::PatchEngineFixesTomlContent(partialOverride));

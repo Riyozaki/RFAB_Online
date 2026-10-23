@@ -41,7 +41,7 @@ export class TranslocoHttpLoader implements TranslocoLoader {
           { id: 'pl', label: 'Polski' },
           { id: 'overwrite', label: 'Custom' },
         ],
-        defaultLang: 'en',
+        defaultLang: 'ru',
         fallbackLang: 'en',
         missingHandler: {
           useFallbackTranslation: true,

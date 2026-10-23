@@ -905,4 +905,62 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
     return oss.str();
 }
 
+// Extracts (major, minor) from semantic git tags such as "v1.0.0", "v1.0.0-7-gc0b262aa", "1.0.2".
+// Returns false on untagged raw git hashes (e.g. "9f8e7d6c") so distinct protocol branches never collide.
+[[nodiscard]] inline bool ExtractMajorMinorProtocolTag(std::string_view aVer, int& aOutMajor, int& aOutMinor) noexcept
+{
+    std::string s = Detail::Trim(aVer);
+    if (!s.empty() && (s.front() == 'v' || s.front() == 'V'))
+        s.erase(s.begin());
+
+    if (s.empty() || !std::isdigit(static_cast<unsigned char>(s[0])))
+        return false;
+
+    size_t pos = 0;
+    int major = 0;
+    while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos])))
+    {
+        major = major * 10 + (s[pos] - '0');
+        ++pos;
+    }
+    if (pos >= s.size() || s[pos] != '.')
+        return false;
+    ++pos;
+
+    if (pos >= s.size() || !std::isdigit(static_cast<unsigned char>(s[pos])))
+        return false;
+
+    int minor = 0;
+    while (pos < s.size() && std::isdigit(static_cast<unsigned char>(s[pos])))
+    {
+        minor = minor * 10 + (s[pos] - '0');
+        ++pos;
+    }
+
+    if (pos < s.size() && s[pos] != '.' && s[pos] != '-')
+        return false;
+
+    aOutMajor = major;
+    aOutMinor = minor;
+    return true;
+}
+
+// Allows any vMAJOR.MINOR.* client and server to connect without forcing whole-pack re-downloads on hotfixes,
+// while still rejecting incompatible protocol families (e.g. v1.0.x vs v1.1.x or v2.0.x).
+[[nodiscard]] inline bool AreBuildVersionsProtocolCompatible(std::string_view aServerVer, std::string_view aClientVer) noexcept
+{
+    if (aServerVer == aClientVer)
+        return true;
+
+    int sMaj = 0, sMin = 0;
+    int cMaj = 0, cMin = 0;
+    if (ExtractMajorMinorProtocolTag(aServerVer, sMaj, sMin) &&
+        ExtractMajorMinorProtocolTag(aClientVer, cMaj, cMin))
+    {
+        return (sMaj == cMaj) && (sMin == cMin);
+    }
+
+    return false;
+}
+
 } // namespace RfabCompat

@@ -210,10 +210,77 @@ $QuickUpdZip  = Join-Path $OutDir "RFAB_Online_${VersionTag}_Quick_Update.zip"
 $PdbZip       = Join-Path $OutDir "RFAB_Online_${VersionTag}_PDB_Symbols.zip"
 
 $QuickDir = Join-Path $StageOuter "Quick_Update"
-New-Item -ItemType Directory -Path $QuickDir -Force | Out-Null
+$QuickSrvDir = Join-Path $QuickDir "Server"
+New-Item -ItemType Directory -Path $QuickDir, $QuickSrvDir -Force | Out-Null
 foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
     Copy-Item -LiteralPath (Join-Path $StageClient $qf) -Destination (Join-Path $QuickDir $qf) -Force
 }
+Invoke-RobocopySafe -Src (Join-Path $StageClient "UI") -Dst (Join-Path $QuickDir "UI") -ExtraArgs @("/E")
+foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
+    Copy-Item -LiteralPath (Join-Path $StageServer $sf) -Destination (Join-Path $QuickSrvDir $sf) -Force
+}
+
+$QuickUpdatePs1 = @'
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$SrcDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+$GameRoot = $null
+$RegKey = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"
+if (Test-Path -LiteralPath $RegKey) {
+    $GameRoot = (Get-ItemProperty -LiteralPath $RegKey -Name "TitlePath" -ErrorAction SilentlyContinue).TitlePath
+}
+if ([string]::IsNullOrWhiteSpace($GameRoot) -or -not (Test-Path -LiteralPath $GameRoot)) {
+    Add-Type -AssemblyName System.Windows.Forms | Out-Null
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = "Select your RFAB root folder (e.g. G:\RFAB Online SkyrimSE)"
+    if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }
+    $GameRoot = $dlg.SelectedPath
+}
+
+Write-Host "==> RFAB root: $GameRoot" -ForegroundColor Cyan
+
+# Stop running old server / client so DLLs & EXEs can be overwritten cleanly
+Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 600
+
+$ClientDst = Join-Path $GameRoot "MO2\mods\RFAB_Online\SkyrimTogetherReborn"
+if (-not (Test-Path -LiteralPath $ClientDst)) {
+    throw "Client folder not found: $ClientDst"
+}
+foreach ($cf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
+    Copy-Item -LiteralPath (Join-Path $SrcDir $cf) -Destination (Join-Path $ClientDst $cf) -Force
+}
+if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
+    Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath (Join-Path $SrcDir "UI") -Destination (Join-Path $ClientDst "UI") -Recurse -Force
+}
+Write-Host "  [OK] Updated Client + Russian UI -> $ClientDst" -ForegroundColor Green
+
+$SrvCandidates = @(
+    (Join-Path $GameRoot "RFAB_Online_Server"),
+    (Join-Path (Split-Path -Parent $GameRoot) "RFAB_Online_Server")
+)
+foreach ($SrvDst in $SrvCandidates) {
+    if ($SrvDst -and (Test-Path -LiteralPath $SrvDst)) {
+        foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
+            Copy-Item -LiteralPath (Join-Path $SrcDir "Server\$sf") -Destination (Join-Path $SrvDst $sf) -Force
+        }
+        Write-Host "  [OK] Updated Server (SkyrimTogetherServer.exe + STServer.dll) -> $SrvDst" -ForegroundColor Green
+    }
+}
+
+$StartBat = Join-Path $GameRoot "START_RFAB_SERVER.bat"
+if (Test-Path -LiteralPath $StartBat) {
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$StartBat`"" -WorkingDirectory $GameRoot
+    Write-Host "  [OK] Fresh RFAB Online Server started on port 10578!" -ForegroundColor Green
+}
+Write-Host "`nALL DONE! Launch 'RFAB Online - Play' in Mod Organizer 2 and press Right Ctrl / F2 -> 127.0.0.1" -ForegroundColor Cyan
+'@
+[System.IO.File]::WriteAllText((Join-Path $QuickDir "Update-Quick.ps1"), $QuickUpdatePs1, (New-Object System.Text.UTF8Encoding($true)))
+
+$QuickBat = "@echo off`r`nchcp 65001 >nul`r`ntitle RFAB Online - 1-Click Client + Server Updater`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0Update-Quick.ps1`"`r`npause`r`n"
+[System.IO.File]::WriteAllText((Join-Path $QuickDir "UPDATE_RFAB_ONLINE.bat"), $QuickBat, [System.Text.Encoding]::ASCII)
 
 [System.IO.Compression.ZipFile]::CreateFromDirectory($StageRoot, $InstallerZip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
 [System.IO.Compression.ZipFile]::CreateFromDirectory($QuickDir,  $QuickUpdZip,  [System.IO.Compression.CompressionLevel]::Optimal, $false)

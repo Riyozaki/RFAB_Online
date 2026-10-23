@@ -22,6 +22,7 @@
 #include <Messages/NotifyPlayerJoined.h>
 #include <Messages/NotifyPlayerLeft.h>
 #include <Messages/NotifySettingsChange.h>
+#include <common/RfabModpackCompat.h>
 #include <console/ConsoleRegistry.h>
 #include <resources/ResourceCollection.h>
 
@@ -985,12 +986,19 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
         Kick(aConnectionId);
     };
 #if 1
-    // to make our testing life a bit easier.
-    if (acRequest->Version != BUILD_COMMIT)
+    // Accept exact commit matches AND any builds within the same vMAJOR.MINOR protocol family
+    // (e.g. v1.0.0-6-g383738a6 <-> v1.0.0-8-g..., preventing client hotfixes from breaking co-op connections).
+    if (!RfabCompat::AreBuildVersionsProtocolCompatible(BUILD_COMMIT, acRequest->Version.c_str()))
     {
-        spdlog::info("New player {:x} '{}' tried to connect with client {} - Version mismatch", aConnectionId, remoteAddress, acRequest->Version.c_str());
+        spdlog::info("New player {:x} '{}' tried to connect with incompatible protocol version {} (server {})",
+                     aConnectionId, remoteAddress, acRequest->Version.c_str(), BUILD_COMMIT);
         sendKick(RT::kWrongVersion);
         return;
+    }
+    if (acRequest->Version != BUILD_COMMIT)
+    {
+        spdlog::info("Player {:x} '{}' connected with protocol-compatible build {} (server {})",
+                     aConnectionId, remoteAddress, acRequest->Version.c_str(), BUILD_COMMIT);
     }
 #endif
 
