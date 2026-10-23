@@ -211,7 +211,7 @@ $PdbZip       = Join-Path $OutDir "RFAB_Online_${VersionTag}_PDB_Symbols.zip"
 
 $QuickDir = Join-Path $StageOuter "Quick_Update"
 New-Item -ItemType Directory -Path $QuickDir -Force | Out-Null
-foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "SkyrimTogetherClient.dll", "EarlyLoad.dll")) {
+foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
     Copy-Item -LiteralPath (Join-Path $StageClient $qf) -Destination (Join-Path $QuickDir $qf) -Force
 }
 
