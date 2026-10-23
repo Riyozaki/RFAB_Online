@@ -11,6 +11,7 @@
 #include <ExtraData/ExtraFactionChanges.h>
 #include <Games/Memory.h>
 #include <Forms/TESLevItem.h>
+#include <Forms/TESObjectARMO.h>
 #include <Combat/CombatController.h>
 
 #include <Events/HealthChangeEvent.h>
@@ -558,8 +559,8 @@ void CollectArmorFromOutfitForm(
     if (apForm->formType == FormType::LeveledItem)
     {
         auto* pLevItem = Cast<TESLevItem>(apForm);
-        const uint8_t flags = pLevItem ? pLevItem->unk10[1] : 0;      // offset 0x11 in TESLeveledList
-        const uint8_t entryCount = pLevItem ? pLevItem->unk10[2] : 0; // offset 0x12 in TESLeveledList
+        const uint8_t flags = pLevItem ? pLevItem->TESLeveledList::unk10[1] : 0;      // offset 0x11 in TESLeveledList
+        const uint8_t entryCount = pLevItem ? pLevItem->TESLeveledList::unk10[2] : 0; // offset 0x12 in TESLeveledList
         if (!pLevItem || !pLevItem->pLeveledListA || entryCount == 0)
             return;
 
@@ -634,7 +635,7 @@ void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
         // SetActorInventory() calls RemoveAllItems(), so always restore 1 item in ExtraContainerChanges
         // under ScopedInventoryOverride before invoking EquipManager::Equip().
         if (RealAddInventoryItem)
-            TiltedPhoques::ThisCall(RealAddInventoryItem, this, pArmor, nullptr, 1, nullptr);
+            TiltedPhoques::ThisCall(RealAddInventoryItem, this, static_cast<TESBoundObject*>(pArmor), nullptr, 1, nullptr);
 
         spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID, baseForm->GetName());
         pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);
