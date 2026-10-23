@@ -215,63 +215,219 @@ if (-not $NonInteractive) {
     }
 }
 
-# 4. Автопоиск папки сборки RFAB на всех локальных дисках ПК
-Write-Step "Шаг 2/7. Автопоиск сборки RFAB, Mod Organizer 2 и SkyrimSE.exe (1.5.97)"
-if ([string]::IsNullOrWhiteSpace($RfabDir)) {
-    $AutoRfabCandidates = New-Object System.Collections.Generic.List[string]
-    $RegProbe = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"
-    if (Test-Path -LiteralPath $RegProbe) {
-        $regTitlePath = (Get-ItemProperty -LiteralPath $RegProbe -Name "TitlePath" -ErrorAction SilentlyContinue).TitlePath
-        if (-not [string]::IsNullOrWhiteSpace($regTitlePath)) {
-            $AutoRfabCandidates.Add($regTitlePath)
-            $parentReg = Split-Path -Parent $regTitlePath
-            if ($parentReg) { $AutoRfabCandidates.Add($parentReg) }
+# 4. Умный поиск всех установок MO2/RFAB + удобное окно подтверждения/выбора папки (читает точный gamePath из ModOrganizer.ini!)
+Write-Step "Шаг 2/7. Определение папки сборки RFAB, Mod Organizer 2 и SkyrimSE.exe (1.5.97)"
+
+function Resolve-Mo2AndSkyrimPreview([string]$InputPath) {
+    if ([string]::IsNullOrWhiteSpace($InputPath)) { return $null }
+    $p = $InputPath.Trim().Trim('"')
+    if (Test-Path -LiteralPath $p -PathType Leaf) {
+        $p = Split-Path -Parent $p
+    }
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+
+    $mo2 = $null
+    if (Test-Path -LiteralPath (Join-Path $p "ModOrganizer.exe")) {
+        $mo2 = Join-Path $p "ModOrganizer.exe"
+    } elseif (Test-Path -LiteralPath (Join-Path $p "MO2\ModOrganizer.exe")) {
+        $mo2 = Join-Path $p "MO2\ModOrganizer.exe"
+    } else {
+        $found = Get-ChildItem -LiteralPath $p -Filter "ModOrganizer.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { $mo2 = $found.FullName }
+    }
+    if (-not $mo2) { return $null }
+
+    $mo2Folder = Split-Path -Parent $mo2
+    $iniFile = Join-Path $mo2Folder "ModOrganizer.ini"
+    $gameExeFound = ""
+    $gameVerFound = ""
+    $isRfabPack = $false
+
+    if (Test-Path -LiteralPath $iniFile) {
+        $baseD = $mo2Folder
+        $gpRaw = ""
+        foreach ($ln in [System.IO.File]::ReadAllLines($iniFile, [System.Text.Encoding]::UTF8)) {
+            if ($ln -match '^\s*base_directory\s*=\s*(.+)$') { $baseD = Decode-Mo2IniValue $Matches[1] }
+            elseif ($ln -match '^\s*gamePath\s*=\s*(.+)$')   { $gpRaw = Decode-Mo2IniValue $Matches[1] }
         }
-    }
-    foreach ($knownRoot in @(
-        "G:\RFAB Online SkyrimSE",
-        "G:\RFAB",
-        "D:\RFAB Online SkyrimSE",
-        "D:\RFAB",
-        "D:\Games\RFAB",
-        "C:\RFAB",
-        "C:\Games\RFAB",
-        "E:\RFAB",
-        "F:\RFAB"
-    )) {
-        $AutoRfabCandidates.Add($knownRoot)
-    }
-    foreach ($drv in ([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
-        $rootPath = $drv.RootDirectory.FullName
-        Get-ChildItem -LiteralPath $rootPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            if ($_.Name -match 'RFAB|Skyrim') { $AutoRfabCandidates.Add($_.FullName) }
-            Get-ChildItem -LiteralPath $_.FullName -Directory -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -match 'RFAB|Skyrim'
-            } | ForEach-Object { $AutoRfabCandidates.Add($_.FullName) }
+        if ([string]::IsNullOrWhiteSpace($baseD) -or -not (Test-Path -LiteralPath $baseD)) { $baseD = $mo2Folder }
+        $profsD = Join-Path $baseD "profiles"
+        if (Test-Path -LiteralPath $profsD) {
+            $profHit = Get-ChildItem -LiteralPath $profsD -Filter "plugins.txt" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Where-Object {
+                ([System.IO.File]::ReadAllText($_.FullName) -match 'Requiem\.esp|\[RFAB\]')
+            } | Select-Object -First 1
+            if ($profHit) { $isRfabPack = $true }
         }
-    }
-    foreach ($candDir in ($AutoRfabCandidates | Select-Object -Unique)) {
-        if (-not [string]::IsNullOrWhiteSpace($candDir) -and (Test-Path -LiteralPath $candDir)) {
-            if ((Test-Path -LiteralPath (Join-Path $candDir "ModOrganizer.exe")) -or
-                (Test-Path -LiteralPath (Join-Path $candDir "MO2\ModOrganizer.exe"))) {
-                $RfabDir = $candDir
-                Write-Ok "Автоматически найдена папка сборки RFAB: $RfabDir"
+        $tryExes = New-Object System.Collections.Generic.List[string]
+        if (-not [string]::IsNullOrWhiteSpace($gpRaw)) {
+            $tryExes.Add((Join-Path ($gpRaw.Replace('%BASE_DIR%', $baseD)) "SkyrimSE.exe"))
+        }
+        $tryExes.Add((Join-Path $p "SkyrimSE.exe"))
+        $parentM = Split-Path -Parent $mo2Folder
+        if ($parentM) { $tryExes.Add((Join-Path $parentM "SkyrimSE.exe")) }
+        foreach ($te in $tryExes) {
+            if ($te -and (Test-Path -LiteralPath $te)) {
+                $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($te)
+                $gameExeFound = [System.IO.Path]::GetFullPath($te)
+                $gameVerFound = "$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)"
                 break
             }
         }
     }
+
+    # Prefer the outer RFAB root folder if MO2 lives inside <Root>\MO2
+    $installRoot = if ((Split-Path -Leaf $mo2Folder) -ieq "MO2") { Split-Path -Parent $mo2Folder } else { $mo2Folder }
+    return [PSCustomObject]@{
+        RootDir  = $installRoot
+        Mo2Exe   = $mo2
+        SkyrimExe = $gameExeFound
+        Version  = $gameVerFound
+        IsSe1597 = ($gameVerFound -like "1.5.97.*")
+        IsRfab   = $isRfabPack
+    }
 }
+
+$DiscoveredInstalls = New-Object System.Collections.Generic.List[object]
+$SeenMo2 = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+function Add-CandidateRoot([string]$Cand) {
+    $info = Resolve-Mo2AndSkyrimPreview $Cand
+    if ($null -ne $info -and $SeenMo2.Add($info.Mo2Exe)) {
+        $DiscoveredInstalls.Add($info)
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($RfabDir)) {
+    Add-CandidateRoot $RfabDir
+}
+$RegProbe = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"
+if (Test-Path -LiteralPath $RegProbe) {
+    $regTitlePath = (Get-ItemProperty -LiteralPath $RegProbe -Name "TitlePath" -ErrorAction SilentlyContinue).TitlePath
+    if (-not [string]::IsNullOrWhiteSpace($regTitlePath)) {
+        Add-CandidateRoot $regTitlePath
+        $parentReg = Split-Path -Parent $regTitlePath
+        if ($parentReg) { Add-CandidateRoot $parentReg }
+    }
+}
+foreach ($drv in ([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
+    $rootPath = $drv.RootDirectory.FullName
+    Get-ChildItem -LiteralPath $rootPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        Add-CandidateRoot $_.FullName
+        Get-ChildItem -LiteralPath $_.FullName -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            Add-CandidateRoot $_.FullName
+        }
+    }
+}
+
+$SortedInstalls = @($DiscoveredInstalls | Sort-Object -Property @{Expression={$_.IsRfab};Descending=$true}, @{Expression={$_.IsSe1597};Descending=$true})
+if ([string]::IsNullOrWhiteSpace($RfabDir) -and $SortedInstalls.Count -gt 0) {
+    $RfabDir = $SortedInstalls[0].RootDir
+}
+
+if (-not $NonInteractive) {
+    Add-Type -AssemblyName System.Drawing | Out-Null
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Установка RFAB Online — Выбор папки сборки RFAB"
+    $form.Size = New-Object System.Drawing.Size(680, 290)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.TopMost = $true
+
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Location = New-Object System.Drawing.Point(18, 16)
+    $lblTitle.Size = New-Object System.Drawing.Size(630, 40)
+    $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $lblTitle.Text = "Укажите папку вашей сборки RFAB (где лежит ModOrganizer.exe или папка MO2):"
+    $form.Controls.Add($lblTitle)
+
+    $cmbPath = New-Object System.Windows.Forms.ComboBox
+    $cmbPath.Location = New-Object System.Drawing.Point(18, 60)
+    $cmbPath.Size = New-Object System.Drawing.Size(515, 28)
+    $cmbPath.Font = New-Object System.Drawing.Font("Segoe UI", 10)
+    foreach ($inst in $SortedInstalls) {
+        [void]$cmbPath.Items.Add($inst.RootDir)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RfabDir)) {
+        $cmbPath.Text = $RfabDir
+    }
+    $form.Controls.Add($cmbPath)
+
+    $btnBrowse = New-Object System.Windows.Forms.Button
+    $btnBrowse.Location = New-Object System.Drawing.Point(542, 58)
+    $btnBrowse.Size = New-Object System.Drawing.Size(108, 30)
+    $btnBrowse.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $btnBrowse.Text = "Обзор..."
+    $form.Controls.Add($btnBrowse)
+
+    $lblStatus = New-Object System.Windows.Forms.Label
+    $lblStatus.Location = New-Object System.Drawing.Point(18, 102)
+    $lblStatus.Size = New-Object System.Drawing.Size(632, 85)
+    $lblStatus.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $form.Controls.Add($lblStatus)
+
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Location = New-Object System.Drawing.Point(370, 200)
+    $btnOk.Size = New-Object System.Drawing.Size(280, 38)
+    $btnOk.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $btnOk.Text = "Установить начисто"
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $form.AcceptButton = $btnOk
+    $form.Controls.Add($btnOk)
+
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Location = New-Object System.Drawing.Point(250, 200)
+    $btnCancel.Size = New-Object System.Drawing.Size(110, 38)
+    $btnCancel.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+    $btnCancel.Text = "Отмена"
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.CancelButton = $btnCancel
+    $form.Controls.Add($btnCancel)
+
+    $updatePreview = {
+        $pInfo = Resolve-Mo2AndSkyrimPreview $cmbPath.Text
+        if ($null -eq $pInfo) {
+            $lblStatus.ForeColor = [System.Drawing.Color]::Firebrick
+            $lblStatus.Text = "ModOrganizer.exe пока не найден по этому пути.`nНажмите «Обзор...» и укажите файл ModOrganizer.exe вашей сборки RFAB (или вставьте путь в строку выше)."
+            $btnOk.Enabled = $false
+        } elseif ($pInfo.IsSe1597) {
+            $lblStatus.ForeColor = [System.Drawing.Color]::DarkGreen
+            $packTag = if ($pInfo.IsRfab) { "Профиль Requiem / RFAB подтверждён" } else { "Mod Organizer 2 найден" }
+            $lblStatus.Text = "[OK] $packTag`nMO2: $($pInfo.Mo2Exe)`nДвижок из ModOrganizer.ini: $($pInfo.SkyrimExe) (версия $($pInfo.Version))"
+            $btnOk.Enabled = $true
+        } else {
+            $lblStatus.ForeColor = [System.Drawing.Color]::DarkOrange
+            $lblStatus.Text = "MO2 найден: $($pInfo.Mo2Exe)`nВнимание: проверьте, что в ModOrganizer.ini указан SkyrimSE.exe версии 1.5.97 (сейчас: $($pInfo.Version))."
+            $btnOk.Enabled = $true
+        }
+    }
+
+    $cmbPath.Add_TextChanged($updatePreview)
+    $cmbPath.Add_SelectedIndexChanged($updatePreview)
+    $btnBrowse.Add_Click({
+        $ofd = New-Object System.Windows.Forms.OpenFileDialog
+        $ofd.Title = "Выберите ModOrganizer.exe вашей сборки RFAB (или откройте папку сборки)"
+        $ofd.Filter = "Mod Organizer 2 (ModOrganizer.exe)|ModOrganizer.exe|Любой файл в папке сборки (*.*)|*.*"
+        $ofd.CheckFileExists = $false
+        $ofd.CheckPathExists = $true
+        $ofd.ValidateNames = $false
+        $ofd.FileName = "ModOrganizer.exe"
+        if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            $picked = Split-Path -Parent $ofd.FileName
+            $resolved = Resolve-Mo2AndSkyrimPreview $picked
+            $cmbPath.Text = if ($resolved) { $resolved.RootDir } else { $picked }
+        }
+    })
+
+    & $updatePreview
+    if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+        throw "Установка отменена пользователем."
+    }
+    $RfabDir = $cmbPath.Text.Trim().Trim('"')
+}
+
 if ([string]::IsNullOrWhiteSpace($RfabDir)) {
-    if ($NonInteractive) {
-        throw "Не удалось автоматически найти папку RFAB (ModOrganizer.exe). Укажите параметр -RfabDir."
-    }
-    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = "Выберите КОРНЕВУЮ папку вашей установленной сборки RFAB (где находится папка MO2 или ModOrganizer.exe)"
-    $dlg.ShowNewFolderButton = $false
-    if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
-        throw "Папка сборки RFAB не выбрана."
-    }
-    $RfabDir = $dlg.SelectedPath
+    throw "Не удалось автоматически найти папку RFAB (ModOrganizer.exe). Укажите параметр -RfabDir."
 }
 $RfabDir = [System.IO.Path]::GetFullPath($RfabDir)
 if (-not (Test-Path -LiteralPath $RfabDir)) {
