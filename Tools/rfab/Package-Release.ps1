@@ -46,6 +46,10 @@ $PdbDir      = Join-Path $StageOuter "PDB_Symbols"
 New-Item -ItemType Directory -Path $StageClient, $StageServer, $StageTools, $PdbDir, $OutDir -Force | Out-Null
 
 Write-Host "==> [1/6] Staging GameFiles/Skyrim & RFAB_Online_Bindings.json..." -ForegroundColor Cyan
+$PrebuiltMo2 = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2"
+if (Test-Path -LiteralPath $PrebuiltMo2) {
+    Invoke-RobocopySafe -Src $PrebuiltMo2 -Dst $StageMo2 -ExtraArgs @("/E")
+}
 Invoke-RobocopySafe -Src $GameFiles -Dst $StageMo2 -ExtraArgs @("/E")
 New-Item -ItemType Directory -Path (Join-Path $StageMo2 "SKSE\Plugins") -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "Data\SKSE\Plugins\RFAB_Online_Bindings.json") `

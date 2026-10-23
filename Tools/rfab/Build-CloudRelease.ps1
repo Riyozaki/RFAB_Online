@@ -17,12 +17,18 @@ function Emit-Annotation([string]$Level, [string]$Title, [string]$Msg) {
 
 function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
     Write-Host "`n==> $StepName" -ForegroundColor Cyan
-    $stepLog = Join-Path $env:TEMP ("rfab_step_" + [Guid]::NewGuid().ToString("N") + ".log")
+    $uid = [Guid]::NewGuid().ToString("N")
+    $stepBat = Join-Path $env:TEMP ("rfab_cmd_" + $uid + ".cmd")
+    $stepLog = Join-Path $env:TEMP ("rfab_step_" + $uid + ".log")
+    $batBody = "@echo off`r`ncall :__rfab_step > `"$stepLog`" 2>&1`r`nexit /b %ERRORLEVEL%`r`n:__rfab_step`r`n$CmdString`r`n"
+    [System.IO.File]::WriteAllText($stepBat, $batBody, (New-Object System.Text.UTF8Encoding($false)))
+
     $prev = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & cmd.exe /d /s /c "$CmdString > `"$stepLog`" 2>&1"
+    & cmd.exe /d /c $stepBat
     $code = $LASTEXITCODE
     $ErrorActionPreference = $prev
+    Remove-Item -LiteralPath $stepBat -Force -ErrorAction SilentlyContinue
 
     if (Test-Path -LiteralPath $stepLog) {
         $allLines = [System.IO.File]::ReadAllLines($stepLog)

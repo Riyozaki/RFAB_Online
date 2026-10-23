@@ -91,12 +91,15 @@ packaged/*
 
 # Binary game / modpack / Address Library artifacts (never commit binaries to Git)
 *.esp
-!GameFiles/Skyrim/SkyrimTogether.esp
+!GameFiles/Skyrim/**/*.esp
+!GameFiles/Skyrim/*.esp
 *.esm
 *.esl
 *.bsa
 *.ba2
 *.pex
+!GameFiles/Skyrim/**/*.pex
+!GameFiles/Skyrim/*.pex
 version-*.bin
 versionlib-*.bin
 NetScriptFramework.*.bin
