@@ -59,8 +59,17 @@ local function build_launcher()
 end
 
 target("SkyrimImmersiveLauncher")
-    set_basename("SkyrimTogether")
+    -- Output native SkyrimSE.exe out of the box (required by drake1ch/RFAB MO2 & SKSE plugins without manual renaming)
+    -- AND emit an identical SkyrimTogether.exe compatibility alias alongside it on every build!
+    set_basename("SkyrimSE")
     add_defines("TARGET_PREFIX=\"st\"")
     add_deps("SkyrimTogetherClient")
     add_ldflags("/WHOLEARCHIVE:SkyrimTogetherClient", { force = true })
     build_launcher()
+    after_build(function (target)
+        local exe = target:targetfile()
+        if exe and os.isfile(exe) then
+            local alias = path.join(path.directory(exe), "SkyrimTogether.exe")
+            os.cp(exe, alias)
+        end
+    end)

@@ -21,6 +21,13 @@ target(name)
         local uidir = path.join(target:scriptdir(), "..", "skyrim_ui", "src")
         os.cp(path.join(uidir, "assets", "images", "cursor.dds"), path.join(target:installdir(), "bin", "assets", "images", "cursor.dds"))
         os.cp(path.join(uidir, "assets", "images", "cursor.png"), path.join(target:installdir(), "bin", "assets", "images", "cursor.png"))
+        local built_ui = path.join(target:scriptdir(), "..", "skyrim_ui", "dist", "UI")
+        local prebuilt_ui = path.join(target:scriptdir(), "..", "..", "dist_ready", "RFAB_Online_MO2", "SkyrimTogetherReborn", "UI")
+        if os.isdir(built_ui) and os.isfile(path.join(built_ui, "index.html")) then
+            os.cp(built_ui, path.join(target:installdir(), "bin"))
+        elseif os.isdir(prebuilt_ui) and os.isfile(path.join(prebuilt_ui, "index.html")) then
+            os.cp(prebuilt_ui, path.join(target:installdir(), "bin"))
+        end
         -- copy RFAB EditorID/modpack bindings manifest for both MO2 root-Data layout (SKSE/Plugins/) and game-dir layout (Data/SKSE/Plugins/)
         local rfab_bindings = path.join(target:scriptdir(), "..", "..", "Data", "SKSE", "Plugins", "RFAB_Online_Bindings.json")
         if os.isfile(rfab_bindings) then

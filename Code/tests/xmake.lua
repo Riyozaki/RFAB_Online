@@ -5,7 +5,7 @@ target("TPTests")
         ".", "..", "../common", "../encoding", "../server")
     add_headerfiles("**.h")
     add_files("*.cpp")
-    add_deps("SkyrimEncoding", "CommonLib", "TiltedConnect")
+    add_deps("SkyrimEncoding", "CommonLib", "TiltedConnect", "ESLoader")
     add_packages(
         "tiltedcore",
         "hopscotch-map",

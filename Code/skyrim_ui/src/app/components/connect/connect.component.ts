@@ -73,7 +73,7 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
         }
       });
 
-    this.address = this.storeService.get('last_connected_address', '');
+    this.address = this.storeService.get('last_connected_address', '127.0.0.1:10578');
     this.password = this.storeService.get('last_connected_password', '');
     this.savePassword = this.password !== '';
   }
@@ -90,9 +90,12 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
   }
 
   async connect(): Promise<void> {
-    const address = this.address.trim().match(/^(.+?)(?::([0-9]+))?$/);
+    const trimmed = this.address.trim().replace(/^[a-zA-Z]+:\/\//, '').replace(/\/+$/, '');
+    const parsed = trimmed === ''
+      ? ['', '127.0.0.1', '10578']
+      : trimmed.match(/^([^:]+?)(?::([0-9]+))?(?::[0-9]+)*$/);
 
-    if (!address) {
+    if (!parsed) {
       this.sound.play(Sound.Fail);
       const message = await firstValueFrom(
         this.translocoService.selectTranslate(
@@ -103,9 +106,12 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
       return;
     }
 
+    const cleanHost = parsed[1].trim() || '127.0.0.1';
+    const cleanPort = parsed[2] ? Number.parseInt(parsed[2], 10) : 10578;
+
     this.connecting = true;
 
-    this.storeService.set('last_connected_address', this.address);
+    this.storeService.set('last_connected_address', `${cleanHost}:${cleanPort}`);
     if (this.savePassword) {
       this.storeService.set('last_connected_password', this.password);
     } else {
@@ -113,11 +119,7 @@ export class ConnectComponent implements OnDestroy, AfterViewInit {
     }
 
     this.sound.play(Sound.Ok);
-    this.client.connect(
-      address[1],
-      address[2] ? Number.parseInt(address[2]) : 10578,
-      this.password,
-    );
+    this.client.connect(cleanHost, cleanPort, this.password);
   }
 
   public cancel(): void {

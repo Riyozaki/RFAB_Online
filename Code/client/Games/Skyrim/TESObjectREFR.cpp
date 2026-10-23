@@ -144,11 +144,32 @@ void TESObjectREFR::SetRotation(float aX, float aY, float aZ) noexcept
 
 using TiltedPhoques::Serialization;
 
+namespace
+{
+// Descriptor indices are only valid for the behavior project they came from, and an Actor can switch projects
+// (e.g. creature re-roll, werewolf/vampire transform), so recompute whenever the behavior project changes.
+void UpdateGraphDescriptorHash(Actor* apActor, BSAnimationGraphManager* apManager, int aForceIndex) noexcept
+{
+    auto* pExtension = apActor->GetExtension();
+    const auto cProjectKey = apManager->GetProjectKey(aForceIndex);
+    if (pExtension->GraphDescriptorHash != 0 && pExtension->GraphDescriptorProjectKey == cProjectKey)
+        return;
+
+    const auto cPreviousHash = pExtension->GraphDescriptorHash;
+    pExtension->GraphDescriptorHash = apManager->GetDescriptorKey(aForceIndex);
+    pExtension->GraphDescriptorProjectKey = cProjectKey;
+
+    if (cPreviousHash != 0)
+        spdlog::info("Animation graph project of actor {:X} changed, graph descriptor {} -> {}", apActor->formID, cPreviousHash, pExtension->GraphDescriptorHash);
+}
+} // namespace
+
 void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const noexcept
 {
-    BSAnimationGraphManager* pManager = nullptr;
-    if (animationGraphHolder.GetBSAnimationGraph(&pManager))
+    const auto spManager = animationGraphHolder.GetAnimationGraphManagerPtr();
+    if (spManager)
     {
+        BSAnimationGraphManager* pManager = spManager.get();
         BSScopedLock<BSRecursiveLock> _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
@@ -170,15 +191,9 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
             if (!pGraph->behaviorGraph || !pGraph->behaviorGraph->stateMachine || !pGraph->behaviorGraph->stateMachine->name)
                 return;
 
+            // Force third person graph to be used on player
+            UpdateGraphDescriptorHash(pActor, pManager, pActor->formID == 0x14 ? 0 : -1);
             auto* pExtendedActor = pActor->GetExtension();
-            if (pExtendedActor->GraphDescriptorHash == 0)
-            {
-                // Force third person graph to be used on player
-                if (pActor->formID == 0x14)
-                    pExtendedActor->GraphDescriptorHash = pManager->GetDescriptorKey(0);
-                else
-                    pExtendedActor->GraphDescriptorHash = pManager->GetDescriptorKey();
-            }
 
             auto pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(pExtendedActor->GraphDescriptorHash);
 
@@ -202,7 +217,7 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
             {
                 const auto idx = pDescriptor->BooleanLookUpTable[i];
 
-                if (pVariableSet->data[idx] != 0)
+                if (pVariableSet->size > idx && pVariableSet->data[idx] != 0)
                     aVariables.Booleans[i] = true;
             }
 
@@ -210,26 +225,27 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
             {
                 const auto idx = pDescriptor->FloatLookupTable[i];
 
-                aVariables.Floats[i] = *reinterpret_cast<float*>(&pVariableSet->data[idx]);
+                if (pVariableSet->size > idx)
+                    aVariables.Floats[i] = *reinterpret_cast<float*>(&pVariableSet->data[idx]);
             }
 
             for (size_t i = 0; i < pDescriptor->IntegerLookupTable.size(); ++i)
             {
                 const auto idx = pDescriptor->IntegerLookupTable[i];
 
-                aVariables.Integers[i] = *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]);
+                if (pVariableSet->size > idx)
+                    aVariables.Integers[i] = *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]);
             }
         }
-
-        pManager->Release();
     }
 }
 
 void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables) const noexcept
 {
-    BSAnimationGraphManager* pManager = nullptr;
-    if (animationGraphHolder.GetBSAnimationGraph(&pManager))
+    const auto spManager = animationGraphHolder.GetAnimationGraphManagerPtr();
+    if (spManager)
     {
+        BSAnimationGraphManager* pManager = spManager.get();
         BSScopedLock<BSRecursiveLock> _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
@@ -246,9 +262,8 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
             if (!pActor)
                 return;
 
+            UpdateGraphDescriptorHash(pActor, pManager, -1);
             auto* pExtendedActor = pActor->GetExtension();
-            if (pExtendedActor->GraphDescriptorHash == 0)
-                pExtendedActor->GraphDescriptorHash = pManager->GetDescriptorKey();
 
             auto pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(pExtendedActor->GraphDescriptorHash);
 
@@ -259,16 +274,19 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
             if (!pDescriptor)
                 return;
 
-            const auto* pVariableSet = pGraph->behaviorGraph->animationVariables;
+            const auto* pBehaviorGraph = pGraph->behaviorGraph;
+            const auto* pVariableSet = pBehaviorGraph->animationVariables;
 
             if (!pVariableSet)
                 return;
 
+            // Never write into a variable whose word is an index: writing scalar data into a pointer/vector slot
+            // corrupts Havok bound-node lookups during behavior evaluation.
             for (size_t i = 0; i < pDescriptor->BooleanLookUpTable.size(); ++i)
             {
                 const auto idx = pDescriptor->BooleanLookUpTable[i];
 
-                if (pVariableSet->size > idx)
+                if (pVariableSet->size > idx && pBehaviorGraph->IsWordVariable(idx))
                 {
                     pVariableSet->data[idx] = aVariables.Booleans.size() > i ? aVariables.Booleans[i] : false;
                 }
@@ -278,18 +296,22 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
             {
                 const auto idx = pDescriptor->FloatLookupTable[i];
 
-                *reinterpret_cast<float*>(&pVariableSet->data[idx]) = aVariables.Floats.size() > i ? aVariables.Floats[i] : 0.f;
+                if (pVariableSet->size > idx && pBehaviorGraph->IsWordVariable(idx))
+                {
+                    *reinterpret_cast<float*>(&pVariableSet->data[idx]) = aVariables.Floats.size() > i ? aVariables.Floats[i] : 0.f;
+                }
             }
 
             for (size_t i = 0; i < pDescriptor->IntegerLookupTable.size(); ++i)
             {
                 const auto idx = pDescriptor->IntegerLookupTable[i];
 
-                *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]) = aVariables.Integers.size() > i ? aVariables.Integers[i] : 0;
+                if (pVariableSet->size > idx && pBehaviorGraph->IsWordVariable(idx))
+                {
+                    *reinterpret_cast<uint32_t*>(&pVariableSet->data[idx]) = aVariables.Integers.size() > i ? aVariables.Integers[i] : 0;
+                }
             }
         }
-
-        pManager->Release();
     }
 }
 

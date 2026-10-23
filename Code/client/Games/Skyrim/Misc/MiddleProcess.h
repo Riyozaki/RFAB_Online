@@ -2,6 +2,8 @@
 
 struct ActiveEffect;
 struct BGSLoadFormBuffer;
+struct bhkCharacterController;
+struct TESObjectREFR;
 
 struct InventoryEntry;
 
@@ -19,7 +21,9 @@ struct MiddleProcess
     BSPointerHandle<TESObjectREFR> commandingActor;
     uint8_t pad21C[0x220 - 0x21C];
     InventoryEntry* leftEquippedObject;
-    uint8_t pad228[0x260 - 0x228];
+    uint8_t pad228[0x250 - 0x228];
+    bhkCharacterController* charController;
+    uint8_t pad258[0x260 - 0x258];
     InventoryEntry* rightEquippedObject;
     InventoryEntry* ammoEquippedObject; // could be more than just ammo
     // 0xB8 - direction
@@ -29,4 +33,5 @@ struct MiddleProcess
 
 static_assert(offsetof(MiddleProcess, direction) == 0xB8);
 static_assert(offsetof(MiddleProcess, leftEquippedObject) == 0x220);
+static_assert(offsetof(MiddleProcess, charController) == 0x250);
 static_assert(offsetof(MiddleProcess, rightEquippedObject) == 0x260);

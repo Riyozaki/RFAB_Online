@@ -20,6 +20,7 @@
 #include <Messages/ReviveActionRequest.h>
 #include <Messages/SyncPlayerDownedState.h>
 #include <Misc/ActorValueOwner.h>
+#include <AI/Movement/PlayerControls.h>
 #include <PlayerCharacter.h>
 #include <Services/TransportService.h>
 
@@ -117,18 +118,107 @@ bool DownedStateService::InterceptPotentialFatalPlayerDamage(
 
     // Clamp player health safely down to 1.0f under ScopedReviveHealAllowance so Skyrim never triggers Actor::Kill
     // or REQ_DeathHandler, then transition immediately into frozen Downed-on-Knee state.
+    FinalizeLethalHitCushion(apPlayer, aCurrentHealth);
+    return true;
+}
+
+void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealthBefore) noexcept
+{
+    if (!apPlayer)
+        return;
+
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
-        const float safeDelta = kDownedFloorHealth - aCurrentHealth;
-        if (std::fabs(safeDelta) > 1e-3f)
-        {
-            apPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, safeDelta);
-            m_world.GetRunner().Trigger(HealthChangeEvent(apPlayer->formID, safeDelta));
-        }
+        const float healthNow = apPlayer->GetActorValue(ActorValueInfo::kHealth);
+        const float clampDelta = kDownedFloorHealth - healthNow;
+        if (std::fabs(clampDelta) > 1e-4f)
+            apPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, clampDelta);
+
+        const float netDelta = apPlayer->GetActorValue(ActorValueInfo::kHealth) - aHealthBefore;
+        if (std::fabs(netDelta) > 1e-4f)
+            m_world.GetRunner().Trigger(HealthChangeEvent(apPlayer->formID, netDelta));
     }
 
     EnterLocalDownedState();
-    return true;
+}
+
+void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept
+{
+    if (!apRemoteActor)
+        return;
+
+    apRemoteActor->SetNoBleedoutRecovery(aIsDowned);
+    BSFixedString animEvent(aIsDowned ? "BleedoutStart" : "BleedoutStop");
+    apRemoteActor->SendAnimationEvent(&animEvent);
+}
+
+void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
+{
+    PlayerControls* pControls = PlayerControls::GetInstance();
+    if (!pControls)
+        return;
+
+    if (aLocked)
+    {
+        if (!m_savedControls.Valid)
+        {
+            m_savedControls.Movement = pControls->pMovementHandler ? pControls->pMovementHandler->isEnabled : true;
+            m_savedControls.Sprint = pControls->pSprintHandler ? pControls->pSprintHandler->isEnabled : true;
+            m_savedControls.ReadyWeapon = pControls->pReadyWeaponHandler ? pControls->pReadyWeaponHandler->isEnabled : true;
+            m_savedControls.AutoMove = pControls->pAutoMoveHandler ? pControls->pAutoMoveHandler->isEnabled : true;
+            m_savedControls.Activate = pControls->pActivateHandler ? pControls->pActivateHandler->isEnabled : true;
+            m_savedControls.Jump = pControls->pJumpHandler ? pControls->pJumpHandler->isEnabled : true;
+            m_savedControls.Shout = pControls->shoutHandler ? pControls->shoutHandler->isEnabled : true;
+            m_savedControls.AttackBlock = pControls->attackBlockHandler ? pControls->attackBlockHandler->isEnabled : true;
+            m_savedControls.Sneak = pControls->sneakHandler ? pControls->sneakHandler->isEnabled : true;
+            m_savedControls.Valid = true;
+        }
+
+        // Lock locomotion, attacks, shouts, jumping, sprinting, and item activation while leaving pLookHandler and
+        // togglePOVHandler active so the downed player can freely rotate camera and watch allies come to revive them.
+        pControls->Data.MoveInputVec = {0.f, 0.f};
+        pControls->Data.bAutoMove = false;
+        if (pControls->pMovementHandler)
+            pControls->pMovementHandler->isEnabled = false;
+        if (pControls->pSprintHandler)
+            pControls->pSprintHandler->isEnabled = false;
+        if (pControls->pReadyWeaponHandler)
+            pControls->pReadyWeaponHandler->isEnabled = false;
+        if (pControls->pAutoMoveHandler)
+            pControls->pAutoMoveHandler->isEnabled = false;
+        if (pControls->pActivateHandler)
+            pControls->pActivateHandler->isEnabled = false;
+        if (pControls->pJumpHandler)
+            pControls->pJumpHandler->isEnabled = false;
+        if (pControls->shoutHandler)
+            pControls->shoutHandler->isEnabled = false;
+        if (pControls->attackBlockHandler)
+            pControls->attackBlockHandler->isEnabled = false;
+        if (pControls->sneakHandler)
+            pControls->sneakHandler->isEnabled = false;
+    }
+    else if (m_savedControls.Valid)
+    {
+        if (pControls->pMovementHandler)
+            pControls->pMovementHandler->isEnabled = m_savedControls.Movement;
+        if (pControls->pSprintHandler)
+            pControls->pSprintHandler->isEnabled = m_savedControls.Sprint;
+        if (pControls->pReadyWeaponHandler)
+            pControls->pReadyWeaponHandler->isEnabled = m_savedControls.ReadyWeapon;
+        if (pControls->pAutoMoveHandler)
+            pControls->pAutoMoveHandler->isEnabled = m_savedControls.AutoMove;
+        if (pControls->pActivateHandler)
+            pControls->pActivateHandler->isEnabled = m_savedControls.Activate;
+        if (pControls->pJumpHandler)
+            pControls->pJumpHandler->isEnabled = m_savedControls.Jump;
+        if (pControls->shoutHandler)
+            pControls->shoutHandler->isEnabled = m_savedControls.Shout;
+        if (pControls->attackBlockHandler)
+            pControls->attackBlockHandler->isEnabled = m_savedControls.AttackBlock;
+        if (pControls->sneakHandler)
+            pControls->sneakHandler->isEnabled = m_savedControls.Sneak;
+        m_savedControls = {};
+    }
 }
 
 void DownedStateService::EnterLocalDownedState() noexcept
@@ -143,10 +233,16 @@ void DownedStateService::EnterLocalDownedState() noexcept
     m_isLocalDowned = true;
     m_isChannelingRevive = false;
     m_channelTargetPlayerId = 0;
+    m_bleedoutReassertTimerSec = 0.0;
 
     pPlayer->InterruptCast(false);
     pPlayer->SetNoBleedoutRecovery(true);
     pPlayer->StopCombat();
+    SetDownedControlLock(true);
+
+    BSFixedString bleedoutStart("BleedoutStart");
+    pPlayer->SendAnimationEvent(&bleedoutStart);
+
     RedirectHostileAggroAwayFromPlayer(pPlayer);
 
     uint32_t nearbyHostiles = 0;
@@ -196,7 +292,9 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
-        const float maxHp = std::max(10.0f, pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth));
+        const float maxHp = std::max(
+            10.0f,
+            pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth) + pPlayer->healthModifiers.temporaryModifier);
         const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
         const float targetHp = std::max(kDownedFloorHealth + 1.0f, maxHp * std::clamp(aHealthFraction, 0.05f, 1.0f));
         const float healDelta = std::max(0.0f, targetHp - curHp);
@@ -212,6 +310,10 @@ void DownedStateService::ApplyAuthoritativeRevive(
         m_encounterHostileFormIds.clear();
 
     pPlayer->SetNoBleedoutRecovery(false);
+    SetDownedControlLock(false);
+
+    BSFixedString bleedoutStop("BleedoutStop");
+    pPlayer->SendAnimationEvent(&bleedoutStop);
 
     SyncPlayerDownedState syncUp{};
     syncUp.IsDowned = false;
@@ -228,9 +330,12 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
 void DownedStateService::ResetAllStates() noexcept
 {
+    const bool wasLocalDowned = m_isLocalDowned;
+
     m_isLocalDowned = false;
     m_allowAuthorizedHeal = false;
     m_graceRemainingSec = 0.0;
+    m_bleedoutReassertTimerSec = 0.0;
     m_isChannelingRevive = false;
     m_channelTargetPlayerId = 0;
     m_channelElapsedSec = 0.0;
@@ -239,8 +344,17 @@ void DownedStateService::ResetAllStates() noexcept
     m_liveBossesSeenInCombat.clear();
     m_remoteDownedByPlayerId.clear();
 
+    SetDownedControlLock(false);
+
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+    {
         pPlayer->SetNoBleedoutRecovery(false);
+        if (wasLocalDowned)
+        {
+            BSFixedString bleedoutStop("BleedoutStop");
+            pPlayer->SendAnimationEvent(&bleedoutStop);
+        }
+    }
 }
 
 void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
@@ -480,8 +594,18 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
     if (m_isLocalDowned)
     {
+        SetDownedControlLock(true);
         if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        {
             RedirectHostileAggroAwayFromPlayer(pPlayer);
+            m_bleedoutReassertTimerSec += acEvent.Delta;
+            if (m_bleedoutReassertTimerSec >= 1.5)
+            {
+                m_bleedoutReassertTimerSec = 0.0;
+                BSFixedString bleedoutStart("BleedoutStart");
+                pPlayer->SendAnimationEvent(&bleedoutStart);
+            }
+        }
     }
     else
     {
@@ -507,7 +631,7 @@ void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState
             continue;
 
         if (Actor* pRemoteActor = Cast<Actor>(TESForm::GetById(playerView.get<FormIdComponent>(entity).Id)))
-            pRemoteActor->SetNoBleedoutRecovery(acMessage.IsDowned);
+            ApplyRemoteActorDownedPosture(pRemoteActor, acMessage.IsDowned);
         break;
     }
 

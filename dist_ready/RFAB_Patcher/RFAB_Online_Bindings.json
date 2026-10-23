@@ -1,3 +1,56 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ad67a479f93f8e58e2716516a9df3a6e30f037f9598bdf12a7f109a30338468a
-size 1809
+{
+  "schema_version": 1,
+  "modpack": "Requiem for a Balance (drake1ch/RFAB)",
+  "target_runtime": "1.5.97.0.8",
+  "plugin_name": "RFAB.esp",
+  "editor_ids": {
+    "xp_amount_global": "RFAB_XP_Amount",
+    "xp_bonus_global": "RFAB_XP_Bonus",
+    "xp_books_formlist": "XPBooksReaded",
+    "no_death_handling_global": "REQ_Combat_NoDeathHandling",
+    "kill_counter_global": "TFOTG_Kill_Counter",
+    "xp_handler_quest": "RFAB_XP_Handler"
+  },
+  "fallback_base_form_ids": {
+    "xp_amount_global": "0x00AD45BB"
+  },
+  "synced_global_prefixes": [
+    "RFAB_Counter_",
+    "RFAB_Global_",
+    "RFAB_Boss_",
+    "RFAB_Quest_",
+    "TFOTG_"
+  ],
+  "excluded_global_prefixes": [
+    "RFAB_MCM_",
+    "RFAB_UI_",
+    "RFAB_Option_",
+    "RFAB_Key_",
+    "RFAB_HUD_",
+    "RFAB_Sound_",
+    "RFAB_Camera_",
+    "RFAB_XP_Amount",
+    "RFAB_XP_Bonus"
+  ],
+  "storage_util_paths": {
+    "experience_ini": "Data/SKSE/Plugins/StorageUtilData/Experience.ini",
+    "quests_ini": "Data/SKSE/Plugins/StorageUtilData/Quests.ini",
+    "xp_settings_json": "Data/SKSE/Plugins/StorageUtilData/RFAB_XP_Settings.json",
+    "boss_list_json": "Data/SKSE/Plugins/StorageUtilData/BossList.json",
+    "race_list_json": "Data/SKSE/Plugins/StorageUtilData/RaceList.json",
+    "rfab_autosave_ini": "Data/SKSE/Plugins/[RFAB] Autosave.ini"
+  },
+  "balance_defaults": {
+    "auto_scale_enemy_health": true,
+    "health_extra_base": 1.0,
+    "downed_revive_duration_sec": 4.0,
+    "downed_revive_hp_fraction": 0.30,
+    "post_revive_grace_sec": 3.0,
+    "combat_leash_radius_meters": 120.0,
+    "combat_clear_hysteresis_sec": 4.5,
+    "post_combat_autosave_interval_sec": 180,
+    "save_ring_buffer_size": 3,
+    "ambush_dedup_radius_meters": 12.0,
+    "ambush_dedup_window_ms": 3000
+  }
+}

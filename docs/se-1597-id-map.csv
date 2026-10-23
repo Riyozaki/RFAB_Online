@@ -141,7 +141,7 @@ ae_id,se_1_5_97_id,se_rva_hex,kind,ref_count,first_reference,source,symbol
 38928,37973,0x639B70,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:313,phase0,
 38929,37974,0x639E20,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:311,id_pairs_curated.csv,
 38930,37975,0x63A0D0,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:315,phase0,
-38933,37978,0x63A590,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:314,se_impl_verified,
+38933,37978,0x63a460,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:314,se_impl_verified,
 38934,37979,0x63A6B0,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:312,id_pairs_curated.csv,
 38935,37980,0x63A900,pointer,1,Code/client/Games/Skyrim/EquipManager.cpp:316,phase0,
 38949,37996,0x63AF10,pointer,1,Code/client/Games/Animation.cpp:189,phase0,ActorMediator::sub_14063AF10
@@ -3077,7 +3077,7 @@ ae_id,se_1_5_97_id,se_rva_hex,kind,ref_count,first_reference,source,symbol
 404238,517711,0x2F3AFB6,pointer,1,Code/client/Games/Skyrim/PlayerCharacter.cpp:60,clibng:relocation,gIsGodMode_142F3AFB6
 405282,518742,0x2F4AEB8,pointer,1,Code/client/Services/Debug/Views/CombatView.cpp:90,diaphora-318,
 406126,519579,0x2F4C910,pointer,1,Code/client/Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:19,diaphora-318,
-406160,520173,0x2F4F1E8,pointer,1,Code/client/Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:20,diaphora-353,
+406160,519618,0x2F4DED0,pointer,1,Code/client/Games/Skyrim/Interface/Menus/HUDMenuUtils.cpp:20,TrueHUD-verified,
 410506,523926,0x3012598,pointer,1,Code/client/Games/Skyrim/Camera/TESCamera.cpp:8,se_ae.csv,RE::NiRTTI_NiCamera
 411155,524557,0x301D758,pointer,1,Code/client/Games/INISettingCollection.cpp:7,clibng:relocation,gINISettingCollection_14301D758
 411347,524728,0x3025F00,pointer,1,Code/client/Games/Renderer.cpp:21,clibng:relocation,gUnkWindow_143025F00

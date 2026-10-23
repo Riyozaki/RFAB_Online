@@ -4,7 +4,11 @@
 #include <console/CommandSettingsProvider.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <unordered_set>
+#include <vector>
 #include <base/threading/ThreadUtils.h>
 
 namespace
@@ -12,6 +16,111 @@ namespace
 constexpr char kSettingsFileName[] = "STServer.ini";
 
 DediRunner* s_pRunner{nullptr};
+
+void EnsureServerLoadOrderReady()
+{
+    std::error_code ec;
+    const fs::path dataDir = fs::current_path() / "Data";
+    fs::create_directories(dataDir, ec);
+    const fs::path targetLoadOrder = dataDir / "loadorder.txt";
+
+    if (fs::exists(targetLoadOrder, ec) && fs::file_size(targetLoadOrder, ec) > 0 && !ec)
+    {
+        std::ifstream check(targetLoadOrder);
+        std::string firstLine;
+        std::getline(check, firstLine);
+        if (firstLine.rfind("version https://git-lfs.github.com/spec/v1", 0) != 0)
+            return;
+    }
+
+    // Try auto-discovering active loadorder.txt / plugins.txt from nearby MO2 installation or %LOCALAPPDATA%\Skyrim Special Edition
+    std::vector<fs::path> candidateDirs;
+    fs::path probe = fs::current_path();
+    for (int depth = 0; depth < 4 && !probe.empty(); ++depth)
+    {
+        candidateDirs.push_back(probe / "MO2" / "profiles");
+        candidateDirs.push_back(probe / "profiles");
+        if (probe == probe.parent_path())
+            break;
+        probe = probe.parent_path();
+    }
+#ifdef _WIN32
+    candidateDirs.emplace_back(L"G:\\RFAB Online SkyrimSE\\MO2\\profiles");
+    if (const char* localAppData = std::getenv("LOCALAPPDATA"); localAppData && *localAppData)
+        candidateDirs.push_back(fs::path(localAppData) / "Skyrim Special Edition");
+#endif
+
+    auto writeCleanOrder = [&](const fs::path& profDir) -> bool
+    {
+        const fs::path pluginsTxt = profDir / "plugins.txt";
+        const fs::path loadOrderTxt = profDir / "loadorder.txt";
+        if (!fs::exists(pluginsTxt, ec) && !fs::exists(loadOrderTxt, ec))
+            return false;
+
+        std::unordered_set<std::string> enabledSet = {
+            "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"
+        };
+        std::vector<std::string> ordered;
+
+        if (fs::exists(pluginsTxt, ec))
+        {
+            std::ifstream pf(pluginsTxt);
+            std::string line;
+            while (std::getline(pf, line))
+            {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+                    line.pop_back();
+                if (line.size() > 1 && line[0] == '*')
+                {
+                    const std::string name = line.substr(1);
+                    enabledSet.insert(name);
+                    if (!fs::exists(loadOrderTxt, ec))
+                        ordered.push_back(name);
+                }
+            }
+        }
+
+        if (fs::exists(loadOrderTxt, ec))
+        {
+            std::ifstream lf(loadOrderTxt);
+            std::string line;
+            while (std::getline(lf, line))
+            {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+                    line.pop_back();
+                if (!line.empty() && line[0] != '#' && enabledSet.count(line) > 0)
+                    ordered.push_back(line);
+            }
+        }
+
+        if (ordered.empty())
+            return false;
+
+        if (enabledSet.count("SkyrimTogether.esp") == 0)
+            ordered.push_back("SkyrimTogether.esp");
+
+        std::ofstream out(targetLoadOrder, std::ios::binary | std::ios::trunc);
+        if (!out.is_open())
+            return false;
+        for (const auto& entry : ordered)
+            out << entry << "\n";
+        spdlog::info("[RFAB Server] Auto-synced {} active plugins from '{}' -> Data/loadorder.txt", ordered.size(), profDir.string());
+        return true;
+    };
+
+    for (const auto& base : candidateDirs)
+    {
+        if (!fs::exists(base, ec))
+            continue;
+        if (writeCleanOrder(base))
+            return;
+        for (const auto& sub : fs::directory_iterator(base, ec))
+        {
+            if (sub.is_directory(ec) && writeCleanOrder(sub.path()))
+                return;
+        }
+    }
+}
 } // namespace
 
 // imports
@@ -29,18 +138,21 @@ DediRunner::DediRunner(int argc, char** argv)
 {
     s_pRunner = this;
 
+    EnsureServerLoadOrderReady();
+
     uv_loop_init(&m_loop);
 
     m_pServerInstance = std::move(CreateGameServer(m_console, [this, argc, argv]() { LoadSettings(argc, argv); }));
 
     // it is here for now..
     m_pServerInstance->Initialize();
-    SaveSettingsToIni(m_console, m_SettingsPath);
+    if (m_useIni && !m_SettingsPath.empty())
+        SaveSettingsToIni(m_console, m_SettingsPath);
 }
 
 DediRunner::~DediRunner()
 {
-    if (m_useIni)
+    if (m_useIni && !m_SettingsPath.empty())
         SaveSettingsToIni(m_console, m_SettingsPath);
     uv_loop_close(&m_loop);
 }
@@ -55,12 +167,20 @@ void DediRunner::LoadSettings(int argc, char** argv)
     else
     {
         m_useIni = true;
+        std::error_code ec;
         m_SettingsPath = fs::current_path() / kConfigPathName / kSettingsFileName;
-        if (!exists(m_SettingsPath))
+        bool needsFreshIni = !exists(m_SettingsPath, ec);
+        if (!needsFreshIni)
         {
-            // there is a bug in here... waiting to be found
-            // since we dont register our settings till later, so the server settings might be... missing??
-            create_directory(fs::current_path() / kConfigPathName);
+            std::ifstream check(m_SettingsPath);
+            std::string firstLine;
+            std::getline(check, firstLine);
+            if (firstLine.rfind("version https://git-lfs.github.com/spec/v1", 0) == 0)
+                needsFreshIni = true;
+        }
+        if (needsFreshIni)
+        {
+            create_directories(fs::current_path() / kConfigPathName, ec);
             SaveSettingsToIni(m_console, m_SettingsPath);
             return;
         }
@@ -81,19 +201,22 @@ void DediRunner::ReadStdin(uv_stream_t* apStream, ssize_t aRead, const uv_buf_t*
     if (aRead < 0)
     {
         if (aRead == UV_EOF)
-            uv_close(reinterpret_cast<uv_handle_t*>(&apStream), nullptr);
+            uv_close(reinterpret_cast<uv_handle_t*>(apStream), nullptr);
     }
     else if (aRead > 0)
     {
         for (auto i = 0; i < aRead; ++i)
         {
-            if (acpBuffer->base[i] == '\n')
+            const char ch = acpBuffer->base[i];
+            if (ch == '\r')
+                continue;
+            if (ch == '\n')
             {
                 ctx->instance->HandleConsole(ctx->data);
                 ctx->data = "";
             }
             else
-                ctx->data += acpBuffer->base[i];
+                ctx->data += ch;
         }
     }
 
@@ -135,7 +258,9 @@ void DediRunner::StartTerminalIO()
     spdlog::get("ConOut")->info("Server started, type /help for a list of commands.");
     PrintExecutorArrowHack();
 
-    uv_tty_init(&m_loop, &m_tty, 0, 1);
+    if (uv_guess_handle(0) != UV_TTY || uv_tty_init(&m_loop, &m_tty, 0, 1) != 0)
+        return;
+
     uv_tty_set_mode(&m_tty, UV_TTY_MODE_NORMAL);
 
     static Context ctx;

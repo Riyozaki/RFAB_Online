@@ -52,6 +52,7 @@
 #include <Games/Skyrim/BSAnimationGraphManager.h>
 #include <Havok/hkbStateMachine.h>
 #include <Havok/hkbBehaviorGraph.h>
+#include <Havok/bhkCharacterController.h>
 #include <Forms/BGSOutfit.h>
 #include <Forms/TESObjectARMO.h>
 
@@ -158,8 +159,14 @@ void Actor::ForcePosition(const NiPoint3& acPosition) noexcept
 {
     ScopedReferencesOverride recursionGuard;
 
-    // It just works TM
-    SetPosition(acPosition, true);
+    bool updateController = true;
+    if (GetExtension()->IsRemote() && currentProcess)
+    {
+        if (auto* pController = currentProcess->GetCharController())
+            updateController = pController->UpdateStepTiming();
+    }
+
+    SetPosition(acPosition, updateController);
 }
 
 void Actor::QueueUpdate() noexcept
@@ -1044,9 +1051,36 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
                 return false;
         }
 
-        // RFAB Stage 3 Downed-on-Knee interception: clamp HP at 1.0f BEFORE Actor::Kill / REQ_DeathHandler fires!
-        if (World::Get().GetDownedStateService().InterceptPotentialFatalPlayerDamage(apThis, currentHealth, estimatedRealDamage))
-            return false;
+        auto& downedSvc = World::Get().GetDownedStateService();
+        if (downedSvc.IsSystemActive())
+        {
+            if (downedSvc.IsLocalPlayerDowned() || downedSvc.IsLocalPlayerInvulnerable())
+                return false;
+
+            // Cushion temporaryModifier across RealDamageActor so RFAB.dll / HookDamage.dll / Requiem multipliers
+            // execute 100% natively without ever reaching <= 0 HP or firing Actor::Kill / REQ_DeathHandler / killmoves.
+            constexpr float kLethalGuardCushion = 65536.0f;
+            const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
+            const float savedTempMod = apThis->healthModifiers.temporaryModifier;
+            apThis->healthModifiers.temporaryModifier = savedTempMod + kLethalGuardCushion;
+
+            const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, false);
+
+            apThis->healthModifiers.temporaryModifier = savedTempMod;
+            const float realHealthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
+
+            if (realHealthAfter <= 1.0f)
+            {
+                downedSvc.FinalizeLethalHitCushion(apThis, healthBefore);
+                return false;
+            }
+
+            const float actualDelta = realHealthAfter - healthBefore;
+            if (actualDelta != 0.f)
+                World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+
+            return result;
+        }
 
         return applyAuthoritativeDamage();
     }
@@ -1380,14 +1414,21 @@ bool Actor::IsSpeakingInScene()
     return isSpeakingInScene;
 }
 
-char TP_MAKE_THISCALL(HookActorProcess, Actor, float a2)
+char TP_MAKE_THISCALL(HookActorProcess, Actor, float aDeltaTime)
 {
-    // Only process AI if we own the actor
-
+    // Suppress local AI movement for remote actors while keeping Havok stepInfo valid
+    // so SetPositionImpl never divides by 0 / stale deltaTime.
     if (apThis->GetExtension()->IsRemote())
-            return 0;
+    {
+        if (apThis->currentProcess)
+        {
+            if (auto* pController = apThis->currentProcess->GetCharController())
+                pController->UpdateStepTiming(aDeltaTime);
+        }
+        return 0;
+    }
 
-    return TiltedPhoques::ThisCall(RealActorProcess, apThis, a2);
+    return TiltedPhoques::ThisCall(RealActorProcess, apThis, aDeltaTime);
 }
 
 TP_THIS_FUNCTION(TAddDeathItems, void, Actor);

@@ -10,6 +10,7 @@
 #include "DllBlocklist.h"
 #include "../Launcher.h"        // For gameDir
 #include "../TargetConfig.h"    // For PRODUCT_NAME
+#include <common/RfabModpackCompat.h>
 
 namespace stubs
 {
@@ -121,85 +122,17 @@ enum GreyListDisposition
 
 GreyListDisposition IsConfigOK(const std::filesystem::path& aPath, const DllGreyEntry& aEntry)
 {
-    std::regex signatureRegex; 
+    // Auto-heal EngineFixes.toml (v5/v6/v7 & partial MO2 overrides such as RFAB's "Disable Quick Saves")
+    // directly through USVFS / MO2 mods before EngineFixes.dll reads its configuration on startup.
+    RfabCompat::EnsureEngineFixesPatchedUnderRoot(aPath);
 
     std::filesystem::path configFile = aPath / aEntry.m_configLocation;
-    std::fstream file(configFile, std::ios::in);
-    if (!file.good())
+    std::string content;
+    if (!RfabCompat::Detail::ReadTextFile(configFile, content))
         return kGreyListAccept;
 
-    std::stringstream rawStream;
-    rawStream << file.rdbuf();
-    if (rawStream.bad() || file.bad())
-    {
-        auto msg = fmt::format(__FUNCTION__ L": failed to read {}", aEntry.m_configLocation);
-        Die(msg.c_str(), true);
-        return kGreyListAbort;
-    }
-
-    const std::string normalizedOrig = NormalizeLineEndings(rawStream.str());
-    std::stringstream configStream(normalizedOrig);
-    std::string newConfig;
-
-    try
-    {
-        {
-            const std::regex validatorRegex(aEntry.m_configValidator, std::regex_constants::icase);
-            std::smatch vmatch;
-            if (!std::regex_search(normalizedOrig.begin(), normalizedOrig.end(), vmatch, validatorRegex))
-                return kGreyListAbort;
-        }
-
-        signatureRegex = std::regex(aEntry.m_sigRegex, std::regex_constants::icase);
-
-        if (!aEntry.m_replacers)
-            return kGreyListAccept;
-
-        std::string line;
-        std::stringstream replacers(aEntry.m_replacers);
-
-        while (std::getline(configStream, line))
-        {
-            std::string pattern;
-            std::string withThat;
-            while (std::getline(replacers, pattern) && std::getline(replacers, withThat))
-            {
-                std::regex replaceThis(pattern, std::regex_constants::icase);
-                line = std::regex_replace(line, replaceThis, withThat);
-            }
-
-            newConfig += line + "\n";
-            replacers.clear();
-            replacers.seekg(0, std::ios::beg);
-        }
-    }
-    catch ([[maybe_unused]] const std::regex_error& e)
-    {
-        auto msg = fmt::format(__FUNCTION__ L": invalid regular expression in DLL grey list handling");
-        Die(msg.c_str(), true);
-        return kGreyListAbort;
-    }
-
-    if (_stricmp(newConfig.c_str(), normalizedOrig.c_str()) == 0)
-        return kGreyListAccept;
-
-    if (MessageBoxW(NULL, aEntry.m_prompt, PRODUCT_NAME L" Requires Configuration Changes", MB_OKCANCEL | MB_ICONWARNING) == IDCANCEL)
-        return kGreyListAbort;
-
-    if (!std::regex_search(newConfig, signatureRegex))
-        newConfig = aEntry.m_sigToInsert + newConfig;
-
-    file = std::fstream(configFile, std::ios::in | std::ios::out | std::ios::trunc);
-
-    if (!file.bad())
-        file << newConfig;
-
-    if (file.bad())
-    {
-        auto msg = fmt::format(__FUNCTION__ L": failed to rewrite {}", configFile.c_str());
-        Die(msg.c_str(), true);
-        return kGreyListAbort;
-    }
+    if (RfabCompat::PatchEngineFixesTomlContent(content))
+        RfabCompat::Detail::WriteTextFile(configFile, content);
 
     return kGreyListAccept;
 }

@@ -41,12 +41,16 @@ MAP_CSV = REPO_ROOT / "docs" / "se-1597-id-map.csv"
 EXTRA_VALID_SE_IDS = {
     14464: 0x01944E0,
     20470: 0x02C53D0,
+    33672: 0x05506C0,
     34818: 0x0586DE0,
     34819: 0x0587350,
     37513: 0x0620900,
+    42928: 0x074B170,
     75591: 0x0D71F00,
     79949: 0x0EBF9C0,
     516860: 0x2F26740,
+    523660: 0x2F6B948,
+    523661: 0x2F6B94C,
 }
 
 EXPECTED_STRUCT_ASSERTS = {
@@ -58,6 +62,7 @@ EXPECTED_STRUCT_ASSERTS = {
     "Code/client/Games/Skyrim/Components/TESLeveledList.h": "sizeof(TESLeveledList) == 0x28",
     "Code/client/Games/Skyrim/BSAnimationGraphManager.h": "offsetof(BSAnimationGraphManager, animationGraphIndex) == 0xA8",
     "Code/client/Games/Skyrim/Combat/CombatController.h": "sizeof(CombatController) == 0xD8",
+    "Code/client/Games/Skyrim/Projectiles/Projectile.h": "offsetof(Projectile, fPower) == 0x188",
     "Code/client/Games/TES.h": "offsetof(ModManager, formLists) == 0x898",
 }
 

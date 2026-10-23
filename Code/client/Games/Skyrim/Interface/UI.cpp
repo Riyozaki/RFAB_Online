@@ -93,7 +93,7 @@ template <size_t Index>
 IMenu* WrappedMenuCreator(UIMessage* apMessage)
 {
     IMenu* pMenu = s_realCreators[Index](apMessage);
-    if (pMenu && World::Get().GetTransport().IsConnected() && !stubs::g_IsSoulsREActive)
+    if (pMenu && World::Get().GetTransport().IsConnected())
     {
         UnfreezeMenu(pMenu);
     }
@@ -132,7 +132,7 @@ static void Hook_UI_Register(UI* apSelf, const char* apMenuName, UI::TCreate* ap
         }
     }
 
-    if (apMenuName && apCreate && !stubs::g_IsSoulsREActive && GetModuleHandleW(L"SkyrimSoulsRE.dll") == nullptr)
+    if (apMenuName && apCreate)
     {
         apCreate = WrapCreatorImpl(apMenuName, apCreate, std::make_index_sequence<kAllowListCount>{});
     }

@@ -402,7 +402,12 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             pActor->SetActorInventory(acMessage.CurrentInventory);
 
             if (pActor->IsDead() != acMessage.IsDead)
-                acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
+            {
+                if (acMessage.IsDead)
+                    pActor->Kill();
+                else
+                    spdlog::info("Keeping local actor {:X} dead instead of Respawn() to prevent leveled re-roll duplication", pActor->formID);
+            }
 
             m_weaponDrawUpdates[pActor->formID] = {acMessage.IsWeaponDrawn};
             MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
@@ -530,6 +535,13 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             return;
         }
 
+        // Moving an uninitialized reference crashes (e.g. null race); local cell discovery will assign it once loaded.
+        if (pActor->IsStillLoading())
+        {
+            spdlog::info("Skipped spawn for actor {:X} because its cell ref is still loading, server id: {:X}", cActorId, acMessage.ServerId);
+            return;
+        }
+
         const auto view = m_world.view<FormIdComponent>();
         const auto itor = std::find_if(std::begin(view), std::end(view), [cActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == cActorId; });
 
@@ -576,6 +588,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         pActor->SetIgnoreFriendlyHit(true);
         pActor->SetPlayerRespawnMode();
         m_world.emplace_or_replace<PlayerComponent>(*entity, acMessage.PlayerId);
+        if (m_world.GetDownedStateService().IsRemotePlayerDowned(acMessage.PlayerId))
+            m_world.GetDownedStateService().ApplyRemoteActorDownedPosture(pActor, true);
     }
 
     if (pActor->IsDead() != acMessage.IsDead)

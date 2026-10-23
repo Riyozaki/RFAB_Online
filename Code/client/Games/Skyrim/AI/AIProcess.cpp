@@ -1,4 +1,10 @@
 #include "AIProcess.h"
+#include <Misc/MiddleProcess.h>
+
+bhkCharacterController* AIProcess::GetCharController() noexcept
+{
+    return middleProcess ? middleProcess->charController : nullptr;
+}
 
 void AIProcess::KnockExplosion(Actor* apActor, const NiPoint3* aSourceLocation, float afMagnitude)
 {

@@ -110,6 +110,18 @@ int StartUp(int argc, char** argv)
     // Ensure EngineFixes.toml (including MO2 overrides like RFAB's "Disable Quick Saves/skse/plugins/EngineFixes.toml")
     // disables conflicting allocators and sets MaxStdio = 8192 while preserving RegularQuicksaves = true.
     RfabCompat::EnsureEngineFixesPatchedUnderRoot(LC->gamePath);
+    {
+        std::error_code cwdEc;
+        const auto cwd = std::filesystem::current_path(cwdEc);
+        if (!cwdEc && !cwd.empty())
+        {
+            // When launched via MO2 from <MO2>/mods/RFAB_Online/SkyrimTogetherReborn, 3 parents up is <MO2> itself
+            // even when MO2 is installed on a completely separate drive/folder from LC->gamePath!
+            const auto mo2FromCwd = cwd.parent_path().parent_path().parent_path();
+            if (!mo2FromCwd.empty() && mo2FromCwd != LC->gamePath)
+                RfabCompat::EnsureEngineFixesPatchedUnderRoot(mo2FromCwd);
+        }
+    }
 
     // Bind path environment.
     loader::InstallPathRouting(LC->gamePath);

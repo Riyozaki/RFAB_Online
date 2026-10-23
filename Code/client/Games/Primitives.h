@@ -271,7 +271,7 @@ struct NiRefObject
     void DecRef();
     bool Release();
 
-    volatile long refCount;
+    volatile LONG refCount;
     uint32_t padC;
 };
 
@@ -411,13 +411,6 @@ template <class T> struct GamePtr
 private:
     T* m_pPointer;
 };
-
-struct alignas(sizeof(void*)) BSIntrusiveRefCounted
-{
-    volatile int32_t refCount;
-};
-
-static_assert(sizeof(BSIntrusiveRefCounted) == sizeof(void*));
 
 enum ETiltedFlags : uint8_t
 {

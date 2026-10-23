@@ -1,5 +1,7 @@
 #pragma once
 
+#include <BSCore/BSTSmartPointer.h>
+
 struct BSAnimationGraphManager;
 struct BSFixedString;
 
@@ -9,7 +11,7 @@ struct IAnimationGraphManagerHolder
 
     virtual bool SendAnimationEvent(BSFixedString* apAnimEvent);
 
-    virtual bool GetBSAnimationGraph(BSAnimationGraphManager** aPtr) const;
+    virtual bool GetBSAnimationGraph(BSTSmartPointer<BSAnimationGraphManager>& aOut) const;
     virtual uint32_t sub_3();
     virtual uint32_t sub_4();
     virtual uint32_t sub_5();
@@ -33,6 +35,7 @@ struct IAnimationGraphManagerHolder
     bool SetVariableBool(BSFixedString* apVariable, bool aValue);
     bool IsReady();
     bool RevertAnimationGraphManager();
+    BSTSmartPointer<BSAnimationGraphManager> GetAnimationGraphManagerPtr() const noexcept;
 
     bool ReSendAnimationEvent(BSFixedString* apAnimEvent);
 };

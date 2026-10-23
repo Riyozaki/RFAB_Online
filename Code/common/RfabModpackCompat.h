@@ -469,16 +469,113 @@ inline void ParseXpSettingsJson(std::string_view aJson, RfabLiveXpTable& aTable)
     }
 }
 
+// Normalizes user-entered server addresses from CEF / console / config so all common forms work cleanly:
+//   ""                        -> "127.0.0.1:10578"
+//   "localhost"               -> "127.0.0.1:10578"
+//   "localhost:10578"         -> "127.0.0.1:10578"
+//   "26.160.34.131"           -> "26.160.34.131:10578"
+//   "26.160.34.131:10578"     -> "26.160.34.131:10578"
+//   "26.160.34.131:10578:10578" -> "26.160.34.131:10578"
+//   "26.160.34.131:27015"     -> "26.160.34.131:27015"
+//   "udp://26.160.34.131:10578/" -> "26.160.34.131:10578"
+inline std::string NormalizeServerEndpoint(std::string_view aRawInput, uint16_t aFallbackPort = 10578)
+{
+    const uint16_t safeDefaultPort = aFallbackPort != 0 ? aFallbackPort : static_cast<uint16_t>(10578);
+    std::string s = Detail::Trim(aRawInput);
+
+    if (const size_t schemePos = s.find("://"); schemePos != std::string::npos)
+        s.erase(0, schemePos + 3);
+
+    while (!s.empty() && (s.back() == '/' || std::isspace(static_cast<unsigned char>(s.back()))))
+        s.pop_back();
+
+    if (s.empty())
+        return "127.0.0.1:" + std::to_string(safeDefaultPort);
+
+    uint16_t chosenPort = safeDefaultPort;
+
+    // Bracketed IPv6: "[::1]:10578" or "[::1]"
+    if (s.front() == '[')
+    {
+        const size_t closeBracket = s.find(']');
+        if (closeBracket != std::string::npos)
+        {
+            const std::string hostPart = s.substr(0, closeBracket + 1);
+            std::string tail = s.substr(closeBracket + 1);
+            while (!tail.empty() && tail.front() == ':')
+            {
+                const size_t nextColon = tail.find(':', 1);
+                const std::string portStr = tail.substr(1, nextColon == std::string::npos ? std::string::npos : nextColon - 1);
+                char* endPtr = nullptr;
+                const unsigned long parsed = std::strtoul(portStr.c_str(), &endPtr, 10);
+                if (endPtr != portStr.c_str() && *endPtr == '\0' && parsed >= 1 && parsed <= 65535)
+                    chosenPort = static_cast<uint16_t>(parsed);
+                if (nextColon == std::string::npos)
+                    break;
+                tail.erase(0, nextColon);
+            }
+            return hostPart + ":" + std::to_string(chosenPort);
+        }
+    }
+
+    // Strip one or more trailing ":<digits>" segments (handles "ip:port" AND accidental "ip:port:port" cleanly),
+    // preserving the FIRST explicit port typed right after the host!
+    std::vector<uint16_t> trailingPorts;
+    while (true)
+    {
+        const size_t lastColon = s.rfind(':');
+        if (lastColon == std::string::npos)
+            break;
+
+        const std::string portToken = Detail::Trim(std::string_view(s).substr(lastColon + 1));
+        if (portToken.empty())
+        {
+            s.erase(lastColon);
+            continue;
+        }
+
+        bool allDigits = true;
+        for (char c : portToken)
+        {
+            if (!std::isdigit(static_cast<unsigned char>(c)))
+            {
+                allDigits = false;
+                break;
+            }
+        }
+        if (!allDigits)
+            break;
+
+        const unsigned long parsed = std::strtoul(portToken.c_str(), nullptr, 10);
+        if (parsed >= 1 && parsed <= 65535)
+            trailingPorts.push_back(static_cast<uint16_t>(parsed));
+        s.erase(lastColon);
+    }
+
+    // Trailing ports were popped right-to-left, so trailingPorts.back() is the port typed directly on the host!
+    if (!trailingPorts.empty())
+        chosenPort = trailingPorts.back();
+
+    std::string host = Detail::Trim(s);
+    if (host.empty() || Detail::ToLowerAscii(host) == "localhost")
+        host = "127.0.0.1";
+
+    return host + ":" + std::to_string(chosenPort);
+}
+
 // Idempotently patches EngineFixes.toml content (including overrides like RFAB's
 // "Disable Quick Saves/skse/plugins/EngineFixes.toml") so Tilted's allocator & MO2 VFS work cleanly
-// while preserving RegularQuicksaves = true and all other user settings byte-for-byte.
+// across both EngineFixes v5/v6 (Skyrim SE 1.5.97) and v7 keys while preserving user settings.
 inline bool PatchEngineFixesTomlContent(std::string& aToml)
 {
     bool changed = false;
     const bool hasCrLf = aToml.find("\r\n") != std::string::npos;
     const std::string newline = hasCrLf ? "\r\n" : "\n";
+    const bool hasBPrefixV7 = aToml.find("bVerboseLogging") != std::string::npos || aToml.find("bMemoryManager") != std::string::npos;
+    const bool hasMemMgrSectionV7 = aToml.find("[MemoryManager]") != std::string::npos &&
+                                    (aToml.find("OverrideVanilla") != std::string::npos || aToml.find("OverrideScaleform") != std::string::npos);
 
-    auto patchKey = [&](std::string_view keyName, std::string_view desiredValue)
+    auto patchKey = [&](std::string_view keyName, std::string_view desiredValue) -> bool
     {
         std::istringstream iss(aToml);
         std::ostringstream oss;
@@ -527,11 +624,138 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
 
         if (found)
             aToml = oss.str() + ((!aToml.empty() && aToml.back() == '\n') ? newline : "");
+        return found;
     };
 
-    patchKey("MemoryManager", "false");
-    patchKey("ScaleformAllocator", "false");
-    patchKey("MaxStdio", "8192");
+    auto insertUnderSection = [&](std::string_view sectionName, const std::vector<std::pair<std::string_view, std::string_view>>& missingEntries)
+    {
+        if (missingEntries.empty())
+            return;
+
+        std::string addBlock;
+        for (const auto& [k, v] : missingEntries)
+            addBlock += std::string(k) + " = " + std::string(v) + newline;
+
+        const std::string header = "[" + std::string(sectionName) + "]";
+        const size_t pos = aToml.find(header);
+        if (pos != std::string::npos)
+        {
+            size_t lineEnd = aToml.find('\n', pos);
+            if (lineEnd == std::string::npos)
+            {
+                aToml += newline + addBlock;
+            }
+            else
+            {
+                aToml.insert(lineEnd + 1, addBlock);
+            }
+        }
+        else
+        {
+            if (!aToml.empty() && aToml.back() != '\n')
+                aToml += newline;
+            aToml += header + newline + addBlock;
+        }
+        changed = true;
+    };
+
+    if (hasBPrefixV7)
+    {
+        patchKey("bMemoryManager", "false");
+        patchKey("bScaleformAllocator", "false");
+        patchKey("bRegularQuicksaves", "true");
+        patchKey("iMaxStdio", "8192");
+    }
+    if (hasMemMgrSectionV7)
+    {
+        const bool hasOvVanilla = patchKey("OverrideVanilla", "false");
+        const bool hasOvScaleform = patchKey("OverrideScaleform", "false");
+        std::vector<std::pair<std::string_view, std::string_view>> missingMm;
+        if (!hasOvVanilla)
+            missingMm.emplace_back("OverrideVanilla", "false");
+        if (!hasOvScaleform)
+            missingMm.emplace_back("OverrideScaleform", "false");
+        insertUnderSection("MemoryManager", missingMm);
+    }
+    if (!hasBPrefixV7)
+    {
+        const bool hasMemMgr = patchKey("MemoryManager", "false");
+        const bool hasScaleform = patchKey("ScaleformAllocator", "false");
+        const bool hasQuicksaves = patchKey("RegularQuicksaves", "true");
+        const bool hasMaxStdio = patchKey("MaxStdio", "8192");
+        const bool hasSaveMax = patchKey("SaveGameMaxSize", "true");
+
+        // Ensure partial MO2 overrides (e.g. "Disable Quick Saves/skse/plugins/EngineFixes.toml")
+        // contain all required [Patches] keys inside [Patches] itself for SSE Engine Fixes v5/v6 (SE 1.5.97)!
+        std::vector<std::pair<std::string_view, std::string_view>> missingPatches;
+        if (!hasMemMgr && !hasMemMgrSectionV7)
+            missingPatches.emplace_back("MemoryManager", "false");
+        if (!hasScaleform && !hasMemMgrSectionV7)
+            missingPatches.emplace_back("ScaleformAllocator", "false");
+        if (!hasQuicksaves)
+            missingPatches.emplace_back("RegularQuicksaves", "true");
+        if (!hasMaxStdio)
+            missingPatches.emplace_back("MaxStdio", "8192");
+        insertUnderSection("Patches", missingPatches);
+
+        if (!hasSaveMax)
+            insertUnderSection("SaveGameMaxSize", {{"SaveGameMaxSize", "true"}});
+    }
+
+    return changed;
+}
+
+// Neutralizes local menu time-dilation in SkyrimSoulsRE.ini ([SLOWMOTION]) so opening menus never desyncs real-time co-op.
+inline bool PatchSkyrimSoulsReIniContent(std::string& aIni)
+{
+    bool changed = false;
+    const bool hasCrLf = aIni.find("\r\n") != std::string::npos;
+    const std::string newline = hasCrLf ? "\r\n" : "\n";
+
+    std::istringstream iss(aIni);
+    std::ostringstream oss;
+    std::string line;
+    bool first = true;
+
+    while (std::getline(iss, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+
+        if (!first)
+            oss << newline;
+        first = false;
+
+        const std::string trimmed = Detail::Trim(line);
+        if (!trimmed.empty() && trimmed.front() != ';' && trimmed.front() != '#' && trimmed.front() != '[')
+        {
+            if (const size_t eq = trimmed.find('='); eq != std::string::npos)
+            {
+                const std::string keyLower = Detail::ToLowerAscii(Detail::Trim(std::string_view(trimmed).substr(0, eq)));
+                std::string val = Detail::Trim(std::string_view(trimmed).substr(eq + 1));
+                if (const size_t semi = val.find_first_of(";#"); semi != std::string::npos)
+                    val = Detail::Trim(std::string_view(val).substr(0, semi));
+
+                if (Detail::StartsWithIgnoreCase(keyLower, "benableslowmotion") && Detail::ToLowerAscii(val) != "false")
+                {
+                    const size_t rawEq = line.find('=');
+                    line = line.substr(0, rawEq + 1) + " false";
+                    changed = true;
+                }
+                else if (keyLower == "fslowmotionmultiplier" && val != "1.000000" && val != "1.0" && val != "1")
+                {
+                    const size_t rawEq = line.find('=');
+                    line = line.substr(0, rawEq + 1) + " 1.000000";
+                    changed = true;
+                }
+            }
+        }
+
+        oss << line;
+    }
+
+    if (changed)
+        aIni = oss.str() + ((!aIni.empty() && aIni.back() == '\n') ? newline : "");
 
     return changed;
 }
@@ -539,8 +763,9 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
 inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acGameOrMo2Root) noexcept
 {
     size_t patchedFiles = 0;
+    std::error_code ec;
 
-    auto patchSingle = [&](const std::filesystem::path& p)
+    auto patchToml = [&](const std::filesystem::path& p)
     {
         std::string content;
         if (!Detail::ReadTextFile(p, content))
@@ -553,32 +778,77 @@ inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acG
         }
     };
 
-    // 1. Direct or MO2 USVFS-mapped Data/SKSE/Plugins/EngineFixes.toml (resolves directly to winning override, e.g. Disable Quick Saves!)
-    patchSingle(acGameOrMo2Root / "Data" / "SKSE" / "Plugins" / "EngineFixes.toml");
-    patchSingle(acGameOrMo2Root / "Data" / "skse" / "plugins" / "EngineFixes.toml");
-
-    // 2. If game sits next to or inside an MO2 instance root, scan mods/*/skse/plugins/EngineFixes.toml as well.
-    std::error_code ec;
-    for (const auto& candidateModsDir : {acGameOrMo2Root / "mods", acGameOrMo2Root.parent_path() / "mods"})
+    auto patchSoulsIni = [&](const std::filesystem::path& p)
     {
-        if (!std::filesystem::exists(candidateModsDir, ec) || !std::filesystem::is_directory(candidateModsDir, ec))
+        std::string content;
+        if (!Detail::ReadTextFile(p, content))
+            return;
+
+        if (PatchSkyrimSoulsReIniContent(content))
+        {
+            if (Detail::WriteTextFile(p, content))
+                ++patchedFiles;
+        }
+    };
+
+    auto hideBetterStealing = [&](const std::filesystem::path& rootDir)
+    {
+        for (const auto& rel : {
+                 std::filesystem::path("NetScriptFramework") / "Plugins" / "BetterStealing.dll",
+                 std::filesystem::path("netscriptframework") / "plugins" / "BetterStealing.dll"})
+        {
+            const auto target = rootDir / rel;
+            if (std::filesystem::exists(target, ec))
+            {
+                auto hiddenPath = target;
+                hiddenPath += ".mohidden";
+                std::filesystem::rename(target, hiddenPath, ec);
+            }
+        }
+    };
+
+    auto scanPluginTree = [&](const std::filesystem::path& baseDir)
+    {
+        patchToml(baseDir / "SKSE" / "Plugins" / "EngineFixes.toml");
+        patchToml(baseDir / "skse" / "plugins" / "EngineFixes.toml");
+        patchSoulsIni(baseDir / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini");
+        patchSoulsIni(baseDir / "skse" / "plugins" / "SkyrimSoulsRE.ini");
+        hideBetterStealing(baseDir);
+    };
+
+    // 1. Direct or MO2 USVFS-mapped Data/ directory (resolves straight to winning MO2 override at runtime!)
+    scanPluginTree(acGameOrMo2Root / "Data");
+
+    // 2. Scan MO2 mods/ + overwrite/ across all standard RFAB layouts:
+    //    - <RFAB_Root>/MO2/{mods,overwrite}  (standard drake1ch/RFAB layout, e.g. G:\RFAB Online SkyrimSE\MO2)
+    //    - <MO2_Root>/{mods,overwrite}
+    //    - <Parent>/{mods,overwrite} and <Parent>/MO2/{mods,overwrite}
+    const std::vector<std::filesystem::path> candidateMo2Roots = {
+        acGameOrMo2Root,
+        acGameOrMo2Root / "MO2",
+        acGameOrMo2Root.parent_path(),
+        acGameOrMo2Root.parent_path() / "MO2",
+    };
+
+    for (const auto& mo2Root : candidateMo2Roots)
+    {
+        if (mo2Root.empty())
             continue;
 
-        for (const auto& modEntry : std::filesystem::directory_iterator(candidateModsDir, ec))
+        const auto overwriteDir = mo2Root / "overwrite";
+        if (std::filesystem::exists(overwriteDir, ec) && std::filesystem::is_directory(overwriteDir, ec))
+            scanPluginTree(overwriteDir);
+
+        const auto modsDir = mo2Root / "mods";
+        if (!std::filesystem::exists(modsDir, ec) || !std::filesystem::is_directory(modsDir, ec))
+            continue;
+
+        for (const auto& modEntry : std::filesystem::directory_iterator(modsDir, ec))
         {
             if (!modEntry.is_directory(ec))
                 continue;
-            patchSingle(modEntry.path() / "SKSE" / "Plugins" / "EngineFixes.toml");
-            patchSingle(modEntry.path() / "skse" / "plugins" / "EngineFixes.toml");
+            scanPluginTree(modEntry.path());
         }
-    }
-
-    // Hide NetScriptFramework's BetterStealing.dll (conflicts with ST add-item prologue hook SE 36525)
-    // while keeping ActorLimitPlugin.dll, BugFixesSSE.dll, GamePlayTweaks.dll, and CustomSkills.dll active.
-    const std::filesystem::path betterStealing = acGameOrMo2Root / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll";
-    if (std::filesystem::exists(betterStealing, ec))
-    {
-        std::filesystem::rename(betterStealing, std::filesystem::path(betterStealing.wstring() + L".mohidden"), ec);
     }
 
     return patchedFiles;

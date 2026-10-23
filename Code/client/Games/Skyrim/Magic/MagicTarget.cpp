@@ -15,6 +15,7 @@
 #include <PlayerCharacter.h>
 
 #include <Effects/ActiveEffect.h>
+#include <Forms/SpellItem.h>
 
 TP_THIS_FUNCTION(TAddTarget, bool, MagicTarget, MagicTarget::AddTargetData& arData);
 TP_THIS_FUNCTION(TCheckAddEffectTargetData, bool, MagicTarget::AddTargetData, void* arArgs, float afResistance);
@@ -59,6 +60,14 @@ bool MagicTarget::AddTarget(AddTargetData& arData, bool aApplyHealPerkBonus, boo
 
 bool MagicTarget::AddTargetData::ShouldSync()
 {
+    // Constant-effect slow time abilities (e.g. Requiem/RFAB Evasion Quick Reflexes) are added and removed locally by
+    // each client's own scripts, so syncing them would leave allies permanently stuck in slow motion.
+    if (pEffectItem && pEffectItem->IsSlowEffect())
+    {
+        if (SpellItem* pSpellItem = Cast<SpellItem>(pSpell); pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT)
+            return false;
+    }
+
     return !pEffectItem->IsSummonEffect() && !pSpell->IsInvisibilitySpell() && !pSpell->IsWardSpell();
 }
 

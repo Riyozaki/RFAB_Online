@@ -58,11 +58,32 @@ public:
     // Returns true if fatal death was intercepted and converted into Downed-on-Knee state.
     bool InterceptPotentialFatalPlayerDamage(Actor* apPlayer, float aCurrentHealth, float aIncomingDamage) noexcept;
 
+    // Clamps health to 1.0f after authoritative RealDamageActor (with temporaryModifier cushion) and enters Downed-on-Knee.
+    void FinalizeLethalHitCushion(Actor* apPlayer, float aHealthBefore) noexcept;
+
+    // Applies or clears kneeling bleedout posture on a remote player's Actor instance.
+    void ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept;
+
     void EnterLocalDownedState() noexcept;
     void ApplyAuthoritativeRevive(float aHealthFraction, float aGraceSec, bool aShowPostCombatNotice) noexcept;
     void ResetAllStates() noexcept;
 
 private:
+    struct SavedControlFlags
+    {
+        bool Valid{false};
+        bool Movement{true};
+        bool Sprint{true};
+        bool ReadyWeapon{true};
+        bool AutoMove{true};
+        bool Activate{true};
+        bool Jump{true};
+        bool Shout{true};
+        bool AttackBlock{true};
+        bool Sneak{true};
+    };
+
+    void SetDownedControlLock(bool aLocked) noexcept;
     void OnConnected(const ConnectedEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
@@ -82,6 +103,8 @@ private:
     bool m_allowAuthorizedHeal{false};
     double m_graceRemainingSec{0.0};
     double m_reportTimerSec{0.0};
+    double m_bleedoutReassertTimerSec{0.0};
+    SavedControlFlags m_savedControls{};
 
     bool m_isChannelingRevive{false};
     uint32_t m_channelTargetPlayerId{0};

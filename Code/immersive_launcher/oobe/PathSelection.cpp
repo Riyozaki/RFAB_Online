@@ -77,9 +77,48 @@ std::optional<std::wstring> OpenPathSelectionDialog2(const std::wstring& aPathSu
 
 bool SelectInstall(bool aForceSelect)
 {
-    // separate, so a custom executable can be chosen for TP
     auto titlePath = Registry::ReadString<wchar_t>(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitlePath");
     auto exePath = Registry::ReadString<wchar_t>(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitleExe");
+
+    const std::filesystem::path selfDir = TiltedPhoques::GetPath();
+
+    // Auto-discover standalone RFAB / MO2 SkyrimSE.exe relative to working directory or launcher folder
+    // before falling back to old registry entries or showing a manual file picker!
+    if (!aForceSelect)
+    {
+        std::error_code ec;
+        const std::filesystem::path cwd = std::filesystem::current_path(ec);
+        const std::filesystem::path p1 = selfDir.parent_path();
+        const std::filesystem::path p2 = p1.parent_path();
+        const std::filesystem::path p3 = p2.parent_path();
+        const std::filesystem::path p4 = p3.parent_path();
+
+        for (const auto& candidateRoot : {cwd, p1, p2, p3, p4})
+        {
+            if (candidateRoot.empty())
+                continue;
+
+            ec.clear();
+            if (std::filesystem::exists(selfDir, ec) &&
+                std::filesystem::exists(candidateRoot, ec) &&
+                std::filesystem::equivalent(candidateRoot, selfDir, ec))
+            {
+                continue;
+            }
+
+            const std::filesystem::path candidateExe = candidateRoot / (TARGET_NAME L".exe");
+            const std::filesystem::path candidateData = candidateRoot / L"Data";
+            ec.clear();
+            if (std::filesystem::exists(candidateExe, ec) && std::filesystem::exists(candidateData, ec))
+            {
+                titlePath = candidateRoot.wstring();
+                exePath = candidateExe.wstring();
+                Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitlePath", titlePath);
+                Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitleExe", exePath);
+                break;
+            }
+        }
+    }
 
     bool result = true;
     if (!std::filesystem::exists(titlePath) || !std::filesystem::exists(exePath) || aForceSelect)
@@ -98,7 +137,8 @@ bool SelectInstall(bool aForceSelect)
                 exePath = (*path);
 
                 // game is installed into our directory, or otherwise.
-                if (titlePath == TiltedPhoques::GetPath())
+                std::error_code ec;
+                if (titlePath == selfDir || std::filesystem::equivalent(titlePath, selfDir, ec))
                 {
                     continue;
                 }

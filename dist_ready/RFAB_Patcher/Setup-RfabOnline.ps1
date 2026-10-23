@@ -148,17 +148,37 @@ $RequiredModFiles = @(
     "SkyrimTogetherReborn\UI\index.html",
     "SkyrimTogetherReborn\assets\images\cursor.png"
 )
+# Ensure both SkyrimSE.exe (primary out-of-the-box launcher) and SkyrimTogether.exe (alias) exist in $ModSourceDir from whichever binary is newest
+$SrcStrDir = Join-Path $ModSourceDir "SkyrimTogetherReborn"
+$SrcSeExe = Join-Path $SrcStrDir "SkyrimSE.exe"
+$SrcStExe = Join-Path $SrcStrDir "SkyrimTogether.exe"
+$HasValidSe = (Test-Path -LiteralPath $SrcSeExe) -and ((Get-Item -LiteralPath $SrcSeExe).Length -gt 200)
+$HasValidSt = (Test-Path -LiteralPath $SrcStExe) -and ((Get-Item -LiteralPath $SrcStExe).Length -gt 200)
+if ($HasValidSe -and $HasValidSt) {
+    if ((Get-Item -LiteralPath $SrcSeExe).LastWriteTimeUtc -ge (Get-Item -LiteralPath $SrcStExe).LastWriteTimeUtc) {
+        Copy-Item -LiteralPath $SrcSeExe -Destination $SrcStExe -Force
+    } else {
+        Copy-Item -LiteralPath $SrcStExe -Destination $SrcSeExe -Force
+    }
+} elseif ($HasValidSe) {
+    Copy-Item -LiteralPath $SrcSeExe -Destination $SrcStExe -Force
+} elseif ($HasValidSt) {
+    Copy-Item -LiteralPath $SrcStExe -Destination $SrcSeExe -Force
+} else {
+    throw "В папке '$SrcStrDir' не найден ни скомпилированный SkyrimSE.exe, ни SkyrimTogether.exe!"
+}
+
 foreach ($rel in $RequiredModFiles) {
     $full = Join-Path $ModSourceDir $rel
     if (-not (Test-Path -LiteralPath $full)) {
-        throw "В папке мода отсутствует обязательный файл: $full (если вы в git-репозитории, убедитесь что выполнен git lfs pull)"
+        throw "В папке мода отсутствует обязательный файл: $full (если вы в git-репозитории, запустите BUILD_AND_DEPLOY_RFAB_ONLINE.bat или git lfs pull)"
     }
     $len = (Get-Item -LiteralPath $full).Length
     if ($len -lt 200 -and ($rel.EndsWith(".exe") -or $rel.EndsWith(".dll") -or $rel.EndsWith(".esp"))) {
-        throw "Файл $full является Git LFS указателем ($len байт), а не бинарником! Выполните 'git lfs pull' в папке репозитория."
+        throw "Файл $full является Git LFS указателем ($len байт), а не бинарником! Запустите BUILD_AND_DEPLOY_RFAB_ONLINE.bat или выполните 'git lfs pull'."
     }
 }
-Write-Ok "Все бинарники клиента, UI, плагин и курсор на месте."
+Write-Ok "Все бинарники клиента (включая нативный SkyrimSE.exe), UI, плагин и курсор на месте."
 
 # 3. Проверка что Mod Organizer 2 закрыт (чтобы MO2 не перезаписал свои ini/txt при выходе)
 if (-not $NonInteractive) {
@@ -176,11 +196,50 @@ if (-not $NonInteractive) {
     }
 }
 
-# 4. Выбор папки сборки RFAB
+# 4. Автопоиск или выбор папки сборки RFAB
 Write-Step "Шаг 2/7. Поиск папки сборки RFAB, Mod Organizer 2 и SkyrimSE.exe (1.5.97)"
 if ([string]::IsNullOrWhiteSpace($RfabDir)) {
+    $AutoRfabCandidates = New-Object System.Collections.Generic.List[string]
+    $RegProbe = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"
+    if (Test-Path -LiteralPath $RegProbe) {
+        $regTitlePath = (Get-ItemProperty -LiteralPath $RegProbe -Name "TitlePath" -ErrorAction SilentlyContinue).TitlePath
+        if (-not [string]::IsNullOrWhiteSpace($regTitlePath)) {
+            $AutoRfabCandidates.Add($regTitlePath)
+            $parentReg = Split-Path -Parent $regTitlePath
+            if ($parentReg) { $AutoRfabCandidates.Add($parentReg) }
+        }
+    }
+    foreach ($knownRoot in @(
+        $CandidateBundleRoot,
+        (Split-Path -Parent $CandidateBundleRoot),
+        "G:\RFAB Online SkyrimSE",
+        "G:\RFAB",
+        "D:\RFAB Online SkyrimSE",
+        "D:\RFAB",
+        "D:\Games\RFAB",
+        "C:\RFAB",
+        "C:\Games\RFAB",
+        "E:\RFAB",
+        "F:\RFAB"
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($knownRoot)) {
+            $AutoRfabCandidates.Add($knownRoot)
+        }
+    }
+    foreach ($candDir in ($AutoRfabCandidates | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candDir) {
+            if ((Test-Path -LiteralPath (Join-Path $candDir "ModOrganizer.exe")) -or
+                (Test-Path -LiteralPath (Join-Path $candDir "MO2\ModOrganizer.exe"))) {
+                $RfabDir = $candDir
+                Write-Ok "Автоматически обнаружена папка сборки RFAB: $RfabDir"
+                break
+            }
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($RfabDir)) {
     if ($NonInteractive) {
-        throw "Не указан параметр -RfabDir в неинтерактивном режиме."
+        throw "Не удалось автоматически найти папку RFAB (ModOrganizer.exe). Укажите параметр -RfabDir."
     }
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
     $dlg.Description = "Выберите КОРНЕВУЮ папку вашей установленной сборки RFAB (где находится ModOrganizer.exe или папка MO2)"
@@ -449,9 +508,37 @@ $CleanLoadOrderText = [string]::Join("`n", $ActiveLoadOrder) + "`n"
 [System.IO.File]::WriteAllText((Join-Path $TargetModDir "loadorder.txt"), $CleanLoadOrderText, (New-Object System.Text.UTF8Encoding($false)))
 Write-Ok "Синхронизирован активный список плагинов ($($ActiveLoadOrder.Count) шт., без выключенных .esp) -> $TargetModDir\loadorder.txt"
 
-# 7. Патч совместимости конфигов модпака RFAB (EngineFixes.toml, [RFAB] Autosave.ini, po3_Tweaks.ini)
-Write-Step "Шаг 5/7. Настройка EngineFixes.toml, [RFAB] Autosave.ini и po3_Tweaks.ini"
-$CompatRoots = @($ModsDir, (Join-Path $GameRoot "Data")) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique
+# 7. Патч совместимости конфигов модпака RFAB (EngineFixes.toml v5/v7 + partial MO2 overrides, [RFAB] Autosave.ini, SkyrimSoulsRE.ini, po3_Tweaks.ini, BetterStealing.dll)
+Write-Step "Шаг 5/7. Настройка EngineFixes.toml, SkyrimSoulsRE.ini, [RFAB] Autosave.ini и po3_Tweaks.ini"
+$CompatRoots = @((Join-Path $Mo2BaseDir "overwrite"), $ModsDir, (Join-Path $GameRoot "Data")) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique
+
+function Ensure-SectionKeys([string]$Content, [string]$Section, [array]$Pairs) {
+    $nl = if ($Content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $cur = $Content
+    $missing = New-Object System.Collections.Generic.List[object]
+    foreach ($pair in $Pairs) {
+        $k = [string]$pair[0]; $v = [string]$pair[1]
+        $pat = "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n#;]+)(.*)$"
+        if ([regex]::IsMatch($cur, $pat)) {
+            $cur = [regex]::Replace($cur, $pat, "`${1}$v`${3}")
+        } else {
+            $missing.Add(@($k, $v))
+        }
+    }
+    if ($missing.Count -gt 0) {
+        $addLines = ($missing | ForEach-Object { "$($_[0]) = $($_[1])$nl" }) -join ""
+        $secPat = "(?mi)^(\s*\[$([regex]::Escape($Section))\][^\r\n]*\r?\n)"
+        $m = [regex]::Match($cur, $secPat)
+        if ($m.Success) {
+            $insertAt = $m.Index + $m.Length
+            $cur = $cur.Substring(0, $insertAt) + $addLines + $cur.Substring($insertAt)
+        } else {
+            $prefix = if ([string]::IsNullOrEmpty($cur) -or $cur.EndsWith("`n")) { "" } else { $nl }
+            $cur = "$cur$prefix[$Section]$nl$addLines"
+        }
+    }
+    return $cur
+}
 
 $EngineFixesFiles = foreach ($cr in $CompatRoots) {
     Get-ChildItem -LiteralPath $cr -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue
@@ -459,21 +546,53 @@ $EngineFixesFiles = foreach ($cr in $CompatRoots) {
 foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) {
     $raw = [System.IO.File]::ReadAllText($ef.FullName, [System.Text.Encoding]::UTF8)
     $updated = $raw
-    foreach ($pair in @(
-        @("MemoryManager", "false"),
-        @("ScaleformAllocator", "false"),
-        @("RegularQuicksaves", "true"),
-        @("MaxStdio", "8192")
-    )) {
-        $k = $pair[0]; $v = $pair[1]
-        $updated = [regex]::Replace($updated, "(?m)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n#]+)(.*)$", "`${1}$v`${3}")
+    $hasV7Mm = [regex]::IsMatch($updated, '(?mi)^\s*\[MemoryManager\]')
+    if ($hasV7Mm) {
+        $updated = Ensure-SectionKeys $updated "MemoryManager" @(
+            @("OverrideVanilla", "false"),
+            @("OverrideScaleform", "false")
+        )
+        foreach ($pair in @(@("MemoryManager", "false"), @("ScaleformAllocator", "false"))) {
+            $k = $pair[0]; $v = $pair[1]
+            $updated = [regex]::Replace($updated, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n#;]+)(.*)$", "`${1}$v`${3}")
+        }
+        $updated = Ensure-SectionKeys $updated "Patches" @(
+            @("RegularQuicksaves", "true"),
+            @("MaxStdio", "8192")
+        )
+    } else {
+        $updated = Ensure-SectionKeys $updated "Patches" @(
+            @("MemoryManager", "false"),
+            @("ScaleformAllocator", "false"),
+            @("RegularQuicksaves", "true"),
+            @("MaxStdio", "8192")
+        )
     }
+    $updated = Ensure-SectionKeys $updated "SaveGameMaxSize" @(
+        @("SaveGameMaxSize", "true")
+    )
     if ($updated -ne $raw) {
         Backup-Once $ef.FullName
         [System.IO.File]::WriteAllText($ef.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
         Write-Ok "Патч EngineFixes.toml применён: $($ef.FullName)"
     } else {
         Write-Ok "EngineFixes.toml уже совместим: $($ef.FullName)"
+    }
+}
+
+$SkyrimSoulsFiles = foreach ($cr in $CompatRoots) {
+    Get-ChildItem -LiteralPath $cr -Filter "SkyrimSoulsRE.ini" -Recurse -ErrorAction SilentlyContinue
+}
+foreach ($sf in ($SkyrimSoulsFiles | Select-Object -Unique -Property FullName)) {
+    $raw = [System.IO.File]::ReadAllText($sf.FullName, [System.Text.Encoding]::UTF8)
+    $updated = [regex]::Replace($raw, '(?mi)^(\s*fSlowMotionMultiplier\s*=\s*)([^\r\n;#]+)(.*)$', '${1}1.000000${3}')
+    $updated = [regex]::Replace($updated, '(?mi)^(\s*bEnableSlowMotion[A-Za-z0-9_]*\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
+    if ($updated -ne $raw) {
+        Backup-Once $sf.FullName
+        [System.IO.File]::WriteAllText($sf.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Ok "Отключён локальный SlowMotion в SkyrimSoulsRE.ini: $($sf.FullName)"
+    } else {
+        Write-Ok "SkyrimSoulsRE.ini проверен: $($sf.FullName)"
     }
 }
 
@@ -516,6 +635,16 @@ foreach ($bs in ($BetterStealingFiles | Select-Object -Unique -Property FullName
     Write-Ok "Скрыт несовместимый плагин BetterStealing.dll -> $($bs.FullName).mohidden"
 }
 
+# Авто-правило Брандмауэра Windows для UDP/TCP 10578 (если запущено с правами Администратора)
+try {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        New-NetFirewallRule -DisplayName "RFAB Online Server (UDP 10578)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 10578 -ErrorAction SilentlyContinue | Out-Null
+        New-NetFirewallRule -DisplayName "RFAB Online Server (TCP 10578)" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 10578 -ErrorAction SilentlyContinue | Out-Null
+        Write-Ok "Порт 10578 (UDP/TCP) открыт в Брандмауэре Windows"
+    }
+} catch {}
+
 # 8. Запись пути к RFAB SkyrimSE.exe в реестр Windows + добавление ярлыка в ModOrganizer.ini
 Write-Step "Шаг 6/7. Привязка пути SkyrimSE.exe (1.5.97) и добавление кнопки запуска в MO2"
 $RegPath = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"
@@ -527,9 +656,21 @@ Set-ItemProperty -LiteralPath $RegPath -Name "TitleExe" -Value $SkyrimExe -Type 
 Write-Ok "Реестр TiltedEvolution настроен строго на: $SkyrimExe"
 
 Backup-Once $Mo2Ini
-# Copy launcher as SkyrimSE.exe inside SkyrimTogetherReborn so .NET Script Framework (SE 1.5.97) sees MainModule.ModuleName == "SkyrimSE.exe"
-Copy-Item -LiteralPath (Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimTogether.exe") -Destination (Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimSE.exe") -Force
-$ClientExe = Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimSE.exe"
+# Ensure SkyrimSE.exe and SkyrimTogether.exe inside SkyrimTogetherReborn match whichever executable is newest (never overwrite newer SkyrimSE.exe!)
+$TargetSeExe = Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimSE.exe"
+$TargetStExe = Join-Path $TargetModDir "SkyrimTogetherReborn\SkyrimTogether.exe"
+if ((Test-Path -LiteralPath $TargetSeExe) -and (Test-Path -LiteralPath $TargetStExe)) {
+    if ((Get-Item -LiteralPath $TargetSeExe).LastWriteTimeUtc -ge (Get-Item -LiteralPath $TargetStExe).LastWriteTimeUtc) {
+        Copy-Item -LiteralPath $TargetSeExe -Destination $TargetStExe -Force
+    } else {
+        Copy-Item -LiteralPath $TargetStExe -Destination $TargetSeExe -Force
+    }
+} elseif (Test-Path -LiteralPath $TargetSeExe) {
+    Copy-Item -LiteralPath $TargetSeExe -Destination $TargetStExe -Force
+} elseif (Test-Path -LiteralPath $TargetStExe) {
+    Copy-Item -LiteralPath $TargetStExe -Destination $TargetSeExe -Force
+}
+$ClientExe = $TargetSeExe
 $ClientWorkDir = Join-Path $TargetModDir "SkyrimTogetherReborn"
 $QtClientBin = Encode-QtIniPath $ClientExe
 $QtClientWorkDir = Encode-QtIniPath $ClientWorkDir
