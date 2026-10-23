@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <assert.h>
+#include <cstring>
 #include <cryptopp/aes.h>
 #include <cryptopp/filters.h>
 #include <cryptopp/modes.h>
@@ -22,6 +23,17 @@ static uint32_t SteamXor(uint8_t* data, uint32_t size, uint32_t key)
     }
 
     return key;
+}
+
+bool HasSteamStubV31(const uint8_t* apEntryPtr) noexcept
+{
+    if (!apEntryPtr || *reinterpret_cast<const uint32_t*>(apEntryPtr) != 0x000000e8)
+        return false;
+
+    SteamStubHeaderV31 stub{};
+    std::memcpy(&stub, apEntryPtr - sizeof(SteamStubHeaderV31), sizeof(SteamStubHeaderV31));
+    SteamXor(reinterpret_cast<uint8_t*>(&stub), sizeof(SteamStubHeaderV31), stub.XorKey);
+    return stub.Signature == 0xC0DEC0DF;
 }
 
 // Just don't touch it, its evil

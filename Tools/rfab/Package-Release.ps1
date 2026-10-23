@@ -206,9 +206,17 @@ Get-ChildItem -LiteralPath $BuildRel -Filter "*.pdb" -Recurse -File -ErrorAction
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem | Out-Null
 $InstallerZip = Join-Path $OutDir "RFAB_Online_${VersionTag}_Full_Installer.zip"
+$QuickUpdZip  = Join-Path $OutDir "RFAB_Online_${VersionTag}_Quick_Update.zip"
 $PdbZip       = Join-Path $OutDir "RFAB_Online_${VersionTag}_PDB_Symbols.zip"
 
+$QuickDir = Join-Path $StageOuter "Quick_Update"
+New-Item -ItemType Directory -Path $QuickDir -Force | Out-Null
+foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "SkyrimTogetherClient.dll", "EarlyLoad.dll")) {
+    Copy-Item -LiteralPath (Join-Path $StageClient $qf) -Destination (Join-Path $QuickDir $qf) -Force
+}
+
 [System.IO.Compression.ZipFile]::CreateFromDirectory($StageRoot, $InstallerZip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+[System.IO.Compression.ZipFile]::CreateFromDirectory($QuickDir,  $QuickUpdZip,  [System.IO.Compression.CompressionLevel]::Optimal, $false)
 [System.IO.Compression.ZipFile]::CreateFromDirectory($PdbDir,    $PdbZip,       [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
 $ShaLines = foreach ($f in Get-ChildItem -LiteralPath $OutDir -Filter "*.zip" | Sort-Object Name) {

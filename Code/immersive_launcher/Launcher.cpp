@@ -24,6 +24,7 @@
 extern void InstallStartHook();
 extern void RunTiltedApp();
 extern void RunTiltedInit(const std::filesystem::path& acGamePath, const TiltedPhoques::String& aExeVersion);
+extern void InstallRfabBootDiagnostics(const std::filesystem::path& acGamePath, const TiltedPhoques::String& aExeVersion);
 extern void SpoofPebMainModuleName(const std::filesystem::path& acExePath);
 
 // Defined in EarlyLoad.dll
@@ -84,6 +85,7 @@ int StartUp(int argc, char** argv)
 #endif
 
     SetMaxstdio();
+    InstallRfabBootDiagnostics({}, "launcher_startup");
 
     if (!EarlyInstallSucceeded())
         DIE_NOW(L"Early load install failed. Tell Force about this.");

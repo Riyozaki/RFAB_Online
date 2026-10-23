@@ -99,6 +99,7 @@ try {
 
     $CommitSha    = (& git rev-parse HEAD).Trim()
     $InstallerZip = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_Full_Installer.zip"
+    $QuickUpdZip  = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_Quick_Update.zip"
     $PdbZip       = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_PDB_Symbols.zip"
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
@@ -106,10 +107,10 @@ try {
     & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
     if ($LASTEXITCODE -eq 0) {
         Invoke-LoggedCmd "[7/7] Update GitHub Release $VersionTag" `
-            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest && gh release upload $VersionTag `"$InstallerZip`" `"$PdbZip`" `"$ShaFile`" --clobber"
+            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest && gh release upload $VersionTag `"$InstallerZip`" `"$QuickUpdZip`" `"$PdbZip`" `"$ShaFile`" --clobber"
     } else {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
-            "gh release create $VersionTag `"$InstallerZip`" `"$PdbZip`" `"$ShaFile`" --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+            "gh release create $VersionTag `"$InstallerZip`" `"$QuickUpdZip`" `"$PdbZip`" `"$ShaFile`" --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     }
 
     & cmd.exe /d /s /c "gh release view v1.0.0-rfab >nul 2>&1"

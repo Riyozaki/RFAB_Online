@@ -140,28 +140,6 @@ static TiltedPhoques::Initializer s_memoryHooks(
         RealFormAllocate = s_formAllocate.Get();
         RealFormFree = s_formFree.Get();
 
-        using T_msize = decltype(&Hook_msize);
-        using Tfree = decltype(&Hookfree);
-        using Tcalloc = decltype(&Hookcalloc);
-        using Tmalloc = decltype(&Hookmalloc);
-        using T_aligned_malloc = decltype(&Hook_aligned_malloc);
-        using T_aligned_free = decltype(&Hook_aligned_free);
-        T_msize Real_msize = nullptr;
-        Tfree Realfree = nullptr;
-        Tcalloc Realcalloc = nullptr;
-        Tmalloc Realmalloc = nullptr;
-        T_aligned_malloc Real_aligned_malloc = nullptr;
-        T_aligned_free Real_aligned_free = nullptr;
-
-        const char* cModuleName = "api-ms-win-crt-heap-l1-1-0.dll";
-
-        TP_HOOK_IAT(_msize, cModuleName);
-        TP_HOOK_IAT(free, cModuleName);
-        TP_HOOK_IAT(calloc, cModuleName);
-        TP_HOOK_IAT(malloc, cModuleName);
-        TP_HOOK_IAT(_aligned_malloc, cModuleName);
-        TP_HOOK_IAT(_aligned_free, cModuleName);
-
         TP_HOOK(&RealFormAllocate, HookFormAllocate);
     });
 
@@ -174,12 +152,12 @@ extern void EnsureTiltedInitialized();
 // reset it. Our hook works just fine chaining to theirs.
 int __cdecl Hook_initterm_e(_PIFV* apFirst, _PIFV* apLast)
 {
-    // Install .text hooks now that EntryPoint unpackers (SteamStub / standalone .cdx) have completed,
-    // and right before Real_initterm_e triggers skse64_plugin_preloader (EngineFixes PreLoad).
-    EnsureTiltedInitialized();
+    // Pre-chain first so skse64_plugin_preloader (EngineFixes PreLoad) runs before we install .text detours.
+    auto retval = Real_initterm_e(apFirst, apLast);
 
-    // We want to run last, so pre-chain.
-    auto retval = Real_initterm_e(apFirst, apLast); 
+    // Now both standalone/CODEX EntryPoint unpackers AND EngineFixes PreLoad have finished:
+    // load Address Library (version-1-5-97-0.bin) and commit all .text detours before C++ global ctors (_initterm).
+    EnsureTiltedInitialized();
     
     // Check if EngineFixes messed with STR's modified alloc hook; if it did, treat EF as truth and rehook
     TFormAllocate* pEngineFixesAllocate = nullptr;
@@ -191,6 +169,29 @@ int __cdecl Hook_initterm_e(_PIFV* apFirst, _PIFV* apLast)
 
 void HookFormAllocateSentinelInit()
 {
+    // Install all CRT heap IAT hooks BEFORE LC->gameMain() executes instruction #1, ensuring 100% of CRT
+    // allocations and frees use mimalloc from the start without touching any .text bytes before unpack.
+    using T_msize = decltype(&Hook_msize);
+    using Tfree = decltype(&Hookfree);
+    using Tcalloc = decltype(&Hookcalloc);
+    using Tmalloc = decltype(&Hookmalloc);
+    using T_aligned_malloc = decltype(&Hook_aligned_malloc);
+    using T_aligned_free = decltype(&Hook_aligned_free);
+    T_msize Real_msize = nullptr;
+    Tfree Realfree = nullptr;
+    Tcalloc Realcalloc = nullptr;
+    Tmalloc Realmalloc = nullptr;
+    T_aligned_malloc Real_aligned_malloc = nullptr;
+    T_aligned_free Real_aligned_free = nullptr;
+
+    const char* cHeapModule = "api-ms-win-crt-heap-l1-1-0.dll";
+    TP_HOOK_IAT(_msize, cHeapModule);
+    TP_HOOK_IAT(free, cHeapModule);
+    TP_HOOK_IAT(calloc, cHeapModule);
+    TP_HOOK_IAT(malloc, cHeapModule);
+    TP_HOOK_IAT(_aligned_malloc, cHeapModule);
+    TP_HOOK_IAT(_aligned_free, cHeapModule);
+
     TP_HOOK_IAT(_initterm_e, "api-ms-win-crt-runtime-l1-1-0.dll");
 }
 #pragma optimize("", on)

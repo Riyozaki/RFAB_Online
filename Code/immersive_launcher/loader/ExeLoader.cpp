@@ -151,14 +151,17 @@ void ExeLoader::LoadSections(const IMAGE_NT_HEADERS* apNtHeader)
             return;
         }
 
+        const uint32_t spanSize = std::max(section->SizeOfRawData, section->Misc.VirtualSize);
         if (section->SizeOfRawData > 0)
         {
             uint32_t sizeOfData = std::min(section->SizeOfRawData, section->Misc.VirtualSize);
-
             memcpy(targetAddress, sourceAddress, sizeOfData);
+        }
 
+        if (spanSize > 0)
+        {
             DWORD oldProtect;
-            VirtualProtect(targetAddress, sizeOfData, PAGE_EXECUTE_READWRITE, &oldProtect);
+            VirtualProtect(targetAddress, spanSize, PAGE_EXECUTE_READWRITE, &oldProtect);
         }
 
         section++;
@@ -251,8 +254,14 @@ uint32_t ExeLoader::Rva2Offset(uint32_t aRva) noexcept
 void ExeLoader::DecryptCeg(IMAGE_NT_HEADERS* apSourceNt)
 {
     auto entry = apSourceNt->OptionalHeader.AddressOfEntryPoint;
-    // analyze executable sections if the entry point is already protected
-    if (*GetOffset<uint32_t>(entry) != 0x000000e8)
+    if (entry < sizeof(steam::SteamStubHeaderV31))
+        return;
+
+    // Verify genuine Valve SteamStub v3.1 signature (0xC0DEC0DF) BEFORE decrypting in-place!
+    // Standalone / CODEX wrappers ALSO begin their PIC entry stub with 'call $+5' (E8 00 00 00 00 == 0x000000e8);
+    // calling CrackCEGInPlace without checking 0xC0DEC0DF corrupts .text with garbage AES keys and crashes at jump!
+    uint8_t* pEntry = GetOffset<uint8_t>(entry);
+    if (!steam::HasSteamStubV31(pEntry))
         return;
 
     const auto* section = IMAGE_FIRST_SECTION(apSourceNt);
@@ -260,11 +269,12 @@ void ExeLoader::DecryptCeg(IMAGE_NT_HEADERS* apSourceNt)
     {
         if (!_strcmpi(reinterpret_cast<const char*>(section[i].Name), ".text"))
         {
+            section = &section[i];
             break;
         }
     }
 
-    steam::CEGLocationInfo info{GetOffset<uint8_t>(entry), {GetOffset<uint8_t>(section->VirtualAddress), section->SizeOfRawData}};
+    steam::CEGLocationInfo info{pEntry, {GetOffset<uint8_t>(section->VirtualAddress), section->SizeOfRawData}};
 
     auto realEntry = steam::CrackCEGInPlace(info);
 
