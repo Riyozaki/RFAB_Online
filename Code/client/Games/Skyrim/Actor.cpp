@@ -634,8 +634,10 @@ void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
 
         // SetActorInventory() calls RemoveAllItems(), so always restore 1 item in ExtraContainerChanges
         // under ScopedInventoryOverride before invoking EquipManager::Equip().
+        // NOTE: in real SkyrimSE.exe TESObjectARMO IS a TESBoundObject subclass (the simplified RE model here
+        // only derives it from TESForm), so this reinterpret_cast is ABI-safe for the native call.
         if (RealAddInventoryItem)
-            TiltedPhoques::ThisCall(RealAddInventoryItem, this, static_cast<TESBoundObject*>(pArmor), nullptr, 1, nullptr);
+            TiltedPhoques::ThisCall(RealAddInventoryItem, this, reinterpret_cast<TESBoundObject*>(pArmor), nullptr, 1, nullptr);
 
         spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID, baseForm->GetName());
         pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);
