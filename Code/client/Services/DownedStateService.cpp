@@ -176,7 +176,8 @@ void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
 
         // Lock locomotion, attacks, shouts, jumping, sprinting, and item activation while leaving pLookHandler and
         // togglePOVHandler active so the downed player can freely rotate camera and watch allies come to revive them.
-        pControls->Data.MoveInputVec = {0.f, 0.f};
+        pControls->Data.MoveInputVec.x = 0.f;
+        pControls->Data.MoveInputVec.y = 0.f;
         pControls->Data.bAutoMove = false;
         if (pControls->pMovementHandler)
             pControls->pMovementHandler->isEnabled = false;

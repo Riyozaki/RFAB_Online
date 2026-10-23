@@ -120,12 +120,5 @@ try {
 } catch {
     $errMsg = $_.Exception.Message
     Emit-Annotation "error" "CI_EXCEPTION" $errMsg
-    if ($script:PackagesReady -and -not (Test-Path -LiteralPath $CacheMarker)) {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $CacheMarker) -Force | Out-Null
-        [System.IO.File]::WriteAllText($CacheMarker, "primed")
-        Emit-Annotation "warning" "CACHE_PRIMED" "Priming 15-min xmake package cache so hot rebuild runs in 60s; release NOT published yet."
-        $global:LASTEXITCODE = 0
-        exit 0
-    }
     exit 1
 }
