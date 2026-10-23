@@ -21,6 +21,7 @@
 #include <Messages/SyncPlayerDownedState.h>
 #include <Misc/ActorValueOwner.h>
 #include <AI/Movement/PlayerControls.h>
+#include <Camera/PlayerCamera.h>
 #include <PlayerCharacter.h>
 #include <Services/TransportService.h>
 
@@ -147,9 +148,15 @@ void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, boo
     if (!apRemoteActor)
         return;
 
+    apRemoteActor->InterruptCast(false);
+    if (aIsDowned)
+        apRemoteActor->SetWeaponDrawnEx(false);
+
     apRemoteActor->SetNoBleedoutRecovery(aIsDowned);
-    BSFixedString animEvent(aIsDowned ? "BleedoutStart" : "BleedoutStop");
-    apRemoteActor->SendAnimationEvent(&animEvent);
+    BSFixedString animEventLower(aIsDowned ? "bleedoutStart" : "bleedoutStop");
+    apRemoteActor->SendAnimationEvent(&animEventLower);
+    BSFixedString animEventPascal(aIsDowned ? "BleedoutStart" : "BleedoutStop");
+    apRemoteActor->SendAnimationEvent(&animEventPascal);
 }
 
 void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
@@ -171,14 +178,18 @@ void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
             m_savedControls.Shout = pControls->shoutHandler ? pControls->shoutHandler->isEnabled : true;
             m_savedControls.AttackBlock = pControls->attackBlockHandler ? pControls->attackBlockHandler->isEnabled : true;
             m_savedControls.Sneak = pControls->sneakHandler ? pControls->sneakHandler->isEnabled : true;
+            m_savedControls.TogglePOV = pControls->togglePOVHandler ? pControls->togglePOVHandler->isEnabled : true;
             m_savedControls.Valid = true;
         }
 
-        // Lock locomotion, attacks, shouts, jumping, sprinting, and item activation while leaving pLookHandler and
-        // togglePOVHandler active so the downed player can freely rotate camera and watch allies come to revive them.
+        // Lock all locomotion, attacks, magic/shouts, jumping, sprinting, item activation, and 1st-person toggle
+        // while keeping pLookHandler open so the kneeling player can look around in 3rd-person while waiting for revive.
         pControls->Data.MoveInputVec.x = 0.f;
         pControls->Data.MoveInputVec.y = 0.f;
+        pControls->Data.PrevMoveVec.x = 0.f;
+        pControls->Data.PrevMoveVec.y = 0.f;
         pControls->Data.bAutoMove = false;
+        pControls->Data.bRunning = false;
         if (pControls->pMovementHandler)
             pControls->pMovementHandler->isEnabled = false;
         if (pControls->pSprintHandler)
@@ -197,6 +208,8 @@ void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
             pControls->attackBlockHandler->isEnabled = false;
         if (pControls->sneakHandler)
             pControls->sneakHandler->isEnabled = false;
+        if (pControls->togglePOVHandler)
+            pControls->togglePOVHandler->isEnabled = false;
     }
     else if (m_savedControls.Valid)
     {
@@ -218,6 +231,8 @@ void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
             pControls->attackBlockHandler->isEnabled = m_savedControls.AttackBlock;
         if (pControls->sneakHandler)
             pControls->sneakHandler->isEnabled = m_savedControls.Sneak;
+        if (pControls->togglePOVHandler)
+            pControls->togglePOVHandler->isEnabled = m_savedControls.TogglePOV;
         m_savedControls = {};
     }
 }
@@ -236,11 +251,23 @@ void DownedStateService::EnterLocalDownedState() noexcept
     m_channelTargetPlayerId = 0;
     m_bleedoutReassertTimerSec = 0.0;
 
+    // 1st-person skeleton in Skyrim SE has no bleedout pose; switch cleanly to 3rd-person so the player visibly
+    // sees their character drop to one knee, and restore 1st-person automatically upon revive.
+    m_wasFirstPersonBeforeDowned = false;
+    if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
+    {
+        m_wasFirstPersonBeforeDowned = true;
+        pCam->ForceThirdPerson();
+    }
+
     pPlayer->InterruptCast(false);
+    pPlayer->SetWeaponDrawnEx(false);
     pPlayer->SetNoBleedoutRecovery(true);
     pPlayer->StopCombat();
     SetDownedControlLock(true);
 
+    BSFixedString bleedoutLower("bleedoutStart");
+    pPlayer->SendAnimationEvent(&bleedoutLower);
     BSFixedString bleedoutStart("BleedoutStart");
     pPlayer->SendAnimationEvent(&bleedoutStart);
 
@@ -313,8 +340,17 @@ void DownedStateService::ApplyAuthoritativeRevive(
     pPlayer->SetNoBleedoutRecovery(false);
     SetDownedControlLock(false);
 
+    BSFixedString bleedoutStopLower("bleedoutStop");
+    pPlayer->SendAnimationEvent(&bleedoutStopLower);
     BSFixedString bleedoutStop("BleedoutStop");
     pPlayer->SendAnimationEvent(&bleedoutStop);
+
+    if (m_wasFirstPersonBeforeDowned)
+    {
+        m_wasFirstPersonBeforeDowned = false;
+        if (auto* pCam = PlayerCamera::Get())
+            pCam->ForceFirstPerson();
+    }
 
     SyncPlayerDownedState syncUp{};
     syncUp.IsDowned = false;
@@ -332,11 +368,14 @@ void DownedStateService::ApplyAuthoritativeRevive(
 void DownedStateService::ResetAllStates() noexcept
 {
     const bool wasLocalDowned = m_isLocalDowned;
+    const bool restoreFirstPerson = m_wasFirstPersonBeforeDowned;
 
     m_isLocalDowned = false;
     m_allowAuthorizedHeal = false;
+    m_wasFirstPersonBeforeDowned = false;
     m_graceRemainingSec = 0.0;
     m_bleedoutReassertTimerSec = 0.0;
+    m_revivePromptCooldownSec = 0.0;
     m_isChannelingRevive = false;
     m_channelTargetPlayerId = 0;
     m_channelElapsedSec = 0.0;
@@ -352,8 +391,15 @@ void DownedStateService::ResetAllStates() noexcept
         pPlayer->SetNoBleedoutRecovery(false);
         if (wasLocalDowned)
         {
+            BSFixedString bleedoutStopLower("bleedoutStop");
+            pPlayer->SendAnimationEvent(&bleedoutStopLower);
             BSFixedString bleedoutStop("BleedoutStop");
             pPlayer->SendAnimationEvent(&bleedoutStop);
+            if (restoreFirstPerson)
+            {
+                if (auto* pCam = PlayerCamera::Get())
+                    pCam->ForceFirstPerson();
+            }
         }
     }
 }
@@ -467,7 +513,16 @@ void DownedStateService::UpdateInteractiveReviveInput(double aDeltaSec) noexcept
         }
     }
 
+    if (m_revivePromptCooldownSec > 0.0)
+        m_revivePromptCooldownSec = std::max(0.0, m_revivePromptCooldownSec - aDeltaSec);
+
     const bool keyHeld = IsHoldReviveKeyPressed();
+    if (nearestDownedPlayerId != 0 && !keyHeld && m_revivePromptCooldownSec <= 0.0)
+    {
+        m_revivePromptCooldownSec = 6.0;
+        Utils::ShowHudMessage(String("Рядом раненый союзник — зажмите [E], чтобы поднять на ноги"));
+    }
+
     if (nearestDownedPlayerId != 0 && keyHeld)
     {
         if (!m_isChannelingRevive || m_channelTargetPlayerId != nearestDownedPlayerId)
@@ -593,16 +648,41 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (m_graceRemainingSec > 0.0)
         m_graceRemainingSec = std::max(0.0, m_graceRemainingSec - acEvent.Delta);
 
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+
+    // Belt-and-suspenders per-frame health guard: even if an external SKSE plugin mutates healthModifiers
+    // directly in memory without calling DamageActor / RestoreActorValue, clamp HP to 1.0f immediately
+    // and transition into frozen Downed-on-Knee posture before negative HP (-50..-500) can ever stick.
+    if (pPlayer)
+    {
+        const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
+        if (!m_isLocalDowned && m_graceRemainingSec <= 0.0 && curHp <= kDownedFloorHealth)
+        {
+            FinalizeLethalHitCushion(pPlayer, curHp);
+        }
+        else if (m_isLocalDowned && std::fabs(curHp - kDownedFloorHealth) > 0.05f)
+        {
+            ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth - curHp);
+        }
+    }
+
     if (m_isLocalDowned)
     {
         SetDownedControlLock(true);
-        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        if (pPlayer)
         {
+            if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
+                pCam->ForceThirdPerson();
+
             RedirectHostileAggroAwayFromPlayer(pPlayer);
             m_bleedoutReassertTimerSec += acEvent.Delta;
-            if (m_bleedoutReassertTimerSec >= 1.5)
+            if (m_bleedoutReassertTimerSec >= 0.85)
             {
                 m_bleedoutReassertTimerSec = 0.0;
+                pPlayer->SetWeaponDrawnEx(false);
+                BSFixedString bleedoutLower("bleedoutStart");
+                pPlayer->SendAnimationEvent(&bleedoutLower);
                 BSFixedString bleedoutStart("BleedoutStart");
                 pPlayer->SendAnimationEvent(&bleedoutStart);
             }

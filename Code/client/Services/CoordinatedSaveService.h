@@ -52,6 +52,9 @@ public:
     // or false if intercepted/converted into a coordinated multiplayer action.
     [[nodiscard]] bool HandleEngineSaveAttempt(const char* acpFileName) noexcept;
     [[nodiscard]] bool HandleEngineLoadAttempt(const char* acpFileName) noexcept;
+    void PrepareEngineForWorldLoad(const char* acpFileName) noexcept;
+    void NotifyEngineSaveCompleted(const char* acpFileName) noexcept;
+    void NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept;
 
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_lastCommittedEpoch; }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_lastCommittedSlot; }
@@ -75,6 +78,12 @@ private:
     TransportService& m_transport;
 
     bool m_pendingPreJoinBackup{false};
+    double m_preJoinBackupDelaySec{0.0};
+    bool m_autoReconnectPendingAfterLoad{false};
+    bool m_sawLoadingScreenForReconnect{false};
+    double m_autoReconnectDelaySec{0.0};
+    bool m_initialPartyCheckpointSent{false};
+    double m_partyCheckpointSettleSec{0.0};
     std::string m_preJoinBackupSlot{"RFAB_MP_PreJoin_Backup"};
     std::string m_authorizedPendingSaveSlot{};
     std::string m_authorizedPendingLoadSlot{};

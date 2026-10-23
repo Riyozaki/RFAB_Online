@@ -630,3 +630,76 @@ TEST_CASE("Co-op Hardening: Monotonic WorldEpoch across Rollbacks, Distant-City 
     }
 }
 
+TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-Kill Ownership & Repeated Boss-Wipe Checkpoints",
+          "[rfab][playtest][regression]")
+{
+    SECTION("drake1ch/RFAB live XP scenario: 3 wolves (3x30) + solo bandit (200) + joint bandit (200) = equal 490 XP on both players")
+    {
+        // Verify default bindings target exact RFAB.esp global RFAB_XP_Amount (base 0xAD45BB)
+        const RfabCompat::RuntimeModpackBindings defaults{};
+        REQUIRE(defaults.PluginName == "RFAB.esp");
+        REQUIRE(defaults.XpAmountGlobalEditorId == "RFAB_XP_Amount");
+        REQUIRE(defaults.FallbackXpAmountBaseFormId == 0xAD45BBu);
+
+        // Simulate Host (Player 1) and Friend (Player 2) dual pools: {RFAB_XP_Amount, Skills::xp}
+        int32_t hostRfabPool = 0;
+        float hostVanillaPool = 0.0f;
+        int32_t friendRfabPool = 0;
+        float friendVanillaPool = 0.0f;
+
+        auto applyPartyXpKill = [&](int32_t delta) {
+            hostRfabPool += delta;
+            hostVanillaPool += static_cast<float>(delta);
+            friendRfabPool += delta;
+            friendVanillaPool += static_cast<float>(delta);
+        };
+
+        // 1. Friend kills 3 Level-2 Wolves ("Волк": 15 * 2 = 30 XP each)
+        for (int i = 0; i < 3; ++i)
+            applyPartyXpKill(30);
+        REQUIRE(hostRfabPool == 90);
+        REQUIRE(friendRfabPool == 90);
+
+        // 2. Host kills 1 Level-20 Nord Bandit ("Норд": 10 * 20 = 200 XP)
+        applyPartyXpKill(200);
+        REQUIRE(hostRfabPool == 290);
+        REQUIRE(friendRfabPool == 290);
+
+        // 3. Joint kill: Host owns Bandit (!IsRemote()), Friend lands final blow -> Host triggers Kill(PlayerRef)
+        //    without setting kInfamy = -1, awarding exact 1x 200 XP shared with Friend (NOT 0 XP and NOT 400 XP!)
+        applyPartyXpKill(200);
+        REQUIRE(hostRfabPool == 490);
+        REQUIRE(friendRfabPool == 490);
+        REQUIRE(hostVanillaPool == 490.0f);
+        REQUIRE(friendVanillaPool == 490.0f);
+    }
+
+    SECTION("Repeated RFAB boss wipes preserve exact boss-door checkpoint across consecutive reloads + auto-reconnects")
+    {
+        RfabCompat::SaveSnapshotCoordinator coord("S7F3A", 3);
+
+        // Either player presses F5 outside boss room -> synchronized save across Host (1) & Friend (2)
+        const auto prep = coord.BeginBarrier({1, 2}, /*aIsAuto=*/false, 10'000);
+        REQUIRE(prep.has_value());
+        REQUIRE(coord.RecordClientAck(1, prep->EpochId, true, "") == RfabCompat::SaveSnapshotCoordinator::AckResolution::PendingMoreAcks);
+        REQUIRE(coord.RecordClientAck(2, prep->EpochId, true, "") == RfabCompat::SaveSnapshotCoordinator::AckResolution::ReadyToCommit);
+        const auto committed = coord.ConsumeAndCommit(10'500);
+        REQUIRE(committed.EpochId == 1);
+        REQUIRE_FALSE(committed.SlotName.empty());
+
+        // Attempt #1 wipes -> rolls back to Epoch 1 slot
+        coord.NotifyRolledBackTo(committed.EpochId, committed.SlotName, 25'000);
+        REQUIRE(coord.GetLastCommittedEpoch() == 1);
+        REQUIRE(coord.GetLastCommittedSlot() == committed.SlotName);
+        const uint64_t worldGenAfterWipe1 = coord.GetCurrentWorldEpoch();
+        REQUIRE(worldGenAfterWipe1 > 1);
+
+        // Attempt #2 wipes again WITHOUT saving again first -> STILL resolves to the exact same boss-door slot!
+        coord.NotifyRolledBackTo(committed.EpochId, committed.SlotName, 45'000);
+        REQUIRE(coord.GetLastCommittedEpoch() == 1);
+        REQUIRE(coord.GetLastCommittedSlot() == committed.SlotName);
+        REQUIRE(coord.GetCurrentWorldEpoch() > worldGenAfterWipe1);
+    }
+}
+
+

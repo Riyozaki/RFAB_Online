@@ -22,6 +22,7 @@ struct BGSSaveLoadManager
     };
 
     static BGSSaveLoadManager* Get() noexcept;
+    static void InstallUniversalPostSkseHooks() noexcept;
 
     void Save(SaveData* apData);
     bool SaveNamed(const char* acpFileName) noexcept;

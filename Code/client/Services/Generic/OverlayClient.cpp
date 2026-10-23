@@ -102,7 +102,7 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
     World::Get().GetTransport().SetServerPassword(password);
 
     World::Get().GetRunner().Queue(
-        [endpoint]()
+        [endpoint, password]()
         {
             PlayerCharacter* pPlayer = PlayerCharacter::Get();
             if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
@@ -111,7 +111,7 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
                 Utils::ShowHudMessage(String("Сначала загрузите сохранение или начните новую игру, затем нажмите F2 -> Connect"));
                 return;
             }
-            World::Get().GetTransport().Connect(endpoint);
+            World::Get().GetTransport().ConnectToServer(endpoint, password);
         });
 }
 

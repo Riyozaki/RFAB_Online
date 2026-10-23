@@ -1,6 +1,7 @@
 #pragma once
 #include "Structs/Inventory.h"
 #include "Structs/ActorData.h"
+#include <Messages/CharacterSpawnRequest.h>
 #include <CoopOwnership.h>
 
 struct ActorAddedEvent;
@@ -96,6 +97,9 @@ struct CharacterService
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
     void NotifySaveLoadReset() noexcept;
+    void PreSavePurgeDynamicActors() noexcept;
+    void RestorePurgedRemoteActorsAfterSave() noexcept;
+    void PurgeAllDynamicActorsForWorldLoad() noexcept;
 
 private:
     void MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
@@ -128,6 +132,8 @@ private:
     std::chrono::steady_clock::time_point m_lastAppliedRemoteXpTime{};
     int32_t m_creditToRefundOnLocalQuestXp = 0;
     mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
+    mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
+    bool m_pendingPostSaveRemoteRestore{false};
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

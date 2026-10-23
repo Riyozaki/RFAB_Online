@@ -6,6 +6,7 @@
 #include <Services/ActorValueService.h>
 #include <World.h>
 #include <Forms/ActorValueInfo.h>
+#include <Games/Overrides.h>
 #include <Games/References.h>
 #include <Components.h>
 
@@ -445,19 +446,32 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
         return;
     }
 
-    const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
-    pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+    {
+        ScopedActorValueOverride avOverride;
+        const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+        pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
+    }
 
     const float health = pActor->GetActorValue(ActorValueInfo::kHealth);
     if (!pActor->IsDead() && health <= 0.f)
     {
         ActorExtension* pExtension = pActor->GetExtension();
-        // Players should never be killed; mark kInfamy = -1 before non-authoritative Kill() so
-        // RFAB_XP_Alias.psc's IsValidXPKill() guard never double-awards kill XP on peers!
         if (!pExtension->IsPlayer())
         {
-            pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
-            pActor->Kill();
+            if (pExtension->IsRemote())
+            {
+                // Non-owner peer: suppress duplicate local RFAB_XP_Alias.psc award via kInfamy = -1.
+                ScopedActorValueOverride avOverride;
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+                pActor->Kill(nullptr);
+            }
+            else
+            {
+                // Authoritative owner of this NPC when a party ally landed the final blow (joint kill!):
+                // credit PlayerCharacter::Get() as killer WITHOUT setting kInfamy = -1 so RFAB_XP_Alias.psc
+                // awards exact 1x RFAB kill XP here and SyncRfabExperienceRequest shares it with the whole party!
+                pActor->Kill(PlayerCharacter::Get());
+            }
         }
     }
 }

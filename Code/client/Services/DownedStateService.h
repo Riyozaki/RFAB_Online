@@ -81,6 +81,7 @@ private:
         bool Shout{true};
         bool AttackBlock{true};
         bool Sneak{true};
+        bool TogglePOV{true};
     };
 
     void SetDownedControlLock(bool aLocked) noexcept;
@@ -101,9 +102,11 @@ private:
 
     bool m_isLocalDowned{false};
     bool m_allowAuthorizedHeal{false};
+    bool m_wasFirstPersonBeforeDowned{false};
     double m_graceRemainingSec{0.0};
     double m_reportTimerSec{0.0};
     double m_bleedoutReassertTimerSec{0.0};
+    double m_revivePromptCooldownSec{0.0};
     SavedControlFlags m_savedControls{};
 
     bool m_isChannelingRevive{false};

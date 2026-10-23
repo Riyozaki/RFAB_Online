@@ -350,14 +350,20 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
             pActor->GetExtension()->nakedDeadline = cNoDeadline;   
         }
 
-        if (pActor->GetExtension()->IsRemote())
+        if (pActor->GetExtension()->IsPlayer() || pActor->IsDead())
         {
-            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check canceled, IsRemote(), {}", pActor->formID, pActor->baseForm->GetName());
+            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check skipped (player or dead) {}", pActor->formID, pActor->baseForm->GetName());
             continue;
         }
 
-        // If somehow inventory was damaged despite fixes, dress actor. Belt and suspenders.
-        // Note if the outfit items have been removed from inventory, they aren't regenerated.
+        if (!pActor->GetNiNode())
+        {
+            // Keep deadline armed until 3D actually finishes streaming in on slow cells.
+            pActor->GetExtension()->SetNakedDeadline();
+            continue;
+        }
+
+        // Dress both local and remote humanoid NPCs whose body outfit was stripped during initial sync.
         TESNPC* pBase = Cast<TESNPC>(pActor->baseForm);
         if (!pActor->IsWearingBodyPiece() && pBase)
         {

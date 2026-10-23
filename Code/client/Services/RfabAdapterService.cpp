@@ -14,6 +14,7 @@
 #include <Games/TES.h>
 #include <Messages/NotifyRfabProgressionEvent.h>
 #include <Messages/SyncRfabProgressionEvent.h>
+#include <PlayerCharacter.h>
 #include <Services/CharacterService.h>
 #include <Services/PapyrusService.h>
 #include <Services/TransportService.h>
@@ -23,6 +24,24 @@
 
 namespace
 {
+std::filesystem::path DiscoverSkyrimRootDirectory() noexcept
+{
+#ifdef _WIN32
+    wchar_t exePath[MAX_PATH * 4]{};
+    const DWORD len = GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+    if (len > 0 && len < std::size(exePath))
+    {
+        std::error_code ec;
+        const auto dir = std::filesystem::path(exePath).parent_path();
+        if (!dir.empty() && std::filesystem::exists(dir, ec))
+            return dir;
+    }
+#endif
+    std::error_code ec;
+    const auto cwd = std::filesystem::current_path(ec);
+    return ec ? std::filesystem::path(".") : cwd;
+}
+
 bool EqualsIgnoreCase(std::string_view aA, std::string_view aB) noexcept
 {
     if (aA.size() != aB.size())
@@ -55,16 +74,16 @@ RfabAdapterService::~RfabAdapterService() noexcept
 
 void RfabAdapterService::RefreshRuntimeBindings() noexcept
 {
-    const std::filesystem::path cwd = std::filesystem::current_path();
-    m_bindings = RfabCompat::LoadBindingsFromDisk(cwd);
+    const std::filesystem::path gameRoot = DiscoverSkyrimRootDirectory();
+    m_bindings = RfabCompat::LoadBindingsFromDisk(gameRoot);
     m_liveXpTable = {};
 
     std::string raw;
-    if (RfabCompat::Detail::ReadTextFile(cwd / m_bindings.ExperienceIniRelPath, raw))
+    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.ExperienceIniRelPath, raw))
         RfabCompat::ParseExperienceIni(raw, m_liveXpTable);
-    if (RfabCompat::Detail::ReadTextFile(cwd / m_bindings.QuestsIniRelPath, raw))
+    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.QuestsIniRelPath, raw))
         RfabCompat::ParseQuestsIni(raw, m_liveXpTable);
-    if (RfabCompat::Detail::ReadTextFile(cwd / m_bindings.XpSettingsJsonRelPath, raw))
+    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.XpSettingsJsonRelPath, raw))
         RfabCompat::ParseXpSettingsJson(raw, m_liveXpTable);
 
     m_pCachedXpGlobal = nullptr;
@@ -160,23 +179,36 @@ int32_t RfabAdapterService::ReadRfabXp(TESGlobal* apGlobal) noexcept
 bool RfabAdapterService::ApplyDualPoolExperienceDelta(int32_t aDelta, int32_t& aOutNewTotalXp) noexcept
 {
     TESGlobal* pRfabXp = GetRfabXpGlobal();
-    if (!pRfabXp)
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pRfabXp || !pPlayer)
         return false;
 
-    auto& papyrusService = m_world.ctx().at<PapyrusService>();
-    const void* pGetExperience = papyrusService.Get("Game", "GetPlayerExperience");
-    const void* pSetExperience = papyrusService.Get("Game", "SetPlayerExperience");
-    if (!pGetExperience || !pSetExperience)
-        return false;
-
-    GlobalPapyrusFunction<float> getExperience(pGetExperience);
-    GlobalPapyrusFunction<void, float> setExperience(pSetExperience);
-
+    // Update BOTH pools directly in C++ memory (matching RFAB_XP_Handler.psc::ModXP + skse64 PapyrusGame.cpp):
+    // 1. TESGlobal RFAB_XP_Amount (0xAD45BB in RFAB.esp) — spent inside RFAB_Menu to raise skills & perks.
+    // 2. PlayerCharacter->pSkills->data->xp (offset 0x00) — exact field mutated by Game.SetPlayerExperience().
+    // Note: Game.GetPlayerExperience / Game.SetPlayerExperience are SKSE-registered functions in skse64_1_5_97.dll,
+    // NOT vanilla SkyrimSE.exe functions, so querying PapyrusService for them previously returned nullptr!
     aOutNewTotalXp = std::max(0, ReadRfabXp(pRfabXp) + aDelta);
     pRfabXp->f = static_cast<float>(aOutNewTotalXp);
 
-    const float updatedVanillaXp = std::max(0.0f, getExperience() + static_cast<float>(aDelta));
-    setExperience(updatedVanillaXp);
+    bool levelUpReady = false;
+    if (pPlayer->pSkills && pPlayer->pSkills->data)
+    {
+        auto* pSkillsData = pPlayer->pSkills->data;
+        pSkillsData->xp = std::max(0.0f, pSkillsData->xp + static_cast<float>(aDelta));
+        levelUpReady = (pSkillsData->levelThreshold > 0.0f && pSkillsData->xp >= pSkillsData->levelThreshold);
+    }
+
+    if (aDelta > 0)
+    {
+        char msgBuf[160]{};
+        if (levelUpReady)
+            std::snprintf(msgBuf, sizeof(msgBuf), "Опыт отряда: +%d XP (доступен новый уровень!)", aDelta);
+        else
+            std::snprintf(msgBuf, sizeof(msgBuf), "Опыт отряда: +%d XP", aDelta);
+        Utils::ShowHudMessage(String(msgBuf));
+    }
+
     return true;
 }
 
@@ -185,7 +217,7 @@ void RfabAdapterService::SuppressSoloRfabAutosave() noexcept
     if (m_autosaveSuppressed)
         return;
 
-    const std::filesystem::path candidate = std::filesystem::current_path() / m_bindings.RfabAutosaveIniRelPath;
+    const std::filesystem::path candidate = DiscoverSkyrimRootDirectory() / m_bindings.RfabAutosaveIniRelPath;
     std::string raw;
     if (!RfabCompat::Detail::ReadTextFile(candidate, raw))
         return;

@@ -111,10 +111,6 @@ bool CoordinatedSaveService::ExecuteAuthorizedLoad(const std::string& acSlotName
     if (!pMgr)
         return false;
 
-    m_world.GetDownedStateService().ResetAllStates();
-    m_world.GetCharacterService().NotifySaveLoadReset();
-    m_world.GetRfabAdapterService().NotifySaveLoadReset();
-
     m_authorizedPendingLoadSlot = acSlotName;
     ScopedSaveLoadAllowance guard;
     const bool ok = pMgr->LoadNamed(acSlotName.c_str(), true);
@@ -123,18 +119,61 @@ bool CoordinatedSaveService::ExecuteAuthorizedLoad(const std::string& acSlotName
     return ok;
 }
 
-bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) noexcept
+void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) noexcept
 {
-    if (ScopedSaveLoadAllowance::IsAllowed())
-        return true;
+    (void)acpFileName;
+    m_world.GetDownedStateService().ResetAllStates();
+    m_world.GetRfabAdapterService().NotifySaveLoadReset();
 
+    // If loading an authorized co-op checkpoint while online, close transport cleanly BEFORE BGSSaveLoadGame::Revert
+    // so zero network packets arrive mid-revert, and schedule automatic reconnect as soon as Loading Menu finishes!
+    if (m_transport.IsConnected() && m_transport.HasLastServerEndpoint())
+    {
+        m_autoReconnectPendingAfterLoad = true;
+        m_sawLoadingScreenForReconnect = false;
+        m_autoReconnectDelaySec = 1.5;
+        m_transport.Close();
+    }
+
+    // Always purge ALL dynamic 0xFFxxxxxx actors (both remote players AND dynamic encounters like FF000862)
+    // BEFORE Skyrim tears down loaded cells and heap TESNPC forms!
+    m_world.GetCharacterService().PurgeAllDynamicActorsForWorldLoad();
+}
+
+void CoordinatedSaveService::NotifyEngineSaveCompleted(const char* acpFileName) noexcept
+{
     const std::string fileName = acpFileName ? acpFileName : "";
     if (!m_authorizedPendingSaveSlot.empty() &&
         RfabCompat::Detail::ToLowerAscii(fileName) == RfabCompat::Detail::ToLowerAscii(m_authorizedPendingSaveSlot))
     {
         m_authorizedPendingSaveSlot.clear();
+    }
+}
+
+void CoordinatedSaveService::NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept
+{
+    const std::string fileName = acpFileName ? acpFileName : "";
+    if (!m_authorizedPendingLoadSlot.empty() &&
+        RfabCompat::Detail::ToLowerAscii(fileName) == RfabCompat::Detail::ToLowerAscii(m_authorizedPendingLoadSlot))
+    {
+        m_authorizedPendingLoadSlot.clear();
+    }
+
+    if (!aSucceeded)
+        m_autoReconnectPendingAfterLoad = false;
+}
+
+bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) noexcept
+{
+    const std::string fileName = acpFileName ? acpFileName : "";
+    if (!m_authorizedPendingSaveSlot.empty() &&
+        RfabCompat::Detail::ToLowerAscii(fileName) == RfabCompat::Detail::ToLowerAscii(m_authorizedPendingSaveSlot))
+    {
         return true;
     }
+
+    if (ScopedSaveLoadAllowance::IsAllowed())
+        return true;
 
     if (!m_transport.IsConnected() || !m_world.GetServerSettings().CoordinatedSavesEnabled)
         return true;
@@ -143,21 +182,15 @@ bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) no
     if (IsAutosaveName(fileName))
         return false;
 
-    if (IsLocalPlayerAuthorizedLeader())
-    {
-        if (m_lastInterceptNoticeCooldownSec <= 0.0)
-        {
-            m_lastInterceptNoticeCooldownSec = 1.5;
-            RequestCoordinatedSaveLoad req{};
-            req.Action = RequestCoordinatedSaveLoad::ActionType::ManualSave;
-            m_transport.Send(req);
-            Utils::ShowHudMessage(String("RFAB Online: Координированное сохранение группы..."));
-        }
-    }
-    else if (m_lastInterceptNoticeCooldownSec <= 0.0)
+    // ANY connected player pressing F5 or Menu -> Save triggers a synchronized two-phase checkpoint save
+    // across ALL connected players simultaneously (saving both characters and exact world coordinates)!
+    if (m_lastInterceptNoticeCooldownSec <= 0.0)
     {
         m_lastInterceptNoticeCooldownSec = 1.5;
-        Utils::ShowHudMessage(String("RFAB Online: Сохранение группы запускает лидер отряда (F5)"));
+        RequestCoordinatedSaveLoad req{};
+        req.Action = RequestCoordinatedSaveLoad::ActionType::ManualSave;
+        m_transport.Send(req);
+        Utils::ShowHudMessage(String("RFAB Online: Синхронное сохранение всех игроков группы..."));
     }
 
     return false;
@@ -165,16 +198,15 @@ bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) no
 
 bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) noexcept
 {
-    if (ScopedSaveLoadAllowance::IsAllowed())
-        return true;
-
     const std::string fileName = acpFileName ? acpFileName : "";
     if (!m_authorizedPendingLoadSlot.empty() &&
         RfabCompat::Detail::ToLowerAscii(fileName) == RfabCompat::Detail::ToLowerAscii(m_authorizedPendingLoadSlot))
     {
-        m_authorizedPendingLoadSlot.clear();
         return true;
     }
+
+    if (ScopedSaveLoadAllowance::IsAllowed())
+        return true;
 
     if (!m_transport.IsConnected() || !m_world.GetServerSettings().CoordinatedSavesEnabled)
         return true;
@@ -195,13 +227,13 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
                 req.Action = RequestCoordinatedSaveLoad::ActionType::LoadLatestCheckpoint;
             }
             m_transport.Send(req);
-            Utils::ShowHudMessage(String("RFAB Online: Синхронная загрузка чекпоинта группы..."));
+            Utils::ShowHudMessage(String("RFAB Online: Общая загрузка чекпоинта для всех игроков..."));
         }
     }
     else if (m_lastInterceptNoticeCooldownSec <= 0.0)
     {
         m_lastInterceptNoticeCooldownSec = 1.5;
-        Utils::ShowHudMessage(String("RFAB Online: Загрузку чекпоинта запускает лидер отряда"));
+        Utils::ShowHudMessage(String("RFAB Online: В кооперативе общую загрузку чекпоинта запускает лидер отряда (F9)"));
     }
 
     return false;
@@ -209,20 +241,28 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
 
 void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
 {
-    m_writtenSlotsInSession.clear();
-    m_lastCommittedEpoch = 0;
-    m_lastCommittedSlot.clear();
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
-    // Do not force an immediate save right inside the connection frame (while the CEF overlay is open);
-    // existing solo saves remain untouched on disk and coordinated saves run on F5 / post-combat checkpoints.
-    m_pendingPreJoinBackup = false;
+    m_autoReconnectPendingAfterLoad = false;
+    m_sawLoadingScreenForReconnect = false;
+    m_partyCheckpointSettleSec = 0.0;
+
+    // Preserve m_writtenSlotsInSession / m_lastCommittedEpoch / m_lastCommittedSlot across auto-reconnects
+    // so repeated RFAB boss attempts (Save -> Wipe #1 -> Auto-Reload -> Wipe #2 -> Auto-Reload -> Victory!)
+    // ALWAYS reload the exact boss-door checkpoint cleanly every single attempt!
+    if (!m_writtenSlotsInSession.contains(m_preJoinBackupSlot))
+    {
+        m_pendingPreJoinBackup = true;
+        m_preJoinBackupDelaySec = 3.5;
+    }
 }
 
 void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
     m_pendingPreJoinBackup = false;
+    m_initialPartyCheckpointSent = false;
+    m_partyCheckpointSettleSec = 0.0;
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
@@ -230,19 +270,71 @@ void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
 
 void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    BGSSaveLoadManager::InstallUniversalPostSkseHooks();
+
     if (m_lastInterceptNoticeCooldownSec > 0.0)
         m_lastInterceptNoticeCooldownSec = std::max(0.0, m_lastInterceptNoticeCooldownSec - acEvent.Delta);
+
+    // Seamless automatic reconnect after synchronized F9 / Menu Load / Party Wipe finishes loading world!
+    if (m_autoReconnectPendingAfterLoad && !m_transport.IsConnected())
+    {
+        if (IsLoadingMenuOpen())
+        {
+            m_sawLoadingScreenForReconnect = true;
+            return;
+        }
+
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (pPlayer && (pPlayer->parentCell || pPlayer->GetWorldSpace()))
+        {
+            m_autoReconnectDelaySec -= acEvent.Delta;
+            if (m_autoReconnectDelaySec <= 0.0)
+            {
+                m_autoReconnectPendingAfterLoad = false;
+                m_sawLoadingScreenForReconnect = false;
+                Utils::ShowHudMessage(String("RFAB Online: Автоматическое переподключение к сессии..."));
+                m_transport.ReconnectToLastServer();
+            }
+        }
+        return;
+    }
 
     if (!m_transport.IsConnected())
         return;
 
     if (m_pendingPreJoinBackup && !IsLoadingMenuOpen())
     {
-        std::string reason;
-        if (CanSafelySaveNow(reason))
+        m_preJoinBackupDelaySec -= acEvent.Delta;
+        if (m_preJoinBackupDelaySec <= 0.0)
         {
-            ExecuteAuthorizedSave(m_preJoinBackupSlot);
-            m_pendingPreJoinBackup = false;
+            std::string reason;
+            if (CanSafelySaveNow(reason))
+            {
+                ExecuteAuthorizedSave(m_preJoinBackupSlot);
+                m_pendingPreJoinBackup = false;
+            }
+        }
+    }
+
+    // Once 2+ players have joined the party, automatically take Checkpoint #1 after a short 4.0s settle
+    // so both players immediately share a synchronized world + character save even before pressing F5!
+    if (!m_initialPartyCheckpointSent &&
+        m_lastCommittedEpoch == 0 &&
+        !IsLoadingMenuOpen() &&
+        IsLocalPlayerAuthorizedLeader() &&
+        m_world.GetPartyService().GetPlayers().size() >= 2)
+    {
+        m_partyCheckpointSettleSec += acEvent.Delta;
+        if (m_partyCheckpointSettleSec >= 4.0)
+        {
+            std::string reason;
+            if (CanSafelySaveNow(reason))
+            {
+                m_initialPartyCheckpointSent = true;
+                RequestCoordinatedSaveLoad req{};
+                req.Action = RequestCoordinatedSaveLoad::ActionType::ManualSave;
+                m_transport.Send(req);
+            }
         }
     }
 

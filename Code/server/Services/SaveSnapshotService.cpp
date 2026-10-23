@@ -427,17 +427,29 @@ void SaveSnapshotService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcep
 void SaveSnapshotService::OnSaveLoadRequest(const PacketEvent<RequestCoordinatedSaveLoad>& acMessage) noexcept
 {
     Player* pSender = acMessage.pPlayer;
-    if (!IsPlayerAuthorizedHost(pSender))
+    if (!pSender)
+        return;
+
+    const auto& req = acMessage.Packet;
+
+    // Allow ANY connected player in the session to request a party-wide ManualSave (F5 / Menu -> Save)
+    // so both players' characters, RFAB XP, items, and world positions are ALWAYS saved together seamlessly!
+    if (req.Action == RequestCoordinatedSaveLoad::ActionType::ManualSave)
     {
-        spdlog::debug("[RFAB SaveSnapshot] Ignoring unauthorized save/load request from player {}", pSender ? pSender->GetId() : 0);
+        TriggerCoordinatedSave(false, nullptr);
         return;
     }
 
-    const auto& req = acMessage.Packet;
+    if (!IsPlayerAuthorizedHost(pSender))
+    {
+        spdlog::debug("[RFAB SaveSnapshot] Ignoring non-host load request from player {}", pSender->GetId());
+        return;
+    }
+
     switch (req.Action)
     {
     case RequestCoordinatedSaveLoad::ActionType::ManualSave:
-        TriggerCoordinatedSave(false, pSender);
+        TriggerCoordinatedSave(false, nullptr);
         break;
     case RequestCoordinatedSaveLoad::ActionType::LoadLatestCheckpoint:
         TriggerRollbackToLatest(false);

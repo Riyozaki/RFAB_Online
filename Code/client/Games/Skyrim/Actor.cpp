@@ -537,42 +537,108 @@ void Actor::SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit)
     s_pSetOutfit(this, apOutfit, aIsSleepOutfit);
 }
 
+namespace
+{
+void CollectArmorFromOutfitForm(
+    TESForm* apForm,
+    uint32_t aDeterministicSeed,
+    int aDepth,
+    TiltedPhoques::Vector<TESObjectARMO*>& aOutArmors) noexcept
+{
+    if (!apForm || aDepth > 8)
+        return;
+
+    if (apForm->formType == FormType::Armor)
+    {
+        if (auto* pArmor = Cast<TESObjectARMO>(apForm))
+            aOutArmors.push_back(pArmor);
+        return;
+    }
+
+    if (apForm->formType == FormType::LeveledItem)
+    {
+        auto* pLevItem = Cast<TESLevItem>(apForm);
+        const uint8_t flags = pLevItem ? pLevItem->unk10[1] : 0;      // offset 0x11 in TESLeveledList
+        const uint8_t entryCount = pLevItem ? pLevItem->unk10[2] : 0; // offset 0x12 in TESLeveledList
+        if (!pLevItem || !pLevItem->pLeveledListA || entryCount == 0)
+            return;
+
+        // TESLeveledList::kUseAll == 1 << 2 (0x04): Requiem / RFAB full armor-set sublists use UseAll
+        // to grant cuirass + boots + gauntlets + helmet together.
+        const bool useAll = (flags & 0x04u) != 0;
+        if (useAll)
+        {
+            for (uint8_t i = 0; i < entryCount; ++i)
+            {
+                CollectArmorFromOutfitForm(
+                    pLevItem->pLeveledListA[i].pForm,
+                    aDeterministicSeed + static_cast<uint32_t>(i) * 2654435761u,
+                    aDepth + 1,
+                    aOutArmors);
+            }
+            return;
+        }
+
+        // Deterministic pick seeded by actor baseForm/formID so Host and Friend materialize identical armor.
+        const uint32_t count = static_cast<uint32_t>(entryCount);
+        const uint32_t startIdx = aDeterministicSeed % count;
+        for (uint32_t offset = 0; offset < count; ++offset)
+        {
+            const uint32_t idx = (startIdx + offset) % count;
+            TESForm* pSubForm = pLevItem->pLeveledListA[idx].pForm;
+            if (!pSubForm)
+                continue;
+
+            const size_t before = aOutArmors.size();
+            CollectArmorFromOutfitForm(
+                pSubForm,
+                aDeterministicSeed ^ (idx * 2246822519u + 1u),
+                aDepth + 1,
+                aOutArmors);
+            if (aOutArmors.size() > before)
+                return;
+        }
+    }
+}
+} // namespace
+
 void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
 {
     auto* pBase = Cast<TESNPC>(baseForm);
     if (!pBase)
         return;
 
-    BGSOutfit* pDefaultOutfit = pBase->outfits[aIsSleepOutfit ? 1:0];
+    BGSOutfit* pDefaultOutfit = pBase->outfits[aIsSleepOutfit ? 1 : 0];
     if (!pDefaultOutfit)
         return;
 
     auto* pEquipManager = EquipManager::Get();
+    if (!pEquipManager)
+        return;
+
+    const uint32_t deterministicSeed = pBase->formID != 0 ? pBase->formID : formID;
+    TiltedPhoques::Vector<TESObjectARMO*> resolvedArmors;
     for (auto* pItem : pDefaultOutfit->outfitItems)
     {
-        TESObjectARMO* pArmor = nullptr;
+        CollectArmorFromOutfitForm(pItem, deterministicSeed, 0, resolvedArmors);
+    }
 
-        if (pItem->formType == FormType::Armor)
-            pArmor = Cast<TESObjectARMO>(pItem);
-        else if (pItem->formType == FormType::LeveledItem)
-        {
-            TESLevItem* pLevItem = Cast<TESLevItem>(pItem);
-            if (!pLevItem || !pLevItem->pLeveledListA || !pLevItem->pLeveledListA->pForm)
-                continue;
+    ScopedInventoryOverride invGuard;
+    ScopedEquipOverride equipGuard;
 
-            pArmor = Cast<TESObjectARMO>(pLevItem->pLeveledListA->pForm);
-        }
-        else
-            continue;
-
+    for (TESObjectARMO* pArmor : resolvedArmors)
+    {
         if (!pArmor)
             continue;
 
-        spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID, baseForm->GetName());
-        pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);  
-    }
+        // SetActorInventory() calls RemoveAllItems(), so always restore 1 item in ExtraContainerChanges
+        // under ScopedInventoryOverride before invoking EquipManager::Equip().
+        if (RealAddInventoryItem)
+            TiltedPhoques::ThisCall(RealAddInventoryItem, this, pArmor, nullptr, 1, nullptr);
 
-    return;
+        spdlog::debug(__FUNCTION__ ": equipping {:X} on actor {:X} {}", pArmor->formID, formID, baseForm->GetName());
+        pEquipManager->Equip(this, pArmor, nullptr, 1, nullptr, false, true, false, false);
+    }
 }
 
 // Get owner of a summon or raised corpse
@@ -782,6 +848,7 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
 
 void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
 {
+    ScopedActorValueOverride avOverride;
     for (auto& value : acActorValues.ActorMaxValuesList)
         ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
 
@@ -883,21 +950,14 @@ bool Actor::IsDragon() const noexcept
     return BehaviorVar::IsDragon(pExtension->GraphDescriptorHash);
 }
 
-void Actor::Kill() noexcept
+void Actor::Kill(Actor* apKiller) noexcept
 {
     // Never kill players
     ActorExtension* pExtension = GetExtension();
     if (pExtension->IsPlayer())
         return;
 
-    // TODO: these args are kind of bogus of course
-    KillImpl(nullptr, 100.f, true, true);
-
-    // Papyrus kill will not go through if it is queued by a kill move
-    /*
-    PAPYRUS_FUNCTION(void, Actor, Kill, void*);
-    s_pKill(this, NULL);
-    */
+    KillImpl(apKiller, 100.f, true, true);
 }
 
 void Actor::Reset() noexcept
@@ -1016,6 +1076,18 @@ bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
 
 TP_THIS_FUNCTION(TDamageActor, bool, Actor, float aDamage, Actor* apHitter, bool aKillMove);
 static TDamageActor* RealDamageActor = nullptr;
+static thread_local bool s_inAuthoritativeDamageHook = false;
+
+struct ScopedDamageHookGuard
+{
+    ScopedDamageHookGuard() noexcept
+        : m_prev(s_inAuthoritativeDamageHook)
+    {
+        s_inAuthoritativeDamageHook = true;
+    }
+    ~ScopedDamageHookGuard() noexcept { s_inAuthoritativeDamageHook = m_prev; }
+    bool m_prev{false};
+};
 
 // TODO: this is flawed, since it does not account for invulnerable actors
 bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bool aKillMove)
@@ -1029,6 +1101,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
 
     auto applyAuthoritativeDamage = [&]() -> bool
     {
+        ScopedDamageHookGuard dmgGuard;
         const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
         const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
         const float healthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
@@ -1059,6 +1132,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
 
             // Cushion temporaryModifier across RealDamageActor so RFAB.dll / HookDamage.dll / Requiem multipliers
             // execute 100% natively without ever reaching <= 0 HP or firing Actor::Kill / REQ_DeathHandler / killmoves.
+            ScopedDamageHookGuard dmgGuard;
             constexpr float kLethalGuardCushion = 65536.0f;
             const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
             const float savedTempMod = apThis->healthModifiers.temporaryModifier;
@@ -1139,60 +1213,53 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
     return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
 }
 
-TP_THIS_FUNCTION(TRegenAttributes, void*, Actor, int aId, float regenValue);
-static TRegenAttributes* RealRegenAttributes = nullptr;
-
-void* TP_MAKE_THISCALL(HookRegenAttributes, Actor, int aId, float aRegenValue)
-{
-    if (aId != ActorValueInfo::kHealth)
-    {
-        return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
-    }
-
-    const auto* pExTarget = apThis->GetExtension();
-    if (pExTarget->IsRemote())
-    {
-        return 0;
-    }
-
-    if (pExTarget->IsLocalPlayer() &&
-        World::Get().GetDownedStateService().ShouldBlockPlayerHealthMutation(aRegenValue))
-    {
-        return 0;
-    }
-
-    World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, aRegenValue));
-    return TiltedPhoques::ThisCall(RealRegenAttributes, apThis, aId, aRegenValue);
-}
-
-TP_THIS_FUNCTION(TRestoreActorValue, void, ActorValueOwner, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue);
+TP_THIS_FUNCTION(TRestoreActorValue, void, Actor, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue);
 static TRestoreActorValue* RealRestoreActorValue = nullptr;
 
-// Hooks Actor::RestoreActorValue (ActorValueOwner vfunc #06, SE 37513) with exact ActorValueOwner* subobject ABI:
-// - Blocks 100% of positive health restores (potions, spells, food, scripts, HealRate) while local player is Downed
-//   without mutating a single stat, active effect, or save record!
-// - Clamps fatal negative health restores (poisons, bleeds, fall damage, ScriptDamage) at 1.0f into Downed-on-Knee!
-void TP_MAKE_THISCALL(HookRestoreActorValue, ActorValueOwner, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue)
+// Unified hook on Actor::RestoreActorValue (SE ID 37513 @ 0x620900, exact ABI: RCX = Actor*, EDX = ForceMode, R8D = AV, XMM3 = float):
+// 1. Intercepts ALL direct health damage on local player (including RFAB.dll custom combat/magic damage,
+//    poisons, bleeds, fall damage, and scripts) BEFORE kHealth ever goes <= 0 (-50..-500 impossible!).
+// 2. Blocks 100% of unauthorized heals/regen/potions/DoTs on local player while Downed-on-Knee or in revive grace.
+// 3. Blocks passive local health regeneration on remote actors without interfering with authoritative damage/sync.
+void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue)
 {
-    if (aMode == ActorValueOwner::ForceMode::DAMAGE && aId == ActorValueInfo::kHealth)
+    if (aMode == ActorValueOwner::ForceMode::DAMAGE && aId == ActorValueInfo::kHealth && apThis)
     {
+        if (auto* pExt = apThis->GetExtension())
+        {
+            if (pExt->IsRemote())
+            {
+                if (!ScopedActorValueOverride::IsOverriden() && !s_inAuthoritativeDamageHook)
+                    return;
+
+                TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+                return;
+            }
+        }
+
         PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
-        if (pLocalPlayer && apThis == &pLocalPlayer->actorValueOwner)
+        if (pLocalPlayer && apThis == pLocalPlayer)
         {
             auto& downed = World::Get().GetDownedStateService();
             if (downed.ShouldBlockPlayerHealthMutation(aValue))
                 return;
 
-            if (aValue < 0.0f)
+            if (!s_inAuthoritativeDamageHook)
             {
-                const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
-                if (downed.InterceptPotentialFatalPlayerDamage(pLocalPlayer, curHp, -aValue))
-                    return;
+                if (aValue < 0.0f)
+                {
+                    const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
+                    if (downed.InterceptPotentialFatalPlayerDamage(pLocalPlayer, curHp, -aValue))
+                        return;
+                }
+
+                if (!ScopedActorValueOverride::IsOverriden() && aValue != 0.0f)
+                    World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, aValue));
             }
         }
     }
 
-    return TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+    TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
 }
 
 void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
@@ -1469,7 +1536,6 @@ static TiltedPhoques::Initializer s_actorHooks(
         POINTER_SKYRIMSE(TSpawnActorInWorld, s_SpawnActorInWorld, 19315);
         POINTER_SKYRIMSE(TDamageActor, s_damageActor, 36345);
         POINTER_SKYRIMSE(TApplyActorEffect, s_applyActorEffect, 34286);
-        POINTER_SKYRIMSE(TRegenAttributes, s_regenAttributes, 37513);
         POINTER_SKYRIMSE(TAddInventoryItem, s_addInventoryItem, 36525);
         POINTER_SKYRIMSE(TPickUpObject, s_pickUpObject, 36521);
         POINTER_SKYRIMSE(TDropObject, s_dropObject, 39382);
@@ -1492,7 +1558,6 @@ static TiltedPhoques::Initializer s_actorHooks(
         RealSpawnActorInWorld = s_SpawnActorInWorld.Get();
         RealDamageActor = s_damageActor.Get();
         RealApplyActorEffect = s_applyActorEffect.Get();
-        RealRegenAttributes = s_regenAttributes.Get();
         RealAddInventoryItem = s_addInventoryItem.Get();
         RealPickUpObject = s_pickUpObject.Get();
         RealDropObject = s_dropObject.Get();
@@ -1514,7 +1579,6 @@ static TiltedPhoques::Initializer s_actorHooks(
         TP_HOOK(&RealSpawnActorInWorld, HookSpawnActorInWorld);
         TP_HOOK(&RealDamageActor, HookDamageActor);
         TP_HOOK(&RealApplyActorEffect, HookApplyActorEffect);
-        TP_HOOK(&RealRegenAttributes, HookRegenAttributes);
         TP_HOOK(&RealAddInventoryItem, HookAddInventoryItem);
         TP_HOOK(&RealPickUpObject, HookPickUpObject);
         TP_HOOK(&RealDropObject, HookDropObject);
