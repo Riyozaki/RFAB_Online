@@ -61,6 +61,10 @@ private:
     double m_respawnTimer = 0.0;
     int32_t m_serverDifficulty = 6;
     int32_t m_previousDifficulty = 6;
+    float m_previousGreetDistance = 70.0f;
+    float m_previousKillMove = 1.0f;
+    float m_previousWorldEncounters = 1.0f;
+    bool m_hasCachedRfabBaseline = false;
 
     bool m_isDeathSystemEnabled = true;
 

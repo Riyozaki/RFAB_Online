@@ -1,4 +1,5 @@
 #include <Services/MagicService.h>
+#include <Services/RfabAdapterService.h>
 
 #include <World.h>
 
@@ -19,7 +20,9 @@
 #include <Actor.h>
 #include <Magic/ActorMagicCaster.h>
 #include <Games/ActorExtension.h>
+#include <Games/References.h>
 #include <EquipManager.h>
+#include <RfabModpackCompat.h>
 
 #include <Structs/Skyrim/AnimationGraphDescriptor_VampireLordBehavior.h>
 #include <Structs/Skyrim/AnimationGraphDescriptor_WerewolfBehavior.h>
@@ -68,10 +71,26 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
         return;
     }
 
-    // only sync concentration spells through spell cast sync, the rest through projectile sync for accuracy
+    // Sync concentration spells (including targeted ally concentration heals/buffs like Healing Hands,
+    // while excluding self-only concentration heals so puppets don't double-heal themselves), wards, and invisibility.
     if (SpellItem* pSpell = Cast<SpellItem>(TESForm::GetById(acEvent.SpellId)))
     {
-        if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || pSpell->IsHealingSpell()) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
+        bool isSelfOnlyHeal = false;
+        if (pSpell->IsHealingSpell())
+        {
+            isSelfOnlyHeal = true;
+            for (const EffectItem* pEffect : pSpell->listOfEffects)
+            {
+                if (pEffect && pEffect->pEffectSetting &&
+                    pEffect->pEffectSetting->deliveryType != static_cast<uint32_t>(MagicSystem::Delivery::SELF))
+                {
+                    isSelfOnlyHeal = false;
+                    break;
+                }
+            }
+        }
+
+        if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || isSelfOnlyHeal) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
         {
             spdlog::debug("Canceled magic spell");
             return;
@@ -93,6 +112,8 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
     request.CasterId = localComponent.Id;
     request.CastingSource = acEvent.pCaster->GetCastingSource();
     request.IsDualCasting = acEvent.pCaster->GetIsDualCasting();
+    request.EffectivenessMult =
+        (formId == 0x14 && Settings::IsRfabModpackActive()) ? Settings::GetRfabOutgoingDamageMult() : 1.0f;
 
     if (!m_world.GetModSystem().GetServerModId(acEvent.SpellId, request.SpellFormId))
     {
@@ -216,7 +237,9 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
         return;
     }
 
-    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, 1.0f, false, 0.0f, pActor);
+    const float effectivenessMult = RfabCompat::SanitizeDifficultyMultiplier(acMessage.EffectivenessMult);
+    const bool adjustOnlyHostile = std::abs(effectivenessMult - 1.0f) > 0.001f;
+    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, effectivenessMult, adjustOnlyHostile, 0.0f, pActor);
 
     spdlog::debug("Successfully casted remote spell");
 }
@@ -419,6 +442,14 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
         return;
     }
 
+    if (pCaster && pActor)
+    {
+        const bool isFriendlySupport = pSpell->IsHealingSpell() || pSpell->IsBuffSpell();
+        const auto coopPolicy = m_world.GetRfabAdapterService().EvaluateCoopAction(pCaster, pActor, isFriendlySupport);
+        if (coopPolicy.BlockHarmfulAction)
+            return;
+    }
+
     // This hack is here because slow time seems to be twice as slow when cast by an npc
     if (pEffect->IsSlowEffect())
     {
@@ -447,13 +478,21 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     if (pEffect->IsSlowEffect())
         pActor = PlayerCharacter::Get();
 
+    if (!pActor)
+        return;
+
     pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
     spdlog::debug("Applied remote magic effect");
 }
 
 void MagicService::OnRemoveSpellEvent(const RemoveSpellEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
+    if (!m_transport.IsConnected() || ScopedSpellCastOverride::IsOverriden())
+        return;
+
+    // Never echo RemoveSpell triggered on remote puppets back across the network!
+    Actor* pTargetActor = Cast<Actor>(TESForm::GetById(acEvent.TargetId));
+    if (!pTargetActor || pTargetActor->GetExtension()->IsRemote())
         return;
 
     RemoveSpellRequest request{};
@@ -515,8 +554,8 @@ void MagicService::OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexc
         return;
     }
 
-    // Remove the spell from the actor
-    //spdlog::info(__FUNCTION__ ": removing spell with form id {:X} from actor with form id {:X}", cSpellId, targetFormId);
+    // Remove the spell from the actor without echoing RemoveSpellEvent back over the network
+    ScopedSpellCastOverride _;
     pActor->RemoveSpell(pSpell);
 }
 

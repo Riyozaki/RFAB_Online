@@ -80,7 +80,9 @@ def ensure_section_keys(content: str, section: str, entries: List[Tuple[str, str
 
 def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
     diffs: List[str] = []
-    cur = content
+    cur = re.sub(r"(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?", "", content)
+    if cur != content:
+        diffs.append("stripped invalid single-char TOML entries")
     has_v7_mm = bool(re.search(r"^\s*\[MemoryManager\]", cur, re.MULTILINE | re.IGNORECASE))
 
     if has_v7_mm:
@@ -93,6 +95,7 @@ def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
 
     patches_entries: List[Tuple[str, str]] = [
         ("RegularQuicksaves", "true"),
+        ("CleanSkseCosaves", "true"),
         ("MaxStdio", "8192"),
     ]
     if not has_v7_mm:
@@ -107,14 +110,27 @@ def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
     cur, d = ensure_section_keys(cur, "Patches", patches_entries)
     diffs.extend(d)
 
-    cur, d = ensure_section_keys(cur, "SaveGameMaxSize", [("SaveGameMaxSize", "true")])
+    cur = re.sub(r"^\s*\[SaveGameMaxSize\]\s*$", "[Experimental]", cur, flags=re.MULTILINE | re.IGNORECASE)
+    # CRITICAL: EngineFixes v5/v6 PatchSaveGameMaxSize() has no MemoryManager check and sets Win32FileType
+    # buffer size to 128 MB while vanilla ScrapHeap stays 64 MB -> ScrapHeap::Allocate returns nullptr -> sSaveGameCorrupt!
+    cur, d = ensure_section_keys(cur, "Experimental", [("SaveGameMaxSize", "false")])
     diffs.extend(d)
     return cur, diffs
 
 
 def patch_rfab_autosave_ini(content: str) -> Tuple[str, bool]:
-    cur, _, changed = patch_toml_key(content, "Enabled", "false")
-    return cur, changed
+    cur = content
+    any_changed = False
+    for k, v in [
+        ("Enabled", "false"),
+        ("Enable autosave", "0"),
+        ("Save after combat", "0"),
+        ("Save on location change", "0"),
+        ("Save on sleep/wait", "0"),
+    ]:
+        cur, _, ch = patch_toml_key(cur, k, v)
+        any_changed = any_changed or ch
+    return cur, any_changed
 
 
 def patch_skyrim_souls_ini(content: str) -> Tuple[str, bool]:

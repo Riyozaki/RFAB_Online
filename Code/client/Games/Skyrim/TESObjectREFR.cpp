@@ -2,6 +2,7 @@
 
 #include <Games/References.h>
 #include <Games/Overrides.h>
+#include <Games/Skyrim/Interface/UI.h>
 
 #include <World.h>
 #include <Services/PapyrusService.h>
@@ -351,25 +352,27 @@ void TESObjectREFR::Delete() const noexcept
 
 void TESObjectREFR::Disable() const noexcept
 {
-    using ObjectReference = TESObjectREFR;
-
-    PAPYRUS_FUNCTION(void, ObjectReference, Disable, bool);
-
-    s_pDisable(this, true);
+    // CRITICAL SE 1.5.97 ABI FIX:
+    // Papyrus ObjectReference.Disable(bool abFadeOut) is a LATENT VM native expecting `const RefrOrInventoryObj&`
+    // in R8 (and attempting to suspend a live Papyrus stackID when abFadeOut == true). Calling it via non-latent
+    // PAPYRUS_FUNCTION passed `this` (`TESObjectREFR*`) in R8, causing SkyrimSE.exe to dereference `Actor::vtable`
+    // (.rdata) as `self.pRefr` -> instant 0xC0000005 CTD when a peer changed location!
+    // Always invoke native C++ virtual TESObjectREFR::DisableImpl() (vtable[0x89]) directly without touching GameVM.
+    const_cast<TESObjectREFR*>(this)->DisableImpl();
 }
 
 void TESObjectREFR::Enable() const noexcept
 {
-    using ObjectReference = TESObjectREFR;
-
-    PAPYRUS_FUNCTION(void, ObjectReference, Enable, bool);
-
-    s_pEnable(this, true);
+    // Same as Disable(): Papyrus ObjectReference.Enable(bool abFadeIn) is latent; invoke native C++ EnableImpl() (SE ID 19373).
+    const_cast<TESObjectREFR*>(this)->EnableImpl();
 }
 
 // Skyrim: MoveTo() can fail, causing the object to be deleted
 void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept
 {
+    if (!apCell)
+        return;
+
     ScopedReferencesOverride recursionGuard;
 
     TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);
@@ -1004,9 +1007,12 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
 {
     Actor* pActivator = Cast<Actor>(apActivator);
 
-    // Exclude books from activation since only reading them removes them from the cell
-    // Note: Books are now unsynced 
-    if (pActivator && apThis->baseForm->formType != FormType::Book)
+    // Never echo remote/scripted Activate overrides or activations performed by remote puppet actors.
+    if (!ScopedActivateOverride::IsOverriden() &&
+        pActivator &&
+        !pActivator->GetExtension()->IsRemote() &&
+        apThis->baseForm &&
+        apThis->baseForm->formType != FormType::Book)
     {
         auto openState = TESObjectREFR::kNone;
         if (apThis->baseForm->formType == FormType::Door)
@@ -1020,9 +1026,39 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
     return TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
 }
 
+namespace
+{
+bool ShouldBlockRemoteActorInventoryHook(TESObjectREFR* apTarget) noexcept
+{
+    Actor* pActor = Cast<Actor>(apTarget);
+    if (!pActor)
+        return false;
+
+    const auto* pExt = pActor->GetExtension();
+    if (!pExt)
+        return false;
+
+    // Never allow Papyrus scripts on a remote player puppet (e.g. RFAB_ExperienceRing::Break -> RemoveItem)
+    // to emit InventoryChangeEvent and delete items from the real peer player's inventory!
+    if (pExt->IsRemotePlayer())
+        return true;
+
+    // For living remote NPCs, only allow interactive player ContainerMenu transfers (pickpocketing),
+    // blocking autonomous remote Papyrus equip/combat scripts from echoing back to the owner.
+    if (pExt->IsRemote() && !pActor->IsDead())
+    {
+        auto* pUi = UI::Get();
+        if (!pUi || !pUi->GetMenuOpen(BSFixedString("ContainerMenu")))
+            return true;
+    }
+
+    return false;
+}
+} // namespace
+
 void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
 {
-    if (!ScopedInventoryOverride::IsOverriden())
+    if (!ScopedInventoryOverride::IsOverriden() && apItem && !ShouldBlockRemoteActorInventoryHook(apThis))
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1036,7 +1072,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
         World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item)));
     }
 
-    spdlog::debug("Adding inventory item {:X} to {:X}", apItem->formID, apThis->formID);
+    spdlog::debug("Adding inventory item {:X} to {:X}", apItem ? apItem->formID : 0, apThis->formID);
 
     TiltedPhoques::ThisCall(RealAddInventoryItem, apThis, apItem, apExtraData, aCount, apOldOwner);
 }
@@ -1044,7 +1080,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
 BSPointerHandle<TESObjectREFR>*
 TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate)
 {
-    if (!ScopedInventoryOverride::IsOverriden())
+    if (!ScopedInventoryOverride::IsOverriden() && apItem && !ShouldBlockRemoteActorInventoryHook(apThis))
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1062,7 +1098,7 @@ TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObje
         World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item)));
     }
 
-    spdlog::debug("Removing inventory item {:X} from {:X}", apItem->formID, apThis->formID);
+    spdlog::debug("Removing inventory item {:X} from {:X}", apItem ? apItem->formID : 0, apThis->formID);
 
     ScopedEquipOverride _;
 

@@ -1,6 +1,8 @@
 #include <Services/PartyService.h>
+#include <Services/RfabProgressionService.h>
 #include <Components.h>
 #include <GameServer.h>
+#include <World.h>
 
 #include <Events/PlayerJoinEvent.h>
 #include <Events/PlayerLeaveEvent.h>
@@ -378,6 +380,7 @@ void PartyService::RemovePlayerFromParty(Player* apPlayer) noexcept
         if (members.empty())
         {
             m_parties.erase(id);
+            m_world.GetRfabProgressionService().BroadcastAllyProtectionState(false);
         }
         else
         {
@@ -444,6 +447,10 @@ void PartyService::BroadcastPartyInfo(uint32_t aPartyId) const noexcept
         message.IsLeader = pPlayer->GetId() == party.LeaderPlayerId;
         pPlayer->Send(message);
     }
+
+    // Keep all clients' Host authority & Co-Op Ally Protection («Единство в битве») synchronized
+    // whenever a party is auto-created, joined, left, or changes its leader!
+    m_world.GetRfabProgressionService().BroadcastAllyProtectionState(false);
 }
 
 void PartyService::SendPartyJoinedEvent(Party& aParty, Player* aPlayer) noexcept

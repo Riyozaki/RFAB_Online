@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$VersionTag = "v1.0.0",
+    [string]$VersionTag = "v1.1.0",
     [string]$BuildMode = "releasedbg"
 )
 
@@ -68,9 +68,11 @@ foreach ($binName in @("SkyrimSE.exe", "EarlyLoad.dll", "TPProcess.exe")) {
 Copy-Item -LiteralPath (Join-Path $StageClient "SkyrimSE.exe") `
           -Destination (Join-Path $StageClient "SkyrimTogether.exe") -Force
 
-if (-not (Test-Path -LiteralPath (Join-Path $StageClient "UI\index.html"))) {
-    $FallbackUi = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2\SkyrimTogetherReborn\UI"
-    Invoke-RobocopySafe -Src $FallbackUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/E")
+# Always stage our custom compiled RFAB Online Angular CEF UI bundle (with «Единство в битве» Right-Ctrl toggle)
+# over any upstream xmake skyrim-together-ui package files in $DistribBin\UI!
+$CustomUi = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2\SkyrimTogetherReborn\UI"
+if (Test-Path -LiteralPath (Join-Path $CustomUi "index.html")) {
+    Invoke-RobocopySafe -Src $CustomUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/MIR")
 }
 
 Write-Host "==> [3/6] Staging Standalone Dedicated Server (RFAB_Online_Server)..." -ForegroundColor Cyan
@@ -166,9 +168,13 @@ Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleAp
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online_MO2\STALE_LEGACY_DIR.txt"), "must be wiped")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n")
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n[Experimental]`r`nS = a`r`nt = r`r`nSaveGameMaxSize = true`r`n")
+New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\profiles\RFAB\saves") -Force | Out-Null
+$MockTruncEss = New-Object byte[] 512
+[System.Text.Encoding]::ASCII.GetBytes("TESV_SAVEGAME").CopyTo($MockTruncEss, 0)
+[System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.ess"), $MockTruncEss)
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnabled = true`r`n")
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnable autosave = 1`r`nSave after combat = 1`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll"), "stub")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\ModOrganizer.ini"), "[General]`r`nselected_profile=@ByteArray(RFAB)`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\modlist.txt"), "-RFAB_Online`r`n+Requiem`r`n")
@@ -196,6 +202,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "RFAB_Online_Server\Skyrim
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "START_RFAB_SERVER.bat"))) {
     throw "START_RFAB_SERVER.bat missing in <RfabDir>!"
 }
+$patchedEf = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"))
+if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false' -or $patchedEf -match '(?m)^\s*S\s*=\s*a') {
+    throw "EngineFixes.toml was not healed to MemoryManager = false & SaveGameMaxSize = false (or retained invalid 'S = a'):`n$patchedEf"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\profiles\RFAB\saves\Quarantined_Corrupt_v100\TruncatedScrapHeap.ess"))) {
+    throw "TruncatedScrapHeap.ess was not quarantined during Setup-RfabOnline.ps1!"
+}
+$patchedAutosave = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"))
+if ($patchedAutosave -notmatch 'Save after combat\s*=\s*0') {
+    throw "[RFAB] Autosave.ini was not patched (PowerShell bracket wildcard regression)!"
+}
 Remove-Item -LiteralPath $MockRfab -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "  [OK] End-to-end clean-wipe installer test passed 100%!" -ForegroundColor Green
 
@@ -212,10 +229,15 @@ $PdbZip       = Join-Path $OutDir "RFAB_Online_${VersionTag}_PDB_Symbols.zip"
 $QuickDir = Join-Path $StageOuter "Quick_Update"
 $QuickSrvDir = Join-Path $QuickDir "Server"
 New-Item -ItemType Directory -Path $QuickDir, $QuickSrvDir -Force | Out-Null
-foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
+foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll", "TPProcess.exe")) {
     Copy-Item -LiteralPath (Join-Path $StageClient $qf) -Destination (Join-Path $QuickDir $qf) -Force
 }
-Invoke-RobocopySafe -Src (Join-Path $StageClient "UI") -Dst (Join-Path $QuickDir "UI") -ExtraArgs @("/E")
+Copy-Item -LiteralPath (Join-Path $StageMo2 "SkyrimTogether.esp") -Destination (Join-Path $QuickDir "SkyrimTogether.esp") -Force
+if (Test-Path -LiteralPath (Join-Path $StageMo2 "SkyrimTogetherQuestPatches.esp")) {
+    Copy-Item -LiteralPath (Join-Path $StageMo2 "SkyrimTogetherQuestPatches.esp") -Destination (Join-Path $QuickDir "SkyrimTogetherQuestPatches.esp") -Force
+}
+Copy-Item -LiteralPath (Join-Path $StageMo2 "SKSE\Plugins\RFAB_Online_Bindings.json") -Destination (Join-Path $QuickDir "RFAB_Online_Bindings.json") -Force
+Invoke-RobocopySafe -Src (Join-Path $StageClient "UI") -Dst (Join-Path $QuickDir "UI") -ExtraArgs @("/MIR")
 foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
     Copy-Item -LiteralPath (Join-Path $StageServer $sf) -Destination (Join-Path $QuickSrvDir $sf) -Force
 }
@@ -240,22 +262,170 @@ if ([string]::IsNullOrWhiteSpace($GameRoot) -or -not (Test-Path -LiteralPath $Ga
 
 Write-Host "==> RFAB root: $GameRoot" -ForegroundColor Cyan
 
-# Stop running old server / client so DLLs & EXEs can be overwritten cleanly
-Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 600
-
-$ClientDst = Join-Path $GameRoot "MO2\mods\RFAB_Online\SkyrimTogetherReborn"
-if (-not (Test-Path -LiteralPath $ClientDst)) {
-    throw "Client folder not found: $ClientDst"
+# Stop running old server / orphaned TPProcess so DLLs & EXEs can be overwritten cleanly
+$runningSrv = @(Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue)
+if ($runningSrv.Count -gt 0) {
+    $runningSrv | Stop-Process -Force -ErrorAction SilentlyContinue
+    $runningSrv | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 }
-foreach ($cf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
-    Copy-Item -LiteralPath (Join-Path $SrcDir $cf) -Destination (Join-Path $ClientDst $cf) -Force
+if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
+    -not (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue)) {
+    $orphanTp = @(Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)
+    if ($orphanTp.Count -gt 0) {
+        $orphanTp | Stop-Process -Force -ErrorAction SilentlyContinue
+        $orphanTp | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
+Start-Sleep -Milliseconds 400
+
+$ModRoot = Join-Path $GameRoot "MO2\mods\RFAB_Online"
+$ClientDst = Join-Path $ModRoot "SkyrimTogetherReborn"
+if (-not (Test-Path -LiteralPath $ClientDst)) {
+    throw "Client folder not found: $ClientDst (run INSTALL_RFAB_ONLINE.bat from Full_Installer first!)"
+}
+foreach ($cf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll", "TPProcess.exe")) {
+    if (Test-Path -LiteralPath (Join-Path $SrcDir $cf)) {
+        Copy-Item -LiteralPath (Join-Path $SrcDir $cf) -Destination (Join-Path $ClientDst $cf) -Force
+    }
+}
+foreach ($espName in @("SkyrimTogether.esp", "SkyrimTogetherQuestPatches.esp")) {
+    if (Test-Path -LiteralPath (Join-Path $SrcDir $espName)) {
+        Copy-Item -LiteralPath (Join-Path $SrcDir $espName) -Destination (Join-Path $ModRoot $espName) -Force
+    }
+}
+if (Test-Path -LiteralPath (Join-Path $SrcDir "RFAB_Online_Bindings.json")) {
+    New-Item -ItemType Directory -Path (Join-Path $ModRoot "SKSE\Plugins") -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $SrcDir "RFAB_Online_Bindings.json") -Destination (Join-Path $ModRoot "SKSE\Plugins\RFAB_Online_Bindings.json") -Force
+}
+foreach ($badRel in @(
+    "scripts\TempleBlessingScript.pex",
+    "scripts\C00TrainerScript.pex",
+    "scripts\ResourceFurnitureScript.pex",
+    "scripts\PetFramework_ParentQuestScript.pex",
+    "scripts\petframework_petquest.pex",
+    "scripts\source\TempleBlessingScript.psc",
+    "scripts\source\C00TrainerScript.psc",
+    "scripts\source\ResourceFurnitureScript.psc",
+    "scripts\source\PetFramework_ParentQuestScript.psc",
+    "scripts\source\PetFramework_PetQuest.psc",
+    "meshes\Interface\logo\logo.nif",
+    "meshes\Interface\logo\logo01ae.nif"
+)) {
+    $badPath = Join-Path $ModRoot $badRel
+    if (Test-Path -LiteralPath $badPath) { Remove-Item -LiteralPath $badPath -Force -ErrorAction SilentlyContinue }
 }
 if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
     Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath (Join-Path $SrcDir "UI") -Destination (Join-Path $ClientDst "UI") -Recurse -Force
 }
-Write-Host "  [OK] Updated Client + Russian UI -> $ClientDst" -ForegroundColor Green
+Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $rawEf = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $updEf = [regex]::Replace($rawEf, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
+    $updEf = [regex]::Replace($updEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
+    foreach ($pair in @(@("MemoryManager","false"),@("ScaleformAllocator","false"),@("RegularQuicksaves","true"),@("MaxStdio","8192"),@("SaveGameMaxSize","false"))) {
+        $k = $pair[0]; $v = $pair[1]
+        $updEf = [regex]::Replace($updEf, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}$v`${3}")
+    }
+    if ($updEf -notmatch '(?mi)^\s*SaveGameMaxSize\s*=') {
+        $nlEf = if ($updEf.Contains("`r`n")) { "`r`n" } else { "`n" }
+        if ($updEf -match '(?mi)^\s*\[Experimental\]') {
+            $updEf = [regex]::Replace($updEf, '(?mi)^(\s*\[Experimental\][^\r\n]*\r?\n)', "`${1}SaveGameMaxSize = false$nlEf")
+        } else {
+            $updEf = $updEf.TrimEnd() + "$nlEf[Experimental]$nlEf" + "SaveGameMaxSize = false$nlEf"
+        }
+    }
+    if ($updEf -ne $rawEf) { [System.IO.File]::WriteAllText($_.FullName, $updEf, (New-Object System.Text.UTF8Encoding($false))) }
+}
+Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "[RFAB] Autosave.ini" } | ForEach-Object {
+    $rawAs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $updAs = $rawAs
+    foreach ($ak in @("Enable autosave","Save after combat","Save on location change","Save on sleep/wait")) {
+        $updAs = [regex]::Replace($updAs, "(?mi)^(\s*$([regex]::Escape($ak))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}0`${3}")
+    }
+    if ($updAs -ne $rawAs) { [System.IO.File]::WriteAllText($_.FullName, $updAs, (New-Object System.Text.UTF8Encoding($false))) }
+}
+
+function Test-ValidSkyrimEssQuick([string]$EssPath) {
+    try {
+        $fi = New-Object System.IO.FileInfo($EssPath)
+        if (-not $fi.Exists -or $fi.Length -lt 256) { return $false }
+        $fs = [System.IO.File]::Open($EssPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $br = New-Object System.IO.BinaryReader($fs)
+            if ([System.Text.Encoding]::ASCII.GetString($br.ReadBytes(13)) -cne "TESV_SAVEGAME") { return $false }
+            $hdrSize = [uint32]$br.ReadUInt32()
+            if ($hdrSize -lt 36 -or $hdrSize -gt 65536 -or ([int64]17 + [int64]$hdrSize) -ge $fi.Length) { return $false }
+            $hdr = $br.ReadBytes([int]$hdrSize)
+            if ($hdr.Length -ne [int]$hdrSize) { return $false }
+            $ver = [System.BitConverter]::ToUInt32($hdr, 0)
+            if ($ver -lt 7 -or $ver -gt 15) { return $false }
+            $pos = 8
+            for ($s = 0; $s -lt 4; $s++) {
+                if ($pos + 2 -gt $hdr.Length) { return $false }
+                $pos += 2 + [int][System.BitConverter]::ToUInt16($hdr, $pos)
+                if ($pos -gt $hdr.Length) { return $false }
+                if ($s -eq 0) { $pos += 4; if ($pos -gt $hdr.Length) { return $false } }
+            }
+            $pos += 18
+            if ($pos + 8 -gt $hdr.Length) { return $false }
+            $ssW = [int64][System.BitConverter]::ToUInt32($hdr, $pos)
+            $ssH = [int64][System.BitConverter]::ToUInt32($hdr, $pos + 4)
+            $pos += 8
+            if ($ssW -gt 16384 -or $ssH -gt 16384) { return $false }
+            $compType = [uint16]0
+            if ($ver -ge 12) {
+                if ($pos + 2 -gt $hdr.Length) { return $false }
+                $compType = [System.BitConverter]::ToUInt16($hdr, $pos); $pos += 2
+                if ($compType -gt 2) { return $false }
+            }
+            if ($pos -ne $hdr.Length) { return $false }
+            $bpp = if ($ver -ge 12) { [int64]4 } else { [int64]3 }
+            $bodyOff = [int64]17 + [int64]$hdrSize + ($bpp * $ssW * $ssH)
+            if ($fi.Length -le ($bodyOff + 16)) { return $false }
+            if ($ver -ge 12 -and $compType -ne 0) {
+                [void]$fs.Seek($bodyOff, [System.IO.SeekOrigin]::Begin)
+                $uncompLen = [int64]$br.ReadUInt32(); $compLen = [int64]$br.ReadUInt32()
+                if ($uncompLen -lt 64 -or $compLen -lt 16 -or ($bodyOff + 8 + $compLen) -gt $fi.Length) { return $false }
+            } elseif ($fi.Length -lt ($bodyOff + 64)) { return $false }
+            return $true
+        } finally { $fs.Dispose() }
+    } catch { return $false }
+}
+
+$DocsSaves = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\Saves"
+$SaveDirsToScan = New-Object System.Collections.Generic.List[string]
+if (Test-Path -LiteralPath $DocsSaves) {
+    $SaveDirsToScan.Add($DocsSaves)
+    Get-ChildItem -LiteralPath $DocsSaves -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -ine "Quarantined_Corrupt_v100" -and $_.Name -ine "_RFAB_CorruptQuarantine"
+    } | ForEach-Object { $SaveDirsToScan.Add($_.FullName) }
+}
+if (Test-Path -LiteralPath (Join-Path $GameRoot "MO2\profiles")) {
+    Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2\profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $ps = Join-Path $_.FullName "saves"
+        if (Test-Path -LiteralPath $ps) { $SaveDirsToScan.Add($ps) }
+    }
+}
+$QuarantinedQuick = 0
+foreach ($sDir in ($SaveDirsToScan | Select-Object -Unique)) {
+    $qDir = Join-Path $sDir "Quarantined_Corrupt_v100"
+    Get-ChildItem -LiteralPath $sDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if (($_.Name.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase) -or $_.Name.EndsWith(".ess.tmp", [System.StringComparison]::OrdinalIgnoreCase)) -and
+            (-not (Test-ValidSkyrimEssQuick $_.FullName))) {
+            New-Item -ItemType Directory -Path $qDir -Force | Out-Null
+            Move-Item -LiteralPath $_.FullName -Destination (Join-Path $qDir $_.Name) -Force -ErrorAction SilentlyContinue
+            $QuarantinedQuick++
+            if ($_.Name.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $sk = [System.IO.Path]::ChangeExtension($_.FullName, ".skse")
+                if (Test-Path -LiteralPath $sk) { Move-Item -LiteralPath $sk -Destination (Join-Path $qDir ([System.IO.Path]::GetFileName($sk))) -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+}
+if ($QuarantinedQuick -gt 0) {
+    Write-Host "  [OK] Quarantined $QuarantinedQuick corrupt/truncated .ess save(s) into Quarantined_Corrupt_v100" -ForegroundColor Yellow
+}
+Write-Host "  [OK] Updated Client + ESP + Scripts + EngineFixes + Russian UI -> $ClientDst" -ForegroundColor Green
 
 $SrvCandidates = @(
     (Join-Path $GameRoot "RFAB_Online_Server"),
@@ -266,7 +436,20 @@ foreach ($SrvDst in $SrvCandidates) {
         foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
             Copy-Item -LiteralPath (Join-Path $SrcDir "Server\$sf") -Destination (Join-Path $SrvDst $sf) -Force
         }
-        Write-Host "  [OK] Updated Server (SkyrimTogetherServer.exe + STServer.dll) -> $SrvDst" -ForegroundColor Green
+        $SrvIni = Join-Path $SrvDst "config\STServer.ini"
+        if (Test-Path -LiteralPath $SrvIni) {
+            $rawIni = [System.IO.File]::ReadAllText($SrvIni, [System.Text.Encoding]::UTF8)
+            $updIni = $rawIni
+            if ($updIni -match '4=Master \(Requiem default\)') {
+                $updIni = $updIni.Replace('4=Master (Requiem default)', '2=Adept (RFAB/Requiem 1.0x standard!), 4=Master')
+                $updIni = [regex]::Replace($updIni, '(?mi)^(\s*uDifficulty\s*=\s*)4(\s*)$', '${1}2${2}')
+            }
+            if ($updIni -notmatch '(?mi)^\s*bEnableItemDrops\s*=') {
+                $updIni = [regex]::Replace($updIni, '(?mi)^(\s*uDifficulty\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableItemDrops = true`r`n")
+            }
+            if ($updIni -ne $rawIni) { [System.IO.File]::WriteAllText($SrvIni, $updIni, (New-Object System.Text.UTF8Encoding($false))) }
+        }
+        Write-Host "  [OK] Updated Server (SkyrimTogetherServer.exe + STServer.dll + STServer.ini) -> $SrvDst" -ForegroundColor Green
     }
 }
 

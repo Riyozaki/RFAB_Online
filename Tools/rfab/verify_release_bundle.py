@@ -171,13 +171,52 @@ def main():
         hedr_ver, = struct.unpack_from("<f", raw, 30)
         assert abs(hedr_ver - 1.70) < 0.001, f"{esp_name} HEDR={hedr_ver:.4f}, expected 1.7000 for SE 1.5.97!"
 
+    # Verify zero RFAB-colliding vanilla scripts or sources inside RFAB_Online_MO2/scripts
+    scripts_dir = os.path.join(stage_dir, "RFAB_Online_MO2", "scripts")
+    for forbidden_pex in (
+        "TempleBlessingScript.pex",
+        "C00TrainerScript.pex",
+        "ResourceFurnitureScript.pex",
+        "PetFramework_ParentQuestScript.pex",
+        "petframework_petquest.pex",
+    ):
+        assert not os.path.exists(os.path.join(scripts_dir, forbidden_pex)), (
+            f"FATAL: Forbidden RFAB-colliding script present in bundle: {forbidden_pex}"
+        )
+    scripts_src_dir = os.path.join(scripts_dir, "source")
+    for forbidden_psc in (
+        "TempleBlessingScript.psc",
+        "C00TrainerScript.psc",
+        "ResourceFurnitureScript.psc",
+        "PetFramework_ParentQuestScript.psc",
+        "PetFramework_PetQuest.psc",
+    ):
+        assert not os.path.exists(os.path.join(scripts_src_dir, forbidden_psc)), (
+            f"FATAL: Forbidden RFAB-colliding script source present in bundle: {forbidden_psc}"
+        )
+
+    # Verify zero main-menu logo overrides so RFAB's own logo.nif wins in MO2 VFS
+    for forbidden_mesh in (
+        r"RFAB_Online_MO2\meshes\Interface\logo\logo.nif",
+        r"RFAB_Online_MO2\meshes\Interface\logo\logo01ae.nif",
+    ):
+        assert not os.path.exists(os.path.join(stage_dir, forbidden_mesh)), (
+            f"FATAL: Vanilla/STR main-menu logo mesh overrides RFAB logo: {forbidden_mesh}"
+        )
+
+    # Verify SkyrimTogether.esp does not carry dirty vanilla Cloak / Camera / T03 overrides
+    st_esp_raw = open(os.path.join(stage_dir, "RFAB_Online_MO2", "SkyrimTogether.esp"), "rb").read()
+    for forbidden_edid in (b"flameCloak\x00", b"FrostCloak\x00", b"LightningCloak\x00", b"MagicOrBowCams\x00"):
+        assert forbidden_edid not in st_esp_raw, (
+            f"FATAL: SkyrimTogether.esp still contains dirty vanilla override {forbidden_edid!r}!"
+        )
+
     # Verify offline UI & cursors & bindings
     for rel in (
         r"RFAB_Online_MO2\SKSE\Plugins\RFAB_Online_Bindings.json",
         r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\index.html",
         r"RFAB_Online_MO2\SkyrimTogetherReborn\assets\images\cursor.dds",
         r"RFAB_Online_MO2\SkyrimTogetherReborn\assets\images\cursor.png",
-        r"RFAB_Online_MO2\meshes\Interface\logo\logo.nif",
         r"RFAB_Online_Server\SkyrimTogetherServer.exe",
         r"RFAB_Online_Server\STServer.dll",
         r"RFAB_Online_Server\config\STServer.ini",
@@ -188,11 +227,54 @@ def main():
         full = os.path.join(stage_dir, rel)
         assert os.path.isfile(full) and os.path.getsize(full) > 20, f"Missing or empty release file: {full}"
 
-    # Windows PowerShell 5.1 requires UTF-8 BOM (EF BB BF) on Cyrillic .ps1 files (otherwise 0x84 = „ closes quotes!)
-    ps1_full = os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1")
-    assert open(ps1_full, "rb").read(3) == b"\xef\xbb\xbf", (
-        "FATAL: Setup-RfabOnline.ps1 is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
+    # Verify custom RFAB Online Right-Ctrl CEF Overlay UI ("Единство в битве" Host-only toggle) is staged
+    ui_main_js = open(os.path.join(stage_dir, r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\main.js"), "rb").read()
+    for required_sym in (b"setAllyProtection", b"ALLY_PROTECTION_ON", b"ALLY_PROTECTION_GUEST_ON"):
+        assert required_sym in ui_main_js, (
+            f"FATAL: Staged UI/main.js is missing RFAB Host-only Co-Op Ally Protection symbol {required_sym!r}!"
+        )
+    ui_ru_json = open(
+        os.path.join(stage_dir, r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\assets\i18n\ru.json"),
+        "r",
+        encoding="utf-8",
+    ).read()
+    assert "Единство в битве: ВКЛ" in ui_ru_json and "Единство в битве: ВКЛ (Хост)" in ui_ru_json, (
+        "FATAL: Staged UI/assets/i18n/ru.json is missing Host/Guest 'Единство в битве' labels!"
     )
+
+    # Windows PowerShell 5.1 requires UTF-8 BOM (EF BB BF) on .ps1 files (otherwise UTF-8 Cyrillic becomes CP1252 mojibake!)
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    for ps1_path in (
+        os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Setup-RfabOnline.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Build-CloudRelease.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Package-Release.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Deploy-RfabOnline.ps1"),
+    ):
+        if os.path.isfile(ps1_path):
+            assert open(ps1_path, "rb").read(3) == b"\xef\xbb\xbf", (
+                f"FATAL: {ps1_path} is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
+            )
+
+    # Verify Setup-RfabOnline.ps1 enforces SaveGameMaxSize = false (never true alongside MemoryManager = false!)
+    setup_ps1_txt = open(os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1"), "r", encoding="utf-8-sig").read()
+    assert '@("SaveGameMaxSize", "false")' in setup_ps1_txt and '@("SaveGameMaxSize", "true")' not in setup_ps1_txt, (
+        "FATAL: Setup-RfabOnline.ps1 must enforce SaveGameMaxSize = false when MemoryManager = false!"
+    )
+
+    notes_tpl = os.path.join(repo_root, r"Tools\rfab\RELEASE_NOTES_TEMPLATE.md")
+    notes_txt = open(notes_tpl, "r", encoding="utf-8").read()
+    assert "автономный релиз" in notes_txt and "Единство в битве" in notes_txt and "Только Хост" in notes_txt, (
+        "FATAL: RELEASE_NOTES_TEMPLATE.md failed UTF-8 Cyrillic integrity check!"
+    )
+    changelog_txt = open(os.path.join(repo_root, "CHANGELOG.md"), "r", encoding="utf-8").read()
+    assert "Журнал изменений" in changelog_txt and "Единство в битве" in changelog_txt, (
+        "FATAL: CHANGELOG.md failed UTF-8 Cyrillic integrity check!"
+    )
+    for mojibake_marker in ("\u00d0", "\u00d1", "\u00e2\u20ac"):
+        assert mojibake_marker not in notes_txt and mojibake_marker not in changelog_txt, (
+            f"FATAL: Release notes or CHANGELOG contains CP1252-decoded UTF-8 mojibake ({mojibake_marker!r})!"
+        )
 
     print(f"[RELEASE GATE PASSED] All {total_files} files in {stage_dir} verified 100% genuine & self-contained!")
 

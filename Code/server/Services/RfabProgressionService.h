@@ -12,6 +12,7 @@
 
 struct World;
 struct PlayerJoinEvent;
+struct PlayerLeaveEvent;
 struct SyncRfabProgressionEvent;
 
 /**
@@ -226,13 +227,21 @@ public:
     [[nodiscard]] RfabProgressionLedger& GetLedger() noexcept { return m_ledger; }
     [[nodiscard]] const RfabProgressionLedger& GetLedger() const noexcept { return m_ledger; }
 
+    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled; }
+    [[nodiscard]] int32_t ResolveAuthorizedHostPlayerId() const noexcept;
+    void BroadcastAllyProtectionState(bool aNotifyHudChange = false) const noexcept;
+    void SendAllyProtectionStateToPlayer(Player* apTarget, bool aNotifyHudChange = false) const noexcept;
+
 private:
     void OnSyncProgressionEvent(const PacketEvent<SyncRfabProgressionEvent>& acMessage) noexcept;
     void OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept;
+    void OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept;
 
     World& m_world;
     RfabProgressionLedger m_ledger;
+    bool m_allyProtectionEnabled{true};
 
     entt::scoped_connection m_progressionConnection;
     entt::scoped_connection m_playerJoinConnection;
+    entt::scoped_connection m_playerLeaveConnection;
 };

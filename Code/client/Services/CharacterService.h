@@ -98,6 +98,8 @@ struct CharacterService
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
     void NotifySaveLoadReset() noexcept;
     void PreSavePurgeDynamicActors() noexcept;
+    void SchedulePostSaveRemoteRestore() noexcept;
+    [[nodiscard]] bool IsSavePurgeActive() const noexcept { return m_savePurgeActive; }
     void RestorePurgedRemoteActorsAfterSave() noexcept;
     void PurgeAllDynamicActorsForWorldLoad() noexcept;
 
@@ -133,7 +135,9 @@ private:
     int32_t m_creditToRefundOnLocalQuestXp = 0;
     mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
     mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
+    Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};
     bool m_pendingPostSaveRemoteRestore{false};
+    bool m_savePurgeActive{false};
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

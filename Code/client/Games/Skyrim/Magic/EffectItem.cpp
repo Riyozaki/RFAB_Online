@@ -10,7 +10,13 @@ bool EffectItem::IsHealingEffect() const noexcept
 
 bool EffectItem::IsSummonEffect() const noexcept
 {
-    return pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kSummonCreature;
+    if (!pEffectSetting)
+        return false;
+
+    const auto arch = pEffectSetting->eArchetype;
+    return arch == EffectArchetypes::ArchetypeID::kSummonCreature ||
+           arch == EffectArchetypes::ArchetypeID::kReanimate ||
+           arch == EffectArchetypes::ArchetypeID::kCommandSummoned;
 }
 
 bool EffectItem::IsSlowEffect() const noexcept

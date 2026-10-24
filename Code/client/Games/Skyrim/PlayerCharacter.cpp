@@ -164,11 +164,11 @@ char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject
         apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
     }
 
-    // This is here so that objects that are picked up on both clients, aka non temps, are synced through activation sync.
-    // The inventory change event should always be sent to the server, otherwise the server inventory won't be updated.
-    bool shouldUpdateClients = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
+    // When picking up a temporary dropped 0xFFxxxxxx world item, set Drop = true so peer clients
+    // despawn their matching ground visual inside Actor::DropOrPickUpObject (zero duplication!).
+    const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
 
-    World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), false, shouldUpdateClients));
+    World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), isTempDropPickup, true));
 
     ScopedInventoryOverride _;
 

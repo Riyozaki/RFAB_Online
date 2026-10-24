@@ -14,7 +14,7 @@
 #include <Setting.h>
 namespace
 {
-Console::Setting bEnableItemDrops{"Gameplay:bEnableItemDrops", "(Experimental) Syncs dropped items by players", false};
+Console::Setting bEnableItemDrops{"Gameplay:bEnableItemDrops", "Syncs dropped items in the 3D world across players", true};
 }
 
 InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher)
@@ -28,10 +28,31 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher)
 void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChanges>& acMessage) noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity cOrigin = static_cast<entt::entity>(message.ServerId);
+    if (!m_world.valid(cOrigin))
+        return;
+
+    // Strict player inventory ownership isolation: a peer client's remote puppet scripts must NEVER
+    // add or remove items from another player's character inventory!
+    if (const auto* pChar = m_world.try_get<CharacterComponent>(cOrigin))
+    {
+        if (pChar->IsPlayer())
+        {
+            const auto* pOwner = m_world.try_get<OwnerComponent>(cOrigin);
+            if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
+            {
+                spdlog::warn(
+                    "Rejected cross-client inventory mutation on player entity {:X} from sender {:X}",
+                    message.ServerId,
+                    acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0);
+                return;
+            }
+        }
+    }
 
     auto view = m_world.view<InventoryComponent>();
 
-    const auto it = view.find(static_cast<entt::entity>(message.ServerId));
+    const auto it = view.find(cOrigin);
 
     if (it != view.end())
     {
@@ -48,7 +69,6 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
 
     notify.Drop = bEnableItemDrops ? message.Drop : false;
 
-    const entt::entity cOrigin = static_cast<entt::entity>(message.ServerId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cOrigin, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }
@@ -56,10 +76,22 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
 void InventoryService::OnEquipmentChanges(const PacketEvent<RequestEquipmentChanges>& acMessage) noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity cOrigin = static_cast<entt::entity>(message.ServerId);
+    if (!m_world.valid(cOrigin))
+        return;
+
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(cOrigin))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+        {
+            spdlog::debug("Ignored non-owner RequestEquipmentChanges for {:X}", message.ServerId);
+            return;
+        }
+    }
 
     auto view = m_world.view<InventoryComponent>();
 
-    const auto it = view.find(static_cast<entt::entity>(message.ServerId));
+    const auto it = view.find(cOrigin);
 
     if (it != view.end())
     {
@@ -76,7 +108,6 @@ void InventoryService::OnEquipmentChanges(const PacketEvent<RequestEquipmentChan
     notify.IsSpell = message.IsSpell;
     notify.IsShout = message.IsShout;
 
-    const entt::entity cOrigin = static_cast<entt::entity>(message.ServerId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cOrigin, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }

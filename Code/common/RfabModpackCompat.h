@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -34,10 +35,10 @@ struct RfabBindingsConfig
     std::string PluginName{"RFAB.esp"};
 
     std::string XpAmountGlobalEditorId{"RFAB_XP_Amount"};
-    std::string XpBonusGlobalEditorId{"RFAB_XP_Bonus"};
+    std::string XpBonusGlobalEditorId{"RFAB_XP_Multiplier"};
     std::string XpBooksFormListEditorId{"XPBooksReaded"};
     std::string NoDeathHandlingGlobalEditorId{"REQ_Combat_NoDeathHandling"};
-    std::string KillCounterGlobalEditorId{"TFOTG_Kill_Counter"};
+    std::string KillCounterGlobalEditorId{"RFAB_TFOTG_Kill_Counter"};
     std::string XpHandlerQuestEditorId{"RFAB_XP_Handler"};
 
     // Optional last-resort base FormID only used if PO3 EditorID tables are completely absent.
@@ -48,6 +49,7 @@ struct RfabBindingsConfig
         "RFAB_Global_",
         "RFAB_Boss_",
         "RFAB_Quest_",
+        "RFAB_TFOTG_",
         "TFOTG_",
     };
 
@@ -61,6 +63,7 @@ struct RfabBindingsConfig
         "RFAB_Camera_",
         "RFAB_XP_Amount",
         "RFAB_XP_Bonus",
+        "RFAB_XP_Multiplier",
     };
 
     std::string ExperienceIniRelPath{"Data/SKSE/Plugins/StorageUtilData/Experience.ini"};
@@ -130,6 +133,243 @@ inline bool StartsWithIgnoreCase(std::string_view aText, std::string_view aPrefi
             return false;
     }
     return true;
+}
+
+inline bool EndsWithIgnoreCase(std::string_view aText, std::string_view aSuffix) noexcept
+{
+    if (aSuffix.empty() || aText.size() < aSuffix.size())
+        return false;
+
+    const size_t offset = aText.size() - aSuffix.size();
+    for (size_t i = 0; i < aSuffix.size(); ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(aText[offset + i])) != std::tolower(static_cast<unsigned char>(aSuffix[i])))
+            return false;
+    }
+    return true;
+}
+
+// Strips directory components, quotes, and `.ess.tmp` / `.tmp` / `.skse` / `.ess` suffixes while preserving original stem casing.
+inline std::string StripSaveSlotExtensionPreserveCase(std::string_view aRawPathOrName)
+{
+    std::string s = Trim(aRawPathOrName);
+    while (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\'')))
+        s = Trim(std::string_view(s).substr(1, s.size() - 2));
+
+    if (const size_t sep = s.find_last_of("\\/"); sep != std::string::npos)
+        s = s.substr(sep + 1);
+
+    for (std::string_view ext : {
+             std::string_view(".ess.tmp"),
+             std::string_view(".ess.bak"),
+             std::string_view(".tmp"),
+             std::string_view(".bak"),
+             std::string_view(".skse"),
+             std::string_view(".ess")})
+    {
+        if (EndsWithIgnoreCase(s, ext))
+        {
+            s.resize(s.size() - ext.size());
+            break;
+        }
+    }
+
+    return Trim(s);
+}
+
+// Canonical lowercase save slot stem so `"Saves\\RFAB_MP_S1234_Auto_0.ess"` == `"RFAB_MP_S1234_Auto_0"`.
+inline std::string NormalizeSaveSlotStem(std::string_view aRawPathOrName)
+{
+    return ToLowerAscii(StripSaveSlotExtensionPreserveCase(aRawPathOrName));
+}
+
+// Verifies that an `.ess` file on disk has a genuine Skyrim `TESV_SAVEGAME` header, intact screenshot,
+// and complete non-truncated payload (catching 0-byte, header-only, screenshot-only, and ScrapHeap-failed saves).
+inline bool IsValidEssFileOnDisk(const std::filesystem::path& acEssPath) noexcept
+{
+    constexpr std::string_view kMagic = "TESV_SAVEGAME";
+    std::error_code ec;
+    if (!std::filesystem::exists(acEssPath, ec) || !std::filesystem::is_regular_file(acEssPath, ec))
+        return false;
+
+    const uint64_t fileSize = std::filesystem::file_size(acEssPath, ec);
+    if (ec || fileSize < 256)
+        return false;
+
+    std::ifstream ifs(acEssPath, std::ios::in | std::ios::binary);
+    if (!ifs.is_open())
+        return false;
+
+    uint8_t prefix[17]{};
+    ifs.read(reinterpret_cast<char*>(prefix), static_cast<std::streamsize>(sizeof(prefix)));
+    if (ifs.gcount() != static_cast<std::streamsize>(sizeof(prefix)))
+        return false;
+
+    if (std::string_view(reinterpret_cast<const char*>(prefix), 13) != kMagic)
+        return false;
+
+    auto readU16Le = [](const uint8_t* p) noexcept -> uint16_t
+    {
+        return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8));
+    };
+    auto readU32Le = [](const uint8_t* p) noexcept -> uint32_t
+    {
+        return static_cast<uint32_t>(p[0]) |
+               (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) |
+               (static_cast<uint32_t>(p[3]) << 24);
+    };
+
+    const uint32_t headerSize = readU32Le(prefix + 13);
+    if (headerSize < 36 || headerSize > 65536 || (17ULL + headerSize) >= fileSize)
+        return false;
+
+    std::vector<uint8_t> hdr(headerSize);
+    ifs.read(reinterpret_cast<char*>(hdr.data()), static_cast<std::streamsize>(headerSize));
+    if (ifs.gcount() != static_cast<std::streamsize>(headerSize))
+        return false;
+
+    size_t pos = 0;
+    auto skipBytes = [&](size_t n) noexcept -> bool
+    {
+        if (pos + n > hdr.size())
+            return false;
+        pos += n;
+        return true;
+    };
+    auto skipStr16 = [&]() noexcept -> bool
+    {
+        if (pos + 2 > hdr.size())
+            return false;
+        const uint16_t len = readU16Le(hdr.data() + pos);
+        pos += 2;
+        return skipBytes(len);
+    };
+
+    if (hdr.size() < 8)
+        return false;
+    const uint32_t version = readU32Le(hdr.data());
+    if (version < 7 || version > 15)
+        return false;
+
+    pos = 8; // version (4) + saveNumber (4)
+    if (!skipStr16()) // playerName
+        return false;
+    if (!skipBytes(4)) // playerLevel
+        return false;
+    if (!skipStr16() || !skipStr16() || !skipStr16()) // playerLocation, gameDate, playerRaceEditorId
+        return false;
+    if (!skipBytes(2 + 4 + 4 + 8)) // playerSex (2) + curExp (4) + lvlExp (4) + filetime (8)
+        return false;
+
+    if (pos + 8 > hdr.size())
+        return false;
+    const uint32_t ssWidth = readU32Le(hdr.data() + pos);
+    const uint32_t ssHeight = readU32Le(hdr.data() + pos + 4);
+    pos += 8;
+
+    if (ssWidth > 16384 || ssHeight > 16384)
+        return false;
+
+    uint16_t compressionType = 0;
+    if (version >= 12)
+    {
+        if (pos + 2 > hdr.size())
+            return false;
+        compressionType = readU16Le(hdr.data() + pos);
+        pos += 2;
+        if (compressionType > 2)
+            return false;
+    }
+
+    if (pos != hdr.size())
+        return false;
+
+    const uint64_t bpp = (version >= 12) ? 4ULL : 3ULL;
+    const uint64_t screenshotBytes = bpp * static_cast<uint64_t>(ssWidth) * static_cast<uint64_t>(ssHeight);
+    const uint64_t bodyOffset = 17ULL + static_cast<uint64_t>(headerSize) + screenshotBytes;
+    if (fileSize <= bodyOffset + 16ULL)
+        return false;
+
+    if (version >= 12 && compressionType != 0)
+    {
+        ifs.seekg(static_cast<std::streamoff>(bodyOffset), std::ios::beg);
+        if (!ifs.good())
+            return false;
+
+        uint8_t sizesBuf[8]{};
+        ifs.read(reinterpret_cast<char*>(sizesBuf), static_cast<std::streamsize>(sizeof(sizesBuf)));
+        if (ifs.gcount() != static_cast<std::streamsize>(sizeof(sizesBuf)))
+            return false;
+
+        const uint32_t uncompressedLen = readU32Le(sizesBuf);
+        const uint32_t compressedLen = readU32Le(sizesBuf + 4);
+        if (uncompressedLen < 64 || compressedLen < 16)
+            return false;
+
+        if (bodyOffset + 8ULL + static_cast<uint64_t>(compressedLen) > fileSize)
+            return false;
+    }
+    else if (fileSize < bodyOffset + 64ULL)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+// Safely moves truncated / headerless / ScrapHeap-aborted `.ess` files into `_RFAB_CorruptQuarantine/`
+// alongside any matching `.skse` or `.ess.tmp` companion files (never deleting user files without backup).
+inline size_t QuarantineCorruptEssFilesInDirectory(const std::filesystem::path& acSavesDir) noexcept
+{
+    std::error_code ec;
+    if (acSavesDir.empty() || !std::filesystem::exists(acSavesDir, ec) || !std::filesystem::is_directory(acSavesDir, ec))
+        return 0;
+
+    std::vector<std::filesystem::path> corruptEssFiles;
+    for (const auto& entry : std::filesystem::directory_iterator(acSavesDir, ec))
+    {
+        if (ec || !entry.is_regular_file(ec))
+            continue;
+
+        const std::string fname = entry.path().filename().string();
+        if (EndsWithIgnoreCase(fname, ".ess") && !IsValidEssFileOnDisk(entry.path()))
+        {
+            corruptEssFiles.push_back(entry.path());
+        }
+        else if (EndsWithIgnoreCase(fname, ".ess.tmp") && !IsValidEssFileOnDisk(entry.path()))
+        {
+            corruptEssFiles.push_back(entry.path());
+        }
+    }
+
+    if (corruptEssFiles.empty())
+        return 0;
+
+    const std::filesystem::path quarantineDir = acSavesDir / "Quarantined_Corrupt_v100";
+    std::filesystem::create_directories(quarantineDir, ec);
+    if (ec)
+        return 0;
+
+    size_t movedCount = 0;
+    for (const auto& badPath : corruptEssFiles)
+    {
+        const auto destPath = quarantineDir / badPath.filename();
+        std::filesystem::rename(badPath, destPath, ec);
+        if (!ec)
+        {
+            ++movedCount;
+            if (EndsWithIgnoreCase(badPath.filename().string(), ".ess"))
+            {
+                auto skseCompanion = badPath;
+                skseCompanion.replace_extension(".skse");
+                if (std::filesystem::exists(skseCompanion, ec))
+                    std::filesystem::rename(skseCompanion, quarantineDir / skseCompanion.filename(), ec);
+            }
+        }
+    }
+
+    return movedCount;
 }
 
 inline bool ReadTextFile(const std::filesystem::path& acPath, std::string& aOut) noexcept
@@ -355,6 +595,16 @@ inline RfabBindingsConfig LoadBindingsFromDisk(const std::filesystem::path& acGa
     if (aEditorId.empty())
         return false;
 
+    const std::string lowerEdid = Detail::ToLowerAscii(aEditorId);
+    // RFAB_XP_Amount is each player's personal unspent RFAB_Menu skill-point wallet (earned deltas sync via
+    // SyncRfabExperienceRequest; spending points in RFAB_Menu is per-character and must NEVER overwrite peers!).
+    if (lowerEdid == "rfab_xp_amount" || lowerEdid == Detail::ToLowerAscii(acConfig.XpAmountGlobalEditorId) ||
+        lowerEdid == "rfab_xp_multiplier" || lowerEdid == "rfab_xp_bonus" ||
+        lowerEdid == Detail::ToLowerAscii(acConfig.XpBonusGlobalEditorId))
+    {
+        return false;
+    }
+
     for (const auto& excluded : acConfig.ExcludedGlobalPrefixes)
     {
         if (Detail::StartsWithIgnoreCase(aEditorId, excluded))
@@ -572,6 +822,38 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     bool changed = false;
     const bool hasCrLf = aToml.find("\r\n") != std::string::npos;
     const std::string newline = hasCrLf ? "\r\n" : "\n";
+
+    // Auto-heal invalid single-letter TOML lines ("S = a", "t = r", "f = a") left by an earlier
+    // PowerShell single-element array-unrolling bug, which otherwise abort EngineFixes.toml parsing
+    // and drop MaxStdio back to 512 (causing EMFILE -> sSaveGameCorrupt in 600-BSA RFAB installs).
+    {
+        std::istringstream cleanIss(aToml);
+        std::ostringstream cleanOss;
+        std::string cleanLine;
+        bool cleanFirst = true;
+        bool strippedAny = false;
+        while (std::getline(cleanIss, cleanLine))
+        {
+            if (!cleanLine.empty() && cleanLine.back() == '\r')
+                cleanLine.pop_back();
+            const std::string t = Detail::Trim(cleanLine);
+            if (t == "S = a" || t == "t = r" || t == "f = a")
+            {
+                strippedAny = true;
+                continue;
+            }
+            if (!cleanFirst)
+                cleanOss << newline;
+            cleanFirst = false;
+            cleanOss << cleanLine;
+        }
+        if (strippedAny)
+        {
+            aToml = cleanOss.str() + ((!aToml.empty() && aToml.back() == '\n') ? newline : "");
+            changed = true;
+        }
+    }
+
     const bool hasBPrefixV7 = aToml.find("bVerboseLogging") != std::string::npos || aToml.find("bMemoryManager") != std::string::npos;
     const bool hasMemMgrSectionV7 = aToml.find("[MemoryManager]") != std::string::npos &&
                                     (aToml.find("OverrideVanilla") != std::string::npos || aToml.find("OverrideScaleform") != std::string::npos);
@@ -664,6 +946,8 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     {
         patchKey("bMemoryManager", "false");
         patchKey("bScaleformAllocator", "false");
+        patchKey("bOverrideScrapHeap", "false");
+        patchKey("iSaveGameMaxSize", "64");
         patchKey("bRegularQuicksaves", "true");
         patchKey("iMaxStdio", "8192");
     }
@@ -671,6 +955,7 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     {
         const bool hasOvVanilla = patchKey("OverrideVanilla", "false");
         const bool hasOvScaleform = patchKey("OverrideScaleform", "false");
+        patchKey("OverrideScrapHeap", "false");
         std::vector<std::pair<std::string_view, std::string_view>> missingMm;
         if (!hasOvVanilla)
             missingMm.emplace_back("OverrideVanilla", "false");
@@ -687,11 +972,17 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
             changed = true;
         }
 
+        // CRITICAL: In SSE Engine Fixes v5.x / v6.0.2 (used by Skyrim SE 1.5.97 & drake1ch/RFAB),
+        // `PatchSaveGameMaxSize()` lacks v7's `if (!bOverrideScrapHeap) return;` guard: when
+        // `SaveGameMaxSize = true` and `MemoryManager = false`, it patches `Win32FileType` to request
+        // 128 MB (`0x08000000`) from vanilla's 64 MB (`0x04000000`) `ScrapHeap`, causing
+        // `ScrapHeap::Allocate` to return `nullptr` and corrupting saves/loads (`sSaveGameCorrupt`).
+        // Always keep `SaveGameMaxSize = false` (matching upstream drake1ch/RFAB) whenever `MemoryManager = false`.
         const bool hasMemMgr = patchKey("MemoryManager", "false");
         const bool hasScaleform = patchKey("ScaleformAllocator", "false");
         const bool hasQuicksaves = patchKey("RegularQuicksaves", "true");
         const bool hasMaxStdio = patchKey("MaxStdio", "8192");
-        const bool hasSaveMax = patchKey("SaveGameMaxSize", "true");
+        const bool hasSaveMax = patchKey("SaveGameMaxSize", "false");
 
         // Ensure partial MO2 overrides (e.g. "Disable Quick Saves/skse/plugins/EngineFixes.toml")
         // contain all required [Patches] keys inside [Patches] itself for SSE Engine Fixes v5/v6 (SE 1.5.97)!
@@ -707,7 +998,7 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
         insertUnderSection("Patches", missingPatches);
 
         if (!hasSaveMax)
-            insertUnderSection("Experimental", {{"SaveGameMaxSize", "true"}});
+            insertUnderSection("Experimental", {{"SaveGameMaxSize", "false"}});
     }
 
     return changed;
@@ -768,6 +1059,8 @@ inline bool PatchSkyrimSoulsReIniContent(std::string& aIni)
     return changed;
 }
 
+inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni);
+
 inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acGameOrMo2Root) noexcept
 {
     size_t patchedFiles = 0;
@@ -815,12 +1108,28 @@ inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acG
         }
     };
 
+    auto patchAutosaveIni = [&](const std::filesystem::path& p)
+    {
+        std::string content;
+        if (!Detail::ReadTextFile(p, content))
+            return;
+
+        const std::string updated = SuppressRfabAutosaveIniContent(content);
+        if (updated != content)
+        {
+            if (Detail::WriteTextFile(p, updated))
+                ++patchedFiles;
+        }
+    };
+
     auto scanPluginTree = [&](const std::filesystem::path& baseDir)
     {
         patchToml(baseDir / "SKSE" / "Plugins" / "EngineFixes.toml");
         patchToml(baseDir / "skse" / "plugins" / "EngineFixes.toml");
         patchSoulsIni(baseDir / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini");
         patchSoulsIni(baseDir / "skse" / "plugins" / "SkyrimSoulsRE.ini");
+        patchAutosaveIni(baseDir / "SKSE" / "Plugins" / "[RFAB] Autosave.ini");
+        patchAutosaveIni(baseDir / "skse" / "plugins" / "[RFAB] Autosave.ini");
         hideBetterStealing(baseDir);
     };
 
@@ -846,6 +1155,18 @@ inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acG
         const auto overwriteDir = mo2Root / "overwrite";
         if (std::filesystem::exists(overwriteDir, ec) && std::filesystem::is_directory(overwriteDir, ec))
             scanPluginTree(overwriteDir);
+
+        const auto profilesDir = mo2Root / "profiles";
+        if (std::filesystem::exists(profilesDir, ec) && std::filesystem::is_directory(profilesDir, ec))
+        {
+            for (const auto& profEntry : std::filesystem::directory_iterator(profilesDir, ec))
+            {
+                if (!ec && profEntry.is_directory(ec))
+                {
+                    Detail::QuarantineCorruptEssFilesInDirectory(profEntry.path() / "saves");
+                }
+            }
+        }
 
         const auto modsDir = mo2Root / "mods";
         if (!std::filesystem::exists(modsDir, ec) || !std::filesystem::is_directory(modsDir, ec))
@@ -889,10 +1210,13 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
             if (const size_t eq = trimmed.find('='); eq != std::string::npos)
             {
                 const std::string key = Detail::ToLowerAscii(Detail::Trim(std::string_view(trimmed).substr(0, eq)));
-                if (key == "enable autosave" || key == "save after combat")
+                if (key == "enable autosave" || key == "save in combat" || key == "save after combat" ||
+                    key == "save on location change" || key == "save on sleep/wait" || key == "enabled")
                 {
                     const size_t rawEq = line.find('=');
-                    line = line.substr(0, rawEq + 1) + " 0";
+                    line = (key == "enabled")
+                        ? (line.substr(0, rawEq + 1) + " false")
+                        : (line.substr(0, rawEq + 1) + " 0");
                 }
             }
         }
@@ -962,6 +1286,166 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
     }
 
     return false;
+}
+
+enum class RfabDifficultyMode : uint8_t
+{
+    Strannik = 0,   // Странник:  x2.0 dealt (x0.5 if Cursed), x0.5 taken
+    Dragonborn = 1, // Довакин:   x1.0 dealt (x0.5 if Cursed), x1.0 taken
+    Legend = 2      // Легенда:   x1.0 dealt (x0.5 if Cursed), x2.0 taken
+};
+
+struct RfabDifficultyMultipliers
+{
+    float OutgoingByPlayer = 1.0f; // fDiffMultHPByPCVH
+    float IncomingToPlayer = 1.0f; // fDiffMultHPToPCVH
+};
+
+[[nodiscard]] inline float SanitizeDifficultyMultiplier(float aMult) noexcept
+{
+    if (!std::isfinite(aMult) || aMult <= 0.0f)
+        return 1.0f;
+
+    return std::clamp(aMult, 0.05f, 10.0f);
+}
+
+// Mirrors RFAB StartMenu.json + RFAB_StartMenu.UpdateDifficulty() + RFAB_MCM_Alias.OnPlayerLoadGame():
+//   - Strannik (0):   ByPC = 2.0, ToPC = 0.5
+//   - Dragonborn (1): ByPC = 1.0, ToPC = 1.0
+//   - Legend (2):     ByPC = 1.0, ToPC = 2.0
+//   - Cursed mark ("Проклятый"): overrides ByPC -> DamageWithCurse = 0.5 across all three modes.
+[[nodiscard]] inline constexpr RfabDifficultyMultipliers ResolveRfabDifficultyMultipliers(
+    RfabDifficultyMode aMode,
+    bool aIsCursed) noexcept
+{
+    float byPlayer = 1.0f;
+    float toPlayer = 1.0f;
+    switch (aMode)
+    {
+    case RfabDifficultyMode::Strannik:
+        byPlayer = 2.0f;
+        toPlayer = 0.5f;
+        break;
+    case RfabDifficultyMode::Dragonborn:
+        byPlayer = 1.0f;
+        toPlayer = 1.0f;
+        break;
+    case RfabDifficultyMode::Legend:
+        byPlayer = 1.0f;
+        toPlayer = 2.0f;
+        break;
+    }
+
+    if (aIsCursed)
+        byPlayer = 0.5f;
+
+    return {byPlayer, toPlayer};
+}
+
+// Skyrim SE has no fDiffMultHPByPCN / fDiffMultHPToPCN GMST for difficulty index 2 (Adept):
+// GetDifficultyMultiplier(2) returns hardcoded 1.0f. RFAB's canonical SkyrimPrefs.ini uses 0 (VE)
+// and RFAB.dll reads fDiffMultHP*PCVH (index 4). Preserve 0/1/3/4/5 and remap 2 -> 4.
+[[nodiscard]] inline constexpr int32_t NormalizeRfabEngineDifficultyIndex(int32_t aCurrentDifficulty) noexcept
+{
+    if (aCurrentDifficulty < 0 || aCurrentDifficulty > 5 || aCurrentDifficulty == 2)
+        return 4;
+
+    return aCurrentDifficulty;
+}
+
+// Hostile/detrimental permanent kHealth (AV 24) effects cast directly by the local player (0x14)
+// must carry the caster's RFAB fDiffMultHPByPCVH (2.0x Странник / 1.0x Довакин,Легенда / 0.5x Проклятый)
+// across the wire, because on the target owner's client the caster is RemotePlayer (0xFFxxxxxx != 0x14)
+// so RFAB.dll will NOT re-apply ByPCVH (zero double-multiplication). Summons (caster != 0x14) stay 1.0x.
+[[nodiscard]] inline bool ShouldScalePlayerOutgoingHealthEffect(
+    bool aIsRfabActive,
+    uint32_t aCasterFormId,
+    uint32_t aEffectFlags,
+    int32_t aPrimaryAv,
+    float aMagnitude) noexcept
+{
+    constexpr uint32_t kHostileOrDetrimental = (1u << 0) | (1u << 2);
+    constexpr uint32_t kRecoverFlag = (1u << 1);
+    constexpr int32_t kHealthAv = 24;
+
+    if (!aIsRfabActive || aCasterFormId != 0x14u)
+        return false;
+    if (!std::isfinite(aMagnitude) || aMagnitude <= 0.0f)
+        return false;
+    if (aPrimaryAv != kHealthAv)
+        return false;
+    if ((aEffectFlags & kHostileOrDetrimental) == 0 || (aEffectFlags & kRecoverFlag) != 0)
+        return false;
+
+    return true;
+}
+
+[[nodiscard]] inline float ScalePlayerOutgoingSpellMagnitude(
+    float aBaseMagnitude,
+    float aCasterOutgoingMult,
+    bool aShouldScale) noexcept
+{
+    if (!aShouldScale || !std::isfinite(aBaseMagnitude))
+        return aBaseMagnitude;
+
+    return aBaseMagnitude * SanitizeDifficultyMultiplier(aCasterOutgoingMult);
+}
+
+// PERK 0x000581F8:
+//   - Vanilla Skyrim (Regeneration): 1.50f (+50%)
+//   - RFAB.esp (RFAB_Perk_Restoration_ImprovedHealing / «Улучшенное лечение»): EPFD = 1.25f (+25%),
+//     strictly on non-hostile permanent kHealth healing effects (excluding Absorb / Fortify).
+[[nodiscard]] inline constexpr float GetRestorationImprovedHealingMultiplier(bool aIsRfabActive) noexcept
+{
+    return aIsRfabActive ? 1.25f : 1.5f;
+}
+
+[[nodiscard]] inline bool ShouldApplyImprovedHealingPerk(
+    uint32_t aEffectFlags,
+    int32_t aPrimaryAv,
+    int32_t aArchetypeId,
+    float aMagnitude) noexcept
+{
+    constexpr uint32_t kHostileOrDetrimental = (1u << 0) | (1u << 2);
+    constexpr uint32_t kRecoverFlag = (1u << 1);
+    constexpr int32_t kHealthAv = 24;
+    constexpr int32_t kAbsorbArchetype = 8;
+
+    if (!std::isfinite(aMagnitude) || aMagnitude <= 0.0f)
+        return false;
+    if (aPrimaryAv != kHealthAv || aArchetypeId == kAbsorbArchetype)
+        return false;
+    if ((aEffectFlags & (kHostileOrDetrimental | kRecoverFlag)) != 0)
+        return false;
+
+    return true;
+}
+
+struct CoopAllyActionPolicy
+{
+    bool BlockHarmfulAction{false};
+    bool AllowPartySparring{false};
+    bool AllowBeneficialMagic{false};
+};
+
+// Mirrors RFAB's Speechcraft 50 «Лидерство» -> «Единство в битве» (RFAB_Power_NoAllyDamage / RFAB_Perk_NoAllyDamage),
+// scoped strictly to distinct Co-Op Party Allies (other players in the same party and their summons/minions),
+// leaving solo NPC followers and personal summons governed by RFAB's native Speechcraft perk.
+[[nodiscard]] inline constexpr CoopAllyActionPolicy EvaluateCoopAllyActionPolicy(
+    bool aAreDistinctCoopPartyAllies,
+    bool aAttackerAllyProtectionEnabled,
+    bool aIsBeneficialHealOrBuff) noexcept
+{
+    if (!aAreDistinctCoopPartyAllies)
+        return {};
+
+    if (aIsBeneficialHealOrBuff)
+        return {false, !aAttackerAllyProtectionEnabled, true};
+
+    if (aAttackerAllyProtectionEnabled)
+        return {true, false, false};
+
+    return {false, true, false};
 }
 
 } // namespace RfabCompat

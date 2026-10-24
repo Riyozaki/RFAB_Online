@@ -58,6 +58,8 @@ export class SettingsComponent {
 
   clientVersion$: Observable<string>;
   isVersionOutdated: Promise<boolean>;
+  allyProtection$ = this.client.allyProtectionChange.asObservable();
+  isAllyProtectionHost$ = this.client.isAllyProtectionHostChange.asObservable();
 
   @Output() public done = new EventEmitter<void>();
   @Output() public settingsUpdated = new EventEmitter<void>();
@@ -79,6 +81,15 @@ export class SettingsComponent {
   close() {
     this.done.next();
     this.sound.play(Sound.Ok);
+  }
+
+  onAllyProtectionChange(enabled: boolean): void {
+    if (!this.client.isAllyProtectionHostChange.getValue()) {
+      return;
+    }
+    this.settings.allyProtection.next(enabled);
+    this.sound.play(enabled ? Sound.Check : Sound.Uncheck);
+    this.client.setAllyProtection(enabled, true);
   }
 
   private getVersionTagList(): Promise<Tag[]> {

@@ -27,6 +27,8 @@
 #include <Forms/TESForm.h>
 #include <Components/TESSpellList.h>
 #include <Forms/TESActorBase.h>
+#include <Forms/EffectSetting.h>
+#include <NetImmerse/BSMaskedShaderMaterial.h>
 
 namespace
 {
@@ -68,13 +70,18 @@ int main()
             "MaxStdio = 2048\r\n"
             "MemoryManager = true\r\n"
             "ScaleformAllocator = true\r\n"
-            "RegularQuicksaves = false\r\n";
+            "RegularQuicksaves = false\r\n"
+            "[Experimental]\r\n"
+            "S = a\r\n"
+            "t = r\r\n"
+            "SaveGameMaxSize = true\r\n";
         assert(RfabCompat::PatchEngineFixesTomlContent(v5Toml));
         assert(v5Toml.find("MemoryManager = false") != std::string::npos);
         assert(v5Toml.find("ScaleformAllocator = false") != std::string::npos);
         assert(v5Toml.find("RegularQuicksaves = true") != std::string::npos);
         assert(v5Toml.find("MaxStdio = 8192") != std::string::npos);
-        assert(v5Toml.find("SaveGameMaxSize = true") != std::string::npos);
+        assert(v5Toml.find("SaveGameMaxSize = false") != std::string::npos);
+        assert(v5Toml.find("S = a") == std::string::npos);
         assert(!RfabCompat::PatchEngineFixesTomlContent(v5Toml));
 
         std::string partialOverride = "[Patches]\r\nRegularQuicksaves = false\r\n";
@@ -213,6 +220,166 @@ int main()
         assert(!missingPlugin.LoadFile("/tmp/definitely_missing_rfab_plugin_99999.esp"));
     }
 
+    // 7. v1.1.0 Playtest Regressions: TESV_SAVEGAME validator, stem normalizer, quarantine,
+    //    RFAB_XP_Amount/Multiplier wallet isolation, [RFAB] Autosave.ini full suppression,
+    //    EncounterCoordinator post-rollback wipe-loop guard, and cleaned SkyrimTogether.esp!
+    {
+        // Stem normalizer strips .ess/.bak/paths cleanly
+        assert(RfabCompat::Detail::StripSaveSlotExtensionPreserveCase("RFAB_MP_S123_Auto_0.ess") == "RFAB_MP_S123_Auto_0");
+        assert(RfabCompat::Detail::StripSaveSlotExtensionPreserveCase("Saves\\Quicksave0_FFFFFFFF.ess.bak") == "Quicksave0_FFFFFFFF");
+        assert(RfabCompat::Detail::NormalizeSaveSlotStem("  RFAB_MP_S123_Manual_1.ESS  ") == "rfab_mp_s123_manual_1");
+
+        // TESV_SAVEGAME validator & corrupt-file quarantine
+        const fs::path saveTmpDir = fs::temp_directory_path() / "rfab_save_validator_test";
+        fs::remove_all(saveTmpDir);
+        fs::create_directories(saveTmpDir);
+
+        const fs::path zeroEss = saveTmpDir / "CorruptZero.ess";
+        {
+            std::ofstream f(zeroEss, std::ios::binary);
+        }
+        assert(!RfabCompat::Detail::IsValidEssFileOnDisk(zeroEss));
+        assert(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 1);
+        assert(!fs::exists(zeroEss));
+        assert(fs::exists(saveTmpDir / "Quarantined_Corrupt_v100" / "CorruptZero.ess"));
+
+        const fs::path truncatedEss = saveTmpDir / "TruncatedHeader.ess";
+        {
+            std::ofstream f(truncatedEss, std::ios::binary);
+            f.write("TESV_SAVEGAME_SHORT", 19);
+        }
+        assert(!RfabCompat::Detail::IsValidEssFileOnDisk(truncatedEss));
+
+        auto buildMockSe12Ess = [](uint32_t ssW, uint32_t ssH, uint16_t compType, uint32_t uncompLen, uint32_t compLen, size_t actualBodyBytes) -> std::vector<uint8_t>
+        {
+            auto appendU16 = [](std::vector<uint8_t>& v, uint16_t x) {
+                v.push_back(static_cast<uint8_t>(x & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+            };
+            auto appendU32 = [](std::vector<uint8_t>& v, uint32_t x) {
+                v.push_back(static_cast<uint8_t>(x & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 16) & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 24) & 0xFFu));
+            };
+            auto appendStr16 = [&](std::vector<uint8_t>& v, std::string_view s) {
+                appendU16(v, static_cast<uint16_t>(s.size()));
+                v.insert(v.end(), s.begin(), s.end());
+            };
+
+            std::vector<uint8_t> hdr;
+            appendU32(hdr, 12u); // Skyrim SE version 12
+            appendU32(hdr, 1u);  // saveNumber
+            appendStr16(hdr, "Dovakin");
+            appendU32(hdr, 1u);  // playerLevel
+            appendStr16(hdr, "Winterhold");
+            appendStr16(hdr, "000.01.00");
+            appendStr16(hdr, "NordRace");
+            appendU16(hdr, 0u);  // playerSex
+            appendU32(hdr, 0u);  // curExp
+            appendU32(hdr, 0u);  // lvlExp
+            appendU32(hdr, 0u);  // filetime low
+            appendU32(hdr, 0u);  // filetime high
+            appendU32(hdr, ssW);
+            appendU32(hdr, ssH);
+            appendU16(hdr, compType);
+
+            std::vector<uint8_t> out;
+            out.insert(out.end(), {'T','E','S','V','_','S','A','V','E','G','A','M','E'});
+            appendU32(out, static_cast<uint32_t>(hdr.size()));
+            out.insert(out.end(), hdr.begin(), hdr.end());
+            out.insert(out.end(), static_cast<size_t>(4u) * ssW * ssH, 0x33u); // RGBA screenshot
+            if (compType != 0)
+            {
+                appendU32(out, uncompLen);
+                appendU32(out, compLen);
+            }
+            out.insert(out.end(), actualBodyBytes, 0x5Au);
+            return out;
+        };
+
+        // Regression test for EngineFixes v5/v6 SaveGameMaxSize=true + MemoryManager=false ScrapHeap failure:
+        // Header + RGBA screenshot written (>256 bytes, starts with TESV_SAVEGAME), 0 compressed body bytes!
+        const fs::path scrapHeapAbortedEss = saveTmpDir / "ScrapHeapAborted.ess";
+        {
+            auto abortedBytes = buildMockSe12Ess(16, 16, 2, 0, 0, 0);
+            abortedBytes.resize(abortedBytes.size() - 8); // stopped right after RGBA screenshot!
+            std::ofstream f(scrapHeapAbortedEss, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(abortedBytes.data()), static_cast<std::streamsize>(abortedBytes.size()));
+        }
+        assert(!RfabCompat::Detail::IsValidEssFileOnDisk(scrapHeapAbortedEss));
+
+        // Construct valid SE 1.5.97 v12 LZ4 TESV_SAVEGAME header + RGBA screenshot + compressed payload
+        const fs::path validEss = saveTmpDir / "RFAB_MP_S1_Manual_0.ess";
+        {
+            const auto bytes = buildMockSe12Ess(8, 8, 2, 4096, 256, 256);
+            std::ofstream f(validEss, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        }
+        assert(RfabCompat::Detail::IsValidEssFileOnDisk(validEss));
+        assert(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 2); // quarantines TruncatedHeader.ess + ScrapHeapAborted.ess
+        assert(fs::exists(validEss));
+        fs::remove_all(saveTmpDir);
+
+        // RFAB_XP_Amount & RFAB_XP_Multiplier must NEVER be broadcast via GlobalValueSync
+        const auto bindings = RfabCompat::LoadBindingsFromDisk(fs::current_path());
+        assert(!RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Amount", bindings));
+        assert(!RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Multiplier", bindings));
+        assert(!RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Bonus", bindings));
+
+        // [RFAB] Autosave.ini full suppression (including location change & sleep/wait)
+        const std::string autosaveRaw =
+            "[Main]\r\nEnable autosave = 1\r\nSave after combat = 1\r\nSave on location change = 1\r\nSave on sleep/wait = 1\r\n";
+        const std::string autosaveSuppressed = RfabCompat::SuppressRfabAutosaveIniContent(autosaveRaw);
+        assert(autosaveSuppressed.find("Enable autosave = 0") != std::string::npos);
+        assert(autosaveSuppressed.find("Save after combat = 0") != std::string::npos);
+        assert(autosaveSuppressed.find("Save on location change = 0") != std::string::npos);
+        assert(autosaveSuppressed.find("Save on sleep/wait = 0") != std::string::npos);
+
+        // Verify SkyrimTogether.esp is clean & TempleBlessingScript.pex / logo.nif are absent
+        assert(!fs::exists("GameFiles/Skyrim/scripts/TempleBlessingScript.pex"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/scripts/TempleBlessingScript.pex"));
+        assert(!fs::exists("GameFiles/Skyrim/scripts/source/TempleBlessingScript.psc"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/scripts/source/TempleBlessingScript.psc"));
+        assert(!fs::exists("GameFiles/Skyrim/meshes/Interface/logo/logo.nif"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/meshes/Interface/logo/logo.nif"));
+
+        // Verify v1.2.0 RFAB Difficulty Modes (Странник / Довакин / Легенда + Проклятый) & Perk 0x581F8 (1.25x)
+        const auto mStrannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Strannik, false);
+        assert(std::abs(mStrannik.OutgoingByPlayer - 2.0f) < 0.001f && std::abs(mStrannik.IncomingToPlayer - 0.5f) < 0.001f);
+        const auto mDragon = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Dragonborn, false);
+        assert(std::abs(mDragon.OutgoingByPlayer - 1.0f) < 0.001f && std::abs(mDragon.IncomingToPlayer - 1.0f) < 0.001f);
+        const auto mLegend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Legend, false);
+        assert(std::abs(mLegend.OutgoingByPlayer - 1.0f) < 0.001f && std::abs(mLegend.IncomingToPlayer - 2.0f) < 0.001f);
+        const auto mCursed = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Strannik, true);
+        assert(std::abs(mCursed.OutgoingByPlayer - 0.5f) < 0.001f && std::abs(mCursed.IncomingToPlayer - 0.5f) < 0.001f);
+        assert(RfabCompat::NormalizeRfabEngineDifficultyIndex(2) == 4);
+        assert(RfabCompat::NormalizeRfabEngineDifficultyIndex(0) == 0);
+        assert(std::abs(RfabCompat::GetRestorationImprovedHealingMultiplier(true) - 1.25f) < 0.001f);
+
+        // Regression audit for v1.1.0 peer location/cell transition CTD root causes:
+        {
+            auto readTextFile = [](const fs::path& p) -> std::string {
+                std::ifstream f(p, std::ios::binary);
+                return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            };
+
+            const std::string refrCpp = readTextFile("Code/client/Games/Skyrim/TESObjectREFR.cpp");
+            assert(refrCpp.find("PAPYRUS_FUNCTION(void, ObjectReference, Disable") == std::string::npos);
+            assert(refrCpp.find("PAPYRUS_FUNCTION(void, ObjectReference, Enable") == std::string::npos);
+            assert(refrCpp.find("DisableImpl()") != std::string::npos);
+            assert(refrCpp.find("if (!apCell)") != std::string::npos);
+
+            const std::string faceGenCpp = readTextFile("Code/client/Systems/FaceGenSystem.cpp");
+            assert(faceGenCpp.find("pLightingShader->material != pClonedMaterial") != std::string::npos);
+            assert(faceGenCpp.find("Memory::Free(pClonedMaterial)") == std::string::npos);
+
+            const std::string charSvcCpp = readTextFile("Code/client/Services/Generic/CharacterService.cpp");
+            assert(charSvcCpp.find("m_world.remove<FormIdComponent, EarlyAnimationBufferComponent, PlayerComponent>(aEntity)") != std::string::npos);
+            assert(charSvcCpp.find("apActor->Disable();") == std::string::npos);
+        }
+    }
+
     std::cout << "[PASS] All SE 1.5.97 struct static_asserts, BSTSmartPointer RAII, Havok stepInfo/IsWordVariable guards, "
                  "TESSpellList null-sanitizer, TESForm::IsStillLoading, ESLoader BOM/CRLF/overflow safety, "
                  "NormalizeServerEndpoint, and MO2 VFS self-healers passed!"
@@ -239,6 +406,7 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
     REQUIRE(partialOverride.find("RegularQuicksaves = true") != std::string::npos);
     REQUIRE(partialOverride.find("MaxStdio = 8192") != std::string::npos);
     REQUIRE(partialOverride.find("[Experimental]") != std::string::npos);
+    REQUIRE(partialOverride.find("SaveGameMaxSize = false") != std::string::npos);
     REQUIRE(partialOverride.find("[SaveGameMaxSize]") == std::string::npos);
     REQUIRE_FALSE(RfabCompat::PatchEngineFixesTomlContent(partialOverride));
 
@@ -277,5 +445,135 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         std::filesystem::current_path(oldCwd);
     }
     std::filesystem::remove_all(loDir);
+
+    // RFAB «Единство в битве (Кооп)» (Co-Op Ally Friendly-Fire Protection) matrix:
+    // 1. Non-party actors, enemies, solo NPC followers, and personal summons are untouched
+    //    (preserving RFAB's Speechcraft 50 «Лидерство» perk).
+    {
+        const auto soloHarm = RfabCompat::EvaluateCoopAllyActionPolicy(false, true, false);
+        REQUIRE_FALSE(soloHarm.BlockHarmfulAction);
+        REQUIRE_FALSE(soloHarm.AllowPartySparring);
+        REQUIRE_FALSE(soloHarm.AllowBeneficialMagic);
+
+        const auto soloHeal = RfabCompat::EvaluateCoopAllyActionPolicy(false, true, true);
+        REQUIRE_FALSE(soloHeal.BlockHarmfulAction);
+        REQUIRE_FALSE(soloHeal.AllowPartySparring);
+        REQUIRE_FALSE(soloHeal.AllowBeneficialMagic);
+    }
+    // 2. Same co-op party with AllyProtection ENABLED (default):
+    //    - 100% of physical attacks, hostile spells, shouts, poisons, cloaks, and debuffs are blocked.
+    //    - 100% of heals & buffs (including RFAB_List_NoAllyDamage_AllowedSpells) still work!
+    {
+        const auto allyHarm = RfabCompat::EvaluateCoopAllyActionPolicy(true, true, false);
+        REQUIRE(allyHarm.BlockHarmfulAction);
+        REQUIRE_FALSE(allyHarm.AllowPartySparring);
+        REQUIRE_FALSE(allyHarm.AllowBeneficialMagic);
+
+        const auto allyHealOrBuff = RfabCompat::EvaluateCoopAllyActionPolicy(true, true, true);
+        REQUIRE_FALSE(allyHealOrBuff.BlockHarmfulAction);
+        REQUIRE_FALSE(allyHealOrBuff.AllowPartySparring);
+        REQUIRE(allyHealOrBuff.AllowBeneficialMagic);
+    }
+    // 3. Same co-op party with AllyProtection DISABLED via Right-Ctrl overlay toggle:
+    //    - Party members can spar / test builds without editing STServer.ini, while heals & buffs still work!
+    {
+        const auto sparHarm = RfabCompat::EvaluateCoopAllyActionPolicy(true, false, false);
+        REQUIRE_FALSE(sparHarm.BlockHarmfulAction);
+        REQUIRE(sparHarm.AllowPartySparring);
+        REQUIRE_FALSE(sparHarm.AllowBeneficialMagic);
+
+        const auto sparHeal = RfabCompat::EvaluateCoopAllyActionPolicy(true, false, true);
+        REQUIRE_FALSE(sparHeal.BlockHarmfulAction);
+        REQUIRE(sparHeal.AllowPartySparring);
+        REQUIRE(sparHeal.AllowBeneficialMagic);
+    }
+
+    // 4. Exact RFAB Respect Edition 30-plugin loadorder.txt verification (RFAB.esp at 0x07, SkyrimTogether.esp at 0x10,
+    //    SkyrimTogetherQuestPatches.esp at FE:003, SkyrimOutfitSystem.esp at 0x17):
+    {
+        const auto respectDir = std::filesystem::temp_directory_path() / "rfab_respect_edition_lo_test";
+        std::filesystem::remove_all(respectDir);
+        std::filesystem::create_directories(respectDir / "Data");
+
+        auto writeMinPlugin = [&](const std::string& fileName, uint32_t tes4Flags)
+        {
+            std::ofstream out(respectDir / "Data" / fileName, std::ios::binary);
+            std::vector<uint8_t> rec(24 + 18, 0);
+            std::memcpy(rec.data(), "TES4", 4);
+            const uint32_t dataSize = 18;
+            std::memcpy(rec.data() + 4, &dataSize, 4);
+            std::memcpy(rec.data() + 8, &tes4Flags, 4);
+            std::memcpy(rec.data() + 24, "HEDR", 4);
+            const uint16_t hedrSize = 12;
+            std::memcpy(rec.data() + 28, &hedrSize, 2);
+            const float ver = 1.70f;
+            std::memcpy(rec.data() + 30, &ver, 4);
+            out.write(reinterpret_cast<const char*>(rec.data()), static_cast<std::streamsize>(rec.size()));
+        };
+
+        const std::vector<std::pair<std::string, uint32_t>> respectPlugins = {
+            {"Skyrim.esm", 0x001u},
+            {"Update.esm", 0x001u},
+            {"Dawnguard.esm", 0x001u},
+            {"HearthFires.esm", 0x001u},
+            {"Dragonborn.esm", 0x001u},
+            {"Unofficial Skyrim Special Edition Patch.esp", 0x001u},
+            {"Skyrim Project Optimization - Full Version.esm", 0x001u},
+            {"RFAB.esp", 0x001u}, // ESM-flagged at 0x07 in RFAB Respect Edition!
+            {"SkyUI_SE.esp", 0x000u},
+            {"SkyHUD.esp", 0x000u},
+            {"UIExtensions.esp", 0x000u},
+            {"Extended UI.esp", 0x000u},
+            {"RaceMenu.esp", 0x000u},
+            {"RaceMenuPlugin.esp", 0x000u},
+            {"Skyrim Mixed Enhanced Physics - Force and Projectiles.esp", 0x000u},
+            {"AHZmoreHUDInventory.esp", 0x200u},
+            {"BetterContainerControls.esp", 0x000u},
+            {"MCMHelper.esp", 0x200u},
+            {"TrueHUD.esl", 0x201u},
+            {"SkyrimTogether.esp", 0x000u},
+            {"SkyrimTogetherQuestPatches.esp", 0x200u},
+            {"UntarnishedUI_Blur.esp", 0x200u},
+            {"RFAB WheelMenu.esp", 0x000u},
+            {"RFABLoadScreens.esp", 0x000u},
+            {"QuickLootIE.esp", 0x200u},
+            {"AddItemMenuSE.esp", 0x000u},
+            {"RFAB_PerksMenu.esp", 0x000u},
+            {"RFAB HF for Gold.esp", 0x000u},
+            {"icepenguinworldmapclassic.esp", 0x000u},
+            {"SkyrimOutfitSystem.esp", 0x000u},
+        };
+
+        {
+            std::ofstream lo(respectDir / "Data" / "loadorder.txt", std::ios::binary);
+            for (const auto& [name, flags] : respectPlugins)
+            {
+                writeMinPlugin(name, flags);
+                lo << name << "\r\n";
+            }
+        }
+
+        {
+            const auto oldCwd = std::filesystem::current_path();
+            std::filesystem::current_path(respectDir);
+            ESLoader::ESLoader loader;
+            (void)loader.BuildRecordCollection();
+            const auto& order = loader.GetLoadOrder();
+            REQUIRE(order.size() == 30);
+            REQUIRE(order[7].m_filename == "RFAB.esp");
+            REQUIRE(order[7].m_standardId == 0x07);
+            REQUIRE_FALSE(order[7].m_isLite);
+            REQUIRE(order[19].m_filename == "SkyrimTogether.esp");
+            REQUIRE(order[19].m_standardId == 0x10);
+            REQUIRE_FALSE(order[19].m_isLite);
+            REQUIRE(order[20].m_filename == "SkyrimTogetherQuestPatches.esp");
+            REQUIRE(order[20].m_isLite);
+            REQUIRE(order[20].m_liteId == 0x003);
+            REQUIRE(order[29].m_filename == "SkyrimOutfitSystem.esp");
+            REQUIRE(order[29].m_standardId == 0x17);
+            std::filesystem::current_path(oldCwd);
+        }
+        std::filesystem::remove_all(respectDir);
+    }
 }
 #endif

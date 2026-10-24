@@ -76,6 +76,18 @@
     <section>
       <h2>{{ 'COMPONENT.SETTINGS.PARTY' | transloco }}</h2>
       <div class="setting">
+        <label for="allyProtection">{{
+          'COMPONENT.SETTINGS.ALLY_PROTECTION' | transloco
+        }}</label>
+        <input
+          type="checkbox"
+          id="allyProtection"
+          [disabled]="!(isAllyProtectionHost$ | async)"
+          [ngModel]="allyProtection$ | async"
+          (ngModelChange)="onAllyProtectionChange($event)"
+        />
+      </div>
+      <div class="setting">
         <label for="showParty">{{
           'COMPONENT.SETTINGS.SHOW_PARTY' | transloco
         }}</label>

@@ -52,6 +52,8 @@ __declspec(noinline) NiTriBasedGeom* GetHeadTriBasedGeom(Actor* apActor, uint32_
 
 struct TextureHolder;
 TP_THIS_FUNCTION(TCreateResourceView, Ni2DBuffer*, TextureHolder, uint32_t, uint32_t);
+TP_THIS_FUNCTION(TSetShaderMaterial, uint32_t, BSShaderProperty, BSMaskedShaderMaterial* apMaterial, bool aUnk1);
+TP_THIS_FUNCTION(TInitializeShader, uint32_t, BSLightingShaderProperty, NiTriBasedGeom* apGeometry);
 
 using TCreateTexture = NiRenderedTexture*(__fastcall)(BSFixedString& aName);
 using TCreateTints = void(__fastcall)(const GameArray<TintMask*>& acTints, NiRenderedTexture* apTexture);
@@ -63,8 +65,17 @@ void FaceGenSystem::Update(World& aWorld, Actor* apActor, FaceGenComponent& aFac
     POINTER_SKYRIMSE(TCreateResourceView, CreateResourceView, 75507);
     POINTER_SKYRIMSE(TCreateTints, CreateTints, 26454);
     POINTER_SKYRIMSE(TextureHolder, s_textureHolder, 524907);
+    POINTER_SKYRIMSE(TSetShaderMaterial, SetShaderMaterial, 98897);
+    POINTER_SKYRIMSE(TInitializeShader, InitializeShader, 99862);
 
-    if (aFaceGenComponent.Generated)
+    if (!apActor || apActor->formID == 0x14)
+        return;
+
+    BSFaceGenNiNode* pCurrentFaceNode = apActor->GetFaceGenNiNode();
+    if (!pCurrentFaceNode)
+        return;
+
+    if (aFaceGenComponent.Generated && aFaceGenComponent.LastFaceNode == pCurrentFaceNode)
         return;
 
     auto pTriBasedGeom = GetHeadTriBasedGeom(apActor, 1);
@@ -84,8 +95,20 @@ void FaceGenSystem::Update(World& aWorld, Actor* apActor, FaceGenComponent& aFac
     if (pLightingShader->GetRTTI() == NiMaskedShaderRTTI.Get())
     {
         BSMaskedShaderMaterial* pMaterial = static_cast<BSMaskedShaderMaterial*>(pLightingShader->material);
+        if (!pMaterial)
+        {
+            pShaderProperty->DecRef();
+            return;
+        }
 
-        BSFixedString name("");
+        // CRITICAL FIX (Screenshot 4):
+        // Never use an empty "" texture name or mutate pMaterial->renderedTexture in-place!
+        // Skyrim pools/hashes BSLightingShaderMaterialFacegen across actors (and FaceGenFixes.dll),
+        // so mutating pMaterial->renderedTexture directly overwrote the local player's face tint with
+        // the remote player's skin color (e.g. turning a Nord player's face bright purple/Argonian!).
+        char texNameBuf[64]{};
+        std::snprintf(texNameBuf, sizeof(texNameBuf), "STR_FaceTint_%08X", apActor->formID);
+        BSFixedString name(texNameBuf);
         auto pTexture = CreateTexture(name);
         pTexture->buffer = CreateResourceView(s_textureHolder.Get(), 512, 512);
 
@@ -123,9 +146,34 @@ void FaceGenSystem::Update(World& aWorld, Actor* apActor, FaceGenComponent& aFac
 
         Memory::Free(tints.data);
 
-        pMaterial->renderedTexture = pTexture;
+        BSMaskedShaderMaterial* pClonedMaterial = pMaterial->Create();
+        if (pClonedMaterial)
+        {
+            pClonedMaterial->Copy(pMaterial);
+            pClonedMaterial->renderedTexture = pTexture;
+
+            TiltedPhoques::ThisCall(SetShaderMaterial, pLightingShader, pClonedMaterial, true);
+            TiltedPhoques::ThisCall(InitializeShader, pLightingShader, pTriBasedGeom);
+
+            // CRITICAL CTD-ON-CELL-CHANGE FIX:
+            // 1. Only release pClonedMaterial if SetShaderMaterial cloned a separate pooled material instance!
+            //    If SetShaderMaterial (or FaceGenFixes.dll) adopted pClonedMaterial directly into
+            //    pLightingShader->material, freeing it here caused an immediate Use-After-Free CTD inside
+            //    ~BSLightingShaderProperty() the moment a co-op friend unloaded on location/cell change.
+            // 2. When pClonedMaterial WAS cloned into a separate instance, invoke SkyrimSE.exe's own virtual
+            //    scalar deleting destructor with flags = 1 (never flags = 0 + manual Memory::Free(..., false)),
+            //    matching pMaterial->Create()'s exact heap & alignment under EngineFixes MemoryManager true/false.
+            if (pLightingShader->material != pClonedMaterial)
+            {
+                using TScalarDtor = void*(__fastcall*)(BSMaskedShaderMaterial*, uint32_t);
+                void** vtbl = *reinterpret_cast<void***>(pClonedMaterial);
+                if (vtbl && vtbl[0])
+                    reinterpret_cast<TScalarDtor>(vtbl[0])(pClonedMaterial, 1);
+            }
+        }
 
         aFaceGenComponent.Generated = true;
+        aFaceGenComponent.LastFaceNode = pCurrentFaceNode;
     }
 
     pShaderProperty->DecRef();

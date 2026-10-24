@@ -448,6 +448,50 @@ TEST_CASE("Packets", "[encoding.packets]")
         REQUIRE(sendMessage == recvMessage);
     }
 
+    SECTION("RfabProgressionAllyProtectionSync")
+    {
+        {
+            Buffer buff(1000);
+            SyncRfabProgressionEvent sendMsg, recvMsg;
+            sendMsg.Kind = SyncRfabProgressionEvent::EventKind::AllyProtectionSync;
+            sendMsg.EpochId = 7;
+            sendMsg.GlobalValue = 0.0f;
+
+            Buffer::Writer writer(&buff);
+            sendMsg.Serialize(writer);
+
+            Buffer::Reader reader(&buff);
+            uint64_t opcode = 0;
+            reader.ReadBits(opcode, 8);
+            recvMsg.DeserializeRaw(reader);
+
+            REQUIRE(sendMsg == recvMsg);
+            REQUIRE(recvMsg.Kind == SyncRfabProgressionEvent::EventKind::AllyProtectionSync);
+        }
+        {
+            Buffer buff(1000);
+            NotifyRfabProgressionEvent sendMsg, recvMsg;
+            sendMsg.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+            sendMsg.EpochId = 7;
+            sendMsg.XpDelta = 2;
+            sendMsg.GlobalValue = 1.0f;
+            sendMsg.AuthoritativeTotalXp = 1500;
+
+            Buffer::Writer writer(&buff);
+            sendMsg.Serialize(writer);
+
+            Buffer::Reader reader(&buff);
+            uint64_t opcode = 0;
+            reader.ReadBits(opcode, 8);
+            recvMsg.DeserializeRaw(reader);
+
+            REQUIRE(sendMsg == recvMsg);
+            REQUIRE(recvMsg.Kind == NotifyRfabProgressionEvent::EventKind::AllyProtectionSync);
+            REQUIRE(recvMsg.XpDelta == 2);
+            REQUIRE(recvMsg.GlobalValue == 1.0f);
+        }
+    }
+
     SECTION("CancelAssignmentRequest")
     {
         Buffer buff(1000);

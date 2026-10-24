@@ -23,10 +23,15 @@ struct BGSSaveLoadManager
 
     static BGSSaveLoadManager* Get() noexcept;
     static void InstallUniversalPostSkseHooks() noexcept;
+    static std::filesystem::path ResolveLocalSavesDirectory() noexcept;
+    static bool VerifySavedSlotOnDisk(const char* acpFileName) noexcept;
+    static size_t QuarantineCorruptSavesOnce() noexcept;
 
     void Save(SaveData* apData);
     bool SaveNamed(const char* acpFileName) noexcept;
-    bool LoadNamed(const char* acpFileName, bool aCheckForMods = true) noexcept;
+    bool LoadNamed(const char* acpFileName, bool aCheckForMods = false) noexcept;
+    bool ExecuteDirectSaveFromProcessEvents(const char* acpFileName) noexcept;
+    bool ExecuteDirectLoadFromProcessEvents(const char* acpFileName, bool aCheckForMods = false) noexcept;
 
     struct Struct330
     {

@@ -102,16 +102,14 @@ void TESForm::Save_Reversed(const uint32_t aChangeFlags, Buffer::Writer& aWriter
 
 void TESForm::SetSkipSaveFlag(bool aSet) noexcept
 {
-    if (aSet)
-    {
-        unk10 = 0xFFFF;
-    }
-    /*const uint32_t flag = 1 << 14;
+    // Skyrim SE TESForm::RecordFlags::kTemporary (1 << 14 = 0x4000) instructs BGSSaveLoadGame
+    // not to serialize this form into .ess change-records without corrupting inGameFormFlags (unk10).
+    constexpr uint32_t kRecordFlagTemporary = 1u << 14;
 
     if (aSet)
-        flags |= flag;
+        flags |= kRecordFlagTemporary;
     else
-        flags &= ~flag;*/
+        flags &= ~kRecordFlagTemporary;
 }
 
 uint32_t TESForm::GetChangeFlags() const noexcept
@@ -142,8 +140,11 @@ TESNPC* TESNPC::Create(const String& acBuffer, const uint32_t aChangeFlags) noex
 {
     auto pNpc = IFormFactory::Create<TESNPC>();
 
+    pNpc->SetSkipSaveFlag(true);
     pNpc->Initialize();
     pNpc->Deserialize(acBuffer, aChangeFlags);
+    pNpc->SetSkipSaveFlag(true);
+    pNpc->UnsetChanged(0xFFFFFFFF);
 
     // This forces facegen for some reason
     pNpc->overlayRace = nullptr;

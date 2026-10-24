@@ -7,6 +7,7 @@ void NotifySpellCast::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const
     Serialization::WriteVarInt(aWriter, CastingSource);
     Serialization::WriteBool(aWriter, IsDualCasting);
     Serialization::WriteVarInt(aWriter, DesiredTarget);
+    Serialization::WriteFloat(aWriter, EffectivenessMult);
 }
 
 void NotifySpellCast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -18,4 +19,5 @@ void NotifySpellCast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noe
     CastingSource = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     IsDualCasting = Serialization::ReadBool(aReader);
     DesiredTarget = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    EffectivenessMult = aReader.Eof() ? 1.0f : Serialization::ReadFloat(aReader);
 }
