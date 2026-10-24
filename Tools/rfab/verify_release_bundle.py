@@ -258,12 +258,16 @@ def main():
 
     notes_tpl = os.path.join(repo_root, r"Tools\rfab\RELEASE_NOTES_TEMPLATE.md")
     notes_txt = open(notes_tpl, "r", encoding="utf-8").read()
-    assert "Чистый автономный релиз" in notes_txt and "Единство в битве" in notes_txt, (
+    assert "автономный релиз" in notes_txt and "Единство в битве" in notes_txt and "Только Хост" in notes_txt, (
         "FATAL: RELEASE_NOTES_TEMPLATE.md failed UTF-8 Cyrillic integrity check!"
     )
+    changelog_txt = open(os.path.join(repo_root, "CHANGELOG.md"), "r", encoding="utf-8").read()
+    assert "Журнал изменений" in changelog_txt and "Единство в битве" in changelog_txt, (
+        "FATAL: CHANGELOG.md failed UTF-8 Cyrillic integrity check!"
+    )
     for mojibake_marker in ("\u00d0", "\u00d1", "\u00e2\u20ac"):
-        assert mojibake_marker not in notes_txt, (
-            f"FATAL: RELEASE_NOTES_TEMPLATE.md contains CP1252-decoded UTF-8 mojibake ({mojibake_marker!r})!"
+        assert mojibake_marker not in notes_txt and mojibake_marker not in changelog_txt, (
+            f"FATAL: Release notes or CHANGELOG contains CP1252-decoded UTF-8 mojibake ({mojibake_marker!r})!"
         )
 
     print(f"[RELEASE GATE PASSED] All {total_files} files in {stage_dir} verified 100% genuine & self-contained!")
