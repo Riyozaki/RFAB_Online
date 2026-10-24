@@ -24,9 +24,11 @@
 - **Пакет быстрого обновления `Quick_Update.zip` (`UPDATE_RFAB_ONLINE.bat`):** обновляет все бинарники клиента (`SkyrimSE.exe`, `SkyrimTogether.exe`, `EarlyLoad.dll`, `TPProcess.exe`), плагины `.esp`, `UI` и сервер в один клик с автоматической зачисткой устаревших файлов `v1.0.0`.
 
 ### 🩹 Исправлено
-- **Битые сохранения и ошибка «Файл сохранения поврежден» (#1 приоритет):**
-  - Запись и загрузка сейвов перенесены из сетевых колбэков в нативную очередь движка `BGSSaveLoadManager` (`SE 34859`).
-  - Добавлена полная двухкадровая очистка `BGSSaveLoadGame` от временных сетевых `0xFFxxxxxx`-акторов (`PurgeDynamicActorCleanly` + `UnsetChanged` + пропуск первых кадров `PlaceAtMe`), проверка заголовка `TESV_SAVEGAME` на диске с карантином битых `.ess`, нормализация имён слотов (без `.ess.ess`) и корректное отключение `[RFAB] Autosave.ini` (исправлен wildcard-баг квадратных скобок в PowerShell).
+- **Битые сохранения и ошибка «Файл сохранения поврежден и не может быть загружен.» (#1 приоритет):**
+  - Устранён критический конфликт `SSE Engine Fixes` v5.x/v6.x (`SaveGameMaxSize = true` при `MemoryManager = false`), из-за которого `Win32FileType` запрашивал `128 МБ` у ванильного `64 МБ` `ScrapHeap`, получал `nullptr`, обрезал `.ess` после RGBA-скриншота и выдавал *«Файл сохранения поврежден и не может быть загружен.»* даже в одиночной игре на `LVL 1`. Теперь `Launcher`, установщик и `Quick_Update` автоматически восстанавливают штатный `SaveGameMaxSize = false` во всех `EngineFixes.toml` до старта движка.
+  - Реализована полная бинарная валидация `.ess`-файлов по формату Skyrim SE v12 (`headerSize`, `ssWidth × ssHeight`, `compressionType`, `uncompressedLen` и `compressedLen`) с автоматическим карантином обрезанных сейвов (`Quarantined_Corrupt_v100`) как в `Documents\My Games\Skyrim Special Edition\Saves`, так и в `MO2\profiles\*\saves`.
+  - Перехват кооп-загрузки перенесён на внешний пролог `BGSSaveLoadManager` (`0x0058AE30` `HookLoadEntry`) с чтением имени выбранного слота из `BGSSaveLoadFileEntry`, благодаря чему выбор сохранения в `Esc → Загрузить` в коопе никогда не провоцирует ложное уведомление `sSaveGameCorrupt`.
+  - Запись и загрузка сейвов выполняются строго из очереди `BGSSaveLoadManager` (`SE 34859`) с двухкадровой очисткой временных сетевых `0xFFxxxxxx`-акторов (`PurgeDynamicActorCleanly` + `UnsetChanged`), нормализацией имён слотов (без `.ess.ess`), CRT `_setmaxstdio(8192)` и отключением `[RFAB] Autosave.ini`.
 - **Система ранения `Downed-on-Knee` и откат при вайпе группы:**
   - Устранён спам чисел урона/лечения на экране (`Actor::ForceActorValue` принимает целевое значение HP `1.0` / `targetHp`, а не дельту).
   - Перенаправление агро врагов с раненого союзника троттлится раз в `0.5 с` без спама системных сообщений; добавлено `15`-секундное окно защиты `ResetForWorldRollback` после вайпа и резервный поиск последнего валидного чекпоинта на диске.

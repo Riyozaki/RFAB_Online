@@ -715,8 +715,48 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
         {
             std::ofstream badEss(saveTmpDir / "BadSave.ess", std::ios::binary);
             badEss << "TRUNCATED";
-            std::vector<uint8_t> goodBytes(512, 0xAB);
-            std::memcpy(goodBytes.data(), "TESV_SAVEGAME", 13);
+
+            auto appendU16 = [](std::vector<uint8_t>& v, uint16_t x) {
+                v.push_back(static_cast<uint8_t>(x & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+            };
+            auto appendU32 = [](std::vector<uint8_t>& v, uint32_t x) {
+                v.push_back(static_cast<uint8_t>(x & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 16) & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 24) & 0xFFu));
+            };
+            auto appendStr16 = [&](std::vector<uint8_t>& v, std::string_view s) {
+                appendU16(v, static_cast<uint16_t>(s.size()));
+                v.insert(v.end(), s.begin(), s.end());
+            };
+
+            std::vector<uint8_t> hdr;
+            appendU32(hdr, 12u);
+            appendU32(hdr, 1u);
+            appendStr16(hdr, "Hero");
+            appendU32(hdr, 1u);
+            appendStr16(hdr, "Whiterun");
+            appendStr16(hdr, "000.01.00");
+            appendStr16(hdr, "NordRace");
+            appendU16(hdr, 0u);
+            appendU32(hdr, 0u);
+            appendU32(hdr, 0u);
+            appendU32(hdr, 0u);
+            appendU32(hdr, 0u);
+            appendU32(hdr, 4u);
+            appendU32(hdr, 4u);
+            appendU16(hdr, 2u); // LZ4
+
+            std::vector<uint8_t> goodBytes;
+            goodBytes.insert(goodBytes.end(), {'T','E','S','V','_','S','A','V','E','G','A','M','E'});
+            appendU32(goodBytes, static_cast<uint32_t>(hdr.size()));
+            goodBytes.insert(goodBytes.end(), hdr.begin(), hdr.end());
+            goodBytes.insert(goodBytes.end(), 4u * 4u * 4u, 0x22u);
+            appendU32(goodBytes, 2048u);
+            appendU32(goodBytes, 128u);
+            goodBytes.insert(goodBytes.end(), 128u, 0xABu);
+
             std::ofstream goodEss(saveTmpDir / "GoodSave.ess", std::ios::binary);
             goodEss.write(reinterpret_cast<const char*>(goodBytes.data()), static_cast<std::streamsize>(goodBytes.size()));
         }

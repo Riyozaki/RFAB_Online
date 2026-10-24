@@ -256,6 +256,12 @@ def main():
                 f"FATAL: {ps1_path} is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
             )
 
+    # Verify Setup-RfabOnline.ps1 enforces SaveGameMaxSize = false (never true alongside MemoryManager = false!)
+    setup_ps1_txt = open(os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1"), "r", encoding="utf-8-sig").read()
+    assert '@("SaveGameMaxSize", "false")' in setup_ps1_txt and '@("SaveGameMaxSize", "true")' not in setup_ps1_txt, (
+        "FATAL: Setup-RfabOnline.ps1 must enforce SaveGameMaxSize = false when MemoryManager = false!"
+    )
+
     notes_tpl = os.path.join(repo_root, r"Tools\rfab\RELEASE_NOTES_TEMPLATE.md")
     notes_txt = open(notes_tpl, "r", encoding="utf-8").read()
     assert "автономный релиз" in notes_txt and "Единство в битве" in notes_txt and "Только Хост" in notes_txt, (

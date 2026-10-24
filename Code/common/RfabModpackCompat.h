@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -182,7 +183,8 @@ inline std::string NormalizeSaveSlotStem(std::string_view aRawPathOrName)
     return ToLowerAscii(StripSaveSlotExtensionPreserveCase(aRawPathOrName));
 }
 
-// Verifies that an `.ess` file on disk has a genuine Skyrim `TESV_SAVEGAME` header and non-truncated payload.
+// Verifies that an `.ess` file on disk has a genuine Skyrim `TESV_SAVEGAME` header, intact screenshot,
+// and complete non-truncated payload (catching 0-byte, header-only, screenshot-only, and ScrapHeap-failed saves).
 inline bool IsValidEssFileOnDisk(const std::filesystem::path& acEssPath) noexcept
 {
     constexpr std::string_view kMagic = "TESV_SAVEGAME";
@@ -190,7 +192,7 @@ inline bool IsValidEssFileOnDisk(const std::filesystem::path& acEssPath) noexcep
     if (!std::filesystem::exists(acEssPath, ec) || !std::filesystem::is_regular_file(acEssPath, ec))
         return false;
 
-    const auto fileSize = std::filesystem::file_size(acEssPath, ec);
+    const uint64_t fileSize = std::filesystem::file_size(acEssPath, ec);
     if (ec || fileSize < 256)
         return false;
 
@@ -198,15 +200,125 @@ inline bool IsValidEssFileOnDisk(const std::filesystem::path& acEssPath) noexcep
     if (!ifs.is_open())
         return false;
 
-    char magicBuf[13]{};
-    ifs.read(magicBuf, static_cast<std::streamsize>(sizeof(magicBuf)));
-    if (ifs.gcount() != static_cast<std::streamsize>(sizeof(magicBuf)))
+    uint8_t prefix[17]{};
+    ifs.read(reinterpret_cast<char*>(prefix), static_cast<std::streamsize>(sizeof(prefix)));
+    if (ifs.gcount() != static_cast<std::streamsize>(sizeof(prefix)))
         return false;
 
-    return std::string_view(magicBuf, sizeof(magicBuf)) == kMagic;
+    if (std::string_view(reinterpret_cast<const char*>(prefix), 13) != kMagic)
+        return false;
+
+    auto readU16Le = [](const uint8_t* p) noexcept -> uint16_t
+    {
+        return static_cast<uint16_t>(static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8));
+    };
+    auto readU32Le = [](const uint8_t* p) noexcept -> uint32_t
+    {
+        return static_cast<uint32_t>(p[0]) |
+               (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) |
+               (static_cast<uint32_t>(p[3]) << 24);
+    };
+
+    const uint32_t headerSize = readU32Le(prefix + 13);
+    if (headerSize < 36 || headerSize > 65536 || (17ULL + headerSize) >= fileSize)
+        return false;
+
+    std::vector<uint8_t> hdr(headerSize);
+    ifs.read(reinterpret_cast<char*>(hdr.data()), static_cast<std::streamsize>(headerSize));
+    if (ifs.gcount() != static_cast<std::streamsize>(headerSize))
+        return false;
+
+    size_t pos = 0;
+    auto skipBytes = [&](size_t n) noexcept -> bool
+    {
+        if (pos + n > hdr.size())
+            return false;
+        pos += n;
+        return true;
+    };
+    auto skipStr16 = [&]() noexcept -> bool
+    {
+        if (pos + 2 > hdr.size())
+            return false;
+        const uint16_t len = readU16Le(hdr.data() + pos);
+        pos += 2;
+        return skipBytes(len);
+    };
+
+    if (hdr.size() < 8)
+        return false;
+    const uint32_t version = readU32Le(hdr.data());
+    if (version < 7 || version > 15)
+        return false;
+
+    pos = 8; // version (4) + saveNumber (4)
+    if (!skipStr16()) // playerName
+        return false;
+    if (!skipBytes(4)) // playerLevel
+        return false;
+    if (!skipStr16() || !skipStr16() || !skipStr16()) // playerLocation, gameDate, playerRaceEditorId
+        return false;
+    if (!skipBytes(2 + 4 + 4 + 8)) // playerSex (2) + curExp (4) + lvlExp (4) + filetime (8)
+        return false;
+
+    if (pos + 8 > hdr.size())
+        return false;
+    const uint32_t ssWidth = readU32Le(hdr.data() + pos);
+    const uint32_t ssHeight = readU32Le(hdr.data() + pos + 4);
+    pos += 8;
+
+    if (ssWidth > 16384 || ssHeight > 16384)
+        return false;
+
+    uint16_t compressionType = 0;
+    if (version >= 12)
+    {
+        if (pos + 2 > hdr.size())
+            return false;
+        compressionType = readU16Le(hdr.data() + pos);
+        pos += 2;
+        if (compressionType > 2)
+            return false;
+    }
+
+    if (pos != hdr.size())
+        return false;
+
+    const uint64_t bpp = (version >= 12) ? 4ULL : 3ULL;
+    const uint64_t screenshotBytes = bpp * static_cast<uint64_t>(ssWidth) * static_cast<uint64_t>(ssHeight);
+    const uint64_t bodyOffset = 17ULL + static_cast<uint64_t>(headerSize) + screenshotBytes;
+    if (fileSize <= bodyOffset + 16ULL)
+        return false;
+
+    if (version >= 12 && compressionType != 0)
+    {
+        ifs.seekg(static_cast<std::streamoff>(bodyOffset), std::ios::beg);
+        if (!ifs.good())
+            return false;
+
+        uint8_t sizesBuf[8]{};
+        ifs.read(reinterpret_cast<char*>(sizesBuf), static_cast<std::streamsize>(sizeof(sizesBuf)));
+        if (ifs.gcount() != static_cast<std::streamsize>(sizeof(sizesBuf)))
+            return false;
+
+        const uint32_t uncompressedLen = readU32Le(sizesBuf);
+        const uint32_t compressedLen = readU32Le(sizesBuf + 4);
+        if (uncompressedLen < 64 || compressedLen < 16)
+            return false;
+
+        if (bodyOffset + 8ULL + static_cast<uint64_t>(compressedLen) > fileSize)
+            return false;
+    }
+    else if (fileSize < bodyOffset + 64ULL)
+    {
+        return false;
+    }
+
+    return true;
 }
 
-// Safely moves truncated / headerless `.ess` files left behind by mid-save aborts into `Quarantined_Corrupt_v100/`
+// Safely moves truncated / headerless / ScrapHeap-aborted `.ess` files into `_RFAB_CorruptQuarantine/`
 // alongside any matching `.skse` or `.ess.tmp` companion files (never deleting user files without backup).
 inline size_t QuarantineCorruptEssFilesInDirectory(const std::filesystem::path& acSavesDir) noexcept
 {
@@ -225,11 +337,9 @@ inline size_t QuarantineCorruptEssFilesInDirectory(const std::filesystem::path& 
         {
             corruptEssFiles.push_back(entry.path());
         }
-        else if (EndsWithIgnoreCase(fname, ".ess.tmp"))
+        else if (EndsWithIgnoreCase(fname, ".ess.tmp") && !IsValidEssFileOnDisk(entry.path()))
         {
-            const auto sz = std::filesystem::file_size(entry.path(), ec);
-            if (!ec && sz < 256)
-                corruptEssFiles.push_back(entry.path());
+            corruptEssFiles.push_back(entry.path());
         }
     }
 
@@ -804,6 +914,8 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     {
         patchKey("bMemoryManager", "false");
         patchKey("bScaleformAllocator", "false");
+        patchKey("bOverrideScrapHeap", "false");
+        patchKey("iSaveGameMaxSize", "64");
         patchKey("bRegularQuicksaves", "true");
         patchKey("iMaxStdio", "8192");
     }
@@ -811,6 +923,7 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     {
         const bool hasOvVanilla = patchKey("OverrideVanilla", "false");
         const bool hasOvScaleform = patchKey("OverrideScaleform", "false");
+        patchKey("OverrideScrapHeap", "false");
         std::vector<std::pair<std::string_view, std::string_view>> missingMm;
         if (!hasOvVanilla)
             missingMm.emplace_back("OverrideVanilla", "false");
@@ -827,11 +940,17 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
             changed = true;
         }
 
+        // CRITICAL: In SSE Engine Fixes v5.x / v6.0.2 (used by Skyrim SE 1.5.97 & drake1ch/RFAB),
+        // `PatchSaveGameMaxSize()` lacks v7's `if (!bOverrideScrapHeap) return;` guard: when
+        // `SaveGameMaxSize = true` and `MemoryManager = false`, it patches `Win32FileType` to request
+        // 128 MB (`0x08000000`) from vanilla's 64 MB (`0x04000000`) `ScrapHeap`, causing
+        // `ScrapHeap::Allocate` to return `nullptr` and corrupting saves/loads (`sSaveGameCorrupt`).
+        // Always keep `SaveGameMaxSize = false` (matching upstream drake1ch/RFAB) whenever `MemoryManager = false`.
         const bool hasMemMgr = patchKey("MemoryManager", "false");
         const bool hasScaleform = patchKey("ScaleformAllocator", "false");
         const bool hasQuicksaves = patchKey("RegularQuicksaves", "true");
         const bool hasMaxStdio = patchKey("MaxStdio", "8192");
-        const bool hasSaveMax = patchKey("SaveGameMaxSize", "true");
+        const bool hasSaveMax = patchKey("SaveGameMaxSize", "false");
 
         // Ensure partial MO2 overrides (e.g. "Disable Quick Saves/skse/plugins/EngineFixes.toml")
         // contain all required [Patches] keys inside [Patches] itself for SSE Engine Fixes v5/v6 (SE 1.5.97)!
@@ -847,7 +966,7 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
         insertUnderSection("Patches", missingPatches);
 
         if (!hasSaveMax)
-            insertUnderSection("Experimental", {{"SaveGameMaxSize", "true"}});
+            insertUnderSection("Experimental", {{"SaveGameMaxSize", "false"}});
     }
 
     return changed;
@@ -1004,6 +1123,18 @@ inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acG
         const auto overwriteDir = mo2Root / "overwrite";
         if (std::filesystem::exists(overwriteDir, ec) && std::filesystem::is_directory(overwriteDir, ec))
             scanPluginTree(overwriteDir);
+
+        const auto profilesDir = mo2Root / "profiles";
+        if (std::filesystem::exists(profilesDir, ec) && std::filesystem::is_directory(profilesDir, ec))
+        {
+            for (const auto& profEntry : std::filesystem::directory_iterator(profilesDir, ec))
+            {
+                if (!ec && profEntry.is_directory(ec))
+                {
+                    Detail::QuarantineCorruptEssFilesInDirectory(profEntry.path() / "saves");
+                }
+            }
+        }
 
         const auto modsDir = mo2Root / "mods";
         if (!std::filesystem::exists(modsDir, ec) || !std::filesystem::is_directory(modsDir, ec))

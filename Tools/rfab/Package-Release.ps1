@@ -168,7 +168,11 @@ Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleAp
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online_MO2\STALE_LEGACY_DIR.txt"), "must be wiped")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n")
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n[Experimental]`r`nSaveGameMaxSize = true`r`n")
+New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\profiles\RFAB\saves") -Force | Out-Null
+$MockTruncEss = New-Object byte[] 512
+[System.Text.Encoding]::ASCII.GetBytes("TESV_SAVEGAME").CopyTo($MockTruncEss, 0)
+[System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.ess"), $MockTruncEss)
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnable autosave = 1`r`nSave after combat = 1`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll"), "stub")
@@ -197,6 +201,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "RFAB_Online_Server\Skyrim
 }
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "START_RFAB_SERVER.bat"))) {
     throw "START_RFAB_SERVER.bat missing in <RfabDir>!"
+}
+$patchedEf = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"))
+if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false') {
+    throw "EngineFixes.toml was not healed to MemoryManager = false & SaveGameMaxSize = false!"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\profiles\RFAB\saves\Quarantined_Corrupt_v100\TruncatedScrapHeap.ess"))) {
+    throw "TruncatedScrapHeap.ess was not quarantined during Setup-RfabOnline.ps1!"
 }
 $patchedAutosave = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"))
 if ($patchedAutosave -notmatch 'Save after combat\s*=\s*0') {
@@ -307,6 +318,15 @@ if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
     Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath (Join-Path $SrcDir "UI") -Destination (Join-Path $ClientDst "UI") -Recurse -Force
 }
+Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $rawEf = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $updEf = [regex]::Replace($rawEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
+    foreach ($pair in @(@("MemoryManager","false"),@("ScaleformAllocator","false"),@("RegularQuicksaves","true"),@("MaxStdio","8192"),@("SaveGameMaxSize","false"))) {
+        $k = $pair[0]; $v = $pair[1]
+        $updEf = [regex]::Replace($updEf, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}$v`${3}")
+    }
+    if ($updEf -ne $rawEf) { [System.IO.File]::WriteAllText($_.FullName, $updEf, (New-Object System.Text.UTF8Encoding($false))) }
+}
 Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "[RFAB] Autosave.ini" } | ForEach-Object {
     $rawAs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
     $updAs = $rawAs
@@ -315,7 +335,88 @@ Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "*Autosave.ini" -
     }
     if ($updAs -ne $rawAs) { [System.IO.File]::WriteAllText($_.FullName, $updAs, (New-Object System.Text.UTF8Encoding($false))) }
 }
-Write-Host "  [OK] Updated Client + ESP + Scripts + Russian UI -> $ClientDst" -ForegroundColor Green
+
+function Test-ValidSkyrimEssQuick([string]$EssPath) {
+    try {
+        $fi = New-Object System.IO.FileInfo($EssPath)
+        if (-not $fi.Exists -or $fi.Length -lt 256) { return $false }
+        $fs = [System.IO.File]::Open($EssPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $br = New-Object System.IO.BinaryReader($fs)
+            if ([System.Text.Encoding]::ASCII.GetString($br.ReadBytes(13)) -cne "TESV_SAVEGAME") { return $false }
+            $hdrSize = [uint32]$br.ReadUInt32()
+            if ($hdrSize -lt 36 -or $hdrSize -gt 65536 -or ([int64]17 + [int64]$hdrSize) -ge $fi.Length) { return $false }
+            $hdr = $br.ReadBytes([int]$hdrSize)
+            if ($hdr.Length -ne [int]$hdrSize) { return $false }
+            $ver = [System.BitConverter]::ToUInt32($hdr, 0)
+            if ($ver -lt 7 -or $ver -gt 15) { return $false }
+            $pos = 8
+            for ($s = 0; $s -lt 4; $s++) {
+                if ($pos + 2 -gt $hdr.Length) { return $false }
+                $pos += 2 + [int][System.BitConverter]::ToUInt16($hdr, $pos)
+                if ($pos -gt $hdr.Length) { return $false }
+                if ($s -eq 0) { $pos += 4; if ($pos -gt $hdr.Length) { return $false } }
+            }
+            $pos += 18
+            if ($pos + 8 -gt $hdr.Length) { return $false }
+            $ssW = [int64][System.BitConverter]::ToUInt32($hdr, $pos)
+            $ssH = [int64][System.BitConverter]::ToUInt32($hdr, $pos + 4)
+            $pos += 8
+            if ($ssW -gt 16384 -or $ssH -gt 16384) { return $false }
+            $compType = [uint16]0
+            if ($ver -ge 12) {
+                if ($pos + 2 -gt $hdr.Length) { return $false }
+                $compType = [System.BitConverter]::ToUInt16($hdr, $pos); $pos += 2
+                if ($compType -gt 2) { return $false }
+            }
+            if ($pos -ne $hdr.Length) { return $false }
+            $bpp = if ($ver -ge 12) { [int64]4 } else { [int64]3 }
+            $bodyOff = [int64]17 + [int64]$hdrSize + ($bpp * $ssW * $ssH)
+            if ($fi.Length -le ($bodyOff + 16)) { return $false }
+            if ($ver -ge 12 -and $compType -ne 0) {
+                [void]$fs.Seek($bodyOff, [System.IO.SeekOrigin]::Begin)
+                $uncompLen = [int64]$br.ReadUInt32(); $compLen = [int64]$br.ReadUInt32()
+                if ($uncompLen -lt 64 -or $compLen -lt 16 -or ($bodyOff + 8 + $compLen) -gt $fi.Length) { return $false }
+            } elseif ($fi.Length -lt ($bodyOff + 64)) { return $false }
+            return $true
+        } finally { $fs.Dispose() }
+    } catch { return $false }
+}
+
+$DocsSaves = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\Saves"
+$SaveDirsToScan = New-Object System.Collections.Generic.List[string]
+if (Test-Path -LiteralPath $DocsSaves) {
+    $SaveDirsToScan.Add($DocsSaves)
+    Get-ChildItem -LiteralPath $DocsSaves -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -ine "Quarantined_Corrupt_v100" -and $_.Name -ine "_RFAB_CorruptQuarantine"
+    } | ForEach-Object { $SaveDirsToScan.Add($_.FullName) }
+}
+if (Test-Path -LiteralPath (Join-Path $GameRoot "MO2\profiles")) {
+    Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2\profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $ps = Join-Path $_.FullName "saves"
+        if (Test-Path -LiteralPath $ps) { $SaveDirsToScan.Add($ps) }
+    }
+}
+$QuarantinedQuick = 0
+foreach ($sDir in ($SaveDirsToScan | Select-Object -Unique)) {
+    $qDir = Join-Path $sDir "Quarantined_Corrupt_v100"
+    Get-ChildItem -LiteralPath $sDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if (($_.Name.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase) -or $_.Name.EndsWith(".ess.tmp", [System.StringComparison]::OrdinalIgnoreCase)) -and
+            (-not (Test-ValidSkyrimEssQuick $_.FullName))) {
+            New-Item -ItemType Directory -Path $qDir -Force | Out-Null
+            Move-Item -LiteralPath $_.FullName -Destination (Join-Path $qDir $_.Name) -Force -ErrorAction SilentlyContinue
+            $QuarantinedQuick++
+            if ($_.Name.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $sk = [System.IO.Path]::ChangeExtension($_.FullName, ".skse")
+                if (Test-Path -LiteralPath $sk) { Move-Item -LiteralPath $sk -Destination (Join-Path $qDir ([System.IO.Path]::GetFileName($sk))) -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+}
+if ($QuarantinedQuick -gt 0) {
+    Write-Host "  [OK] Quarantined $QuarantinedQuick corrupt/truncated .ess save(s) into Quarantined_Corrupt_v100" -ForegroundColor Yellow
+}
+Write-Host "  [OK] Updated Client + ESP + Scripts + EngineFixes + Russian UI -> $ClientDst" -ForegroundColor Green
 
 $SrvCandidates = @(
     (Join-Path $GameRoot "RFAB_Online_Server"),

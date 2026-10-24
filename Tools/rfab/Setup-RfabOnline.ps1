@@ -874,8 +874,11 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
         )
     }
     $updated = [regex]::Replace($updated, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
+    # CRITICAL: EngineFixes v5/v6 PatchSaveGameMaxSize() lacks v7's MemoryManager/ScrapHeap guard!
+    # Setting SaveGameMaxSize = true while MemoryManager = false forces Win32FileType to allocate 128 MB
+    # from vanilla's 64 MB ScrapHeap -> nullptr -> truncated saves & "Файл сохранения поврежден"!
     $updated = Ensure-SectionKeys $updated "Experimental" @(
-        @("SaveGameMaxSize", "true")
+        @("SaveGameMaxSize", "false")
     )
     if ($updated -ne $raw) {
         Backup-Once $ef.FullName
@@ -884,6 +887,117 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
     } else {
         Write-Ok "EngineFixes.toml проверен: $($ef.FullName)"
     }
+}
+
+function Test-ValidSkyrimEssFile([string]$EssPath) {
+    try {
+        $fi = New-Object System.IO.FileInfo($EssPath)
+        if (-not $fi.Exists -or $fi.Length -lt 256) { return $false }
+        $fs = [System.IO.File]::Open($EssPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $br = New-Object System.IO.BinaryReader($fs)
+            $magic = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(13))
+            if ($magic -cne "TESV_SAVEGAME") { return $false }
+            $hdrSize = [uint32]$br.ReadUInt32()
+            if ($hdrSize -lt 36 -or $hdrSize -gt 65536 -or ([int64]17 + [int64]$hdrSize) -ge $fi.Length) { return $false }
+            $hdr = $br.ReadBytes([int]$hdrSize)
+            if ($hdr.Length -ne [int]$hdrSize) { return $false }
+            $pos = 0
+            $ver = [System.BitConverter]::ToUInt32($hdr, 0)
+            if ($ver -lt 7 -or $ver -gt 15) { return $false }
+            $pos = 8
+            for ($s = 0; $s -lt 4; $s++) {
+                if ($pos + 2 -gt $hdr.Length) { return $false }
+                $sLen = [int][System.BitConverter]::ToUInt16($hdr, $pos)
+                $pos += 2 + $sLen
+                if ($pos -gt $hdr.Length) { return $false }
+                if ($s -eq 0) {
+                    $pos += 4
+                    if ($pos -gt $hdr.Length) { return $false }
+                }
+            }
+            $pos += 18
+            if ($pos + 8 -gt $hdr.Length) { return $false }
+            $ssW = [int64][System.BitConverter]::ToUInt32($hdr, $pos)
+            $ssH = [int64][System.BitConverter]::ToUInt32($hdr, $pos + 4)
+            $pos += 8
+            if ($ssW -gt 16384 -or $ssH -gt 16384) { return $false }
+            $compType = [uint16]0
+            if ($ver -ge 12) {
+                if ($pos + 2 -gt $hdr.Length) { return $false }
+                $compType = [System.BitConverter]::ToUInt16($hdr, $pos)
+                $pos += 2
+                if ($compType -gt 2) { return $false }
+            }
+            if ($pos -ne $hdr.Length) { return $false }
+            $bpp = if ($ver -ge 12) { [int64]4 } else { [int64]3 }
+            $bodyOff = [int64]17 + [int64]$hdrSize + ($bpp * $ssW * $ssH)
+            if ($fi.Length -le ($bodyOff + 16)) { return $false }
+            if ($ver -ge 12 -and $compType -ne 0) {
+                [void]$fs.Seek($bodyOff, [System.IO.SeekOrigin]::Begin)
+                $uncompLen = [int64]$br.ReadUInt32()
+                $compLen = [int64]$br.ReadUInt32()
+                if ($uncompLen -lt 64 -or $compLen -lt 16) { return $false }
+                if (($bodyOff + 8 + $compLen) -gt $fi.Length) { return $false }
+            } elseif ($fi.Length -lt ($bodyOff + 64)) {
+                return $false
+            }
+            return $true
+        } finally {
+            $fs.Dispose()
+        }
+    } catch {
+        return $false
+    }
+}
+
+function Quarantine-CorruptSavesInDir([string]$SavesDir) {
+    if ([string]::IsNullOrWhiteSpace($SavesDir) -or -not (Test-Path -LiteralPath $SavesDir)) { return 0 }
+    $moved = 0
+    $qDir = Join-Path $SavesDir "Quarantined_Corrupt_v100"
+    Get-ChildItem -LiteralPath $SavesDir -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $n = $_.Name
+        $isBad = $false
+        if ($n.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $n.EndsWith(".ess.tmp", [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (-not (Test-ValidSkyrimEssFile $_.FullName)) { $isBad = $true }
+        }
+        if ($isBad) {
+            New-Item -ItemType Directory -Path $qDir -Force | Out-Null
+            $dst = Join-Path $qDir $n
+            Move-Item -LiteralPath $_.FullName -Destination $dst -Force -ErrorAction SilentlyContinue
+            $moved++
+            if ($n.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase)) {
+                $sksePath = [System.IO.Path]::ChangeExtension($_.FullName, ".skse")
+                if (Test-Path -LiteralPath $sksePath) {
+                    Move-Item -LiteralPath $sksePath -Destination (Join-Path $qDir ([System.IO.Path]::GetFileName($sksePath))) -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+    return $moved
+}
+
+$TotalQuarantinedSaves = 0
+$DocsSavesRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\Saves"
+$CandidateSaveDirs = New-Object System.Collections.Generic.List[string]
+if (Test-Path -LiteralPath $DocsSavesRoot) {
+    $CandidateSaveDirs.Add($DocsSavesRoot)
+    Get-ChildItem -LiteralPath $DocsSavesRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -ine "Quarantined_Corrupt_v100" -and $_.Name -ine "_RFAB_CorruptQuarantine"
+    } | ForEach-Object { $CandidateSaveDirs.Add($_.FullName) }
+}
+if (Test-Path -LiteralPath (Join-Path $Mo2Dir "profiles")) {
+    Get-ChildItem -LiteralPath (Join-Path $Mo2Dir "profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+        $profSaves = Join-Path $_.FullName "saves"
+        if (Test-Path -LiteralPath $profSaves) { $CandidateSaveDirs.Add($profSaves) }
+    }
+}
+foreach ($sd in ($CandidateSaveDirs | Select-Object -Unique)) {
+    $TotalQuarantinedSaves += (Quarantine-CorruptSavesInDir $sd)
+}
+if ($TotalQuarantinedSaves -gt 0) {
+    Write-Ok "Перемещено повреждённых/обрезанных .ess сохранений в карантин Quarantined_Corrupt_v100: $TotalQuarantinedSaves"
 }
 
 $SkyrimSoulsFiles = foreach ($cr in $CompatRoots) {

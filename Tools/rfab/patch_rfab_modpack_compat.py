@@ -109,7 +109,9 @@ def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
     diffs.extend(d)
 
     cur = re.sub(r"^\s*\[SaveGameMaxSize\]\s*$", "[Experimental]", cur, flags=re.MULTILINE | re.IGNORECASE)
-    cur, d = ensure_section_keys(cur, "Experimental", [("SaveGameMaxSize", "true")])
+    # CRITICAL: EngineFixes v5/v6 PatchSaveGameMaxSize() has no MemoryManager check and sets Win32FileType
+    # buffer size to 128 MB while vanilla ScrapHeap stays 64 MB -> ScrapHeap::Allocate returns nullptr -> sSaveGameCorrupt!
+    cur, d = ensure_section_keys(cur, "Experimental", [("SaveGameMaxSize", "false")])
     diffs.extend(d)
     return cur, diffs
 

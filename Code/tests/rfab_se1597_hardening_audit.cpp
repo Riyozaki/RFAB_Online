@@ -70,13 +70,15 @@ int main()
             "MaxStdio = 2048\r\n"
             "MemoryManager = true\r\n"
             "ScaleformAllocator = true\r\n"
-            "RegularQuicksaves = false\r\n";
+            "RegularQuicksaves = false\r\n"
+            "[Experimental]\r\n"
+            "SaveGameMaxSize = true\r\n";
         assert(RfabCompat::PatchEngineFixesTomlContent(v5Toml));
         assert(v5Toml.find("MemoryManager = false") != std::string::npos);
         assert(v5Toml.find("ScaleformAllocator = false") != std::string::npos);
         assert(v5Toml.find("RegularQuicksaves = true") != std::string::npos);
         assert(v5Toml.find("MaxStdio = 8192") != std::string::npos);
-        assert(v5Toml.find("SaveGameMaxSize = true") != std::string::npos);
+        assert(v5Toml.find("SaveGameMaxSize = false") != std::string::npos);
         assert(!RfabCompat::PatchEngineFixesTomlContent(v5Toml));
 
         std::string partialOverride = "[Patches]\r\nRegularQuicksaves = false\r\n";
@@ -245,16 +247,74 @@ int main()
         }
         assert(!RfabCompat::Detail::IsValidEssFileOnDisk(truncatedEss));
 
-        // Construct valid SE 1.5.97 v12 TESV_SAVEGAME header + payload
+        auto buildMockSe12Ess = [](uint32_t ssW, uint32_t ssH, uint16_t compType, uint32_t uncompLen, uint32_t compLen, size_t actualBodyBytes) -> std::vector<uint8_t>
+        {
+            auto appendU16 = [](std::vector<uint8_t>& v, uint16_t x) {
+                v.push_back(static_cast<uint8_t>(x & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+            };
+            auto appendU32 = [](std::vector<uint8_t>& v, uint32_t x) {
+                v.push_back(static_cast<uint8_t>(x & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 16) & 0xFFu));
+                v.push_back(static_cast<uint8_t>((x >> 24) & 0xFFu));
+            };
+            auto appendStr16 = [&](std::vector<uint8_t>& v, std::string_view s) {
+                appendU16(v, static_cast<uint16_t>(s.size()));
+                v.insert(v.end(), s.begin(), s.end());
+            };
+
+            std::vector<uint8_t> hdr;
+            appendU32(hdr, 12u); // Skyrim SE version 12
+            appendU32(hdr, 1u);  // saveNumber
+            appendStr16(hdr, "Dovakin");
+            appendU32(hdr, 1u);  // playerLevel
+            appendStr16(hdr, "Winterhold");
+            appendStr16(hdr, "000.01.00");
+            appendStr16(hdr, "NordRace");
+            appendU16(hdr, 0u);  // playerSex
+            appendU32(hdr, 0u);  // curExp
+            appendU32(hdr, 0u);  // lvlExp
+            appendU32(hdr, 0u);  // filetime low
+            appendU32(hdr, 0u);  // filetime high
+            appendU32(hdr, ssW);
+            appendU32(hdr, ssH);
+            appendU16(hdr, compType);
+
+            std::vector<uint8_t> out;
+            out.insert(out.end(), {'T','E','S','V','_','S','A','V','E','G','A','M','E'});
+            appendU32(out, static_cast<uint32_t>(hdr.size()));
+            out.insert(out.end(), hdr.begin(), hdr.end());
+            out.insert(out.end(), static_cast<size_t>(4u) * ssW * ssH, 0x33u); // RGBA screenshot
+            if (compType != 0)
+            {
+                appendU32(out, uncompLen);
+                appendU32(out, compLen);
+            }
+            out.insert(out.end(), actualBodyBytes, 0x5Au);
+            return out;
+        };
+
+        // Regression test for EngineFixes v5/v6 SaveGameMaxSize=true + MemoryManager=false ScrapHeap failure:
+        // Header + RGBA screenshot written (>256 bytes, starts with TESV_SAVEGAME), 0 compressed body bytes!
+        const fs::path scrapHeapAbortedEss = saveTmpDir / "ScrapHeapAborted.ess";
+        {
+            auto abortedBytes = buildMockSe12Ess(16, 16, 2, 0, 0, 0);
+            abortedBytes.resize(abortedBytes.size() - 8); // stopped right after RGBA screenshot!
+            std::ofstream f(scrapHeapAbortedEss, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(abortedBytes.data()), static_cast<std::streamsize>(abortedBytes.size()));
+        }
+        assert(!RfabCompat::Detail::IsValidEssFileOnDisk(scrapHeapAbortedEss));
+
+        // Construct valid SE 1.5.97 v12 LZ4 TESV_SAVEGAME header + RGBA screenshot + compressed payload
         const fs::path validEss = saveTmpDir / "RFAB_MP_S1_Manual_0.ess";
         {
-            std::vector<uint8_t> bytes(512, 0xAB);
-            std::memcpy(bytes.data(), "TESV_SAVEGAME", 13);
+            const auto bytes = buildMockSe12Ess(8, 8, 2, 4096, 256, 256);
             std::ofstream f(validEss, std::ios::binary);
             f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         }
         assert(RfabCompat::Detail::IsValidEssFileOnDisk(validEss));
-        assert(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 1); // quarantines TruncatedHeader.ess only
+        assert(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 2); // quarantines TruncatedHeader.ess + ScrapHeapAborted.ess
         assert(fs::exists(validEss));
         fs::remove_all(saveTmpDir);
 
@@ -321,6 +381,7 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
     REQUIRE(partialOverride.find("RegularQuicksaves = true") != std::string::npos);
     REQUIRE(partialOverride.find("MaxStdio = 8192") != std::string::npos);
     REQUIRE(partialOverride.find("[Experimental]") != std::string::npos);
+    REQUIRE(partialOverride.find("SaveGameMaxSize = false") != std::string::npos);
     REQUIRE(partialOverride.find("[SaveGameMaxSize]") == std::string::npos);
     REQUIRE_FALSE(RfabCompat::PatchEngineFixesTomlContent(partialOverride));
 

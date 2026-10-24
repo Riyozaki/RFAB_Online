@@ -24,6 +24,7 @@ TP_THIS_FUNCTION(TLoadImpl, bool, BGSSaveLoadManager, const char* acpFileName, i
 TP_THIS_FUNCTION(TLoadMostRecent, bool, BGSSaveLoadManager);
 TP_THIS_FUNCTION(TQueueSaveLoadTask, void, BGSSaveLoadManager, uint32_t aTaskMask);
 TP_THIS_FUNCTION(TProcessEvents, void, BGSSaveLoadManager);
+TP_THIS_FUNCTION(TLoadEntry, bool, BGSSaveLoadManager, void* apFileEntry, uint64_t aArg2, uint64_t aArg3, uint64_t aArg4, uint64_t aArg5);
 TP_THIS_FUNCTION(TLoadGameCallSite, bool, BGSSaveLoadManager, uint64_t* apUnk0, uint32_t aUnk1, uint32_t aUnk2, void* apUnk3);
 
 TSaveImpl* RealSaveImpl = nullptr;
@@ -32,26 +33,74 @@ TLoadImpl* RealLoadImpl = nullptr;
 TLoadMostRecent* RealLoadMostRecent = nullptr;
 TQueueSaveLoadTask* RealQueueSaveLoadTask = nullptr;
 TProcessEvents* RealProcessEvents = nullptr;
+TLoadEntry* RealLoadEntry = nullptr;
 TLoadGameCallSite* RealLoadCallSite = nullptr;
 
 std::atomic<bool> s_universalHooksInstalled{false};
 std::atomic<bool> s_quarantinedOnce{false};
 thread_local bool s_inDirectProcessEventsSave = false;
 
-// Exact Skyrim SE 1.5.97.0.8 call-site offset verified verbatim against ianpatt/skse64 tag v2.0.20
+// Exact Skyrim SE 1.5.97.0.8 function & call-site offsets verified verbatim against ianpatt/skse64 tag v2.0.20
 // (skse64/Hooks_SaveLoad.cpp line 129: LoadGame_HookTarget_Enter = 0x0058AE30 + 0x26C).
-// Note: SaveGame_HookTarget_Enter (0x00586DE0 + 0x18B) and SaveGame2_HookTarget_Enter (0x005875F0 + 0x138)
-// MUST NEVER be aborted mid-function because BGSSaveLoadManager has already created/truncated the .ess file
-// on disk before reaching those inner call sites! All save gating happens strictly at the outer entry points
-// (34859 QueueSaveLoadTask, 34818 Save_Impl, 34823 SaveGame2) BEFORE any .ess file is opened.
+// CRITICAL:
+// 1. SaveGame_HookTarget_Enter (0x00586DE0 + 0x18B) and SaveGame2_HookTarget_Enter (0x005875F0 + 0x138)
+//    MUST NEVER be aborted mid-function because BGSSaveLoadManager has already created/truncated the .ess file
+//    on disk before reaching those inner call sites!
+// 2. Likewise, LoadGame_HookTarget_Enter (0x0058AE30 + 0x26C) MUST NEVER return a synthetic `false` to block
+//    co-op loads, because 0x0058AE30 interprets `false` from +0x26C (`BGSSaveLoadGame::LoadGame`) as `.ess`
+//    corruption and displays HUD `sSaveGameCorrupt` ("Файл сохранения поврежден и не может быть загружен.")!
+//    All load gating happens at the outer function prologues (`34859`, `34819`, `34856`, and `0x0058AE30`)
+//    BEFORE entering 0x0058AE30's body, while +0x26C strictly runs `PrepareEngineForWorldLoad` on authorized loads.
+constexpr uintptr_t kSe1597LoadEntryFuncRva = 0x0058AE30;
 constexpr uintptr_t kSe1597LoadCallSiteRva = 0x0058AE30 + 0x26C;
+
+bool IsReadableMemoryRange(const void* apAddr, size_t aBytes) noexcept
+{
+#ifdef _WIN32
+    if (!apAddr || aBytes == 0)
+        return false;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(apAddr, &mbi, sizeof(mbi)))
+        return false;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+        return false;
+    const uintptr_t start = reinterpret_cast<uintptr_t>(apAddr);
+    const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    return start <= regionEnd && (regionEnd - start) >= aBytes;
+#else
+    (void)apAddr;
+    (void)aBytes;
+    return false;
+#endif
+}
+
+const char* ExtractSaveNameFromFileEntry(const void* apFileEntry) noexcept
+{
+    // RE::BGSSaveLoadFileEntry stores `BSFixedString fileName` at offset +0x00.
+    if (!IsReadableMemoryRange(apFileEntry, sizeof(const char*)))
+        return "";
+    const char* candidate = *reinterpret_cast<const char* const*>(apFileEntry);
+    if (!IsReadableMemoryRange(candidate, 16))
+        return "";
+    const auto firstByte = static_cast<unsigned char>(candidate[0]);
+    if (firstByte < 0x20 || firstByte == 0x7F)
+        return "";
+    for (size_t i = 0; i < 260; ++i)
+    {
+        if (!IsReadableMemoryRange(candidate + i, 1))
+            return "";
+        if (candidate[i] == '\0')
+            return candidate;
+    }
+    return "";
+}
 
 const char* ExtractSaveNameFromContext(uint64_t* apUnk0) noexcept
 {
-    if (!apUnk0)
+    if (!IsReadableMemoryRange(apUnk0, 0xBB0 + sizeof(const char*)))
         return "";
     const char* name = reinterpret_cast<const char*>(apUnk0[0xBB0 / 8]);
-    return name ? name : "";
+    return IsReadableMemoryRange(name, 1) ? name : "";
 }
 
 template <typename TFn>
@@ -112,15 +161,27 @@ bool PatchRelativeCallSite(uintptr_t aCallSiteAddr, void* apDetourFn, TFn** appO
 #endif
 }
 
-bool TP_MAKE_THISCALL(HookLoadCallSite, BGSSaveLoadManager, uint64_t* apUnk0, uint32_t aUnk1, uint32_t aUnk2, void* apUnk3)
+bool TP_MAKE_THISCALL(HookLoadEntry, BGSSaveLoadManager, void* apFileEntry, uint64_t aArg2, uint64_t aArg3, uint64_t aArg4, uint64_t aArg5)
 {
-    const char* saveName = ExtractSaveNameFromContext(apUnk0);
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+        return TiltedPhoques::ThisCall(RealLoadEntry, apThis, apFileEntry, aArg2, aArg3, aArg4, aArg5);
+
+    const char* saveName = ExtractSaveNameFromFileEntry(apFileEntry);
     auto& coord = World::Get().GetCoordinatedSaveService();
     if (!coord.HandleEngineLoadAttempt(saveName))
         return false;
 
+    return TiltedPhoques::ThisCall(RealLoadEntry, apThis, apFileEntry, aArg2, aArg3, aArg4, aArg5);
+}
+
+bool TP_MAKE_THISCALL(HookLoadCallSite, BGSSaveLoadManager, uint64_t* apUnk0, uint32_t aUnk1, uint32_t aUnk2, void* apUnk3)
+{
+    const char* saveName = ExtractSaveNameFromContext(apUnk0);
+    auto& coord = World::Get().GetCoordinatedSaveService();
+
     // Tear down live network session & purge EVERY dynamic 0xFFxxxxxx actor BEFORE kMessage_PreLoadGame
     // and BGSSaveLoadGame::Revert execute — eliminating UAF crashes during world revert!
+    // Never return a synthetic `false` here: 0x0058AE30 treats `false` from +0x26C as `sSaveGameCorrupt`.
     coord.PrepareEngineForWorldLoad(saveName);
     const bool ok = TiltedPhoques::ThisCall(RealLoadCallSite, apThis, apUnk0, aUnk1, aUnk2, apUnk3);
     coord.NotifyEngineLoadCompleted(saveName, ok);
@@ -405,6 +466,23 @@ void BGSSaveLoadManager::InstallUniversalPostSkseHooks() noexcept
     if (!s_universalHooksInstalled.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return;
 
+#ifdef _WIN32
+    // Defense-in-depth for large modpacks (>512 BSAs/plugins): raise CRT stdio handle cap to 8192
+    // even if SSE Engine Fixes was bypassed or misconfigured.
+    for (const wchar_t* crtModName : {L"ucrtbase.dll", L"api-ms-win-crt-stdio-l1-1-0.dll"})
+    {
+        if (HMODULE hCrt = GetModuleHandleW(crtModName))
+        {
+            using TSetMaxStdio = int(__cdecl*)(int);
+            if (auto fnSetMaxStdio = reinterpret_cast<TSetMaxStdio>(GetProcAddress(hCrt, "_setmaxstdio")))
+            {
+                fnSetMaxStdio(8192);
+                break;
+            }
+        }
+    }
+#endif
+
     QuarantineCorruptSavesOnce();
 
 #ifdef _WIN32
@@ -412,8 +490,11 @@ void BGSSaveLoadManager::InstallUniversalPostSkseHooks() noexcept
     if (!base)
         return;
 
+    RealLoadEntry = reinterpret_cast<TLoadEntry*>(base + kSe1597LoadEntryFuncRva);
+    TP_HOOK(&RealLoadEntry, HookLoadEntry);
+
     const bool okLoad = PatchRelativeCallSite(base + kSe1597LoadCallSiteRva, reinterpret_cast<void*>(&HookLoadCallSite), &RealLoadCallSite);
-    spdlog::info("[RFAB SaveLoad] Installed post-SKSE LoadCallSite hook (Load={})", okLoad);
+    spdlog::info("[RFAB SaveLoad] Installed post-SKSE LoadEntry + LoadCallSite hooks (LoadCallSite={})", okLoad);
 #endif
 }
 
@@ -449,6 +530,12 @@ bool BGSSaveLoadManager::ExecuteDirectLoadFromProcessEvents(const char* acpFileN
     const std::string cleanStem = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(acpFileName);
     if (cleanStem.empty())
         return false;
+
+    if (!VerifySavedSlotOnDisk(cleanStem.c_str()))
+    {
+        spdlog::error("[RFAB SaveLoad] Refusing to load missing or corrupt .ess slot '{}'", cleanStem);
+        return false;
+    }
 
     return TiltedPhoques::ThisCall(RealLoadImpl, this, cleanStem.c_str(), -1, 0u, aCheckForMods);
 }
