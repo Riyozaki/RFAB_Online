@@ -19,7 +19,9 @@
 #include <Actor.h>
 #include <Magic/ActorMagicCaster.h>
 #include <Games/ActorExtension.h>
+#include <Games/References.h>
 #include <EquipManager.h>
+#include <RfabModpackCompat.h>
 
 #include <Structs/Skyrim/AnimationGraphDescriptor_VampireLordBehavior.h>
 #include <Structs/Skyrim/AnimationGraphDescriptor_WerewolfBehavior.h>
@@ -109,6 +111,8 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
     request.CasterId = localComponent.Id;
     request.CastingSource = acEvent.pCaster->GetCastingSource();
     request.IsDualCasting = acEvent.pCaster->GetIsDualCasting();
+    request.EffectivenessMult =
+        (formId == 0x14 && Settings::IsRfabModpackActive()) ? Settings::GetRfabOutgoingDamageMult() : 1.0f;
 
     if (!m_world.GetModSystem().GetServerModId(acEvent.SpellId, request.SpellFormId))
     {
@@ -232,7 +236,9 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
         return;
     }
 
-    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, 1.0f, false, 0.0f, pActor);
+    const float effectivenessMult = RfabCompat::SanitizeDifficultyMultiplier(acMessage.EffectivenessMult);
+    const bool adjustOnlyHostile = std::abs(effectivenessMult - 1.0f) > 0.001f;
+    pCaster->CastSpellImmediate(pSpell, false, pDesiredTarget, effectivenessMult, adjustOnlyHostile, 0.0f, pActor);
 
     spdlog::debug("Successfully casted remote spell");
 }

@@ -623,7 +623,7 @@ if ($FullModSrc -ne $FullTargetMod) {
 }
 Write-Ok "Чистая версия мода RFAB_Online установлена с нуля в $TargetModDir"
 
-# 6. Активация +RFAB_Online и *SkyrimTogether.esp (+ *SkyrimTogetherQuestPatches.esp) с оптимальным порядком до Requiem.esp
+# 6. Активация +RFAB_Online и *SkyrimTogether.esp (+ *SkyrimTogetherQuestPatches.esp) строго ДО RFAB.esp
 Write-Step "Шаг 4/7. Включение +RFAB_Online и *SkyrimTogether.esp в профиле MO2"
 $HasQuestPatchesEsp = Test-Path -LiteralPath (Join-Path $TargetModDir "SkyrimTogetherQuestPatches.esp")
 $ProfileDirs = @(Get-ChildItem -LiteralPath $ProfilesDir -Directory -ErrorAction SilentlyContinue | Where-Object {
@@ -634,7 +634,7 @@ if ($ProfileDirs.Count -eq 0) {
     throw "В '$ProfilesDir' не найдено ни одного профиля MO2 с modlist.txt и plugins.txt."
 }
 
-function Insert-StPluginsBeforeRequiem([string[]]$Lines, [bool]$StarPrefix, [bool]$WithQuestPatches) {
+function Insert-StPluginsBeforeRfab([string[]]$Lines, [bool]$StarPrefix, [bool]$WithQuestPatches) {
     $stripNames = @("SkyrimTogether.esp", "*SkyrimTogether.esp", "SkyrimTogetherQuestPatches.esp", "*SkyrimTogetherQuestPatches.esp")
     $clean = New-Object System.Collections.Generic.List[string]
     foreach ($l in $Lines) {
@@ -642,17 +642,29 @@ function Insert-StPluginsBeforeRequiem([string[]]$Lines, [bool]$StarPrefix, [boo
             $clean.Add($l)
         }
     }
-    # Place right before Requiem.esp (so Requiem/RFAB spell localizations & balance win on vanilla cloak spells while SkyrimTogether gets a rock-solid low slot!), or after master .esm/.esl block
+    # Place strictly BEFORE RFAB.esp (or Requiem.esp) and AFTER all .esm/.esl/USSEP master plugins,
+    # guaranteeing RFAB.esp wins 100% of records while SkyrimTogether gets a deterministic early slot!
     $idx = -1
+    $lastMasterIdx = -1
     for ($i = 0; $i -lt $clean.Count; $i++) {
-        $rawName = $clean[$i].Trim().TrimStart('*')
-        if ($rawName -ieq "Requiem.esp") {
+        $trimmed = $clean[$i].Trim()
+        if ($trimmed.StartsWith("#") -or [string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+        $rawName = $trimmed.TrimStart('*')
+        if ($rawName.EndsWith(".esm", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $rawName.EndsWith(".esl", [System.StringComparison]::OrdinalIgnoreCase) -or
+            ($rawName -ieq "Unofficial Skyrim Special Edition Patch.esp")) {
+            $lastMasterIdx = $i
+        }
+        if ($idx -lt 0 -and (($rawName -ieq "RFAB.esp") -or ($rawName -ieq "Requiem.esp"))) {
             $idx = $i
-            break
         }
     }
     if ($idx -lt 0) {
-        $idx = $clean.Count
+        $idx = if ($lastMasterIdx -ge 0) { $lastMasterIdx + 1 } else { $clean.Count }
+    } elseif ($lastMasterIdx -ge $idx) {
+        $idx = $lastMasterIdx + 1
     }
     $stEntry = if ($StarPrefix) { "*SkyrimTogether.esp" } else { "SkyrimTogether.esp" }
     $qpEntry = if ($StarPrefix) { "*SkyrimTogetherQuestPatches.esp" } else { "SkyrimTogetherQuestPatches.esp" }
@@ -696,12 +708,12 @@ foreach ($pd in $ProfileDirs) {
     [System.IO.File]::WriteAllLines($modlistPath, $newMl, (New-Object System.Text.UTF8Encoding($false)))
 
     $plLines = [System.IO.File]::ReadAllLines($pluginsPath, [System.Text.Encoding]::UTF8)
-    $newPl = Insert-StPluginsBeforeRequiem -Lines $plLines -StarPrefix $true -WithQuestPatches $HasQuestPatchesEsp
+    $newPl = Insert-StPluginsBeforeRfab -Lines $plLines -StarPrefix $true -WithQuestPatches $HasQuestPatchesEsp
     [System.IO.File]::WriteAllLines($pluginsPath, $newPl, (New-Object System.Text.UTF8Encoding($false)))
 
     if (Test-Path -LiteralPath $loadOrderPath) {
         $loLines = [System.IO.File]::ReadAllLines($loadOrderPath, [System.Text.Encoding]::UTF8)
-        $newLo = Insert-StPluginsBeforeRequiem -Lines $loLines -StarPrefix $false -WithQuestPatches $HasQuestPatchesEsp
+        $newLo = Insert-StPluginsBeforeRfab -Lines $loLines -StarPrefix $false -WithQuestPatches $HasQuestPatchesEsp
         [System.IO.File]::WriteAllLines($loadOrderPath, $newLo, (New-Object System.Text.UTF8Encoding($false)))
     }
     Write-Ok "Профиль '$($pd.Name)': активирован +RFAB_Online и *SkyrimTogether.esp"

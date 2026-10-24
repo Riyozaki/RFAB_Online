@@ -10,6 +10,8 @@
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
+#include <Messages/SpellCastRequest.h>
+#include <Messages/NotifySpellCast.h>
 #include <Structs/ServerSettings.h>
 
 #include <entt/entt.hpp>
@@ -751,6 +753,83 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
         enc.SetPlayerDowned(1, true, 0.f, 0.f, 0.f, 2, 5000);
         enc.SetPlayerDowned(2, true, 20.f, 0.f, 0.f, 2, 5050);
         REQUIRE_FALSE(enc.Tick(9000).PartyWipeTriggered);
+    }
+
+    SECTION("v1.2.0 RFAB Native Difficulty Modes (Странник / Довакин / Легенда + Проклятый) & Zero Vanilla Overrides")
+    {
+        using RfabCompat::RfabDifficultyMode;
+
+        // 1. Exact RFAB StartMenu.json + RFAB_StartMenu.UpdateDifficulty() multipliers:
+        const auto strannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Strannik, false);
+        REQUIRE(strannik.OutgoingByPlayer == Approx(2.0f));
+        REQUIRE(strannik.IncomingToPlayer == Approx(0.5f));
+
+        const auto dragonborn = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Dragonborn, false);
+        REQUIRE(dragonborn.OutgoingByPlayer == Approx(1.0f));
+        REQUIRE(dragonborn.IncomingToPlayer == Approx(1.0f));
+
+        const auto legend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Legend, false);
+        REQUIRE(legend.OutgoingByPlayer == Approx(1.0f));
+        REQUIRE(legend.IncomingToPlayer == Approx(2.0f));
+
+        // 2. "Проклятый" (Cursed) halves outgoing player damage (0.5x) while keeping mode's incoming multiplier:
+        const auto cursedStrannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Strannik, true);
+        REQUIRE(cursedStrannik.OutgoingByPlayer == Approx(0.5f));
+        REQUIRE(cursedStrannik.IncomingToPlayer == Approx(0.5f));
+
+        const auto cursedDragonborn = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Dragonborn, true);
+        REQUIRE(cursedDragonborn.OutgoingByPlayer == Approx(0.5f));
+        REQUIRE(cursedDragonborn.IncomingToPlayer == Approx(1.0f));
+
+        const auto cursedLegend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Legend, true);
+        REQUIRE(cursedLegend.OutgoingByPlayer == Approx(0.5f));
+        REQUIRE(cursedLegend.IncomingToPlayer == Approx(2.0f));
+
+        // 3. Engine difficulty index normalization (Skyrim SE has no GMST for index 2 Adept):
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(0) == 0); // RFAB SkyrimPrefs.ini default (VE)
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(4) == 4); // Master (VH, read by RFAB.dll)
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(2) == 4); // Stale Adept -> VH
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(6) == 4); // Uninitialized -> VH
+
+        // 4. Cross-client outgoing spell/enchantment/poison scaling (0x14 only; summons stay 1.0x; heals unscaled):
+        constexpr uint32_t kHostileDetrimental = 0x5u;
+        constexpr uint32_t kRecover = 0x2u;
+        REQUIRE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0x14u, kHostileDetrimental, 24, 100.0f));
+        REQUIRE(RfabCompat::ScalePlayerOutgoingSpellMagnitude(100.0f, strannik.OutgoingByPlayer, true) == Approx(200.0f));
+        REQUIRE(RfabCompat::ScalePlayerOutgoingSpellMagnitude(100.0f, cursedLegend.OutgoingByPlayer, true) == Approx(50.0f));
+
+        // Summon (caster != 0x14) must NEVER inherit player's 2.0x Strannik or 0.5x Cursed multiplier:
+        REQUIRE_FALSE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0xFF001234u, kHostileDetrimental, 24, 100.0f));
+        // Friendly heal (flags == 0) and Fortify Health (kRecover) must NOT be scaled as hostile damage:
+        REQUIRE_FALSE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0x14u, 0x0u, 24, 100.0f));
+        REQUIRE_FALSE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0x14u, kHostileDetrimental | kRecover, 24, 100.0f));
+
+        // 5. PERK 0x000581F8 RFAB_Perk_Restoration_ImprovedHealing (1.25x in RFAB.esp vs 1.50x vanilla):
+        REQUIRE(RfabCompat::GetRestorationImprovedHealingMultiplier(true) == Approx(1.25f));
+        REQUIRE(RfabCompat::GetRestorationImprovedHealingMultiplier(false) == Approx(1.50f));
+        REQUIRE(RfabCompat::ShouldApplyImprovedHealingPerk(0x0u, 24, 0, 50.0f));       // Pure Restoration heal
+        REQUIRE_FALSE(RfabCompat::ShouldApplyImprovedHealingPerk(0x0u, 24, 8, 50.0f)); // Absorb (Vampiric Drain) excluded
+        REQUIRE_FALSE(RfabCompat::ShouldApplyImprovedHealingPerk(kRecover, 24, 0, 50.0f)); // Fortify Health excluded
+        REQUIRE_FALSE(RfabCompat::ShouldApplyImprovedHealingPerk(kHostileDetrimental, 24, 0, 50.0f));
+
+        // 6. Channeled concentration spell wire packets carry caster's EffectivenessMult (Странник 2.0x / Проклятый 0.5x):
+        SpellCastRequest castReq{};
+        castReq.CasterId = 42;
+        castReq.SpellFormId = GameId(0x06, 0x012FCD);
+        castReq.CastingSource = 1;
+        castReq.IsDualCasting = true;
+        castReq.DesiredTarget = 99;
+        castReq.EffectivenessMult = 0.5f; // Cursed player
+        AssertClientPacketRoundtrip(castReq);
+
+        NotifySpellCast castNotify{};
+        castNotify.CasterId = 42;
+        castNotify.SpellFormId = GameId(0x06, 0x012FCD);
+        castNotify.CastingSource = 1;
+        castNotify.IsDualCasting = true;
+        castNotify.DesiredTarget = 99;
+        castNotify.EffectivenessMult = 2.0f; // Strannik player
+        AssertServerPacketRoundtrip(castNotify);
     }
 }
 

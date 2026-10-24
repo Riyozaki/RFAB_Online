@@ -1300,6 +1300,22 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                 if (!ScopedActorValueOverride::IsOverriden() && aValue != 0.0f)
                     World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, aValue));
             }
+            TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+            return;
+        }
+
+        // RFAB.dll applies spell/poison/bleed/ScriptDamage directly via RestoreActorValue(DAMAGE, kHealth, -dmg),
+        // bypassing Actor::DamageActor. Broadcast actual negative HP deltas on locally-owned NPCs immediately!
+        if (auto* pExt = apThis->GetExtension();
+            pExt && pExt->IsLocal() && !s_inAuthoritativeDamageHook && !ScopedActorValueOverride::IsOverriden() && aValue < -0.05f)
+        {
+            const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
+            TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+            const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
+            const float actualDelta = hpAfter - hpBefore;
+            if (actualDelta < -0.05f)
+                World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+            return;
         }
     }
 

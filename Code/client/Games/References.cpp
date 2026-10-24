@@ -30,6 +30,7 @@
 
 #include <AI/AITimer.h>
 #include <Combat/CombatTargetSelector.h>
+#include <RfabModpackCompat.h>
 
 namespace Settings
 {
@@ -45,6 +46,34 @@ float* GetGreetDistance() noexcept
     return s_greetDistance.Get();
 }
 
+bool IsRfabModpackActive() noexcept
+{
+    auto* pModManager = ModManager::Get();
+    return pModManager && pModManager->GetByName("RFAB.esp") != nullptr;
+}
+
+float GetRfabOutgoingDamageMult() noexcept
+{
+    if (auto* pGmst = GameSettingCollection::Get())
+    {
+        if (auto* pSetting = pGmst->GetSetting("fDiffMultHPByPCVH"))
+            return RfabCompat::SanitizeDifficultyMultiplier(pSetting->f);
+    }
+
+    return 1.0f;
+}
+
+float GetRfabIncomingDamageMult() noexcept
+{
+    if (auto* pGmst = GameSettingCollection::Get())
+    {
+        if (auto* pSetting = pGmst->GetSetting("fDiffMultHPToPCVH"))
+            return RfabCompat::SanitizeDifficultyMultiplier(pSetting->f);
+    }
+
+    return 1.0f;
+}
+
 } // namespace Settings
 
 namespace GameplayFormulas
@@ -52,19 +81,23 @@ namespace GameplayFormulas
 
 float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexcept
 {
-    using TGetDifficultyMultiplier = float(int32_t, int32_t, bool);
-    POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 25920);
-
     bool isPlayer = apHittee == PlayerCharacter::Get();
+    float multiplier = 1.0f;
 
-    float multiplier = s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ActorValueInfo::kHealth, isPlayer);
+    if (Settings::IsRfabModpackActive())
+    {
+        // RFAB.dll evaluates GMST fDiffMultHPToPCVH (player 0x14 victim) and fDiffMultHPByPCVH (player 0x14 aggressor),
+        // corresponding to Странник (x2/x0.5), Довакин (x1/x1), Легенда (x1/x2), and Проклятый (x0.5 outgoing).
+        multiplier = isPlayer ? Settings::GetRfabIncomingDamageMult() : Settings::GetRfabOutgoingDamageMult();
+    }
+    else
+    {
+        using TGetDifficultyMultiplier = float(int32_t, int32_t, bool);
+        POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 25920);
+        multiplier = s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ActorValueInfo::kHealth, isPlayer);
+    }
 
-    float realDamage = aDamage;
-
-    // TODO(cosideci): this seems problematic? It may not register the kill for others?
-    // Disabled for now, cause this check seems to have totally broken everything, let's see what happens.
-    // if (!aKillMove || multiplier < 1.0)
-    realDamage = aDamage * multiplier;
+    float realDamage = aDamage * multiplier;
 
     return realDamage;
 }

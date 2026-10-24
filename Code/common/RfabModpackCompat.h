@@ -1125,4 +1125,137 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
     return false;
 }
 
+enum class RfabDifficultyMode : uint8_t
+{
+    Strannik = 0,   // Странник:  x2.0 dealt (x0.5 if Cursed), x0.5 taken
+    Dragonborn = 1, // Довакин:   x1.0 dealt (x0.5 if Cursed), x1.0 taken
+    Legend = 2      // Легенда:   x1.0 dealt (x0.5 if Cursed), x2.0 taken
+};
+
+struct RfabDifficultyMultipliers
+{
+    float OutgoingByPlayer = 1.0f; // fDiffMultHPByPCVH
+    float IncomingToPlayer = 1.0f; // fDiffMultHPToPCVH
+};
+
+[[nodiscard]] inline float SanitizeDifficultyMultiplier(float aMult) noexcept
+{
+    if (!std::isfinite(aMult) || aMult <= 0.0f)
+        return 1.0f;
+
+    return std::clamp(aMult, 0.05f, 10.0f);
+}
+
+// Mirrors RFAB StartMenu.json + RFAB_StartMenu.UpdateDifficulty() + RFAB_MCM_Alias.OnPlayerLoadGame():
+//   - Strannik (0):   ByPC = 2.0, ToPC = 0.5
+//   - Dragonborn (1): ByPC = 1.0, ToPC = 1.0
+//   - Legend (2):     ByPC = 1.0, ToPC = 2.0
+//   - Cursed mark ("Проклятый"): overrides ByPC -> DamageWithCurse = 0.5 across all three modes.
+[[nodiscard]] inline constexpr RfabDifficultyMultipliers ResolveRfabDifficultyMultipliers(
+    RfabDifficultyMode aMode,
+    bool aIsCursed) noexcept
+{
+    float byPlayer = 1.0f;
+    float toPlayer = 1.0f;
+    switch (aMode)
+    {
+    case RfabDifficultyMode::Strannik:
+        byPlayer = 2.0f;
+        toPlayer = 0.5f;
+        break;
+    case RfabDifficultyMode::Dragonborn:
+        byPlayer = 1.0f;
+        toPlayer = 1.0f;
+        break;
+    case RfabDifficultyMode::Legend:
+        byPlayer = 1.0f;
+        toPlayer = 2.0f;
+        break;
+    }
+
+    if (aIsCursed)
+        byPlayer = 0.5f;
+
+    return {byPlayer, toPlayer};
+}
+
+// Skyrim SE has no fDiffMultHPByPCN / fDiffMultHPToPCN GMST for difficulty index 2 (Adept):
+// GetDifficultyMultiplier(2) returns hardcoded 1.0f. RFAB's canonical SkyrimPrefs.ini uses 0 (VE)
+// and RFAB.dll reads fDiffMultHP*PCVH (index 4). Preserve 0/1/3/4/5 and remap 2 -> 4.
+[[nodiscard]] inline constexpr int32_t NormalizeRfabEngineDifficultyIndex(int32_t aCurrentDifficulty) noexcept
+{
+    if (aCurrentDifficulty < 0 || aCurrentDifficulty > 5 || aCurrentDifficulty == 2)
+        return 4;
+
+    return aCurrentDifficulty;
+}
+
+// Hostile/detrimental permanent kHealth (AV 24) effects cast directly by the local player (0x14)
+// must carry the caster's RFAB fDiffMultHPByPCVH (2.0x Странник / 1.0x Довакин,Легенда / 0.5x Проклятый)
+// across the wire, because on the target owner's client the caster is RemotePlayer (0xFFxxxxxx != 0x14)
+// so RFAB.dll will NOT re-apply ByPCVH (zero double-multiplication). Summons (caster != 0x14) stay 1.0x.
+[[nodiscard]] inline bool ShouldScalePlayerOutgoingHealthEffect(
+    bool aIsRfabActive,
+    uint32_t aCasterFormId,
+    uint32_t aEffectFlags,
+    int32_t aPrimaryAv,
+    float aMagnitude) noexcept
+{
+    constexpr uint32_t kHostileOrDetrimental = (1u << 0) | (1u << 2);
+    constexpr uint32_t kRecoverFlag = (1u << 1);
+    constexpr int32_t kHealthAv = 24;
+
+    if (!aIsRfabActive || aCasterFormId != 0x14u)
+        return false;
+    if (!std::isfinite(aMagnitude) || aMagnitude <= 0.0f)
+        return false;
+    if (aPrimaryAv != kHealthAv)
+        return false;
+    if ((aEffectFlags & kHostileOrDetrimental) == 0 || (aEffectFlags & kRecoverFlag) != 0)
+        return false;
+
+    return true;
+}
+
+[[nodiscard]] inline float ScalePlayerOutgoingSpellMagnitude(
+    float aBaseMagnitude,
+    float aCasterOutgoingMult,
+    bool aShouldScale) noexcept
+{
+    if (!aShouldScale || !std::isfinite(aBaseMagnitude))
+        return aBaseMagnitude;
+
+    return aBaseMagnitude * SanitizeDifficultyMultiplier(aCasterOutgoingMult);
+}
+
+// PERK 0x000581F8:
+//   - Vanilla Skyrim (Regeneration): 1.50f (+50%)
+//   - RFAB.esp (RFAB_Perk_Restoration_ImprovedHealing / «Улучшенное лечение»): EPFD = 1.25f (+25%),
+//     strictly on non-hostile permanent kHealth healing effects (excluding Absorb / Fortify).
+[[nodiscard]] inline constexpr float GetRestorationImprovedHealingMultiplier(bool aIsRfabActive) noexcept
+{
+    return aIsRfabActive ? 1.25f : 1.5f;
+}
+
+[[nodiscard]] inline bool ShouldApplyImprovedHealingPerk(
+    uint32_t aEffectFlags,
+    int32_t aPrimaryAv,
+    int32_t aArchetypeId,
+    float aMagnitude) noexcept
+{
+    constexpr uint32_t kHostileOrDetrimental = (1u << 0) | (1u << 2);
+    constexpr uint32_t kRecoverFlag = (1u << 1);
+    constexpr int32_t kHealthAv = 24;
+    constexpr int32_t kAbsorbArchetype = 8;
+
+    if (!std::isfinite(aMagnitude) || aMagnitude <= 0.0f)
+        return false;
+    if (aPrimaryAv != kHealthAv || aArchetypeId == kAbsorbArchetype)
+        return false;
+    if ((aEffectFlags & (kHostileOrDetrimental | kRecoverFlag)) != 0)
+        return false;
+
+    return true;
+}
+
 } // namespace RfabCompat

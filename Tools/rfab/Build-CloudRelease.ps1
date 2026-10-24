@@ -1,11 +1,11 @@
-﻿param(
-    [string]$VersionTag = "v1.1.0",
+param(
+    [string]$VersionTag = "v1.2.0",
     [string]$BuildMode = "releasedbg"
 )
 
-if ($VersionTag -eq "v1.0.0") {
-    Write-Host "[PROTECT v1.0.0] Legacy workflow argument -VersionTag 'v1.0.0' remapped to 'v1.1.0' so baseline release v1.0.0 remains 100% untouched." -ForegroundColor Yellow
-    $VersionTag = "v1.1.0"
+if ($VersionTag -eq "v1.0.0" -or $VersionTag -eq "v1.1.0") {
+    Write-Host "[PROTECT RELEASES] Legacy workflow argument -VersionTag '$VersionTag' remapped to 'v1.2.0' so releases v1.0.0 and v1.1.0 remain 100% untouched." -ForegroundColor Yellow
+    $VersionTag = "v1.2.0"
 }
 if ($VersionTag -eq "v1.0.0") {
     throw "Hard guard: v1.0.0 must never be overwritten!"
@@ -98,7 +98,7 @@ try {
 2. Закройте игру и **Mod Organizer 2**, затем дважды нажмите на **``INSTALL_RFAB_ONLINE.bat``**:
    - Откроется удобное окно выбора папки сборки RFAB (автоматически найдёт ``ModOrganizer.exe`` на ваших дисках и покажет точный путь к ``SkyrimSE.exe 1.5.97`` прямо из ``ModOrganizer.ini``, либо позволит выбрать любую папку кнопкой **«Обзор...»**).
    - Установщик **начисто удаляет** любые старые файлы прошлых тестов в ``MO2\mods\RFAB_Online`` и ``RFAB_Online_Server`` (никакого наслаивания на старые версии!).
-   - Ставит готовый нативный лаунчер ``SkyrimSE.exe``, включает ``+RFAB_Online``, ``*SkyrimTogether.esp`` и ``*SkyrimTogetherQuestPatches.esp`` строго перед ``Requiem.esp``, настраивает ``EngineFixes.toml``, ``SkyrimSoulsRE.ini``, ``[RFAB] Autosave.ini``, скрывает конфликтующий ``BetterStealing.dll`` и добавляет кнопку **``RFAB Online - Play``** в MO2.
+   - Ставит готовый нативный лаунчер ``SkyrimSE.exe``, включает ``+RFAB_Online``, ``*SkyrimTogether.esp`` и ``*SkyrimTogetherQuestPatches.esp`` строго **ДО ``RFAB.esp``** (чтобы ``RFAB.esp`` побеждал по 100% записей), настраивает ``EngineFixes.toml``, ``SkyrimSoulsRE.ini``, ``[RFAB] Autosave.ini``, скрывает конфликтующий ``BetterStealing.dll`` и добавляет кнопку **``RFAB Online - Play``** в MO2.
    - Ставит автономный сервер прямо в ``<Папка_RFAB>\RFAB_Online_Server`` и создаёт ярлык **``START_RFAB_SERVER.bat``** (после установки скачанный ZIP-архив можно спокойно удалить).
 
 > 💡 **Уже играли в прошлую версию?** Скачайте ``RFAB_Online_${VersionTag}_Quick_Update.zip``, распакуйте и запустите **``UPDATE_RFAB_ONLINE.bat``** — клиент и сервер обновятся без полной переустановки.
@@ -123,6 +123,10 @@ try {
 - **Враги** — один комплект на группу (засады **не** дублируются), HP масштабируется: ``2`` игрока = ``×3 HP``, ``3`` игрока = ``×4 HP``.
 - **Смерть** — ``0 HP`` = «Downed-on-Knee» до конца боя или до поднятия союзником; честная победа поднимает павших с ≈``30% HP``; Total Party Wipe откатывает последний чекпоинт.
 - **Сохранения** — ``F5`` у любого игрока сохраняет группу, ``F9``/загрузка — только Хост, автоматический чекпоинт после боя и авто-переподключение после загрузки.
+
+## 🩹 Что нового в релизе v1.2.0 (полная поддержка сложностей RFAB и 0 ванильных перезаписей)
+- **Собственные сложности RFAB («Странник» `x2 / x0.5`, «Довакин» `x1 / x1`, «Легенда» `x1 / x2`) и метка «Проклятый» (`x0.5` к исходящему урону игрока)** — полностью сохраняются индивидуально для каждого игрока без перезаписи сервером, корректно читаются из `GameSettingCollection` (`fDiffMultHPByPCVH` / `fDiffMultHPToPCVH`) и точно передаются по сети для оружия, луков, криков, ядов, чар, разовых и потоковых заклинаний (при этом урон призывных существ остаётся `1.0x`, как в `DifficultyBalance.dll` / `RFAB.dll`).
+- **0 перезаписей контента, статов, перков, камер и ассетов RFAB** — из `SkyrimTogether.esp` вычищен последний ванильный оверрайд `CPTH MagicOrBowCams`, порядок загрузки в MO2 ставит `SkyrimTogether*.esp` строго **перед `RFAB.esp`**, удалён чужой `logo.nif` главного меню и осиротевшие ванильные `.psc`, перк Восстановления `0x000581F8` («Улучшенное лечение») даёт точные `+25%` (`x1.25`) из `RFAB.esp` вместо ванильных `+50%`, а `fAIMinGreetingDistance` (`70.0`) и `KillMove` восстанавливаются к значениям RFAB.
 
 ## 🩹 Что исправлено в релизе v1.1.0 по итогам кооп-плейтеста
 1. **Битые сохранения и ошибка «Файл сохранения поврежден» (#1 приоритет)** — безопасная постановка задач сохранения/загрузки через очередь движка `BGSSaveLoadManager` (`34859`) вместо прямого вызова из сетевого колбэка, полная очистка `BGSSaveLoadGame` от временных сетевых `0xFFxxxxxx`-форм (`PurgeDynamicActorCleanly` + `UnsetChanged` + пропуск первых кадров `PlaceAtMe`), валидация заголовков `TESV_SAVEGAME` с карантином повреждённых `.ess`, нормализация имён слотов (без `.ess.ess`) и исправленное отключение `[RFAB] Autosave.ini`.

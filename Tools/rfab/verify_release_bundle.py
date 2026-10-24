@@ -171,7 +171,7 @@ def main():
         hedr_ver, = struct.unpack_from("<f", raw, 30)
         assert abs(hedr_ver - 1.70) < 0.001, f"{esp_name} HEDR={hedr_ver:.4f}, expected 1.7000 for SE 1.5.97!"
 
-    # Verify zero RFAB-colliding vanilla scripts (e.g. TempleBlessingScript.pex) inside RFAB_Online_MO2/scripts
+    # Verify zero RFAB-colliding vanilla scripts or sources inside RFAB_Online_MO2/scripts
     scripts_dir = os.path.join(stage_dir, "RFAB_Online_MO2", "scripts")
     for forbidden_pex in (
         "TempleBlessingScript.pex",
@@ -183,12 +183,32 @@ def main():
         assert not os.path.exists(os.path.join(scripts_dir, forbidden_pex)), (
             f"FATAL: Forbidden RFAB-colliding script present in bundle: {forbidden_pex}"
         )
+    scripts_src_dir = os.path.join(scripts_dir, "source")
+    for forbidden_psc in (
+        "TempleBlessingScript.psc",
+        "C00TrainerScript.psc",
+        "ResourceFurnitureScript.psc",
+        "PetFramework_ParentQuestScript.psc",
+        "PetFramework_PetQuest.psc",
+    ):
+        assert not os.path.exists(os.path.join(scripts_src_dir, forbidden_psc)), (
+            f"FATAL: Forbidden RFAB-colliding script source present in bundle: {forbidden_psc}"
+        )
 
-    # Verify SkyrimTogether.esp does not carry dirty vanilla Cloak / T03 overrides
+    # Verify zero main-menu logo overrides so RFAB's own logo.nif wins in MO2 VFS
+    for forbidden_mesh in (
+        r"RFAB_Online_MO2\meshes\Interface\logo\logo.nif",
+        r"RFAB_Online_MO2\meshes\Interface\logo\logo01ae.nif",
+    ):
+        assert not os.path.exists(os.path.join(stage_dir, forbidden_mesh)), (
+            f"FATAL: Vanilla/STR main-menu logo mesh overrides RFAB logo: {forbidden_mesh}"
+        )
+
+    # Verify SkyrimTogether.esp does not carry dirty vanilla Cloak / Camera / T03 overrides
     st_esp_raw = open(os.path.join(stage_dir, "RFAB_Online_MO2", "SkyrimTogether.esp"), "rb").read()
-    for forbidden_edid in (b"flameCloak\x00", b"FrostCloak\x00", b"LightningCloak\x00"):
+    for forbidden_edid in (b"flameCloak\x00", b"FrostCloak\x00", b"LightningCloak\x00", b"MagicOrBowCams\x00"):
         assert forbidden_edid not in st_esp_raw, (
-            f"FATAL: SkyrimTogether.esp still contains dirty vanilla cloak override {forbidden_edid!r}!"
+            f"FATAL: SkyrimTogether.esp still contains dirty vanilla override {forbidden_edid!r}!"
         )
 
     # Verify offline UI & cursors & bindings
@@ -197,7 +217,6 @@ def main():
         r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\index.html",
         r"RFAB_Online_MO2\SkyrimTogetherReborn\assets\images\cursor.dds",
         r"RFAB_Online_MO2\SkyrimTogetherReborn\assets\images\cursor.png",
-        r"RFAB_Online_MO2\meshes\Interface\logo\logo.nif",
         r"RFAB_Online_Server\SkyrimTogetherServer.exe",
         r"RFAB_Online_Server\STServer.dll",
         r"RFAB_Online_Server\config\STServer.ini",

@@ -2,6 +2,8 @@
 
 #include <GameServer.h>
 #include <World.h>
+#include <algorithm>
+#include <cmath>
 
 #include <Messages/SpellCastRequest.h>
 #include <Messages/InterruptCastRequest.h>
@@ -31,6 +33,9 @@ void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMes
     notify.CastingSource = message.CastingSource;
     notify.IsDualCasting = message.IsDualCasting;
     notify.DesiredTarget = message.DesiredTarget;
+    notify.EffectivenessMult = std::isfinite(message.EffectivenessMult)
+                                   ? std::clamp(message.EffectivenessMult, 0.05f, 10.0f)
+                                   : 1.0f;
 
     const auto entity = static_cast<entt::entity>(message.CasterId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))

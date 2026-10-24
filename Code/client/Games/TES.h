@@ -132,9 +132,39 @@ static_assert(offsetof(ModManager, mods) == 0xD60);
 struct Setting
 {
     void* unk0;
-    uint64_t data;
+    union
+    {
+        uint64_t data;
+        float f;
+        int32_t i;
+        bool b;
+    };
     const char* name;
 };
+
+struct GameSettingCollection
+{
+    static GameSettingCollection* Get() noexcept;
+
+    struct MapItem
+    {
+        MapItem* next;
+        const char* key;
+        Setting* value;
+    };
+
+    Setting* GetSetting(const char* acpName) noexcept;
+
+    uint8_t unk0[0x118];
+    void* mapVtbl;
+    uint32_t bucketCount;
+    uint32_t pad124;
+    MapItem** buckets;
+};
+
+static_assert(offsetof(GameSettingCollection, mapVtbl) == 0x118);
+static_assert(offsetof(GameSettingCollection, bucketCount) == 0x120);
+static_assert(offsetof(GameSettingCollection, buckets) == 0x128);
 
 struct INISettingCollection
 {

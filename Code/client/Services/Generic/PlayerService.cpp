@@ -31,6 +31,7 @@
 #include <AI/AIProcess.h>
 #include <EquipManager.h>
 #include <Forms/TESRace.h>
+#include <RfabModpackCompat.h>
 
 PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -61,7 +62,17 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
-    // TODO: SkyrimTogether.esm
+    if (!m_hasCachedRfabBaseline)
+    {
+        if (float* greetDistance = Settings::GetGreetDistance())
+            m_previousGreetDistance = *greetDistance;
+        if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
+            m_previousKillMove = pKillMove->f;
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+            m_previousWorldEncounters = pWorldEncountersEnabled->f;
+        m_hasCachedRfabBaseline = true;
+    }
+
     if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
         pKillMove->f = 0.f;
 
@@ -71,32 +82,57 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
-    PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);
+    if (!Settings::IsRfabModpackActive() && m_previousDifficulty >= 0 && m_previousDifficulty <= 5)
+        PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);
+
     m_serverDifficulty = m_previousDifficulty = 6;
 
     ToggleDeathSystem(false);
 
     if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
-        pKillMove->f = 1.f;
+        pKillMove->f = m_hasCachedRfabBaseline ? m_previousKillMove : 1.f;
 
-    // Restore to the default value (150 in skyrim, 175 in fallout 4)
+    // Restore RFAB's baseline fAIMinGreetingDistance (70.0 in RFAB.esp, never hardcoded vanilla 150.0)
     if (float* greetDistance = Settings::GetGreetDistance())
-        *greetDistance = 150.f;
+        *greetDistance = m_hasCachedRfabBaseline ? m_previousGreetDistance : 70.f;
 
     if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
-        pWorldEncountersEnabled->f = 1.f;
+        pWorldEncountersEnabled->f = m_hasCachedRfabBaseline ? m_previousWorldEncounters : 1.f;
 }
 
 void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) noexcept
 {
     m_previousDifficulty = *Settings::GetDifficulty();
-    PlayerCharacter::Get()->SetDifficulty(acSettings.Difficulty);
     m_serverDifficulty = acSettings.Difficulty;
+
+    if (Settings::IsRfabModpackActive())
+    {
+        // Preserve each player's own RFAB difficulty (Странник / Довакин / Легенда) & Проклятый mark!
+        // Only remap index 2 (Adept, which has no GMST in Skyrim SE) -> 4 (Master / VH).
+        if (auto* pPlayer = PlayerCharacter::Get())
+        {
+            const int32_t normalized = RfabCompat::NormalizeRfabEngineDifficultyIndex(pPlayer->difficulty);
+            if (pPlayer->difficulty != normalized)
+                pPlayer->SetDifficulty(normalized);
+        }
+        spdlog::info(
+            "[RFAB Difficulty] Preserving personal RFAB difficulty & Cursed state (ByPC={:.2f}x, ToPC={:.2f}x).",
+            Settings::GetRfabOutgoingDamageMult(),
+            Settings::GetRfabIncomingDamageMult());
+    }
+    else
+    {
+        PlayerCharacter::Get()->SetDifficulty(acSettings.Difficulty);
+    }
 
     if (!acSettings.GreetingsEnabled)
     {
-        float* greetDistance = Settings::GetGreetDistance();
-        *greetDistance = 0.f;
+        if (float* greetDistance = Settings::GetGreetDistance())
+        {
+            if (!m_hasCachedRfabBaseline)
+                m_previousGreetDistance = *greetDistance;
+            *greetDistance = 0.f;
+        }
     }
 
     ToggleDeathSystem(acSettings.DeathSystemEnabled);
@@ -295,7 +331,19 @@ void PlayerService::RunDifficultyUpdates() const noexcept
     if (!m_transport.IsConnected())
         return;
 
-    PlayerCharacter::Get()->SetDifficulty(m_serverDifficulty);
+    auto* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    if (Settings::IsRfabModpackActive())
+    {
+        const int32_t normalized = RfabCompat::NormalizeRfabEngineDifficultyIndex(pPlayer->difficulty);
+        if (pPlayer->difficulty != normalized)
+            pPlayer->SetDifficulty(normalized);
+        return;
+    }
+
+    pPlayer->SetDifficulty(m_serverDifficulty);
 }
 
 void PlayerService::RunLevelUpdates() const noexcept

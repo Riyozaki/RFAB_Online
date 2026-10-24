@@ -273,9 +273,26 @@ int main()
         assert(autosaveSuppressed.find("Save on location change = 0") != std::string::npos);
         assert(autosaveSuppressed.find("Save on sleep/wait = 0") != std::string::npos);
 
-        // Verify SkyrimTogether.esp is clean & TempleBlessingScript.pex is absent
+        // Verify SkyrimTogether.esp is clean & TempleBlessingScript.pex / logo.nif are absent
         assert(!fs::exists("GameFiles/Skyrim/scripts/TempleBlessingScript.pex"));
         assert(!fs::exists("dist_ready/RFAB_Online_MO2/scripts/TempleBlessingScript.pex"));
+        assert(!fs::exists("GameFiles/Skyrim/scripts/source/TempleBlessingScript.psc"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/scripts/source/TempleBlessingScript.psc"));
+        assert(!fs::exists("GameFiles/Skyrim/meshes/Interface/logo/logo.nif"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/meshes/Interface/logo/logo.nif"));
+
+        // Verify v1.2.0 RFAB Difficulty Modes (Странник / Довакин / Легенда + Проклятый) & Perk 0x581F8 (1.25x)
+        const auto mStrannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Strannik, false);
+        assert(std::abs(mStrannik.OutgoingByPlayer - 2.0f) < 0.001f && std::abs(mStrannik.IncomingToPlayer - 0.5f) < 0.001f);
+        const auto mDragon = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Dragonborn, false);
+        assert(std::abs(mDragon.OutgoingByPlayer - 1.0f) < 0.001f && std::abs(mDragon.IncomingToPlayer - 1.0f) < 0.001f);
+        const auto mLegend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Legend, false);
+        assert(std::abs(mLegend.OutgoingByPlayer - 1.0f) < 0.001f && std::abs(mLegend.IncomingToPlayer - 2.0f) < 0.001f);
+        const auto mCursed = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Strannik, true);
+        assert(std::abs(mCursed.OutgoingByPlayer - 0.5f) < 0.001f && std::abs(mCursed.IncomingToPlayer - 0.5f) < 0.001f);
+        assert(RfabCompat::NormalizeRfabEngineDifficultyIndex(2) == 4);
+        assert(RfabCompat::NormalizeRfabEngineDifficultyIndex(0) == 0);
+        assert(std::abs(RfabCompat::GetRestorationImprovedHealingMultiplier(true) - 1.25f) < 0.001f);
     }
 
     std::cout << "[PASS] All SE 1.5.97 struct static_asserts, BSTSmartPointer RAII, Havok stepInfo/IsWordVariable guards, "

@@ -12,9 +12,12 @@
 
 #include <Games/ActorExtension.h>
 #include <Games/Overrides.h>
+#include <Games/References.h>
 #include <PlayerCharacter.h>
+#include <RfabModpackCompat.h>
 
 #include <Effects/ActiveEffect.h>
+#include <Forms/EffectSetting.h>
 #include <Forms/SpellItem.h>
 
 TP_THIS_FUNCTION(TAddTarget, bool, MagicTarget, MagicTarget::AddTargetData& arData);
@@ -126,6 +129,24 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
     addTargetEvent.Magnitude = arData.fMagnitude;
     addTargetEvent.IsDualCasting = arData.bDualCast;
 
+    // Preserve local player's RFAB difficulty & Cursed outgoing multiplier (Странник 2.0x / Довакин,Легенда 1.0x / Проклятый 0.5x)
+    // when syncing direct player-cast hostile health spells, shouts, weapon enchantments, and poisons to remote targets.
+    // On the receiving client, caster is RemotePlayer (0xFFxxxxxx != 0x14), so RFAB.dll does not re-apply ByPCVH (0 double-mult).
+    if (arData.pCaster && arData.pEffectItem && arData.pEffectItem->pEffectSetting && !pTargetActorEx->IsLocalPlayer())
+    {
+        const auto* pMgef = arData.pEffectItem->pEffectSetting;
+        const bool shouldScaleRfab = RfabCompat::ShouldScalePlayerOutgoingHealthEffect(
+            Settings::IsRfabModpackActive(),
+            arData.pCaster->formID,
+            pMgef->flags,
+            pMgef->primaryAV,
+            addTargetEvent.Magnitude);
+        addTargetEvent.Magnitude = RfabCompat::ScalePlayerOutgoingSpellMagnitude(
+            addTargetEvent.Magnitude,
+            Settings::GetRfabOutgoingDamageMult(),
+            shouldScaleRfab);
+    }
+
     if (pTargetActorEx->IsRemotePlayer())
     {
         if (!arData.pCaster)
@@ -193,14 +214,17 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
     if (arData.pCaster)
     {
         ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
-        if (pCasterExtension->IsLocalPlayer())
+        const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
+        const bool isLocalPlayerOrSummon =
+            (pCasterExtension && pCasterExtension->IsLocalPlayer()) || (pCasterCmd && pCasterCmd->formID == 0x14);
+        if (isLocalPlayerOrSummon)
         {
             bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
             if (result && arData.ShouldSync())
                 World::Get().GetRunner().Trigger(addTargetEvent);
             return result;
         }
-        else if (pCasterExtension->IsRemotePlayer())
+        else if (pCasterExtension && pCasterExtension->IsRemotePlayer())
         {
             // Send out a HitEvent because TakeDamage is never triggered.
             World::Get().GetRunner().Trigger(HitEvent(arData.pCaster->formID, pTargetActor->formID));
@@ -238,8 +262,19 @@ void TP_MAKE_THISCALL(HookAdjustForPerks, ActiveEffect, Actor* apCaster, MagicTa
 {
     TiltedPhoques::ThisCall(RealAdjustForPerks, apThis, apCaster, apTarget);
 
-    if (s_applyHealPerkBonus)
-        apThis->fMagnitude *= 1.5f;
+    if (s_applyHealPerkBonus && apThis)
+    {
+        const auto* pEffItem = static_cast<const EffectItem*>(apThis->pEffect);
+        const auto* pMgef = pEffItem ? pEffItem->pEffectSetting : nullptr;
+        if (!pMgef || RfabCompat::ShouldApplyImprovedHealingPerk(
+                pMgef->flags,
+                pMgef->primaryAV,
+                static_cast<int32_t>(pMgef->eArchetype),
+                apThis->fMagnitude))
+        {
+            apThis->fMagnitude *= RfabCompat::GetRestorationImprovedHealingMultiplier(Settings::IsRfabModpackActive());
+        }
+    }
 }
 
 bool TP_MAKE_THISCALL(HookHasPerk, Actor, TESForm* apPerk, void* apUnk1, double* afReturnValue)
