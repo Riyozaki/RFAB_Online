@@ -60,12 +60,26 @@ bool MagicTarget::AddTarget(AddTargetData& arData, bool aApplyHealPerkBonus, boo
 
 bool MagicTarget::AddTargetData::ShouldSync()
 {
+    if (!pEffectItem || !pEffectItem->pEffectSetting || !pSpell)
+        return false;
+
     // Constant-effect slow time abilities (e.g. Requiem/RFAB Evasion Quick Reflexes) are added and removed locally by
     // each client's own scripts, so syncing them would leave allies permanently stuck in slow motion.
-    if (pEffectItem && pEffectItem->IsSlowEffect())
+    if (pEffectItem->IsSlowEffect())
     {
         if (SpellItem* pSpellItem = Cast<SpellItem>(pSpell); pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT)
             return false;
+    }
+
+    // Never sync SELF-delivered kScript effects cast by a player onto themselves (e.g. RFAB Spirit Toggle summons,
+    // Mirel_REUS Summon-Token scripts, RFAB_Script_SummonSpirit, RFAB_ToggleAbility / Stance / Aura).
+    // Running those Papyrus ActiveMagicEffect scripts on a remote player puppet corrupts summon tokens,
+    // spawns duplicate unsynced local summons, and triggers HUD/RemoveSpell echoes on peer clients!
+    if (pEffectItem->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kScript &&
+        pEffectItem->pEffectSetting->deliveryType == static_cast<uint32_t>(MagicSystem::Delivery::SELF) &&
+        pCaster && pCaster->GetExtension() && pCaster->GetExtension()->IsPlayer())
+    {
+        return false;
     }
 
     return !pEffectItem->IsSummonEffect() && !pSpell->IsInvisibilitySpell() && !pSpell->IsWardSpell();
@@ -117,11 +131,15 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         if (!arData.pCaster)
             return false;
 
-        if (!arData.pSpell->IsHealingSpell() && !arData.pSpell->IsBuffSpell())
+        const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
+        const bool isPvpAllowed = World::Get().GetServerSettings().PvpEnabled;
+        if (!isFriendlySupport && !isPvpAllowed)
             return false;
 
         ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
-        if (!pCasterExtension->IsLocalPlayer())
+        const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
+        const bool isLocalCaster = pCasterExtension->IsLocalPlayer() || (pCasterCmd && pCasterCmd->formID == 0x14);
+        if (!isLocalCaster)
             return false;
 
         if (arData.pSpell->IsHealingSpell())
@@ -130,8 +148,13 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
         }
 
+        const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
+        const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+
         bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
-        if (result)
+        // Concentration spells (e.g. Healing Hands / Sparks) are channeled continuously via SpellCastRequest/InterruptCastRequest;
+        // Fire-and-Forget heals/buffs/spells sync deterministically via AddTargetEvent.
+        if (result && !isConcentration && arData.ShouldSync())
             World::Get().GetRunner().Trigger(addTargetEvent);
         return result;
     }
@@ -143,11 +166,20 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
             if (pCasterExtension->IsRemotePlayer())
             {
-                if (!World::Get().GetServerSettings().PvpEnabled)
-                    return false;
+                const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
+                const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
+                const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
 
-                // Heal and buff spells are already synced by the caster.
-                if (arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell())
+                // Allow targeted concentration heals & buffs (e.g. Healing Hands) from allied remote players even when PvP is disabled!
+                if (isFriendlySupport)
+                {
+                    if (!isConcentration)
+                        return false; // Fire-and-forget ally heals/buffs are synced via NotifyAddTarget from caster
+
+                    return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+                }
+
+                if (!World::Get().GetServerSettings().PvpEnabled)
                     return false;
             }
         }

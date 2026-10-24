@@ -38,8 +38,8 @@ Console::StringSetting sAdminPassword{"GameServer:sAdminPassword", "Admin authen
 Console::StringSetting sPassword{"GameServer:sPassword", "Server password", ""};
 
 // Gameplay
-// TODO: to make this easier for users, use game names for difficulty instead of int
-Console::Setting uDifficulty{"Gameplay:uDifficulty", "In game difficulty (0 to 5)", 4u};
+// RFAB / Requiem requires Adept (2 = 1.0x dealt / 1.0x taken; DifficultyBalance.ini & RFAB.ini target Adept).
+Console::Setting uDifficulty{"Gameplay:uDifficulty", "In game difficulty (0 to 5, RFAB default 2 = Adept 1.0x)", 2u};
 Console::Setting bEnableGreetings{"Gameplay:bEnableGreetings", "Enables NPC greetings (disabled by default since they can be spammy with dialogue sync)", false};
 Console::Setting bEnablePvp{"Gameplay:bEnablePvp", "Enables pvp", false};
 Console::Setting bSyncPlayerHomes{"Gameplay:bSyncPlayerHomes", "Sync chests and displays in player homes and other NoResetZones", false};

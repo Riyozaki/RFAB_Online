@@ -904,6 +904,11 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
         auto& dispatcher = m_world.GetDispatcher();
         dispatcher.trigger(PlayerEnterWorldEvent(pPlayer));
     }
+    else if (message.IsPlayerSummon && acMessage.pPlayer)
+    {
+        // Record the summoner's PlayerId so remote clients bind commandingActor to the remote summoner (never 0x14).
+        characterComponent.PlayerId = acMessage.pPlayer->GetId();
+    }
 
     AssignCharacterResponse response{};
     response.Cookie = message.Cookie;

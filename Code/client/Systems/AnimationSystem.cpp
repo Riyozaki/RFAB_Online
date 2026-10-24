@@ -14,6 +14,7 @@
 #include <Messages/ClientReferencesMoveRequest.h>
 
 #include <Components.h>
+#include <Utils.h>
 #include <World.h>
 
 #include <Forms/TESObjectCELL.h>
@@ -21,32 +22,56 @@
 
 extern thread_local const char* g_animErrorCode;
 
+namespace
+{
+constexpr uint32_t kEncodedActorServerIdTag = 0xFF800000u;
+constexpr uint32_t kEncodedActorServerIdMask = 0x007FFFFFu;
+}
+
 void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent, const uint64_t aTick) noexcept
 {
     auto& actions = aAnimationComponent.TimePoints;
+    if (actions.empty())
+        return;
 
-    const auto it = std::begin(actions);
-    if (it != std::end(actions) && it->Tick <= aTick)
+    // Check if animation graph is ready before attempting to play animations
+    if (!apActor || !apActor->animationGraphHolder.IsReady())
+        return;
+
+    // Drop ancient backlog (>2s stale non-replay actions) if a lag burst queued >16 events, preventing freeze catch-up storms.
+    while (actions.size() > 16 && aAnimationComponent.ReplayCount == 0 && aTick > 2000 && actions.front().Tick + 2000 < aTick)
     {
-        // Check if animation graph is ready before attempting to play animations
-        if (!apActor->animationGraphHolder.IsReady())
-        {
-            // Animation graph not ready, keep the action in queue and try again later
-            return;
-        }
+        actions.pop_front();
+    }
+
+    // Drain up to 8 causal actions per frame in order so multi-event Skyrim/RFAB combat transitions
+    // (e.g. ActionDraw + weaponDraw, ActionRightAttack + attackStart + BashStart) fire together cleanly!
+    uint32_t processedThisFrame = 0;
+    while (!actions.empty() && actions.front().Tick <= aTick && processedThisFrame < 8)
+    {
         if (aAnimationComponent.ReplayCount > 0 && aAnimationComponent.ResetAnimationGraphForReplay)
         {
             apActor->animationGraphHolder.RevertAnimationGraphManager();
             aAnimationComponent.ResetAnimationGraphForReplay = false;
         }
 
-        const auto& first = *it;
+        const auto first = actions.front();
+        actions.pop_front();
+        ++processedThisFrame;
 
         const auto actionId = first.ActionId;
         const auto targetId = first.TargetId;
 
         const auto pAction = Cast<BGSAction>(TESForm::GetById(actionId));
-        const auto pTarget = Cast<TESObjectREFR>(TESForm::GetById(targetId));
+        TESObjectREFR* pTarget = nullptr;
+        if ((targetId & kEncodedActorServerIdTag) == kEncodedActorServerIdTag)
+        {
+            pTarget = Utils::GetByServerId<TESObjectREFR>(targetId & kEncodedActorServerIdMask);
+        }
+        else if (targetId != 0 && targetId != 0x14 && (targetId & 0xFF000000u) != 0xFF000000u)
+        {
+            pTarget = Cast<TESObjectREFR>(TESForm::GetById(targetId));
+        }
 
         apActor->actorState.flags1 = first.State1;
         apActor->actorState.flags2 = first.State2;
@@ -61,12 +86,10 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
         actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
 
-        const auto result = ActorMediator::Get()->ForceAction(&actionData);
+        ActorMediator::Get()->ForceAction(&actionData);
 
         if (aAnimationComponent.ReplayCount > 0)
             aAnimationComponent.ReplayCount--;
-
-        actions.pop_front();
     }
 }
 
@@ -133,9 +156,27 @@ void AnimationSystem::Serialize(World& aWorld, ClientReferencesMoveRequest& aMov
         movement.Direction = pActor->currentProcess->middleProcess->direction;
     }
 
-    for (auto& entry : animationComponent.Actions)
+    for (auto entry : animationComponent.Actions)
     {
-        update.ActionEvents.push_back(entry);
+        if (entry.TargetId != 0)
+        {
+            auto targetView = aWorld.view<FormIdComponent>();
+            const auto targetIt = std::find_if(
+                std::begin(targetView), std::end(targetView),
+                [id = entry.TargetId, targetView](entt::entity e) { return targetView.get<FormIdComponent>(e).Id == id; });
+            if (targetIt != std::end(targetView))
+            {
+                if (const auto targetServerId = Utils::GetServerId(*targetIt); targetServerId.has_value())
+                    entry.TargetId = kEncodedActorServerIdTag | (targetServerId.value() & kEncodedActorServerIdMask);
+                else if (entry.TargetId == 0x14 || (entry.TargetId & 0xFF000000u) == 0xFF000000u)
+                    entry.TargetId = 0;
+            }
+            else if (entry.TargetId == 0x14 || (entry.TargetId & 0xFF000000u) == 0xFF000000u)
+            {
+                entry.TargetId = 0;
+            }
+        }
+        update.ActionEvents.push_back(std::move(entry));
     }
 
     auto latestAction = animationComponent.GetLatestAction();

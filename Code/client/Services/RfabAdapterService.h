@@ -33,6 +33,7 @@ public:
     TP_NOCOPYMOVE(RfabAdapterService);
 
     [[nodiscard]] TESGlobal* GetRfabXpGlobal() noexcept;
+    [[nodiscard]] float GetLocalXpMultiplier() noexcept;
     [[nodiscard]] TESGlobal* ResolveGlobalByEditorId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) noexcept;
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
 
@@ -65,6 +66,7 @@ private:
     RfabCompat::RfabLiveXpTable m_liveXpTable{};
 
     TESGlobal* m_pCachedXpGlobal{nullptr};
+    TESGlobal* m_pCachedXpMultiplierGlobal{nullptr};
     TESGlobal* m_pNoDeathHandlingGlobal{nullptr};
     BGSListForm* m_pXpBooksFormList{nullptr};
     bool m_scannedGlobalsOnce{false};

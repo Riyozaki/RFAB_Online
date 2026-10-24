@@ -802,6 +802,7 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
         }
         $updated = Ensure-SectionKeys $updated "Patches" @(
             @("RegularQuicksaves", "true"),
+            @("CleanSkseCosaves", "true"),
             @("MaxStdio", "8192")
         )
     } else {
@@ -809,6 +810,7 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
             @("MemoryManager", "false"),
             @("ScaleformAllocator", "false"),
             @("RegularQuicksaves", "true"),
+            @("CleanSkseCosaves", "true"),
             @("MaxStdio", "8192")
         )
     }
@@ -842,11 +844,16 @@ foreach ($sf in ($SkyrimSoulsFiles | Select-Object -Unique -Property FullName)) 
 }
 
 $AutosaveFiles = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "[RFAB] Autosave.ini" -Recurse -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $cr -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -ieq "[RFAB] Autosave.ini"
+    }
 }
 foreach ($af in ($AutosaveFiles | Select-Object -Unique -Property FullName)) {
     $raw = [System.IO.File]::ReadAllText($af.FullName, [System.Text.Encoding]::UTF8)
-    $updated = [regex]::Replace($raw, "(?m)^(\s*Enabled\s*=\s*)([^\r\n#]+)(.*)$", "`${1}false`${3}")
+    $updated = [regex]::Replace($raw, "(?mi)^(\s*Enabled\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}false`${3}")
+    foreach ($asKey in @("Enable autosave", "Save after combat", "Save on location change", "Save on sleep/wait")) {
+        $updated = [regex]::Replace($updated, "(?mi)^(\s*$([regex]::Escape($asKey))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}0`${3}")
+    }
     if ($updated -ne $raw) {
         Backup-Once $af.FullName
         [System.IO.File]::WriteAllText($af.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
@@ -1019,8 +1026,21 @@ if (-not [string]::IsNullOrWhiteSpace($ServerSourceDir) -and (Test-Path -Literal
     New-Item -ItemType Directory -Path $SrvCfgDir -Force | Out-Null
 
     if ($null -ne $SavedServerIni -and $SavedServerIni.Length -gt 20) {
-        [System.IO.File]::WriteAllBytes((Join-Path $SrvCfgDir "STServer.ini"), $SavedServerIni)
-        Write-Ok "Сохранены ваши пользовательские настройки STServer.ini"
+        $TargetIniFile = Join-Path $SrvCfgDir "STServer.ini"
+        [System.IO.File]::WriteAllBytes($TargetIniFile, $SavedServerIni)
+        $rawSavedIni = [System.IO.File]::ReadAllText($TargetIniFile, [System.Text.Encoding]::UTF8)
+        $migratedIni = $rawSavedIni
+        if ($migratedIni -match '4=Master \(Requiem default\)') {
+            $migratedIni = $migratedIni.Replace('4=Master (Requiem default)', '2=Adept (RFAB/Requiem 1.0x standard!), 4=Master')
+            $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*uDifficulty\s*=\s*)4(\s*)$', '${1}2${2}')
+        }
+        if ($migratedIni -notmatch '(?mi)^\s*bEnableItemDrops\s*=') {
+            $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*uDifficulty\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableItemDrops = true`r`n")
+        }
+        if ($migratedIni -ne $rawSavedIni) {
+            [System.IO.File]::WriteAllText($TargetIniFile, $migratedIni, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        Write-Ok "Сохранены и обновлены настройки STServer.ini (сложность Adept 1.0x, видимые предметы на земле)"
     }
 
     [System.IO.File]::WriteAllText((Join-Path $SrvDataDir "loadorder.txt"), $CleanLoadOrderText, (New-Object System.Text.UTF8Encoding($false)))

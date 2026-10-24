@@ -87,6 +87,7 @@ void RfabAdapterService::RefreshRuntimeBindings() noexcept
         RfabCompat::ParseXpSettingsJson(raw, m_liveXpTable);
 
     m_pCachedXpGlobal = nullptr;
+    m_pCachedXpMultiplierGlobal = nullptr;
     m_pNoDeathHandlingGlobal = nullptr;
     m_pXpBooksFormList = nullptr;
     m_scannedGlobalsOnce = false;
@@ -166,6 +167,21 @@ TESGlobal* RfabAdapterService::GetRfabXpGlobal() noexcept
 
     m_pCachedXpGlobal = ResolveGlobalByEditorId(m_bindings.XpAmountGlobalEditorId, m_bindings.FallbackXpAmountBaseFormId);
     return m_pCachedXpGlobal;
+}
+
+float RfabAdapterService::GetLocalXpMultiplier() noexcept
+{
+    if (!m_pCachedXpMultiplierGlobal)
+    {
+        m_pCachedXpMultiplierGlobal = ResolveGlobalByEditorId("RFAB_XP_Multiplier", 0x00112815);
+        if (!m_pCachedXpMultiplierGlobal && !m_bindings.XpBonusGlobalEditorId.empty())
+            m_pCachedXpMultiplierGlobal = ResolveGlobalByEditorId(m_bindings.XpBonusGlobalEditorId, 0);
+    }
+
+    if (!m_pCachedXpMultiplierGlobal || !std::isfinite(m_pCachedXpMultiplierGlobal->f) || m_pCachedXpMultiplierGlobal->f <= 0.05f)
+        return 1.0f;
+
+    return m_pCachedXpMultiplierGlobal->f;
 }
 
 int32_t RfabAdapterService::ReadRfabXp(TESGlobal* apGlobal) noexcept
@@ -446,7 +462,7 @@ void RfabAdapterService::OnNotifyProgressionEvent(const NotifyRfabProgressionEve
     case NotifyRfabProgressionEvent::EventKind::GlobalValueSync:
     {
         const std::string editorId(acMessage.EditorId.c_str(), acMessage.EditorId.size());
-        if (editorId.empty())
+        if (editorId.empty() || !RfabCompat::ShouldAutoSyncGlobalEditorId(editorId, m_bindings))
             break;
 
         TESGlobal* pTarget = nullptr;

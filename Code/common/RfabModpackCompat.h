@@ -34,10 +34,10 @@ struct RfabBindingsConfig
     std::string PluginName{"RFAB.esp"};
 
     std::string XpAmountGlobalEditorId{"RFAB_XP_Amount"};
-    std::string XpBonusGlobalEditorId{"RFAB_XP_Bonus"};
+    std::string XpBonusGlobalEditorId{"RFAB_XP_Multiplier"};
     std::string XpBooksFormListEditorId{"XPBooksReaded"};
     std::string NoDeathHandlingGlobalEditorId{"REQ_Combat_NoDeathHandling"};
-    std::string KillCounterGlobalEditorId{"TFOTG_Kill_Counter"};
+    std::string KillCounterGlobalEditorId{"RFAB_TFOTG_Kill_Counter"};
     std::string XpHandlerQuestEditorId{"RFAB_XP_Handler"};
 
     // Optional last-resort base FormID only used if PO3 EditorID tables are completely absent.
@@ -48,6 +48,7 @@ struct RfabBindingsConfig
         "RFAB_Global_",
         "RFAB_Boss_",
         "RFAB_Quest_",
+        "RFAB_TFOTG_",
         "TFOTG_",
     };
 
@@ -61,6 +62,7 @@ struct RfabBindingsConfig
         "RFAB_Camera_",
         "RFAB_XP_Amount",
         "RFAB_XP_Bonus",
+        "RFAB_XP_Multiplier",
     };
 
     std::string ExperienceIniRelPath{"Data/SKSE/Plugins/StorageUtilData/Experience.ini"};
@@ -130,6 +132,134 @@ inline bool StartsWithIgnoreCase(std::string_view aText, std::string_view aPrefi
             return false;
     }
     return true;
+}
+
+inline bool EndsWithIgnoreCase(std::string_view aText, std::string_view aSuffix) noexcept
+{
+    if (aSuffix.empty() || aText.size() < aSuffix.size())
+        return false;
+
+    const size_t offset = aText.size() - aSuffix.size();
+    for (size_t i = 0; i < aSuffix.size(); ++i)
+    {
+        if (std::tolower(static_cast<unsigned char>(aText[offset + i])) != std::tolower(static_cast<unsigned char>(aSuffix[i])))
+            return false;
+    }
+    return true;
+}
+
+// Strips directory components, quotes, and `.ess.tmp` / `.tmp` / `.skse` / `.ess` suffixes while preserving original stem casing.
+inline std::string StripSaveSlotExtensionPreserveCase(std::string_view aRawPathOrName)
+{
+    std::string s = Trim(aRawPathOrName);
+    while (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\'')))
+        s = Trim(std::string_view(s).substr(1, s.size() - 2));
+
+    if (const size_t sep = s.find_last_of("\\/"); sep != std::string::npos)
+        s = s.substr(sep + 1);
+
+    for (std::string_view ext : {
+             std::string_view(".ess.tmp"),
+             std::string_view(".ess.bak"),
+             std::string_view(".tmp"),
+             std::string_view(".bak"),
+             std::string_view(".skse"),
+             std::string_view(".ess")})
+    {
+        if (EndsWithIgnoreCase(s, ext))
+        {
+            s.resize(s.size() - ext.size());
+            break;
+        }
+    }
+
+    return Trim(s);
+}
+
+// Canonical lowercase save slot stem so `"Saves\\RFAB_MP_S1234_Auto_0.ess"` == `"RFAB_MP_S1234_Auto_0"`.
+inline std::string NormalizeSaveSlotStem(std::string_view aRawPathOrName)
+{
+    return ToLowerAscii(StripSaveSlotExtensionPreserveCase(aRawPathOrName));
+}
+
+// Verifies that an `.ess` file on disk has a genuine Skyrim `TESV_SAVEGAME` header and non-truncated payload.
+inline bool IsValidEssFileOnDisk(const std::filesystem::path& acEssPath) noexcept
+{
+    constexpr std::string_view kMagic = "TESV_SAVEGAME";
+    std::error_code ec;
+    if (!std::filesystem::exists(acEssPath, ec) || !std::filesystem::is_regular_file(acEssPath, ec))
+        return false;
+
+    const auto fileSize = std::filesystem::file_size(acEssPath, ec);
+    if (ec || fileSize < 256)
+        return false;
+
+    std::ifstream ifs(acEssPath, std::ios::in | std::ios::binary);
+    if (!ifs.is_open())
+        return false;
+
+    char magicBuf[13]{};
+    ifs.read(magicBuf, static_cast<std::streamsize>(sizeof(magicBuf)));
+    if (ifs.gcount() != static_cast<std::streamsize>(sizeof(magicBuf)))
+        return false;
+
+    return std::string_view(magicBuf, sizeof(magicBuf)) == kMagic;
+}
+
+// Safely moves truncated / headerless `.ess` files left behind by mid-save aborts into `Quarantined_Corrupt_v100/`
+// alongside any matching `.skse` or `.ess.tmp` companion files (never deleting user files without backup).
+inline size_t QuarantineCorruptEssFilesInDirectory(const std::filesystem::path& acSavesDir) noexcept
+{
+    std::error_code ec;
+    if (acSavesDir.empty() || !std::filesystem::exists(acSavesDir, ec) || !std::filesystem::is_directory(acSavesDir, ec))
+        return 0;
+
+    std::vector<std::filesystem::path> corruptEssFiles;
+    for (const auto& entry : std::filesystem::directory_iterator(acSavesDir, ec))
+    {
+        if (ec || !entry.is_regular_file(ec))
+            continue;
+
+        const std::string fname = entry.path().filename().string();
+        if (EndsWithIgnoreCase(fname, ".ess") && !IsValidEssFileOnDisk(entry.path()))
+        {
+            corruptEssFiles.push_back(entry.path());
+        }
+        else if (EndsWithIgnoreCase(fname, ".ess.tmp"))
+        {
+            const auto sz = std::filesystem::file_size(entry.path(), ec);
+            if (!ec && sz < 256)
+                corruptEssFiles.push_back(entry.path());
+        }
+    }
+
+    if (corruptEssFiles.empty())
+        return 0;
+
+    const std::filesystem::path quarantineDir = acSavesDir / "Quarantined_Corrupt_v100";
+    std::filesystem::create_directories(quarantineDir, ec);
+    if (ec)
+        return 0;
+
+    size_t movedCount = 0;
+    for (const auto& badPath : corruptEssFiles)
+    {
+        const auto destPath = quarantineDir / badPath.filename();
+        std::filesystem::rename(badPath, destPath, ec);
+        if (!ec)
+        {
+            ++movedCount;
+            if (EndsWithIgnoreCase(badPath.filename().string(), ".ess"))
+            {
+                auto skseCompanion = badPath;
+                skseCompanion.replace_extension(".skse");
+                if (std::filesystem::exists(skseCompanion, ec))
+                    std::filesystem::rename(skseCompanion, quarantineDir / skseCompanion.filename(), ec);
+            }
+        }
+    }
+
+    return movedCount;
 }
 
 inline bool ReadTextFile(const std::filesystem::path& acPath, std::string& aOut) noexcept
@@ -354,6 +484,16 @@ inline RfabBindingsConfig LoadBindingsFromDisk(const std::filesystem::path& acGa
 {
     if (aEditorId.empty())
         return false;
+
+    const std::string lowerEdid = Detail::ToLowerAscii(aEditorId);
+    // RFAB_XP_Amount is each player's personal unspent RFAB_Menu skill-point wallet (earned deltas sync via
+    // SyncRfabExperienceRequest; spending points in RFAB_Menu is per-character and must NEVER overwrite peers!).
+    if (lowerEdid == "rfab_xp_amount" || lowerEdid == Detail::ToLowerAscii(acConfig.XpAmountGlobalEditorId) ||
+        lowerEdid == "rfab_xp_multiplier" || lowerEdid == "rfab_xp_bonus" ||
+        lowerEdid == Detail::ToLowerAscii(acConfig.XpBonusGlobalEditorId))
+    {
+        return false;
+    }
 
     for (const auto& excluded : acConfig.ExcludedGlobalPrefixes)
     {
@@ -768,6 +908,8 @@ inline bool PatchSkyrimSoulsReIniContent(std::string& aIni)
     return changed;
 }
 
+inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni);
+
 inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acGameOrMo2Root) noexcept
 {
     size_t patchedFiles = 0;
@@ -815,12 +957,28 @@ inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acG
         }
     };
 
+    auto patchAutosaveIni = [&](const std::filesystem::path& p)
+    {
+        std::string content;
+        if (!Detail::ReadTextFile(p, content))
+            return;
+
+        const std::string updated = SuppressRfabAutosaveIniContent(content);
+        if (updated != content)
+        {
+            if (Detail::WriteTextFile(p, updated))
+                ++patchedFiles;
+        }
+    };
+
     auto scanPluginTree = [&](const std::filesystem::path& baseDir)
     {
         patchToml(baseDir / "SKSE" / "Plugins" / "EngineFixes.toml");
         patchToml(baseDir / "skse" / "plugins" / "EngineFixes.toml");
         patchSoulsIni(baseDir / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini");
         patchSoulsIni(baseDir / "skse" / "plugins" / "SkyrimSoulsRE.ini");
+        patchAutosaveIni(baseDir / "SKSE" / "Plugins" / "[RFAB] Autosave.ini");
+        patchAutosaveIni(baseDir / "skse" / "plugins" / "[RFAB] Autosave.ini");
         hideBetterStealing(baseDir);
     };
 
@@ -889,10 +1047,13 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
             if (const size_t eq = trimmed.find('='); eq != std::string::npos)
             {
                 const std::string key = Detail::ToLowerAscii(Detail::Trim(std::string_view(trimmed).substr(0, eq)));
-                if (key == "enable autosave" || key == "save after combat")
+                if (key == "enable autosave" || key == "save in combat" || key == "save after combat" ||
+                    key == "save on location change" || key == "save on sleep/wait" || key == "enabled")
                 {
                     const size_t rawEq = line.find('=');
-                    line = line.substr(0, rawEq + 1) + " 0";
+                    line = (key == "enabled")
+                        ? (line.substr(0, rawEq + 1) + " false")
+                        : (line.substr(0, rawEq + 1) + " 0");
                 }
             }
         }

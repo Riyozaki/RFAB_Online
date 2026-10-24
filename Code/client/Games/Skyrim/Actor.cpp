@@ -22,6 +22,7 @@
 #include <Events/RemoveSpellEvent.h>
 
 #include <Games/TES.h>
+#include <Games/Skyrim/Interface/UI.h>
 #include <World.h>
 #include <Services/PapyrusService.h>
 #include <Services/DownedStateService.h>
@@ -196,7 +197,6 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
     const auto pWorldSpace = pPlayer->GetWorldSpace();
 
     pActor->SetLevelMod(4);
-    pActor->MarkChanged(0x40000000);
     pActor->SetParentCell(pCell);
     pActor->SetBaseForm(apBaseForm);
 
@@ -215,6 +215,8 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
     pActor->GetMagicCaster(MagicSystem::CastingSource::OTHER);
 
     pActor->flags &= 0xFFDFFFFF;
+    pActor->SetSkipSaveFlag(true);
+    pActor->UnsetChanged(0xFFFFFFFF);
 
     return pActor;
 }
@@ -670,7 +672,10 @@ void Actor::SetCommandingActor(BSPointerHandle<TESObjectREFR> aCommandingActor) 
 bool Actor::IsPlayerSummon() const noexcept
 {
     const Actor* pCommandingActor = GetCommandingActor();
-    return pCommandingActor && pCommandingActor->formID == 0x14;
+    if (!pCommandingActor)
+        return false;
+
+    return pCommandingActor->formID == 0x14 || pCommandingActor->GetExtension()->IsRemotePlayer();
 }
 
 TESForm* Actor::GetCurrentLocation()
@@ -723,13 +728,27 @@ ActorValues Actor::GetEssentialActorValues() const noexcept
 {
     ActorValues actorValues;
 
-    int essentialValues[] = {ActorValueInfo::kHealth, ActorValueInfo::kStamina, ActorValueInfo::kMagicka};
-    for (auto i : essentialValues)
+    const int essentialPools[] = {ActorValueInfo::kHealth, ActorValueInfo::kStamina, ActorValueInfo::kMagicka};
+    for (int i : essentialPools)
     {
-        float value = actorValueOwner.GetValue(i);
+        const float value = actorValueOwner.GetValue(i);
         actorValues.ActorValuesList.insert({i, value});
-        float maxValue = actorValueOwner.GetPermanentValue(i);
+        const float maxValue = actorValueOwner.GetPermanentValue(i);
         actorValues.ActorMaxValuesList.insert({i, maxValue});
+    }
+
+    // Sync armor rating (kDamageResist = 39) & magic/elemental resistances (40..44) via PERMANENT so
+    // RFAB.dll ProcessHit / Shield Bash flat-damage armor mitigation and spell damage match across peers!
+    const int defenseValues[] = {
+        ActorValueInfo::kDamageResist,
+        ActorValueInfo::kPoisonResist,
+        ActorValueInfo::kFireResist,
+        ActorValueInfo::kElectricResist,
+        ActorValueInfo::kFrostResist,
+        ActorValueInfo::kMagicResist};
+    for (int av : defenseValues)
+    {
+        actorValues.ActorMaxValuesList.insert({av, actorValueOwner.GetValue(av)});
     }
 
     return actorValues;
@@ -1105,6 +1124,15 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     auto applyAuthoritativeDamage = [&]() -> bool
     {
         ScopedDamageHookGuard dmgGuard;
+        // Enforce single-owner RFAB kill XP authority: if a non-owner player or local summon lands a killing blow
+        // on a remotely-owned NPC, mark kInfamy = -1 locally so RFAB_XP_Alias::OnActorKilled fires ONLY on the
+        // NPC's authoritative owner client (via OnHealthChangeBroadcast) and distributes exact 1x XP to the party!
+        if (apThis->GetExtension()->IsRemote() && !apThis->GetExtension()->IsPlayer())
+        {
+            ScopedActorValueOverride avOverride;
+            apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+        }
+
         const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
         const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
         const float healthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
@@ -1169,9 +1197,15 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     if (apHitter)
     {
         const auto* pExHitter = apHitter->GetExtension();
-        if (pExHitter->IsLocalPlayer())
+        const Actor* pHitterCmd = apHitter->GetCommandingActor();
+        const bool isLocalPlayerSummon = pHitterCmd && pHitterCmd->formID == 0x14;
+        const bool isRemotePlayerSummon =
+            (pHitterCmd && pHitterCmd->GetExtension()->IsRemotePlayer()) ||
+            (pExHitter->IsRemote() && apHitter->IsPlayerSummon());
+
+        if (pExHitter->IsLocalPlayer() || isLocalPlayerSummon)
             return applyAuthoritativeDamage();
-        if (pExHitter->IsRemotePlayer())
+        if (pExHitter->IsRemotePlayer() || isRemotePlayerSummon)
             return wouldKill;
     }
 
@@ -1267,7 +1301,13 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
 
 void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
 {
-    if (!ScopedInventoryOverride::IsOverriden())
+    const auto* pExt = apThis ? apThis->GetExtension() : nullptr;
+    const bool blockRemote =
+        pExt &&
+        (pExt->IsRemotePlayer() ||
+         (pExt->IsRemote() && !apThis->IsDead() && (!UI::Get() || !UI::Get()->GetMenuOpen(BSFixedString("ContainerMenu")))));
+
+    if (!ScopedInventoryOverride::IsOverriden() && apItem && !blockRemote)
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1286,7 +1326,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
 
 void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2)
 {
-    if (!ScopedInventoryOverride::IsOverriden())
+    if (!ScopedInventoryOverride::IsOverriden() && apObject && apObject->baseForm && !apThis->GetExtension()->IsRemote())
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1297,11 +1337,9 @@ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t
         if (apObject->GetExtraDataList())
             apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
 
-        // This is here so that objects that are picked up on both clients, aka non temps, are synced through activation sync.
-        // The inventory change event should always be sent to the server, otherwise the server inventory won't be updated.
-        bool shouldUpdateClients = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
+        const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
 
-        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), false, shouldUpdateClients));
+        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), isTempDropPickup, true));
     }
 
     return TiltedPhoques::ThisCall(RealPickUpObject, apThis, apObject, aCount, aUnk1, aUnk2);
@@ -1314,16 +1352,19 @@ void Actor::PickUpObject(TESObjectREFR* apObject, int32_t aCount, bool aUnk1, fl
 
 void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation)
 {
-    auto& modSystem = World::Get().GetModSystem();
+    if (apObject && !apThis->GetExtension()->IsRemote())
+    {
+        auto& modSystem = World::Get().GetModSystem();
 
-    Inventory::Entry item{};
-    modSystem.GetServerModId(apObject->formID, item.BaseId);
-    item.Count = -aCount;
+        Inventory::Entry item{};
+        modSystem.GetServerModId(apObject->formID, item.BaseId);
+        item.Count = -aCount;
 
-    if (apExtraData)
-        apThis->GetItemFromExtraData(item, apExtraData);
+        if (apExtraData)
+            apThis->GetItemFromExtraData(item, apExtraData);
 
-    World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), true));
+        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), true));
+    }
 
     ScopedInventoryOverride _;
 
@@ -1340,14 +1381,65 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
     TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
     if (!pObject)
     {
-        spdlog::warn("Object to drop not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
+        spdlog::warn("Object to drop/pick up not found, {:X}:{:X}.", arEntry.BaseId.ModId, arEntry.BaseId.BaseId);
         ExtraDataList::Delete(pExtraData);
         return;
     }
 
     if (arEntry.Count < 0)
+    {
         DropObject(pObject, pExtraData, -arEntry.Count, apLocation, apRotation);
-    // TODO: pick up
+        return;
+    }
+
+    ExtraDataList::Delete(pExtraData);
+
+    if (arEntry.Count > 0)
+    {
+        // Despawn the matching temporary 0xFFxxxxxx dropped world reference near this actor so peers
+        // cannot pick up a second copy after someone already picked it up!
+        TESObjectREFR* pBestMatch = nullptr;
+        float bestDistSq = 2048.0f * 2048.0f;
+
+        auto scanCell = [&](TESObjectCELL* apCell)
+        {
+            if (!apCell || !apCell->refData.refArray)
+                return;
+
+            for (uint32_t i = 0; i < apCell->refData.capacity; ++i)
+            {
+                TESObjectREFR* pRef = apCell->refData.refArray[i].Get();
+                if (!pRef || pRef == this || pRef->IsDisabled() || pRef->baseForm != pObject)
+                    continue;
+                if ((pRef->formID & 0xFF000000) != 0xFF000000)
+                    continue;
+
+                const float dx = pRef->position.x - position.x;
+                const float dy = pRef->position.y - position.y;
+                const float dz = pRef->position.z - position.z;
+                const float distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq < bestDistSq)
+                {
+                    bestDistSq = distSq;
+                    pBestMatch = pRef;
+                }
+            }
+        };
+
+        scanCell(parentCell);
+        if (PlayerCharacter* pLocalPlayer = PlayerCharacter::Get(); pLocalPlayer && pLocalPlayer->parentCell != parentCell)
+            scanCell(pLocalPlayer->parentCell);
+
+        if (pBestMatch)
+        {
+            pBestMatch->UnsetChanged(0xFFFFFFFF);
+            pBestMatch->SetSkipSaveFlag(true);
+            pBestMatch->Disable();
+            pBestMatch->Delete();
+        }
+
+        AddOrRemoveItem(arEntry);
+    }
 }
 
 void Actor::DropObject(TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
@@ -1355,6 +1447,11 @@ void Actor::DropObject(TESBoundObject* apObject, ExtraDataList* apExtraData, int
     spdlog::debug("Dropping object, form id: {:X}, count: {}, actor: {:X}", apObject->formID, aCount, formID);
     BSPointerHandle<TESObjectREFR> result{};
     TiltedPhoques::ThisCall(RealDropObject, this, &result, apObject, apExtraData, aCount, apLocation, apRotation);
+    if (TESObjectREFR* pDropped = TESObjectREFR::GetByHandle(result))
+    {
+        pDropped->SetSkipSaveFlag(true);
+        pDropped->UnsetChanged(0xFFFFFFFF);
+    }
 }
 
 TP_THIS_FUNCTION(TUpdateDetectionState, void, ActorKnowledge, void*);

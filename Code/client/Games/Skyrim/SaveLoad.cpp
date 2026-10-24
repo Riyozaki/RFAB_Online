@@ -1,8 +1,10 @@
 #include <TiltedOnlinePCH.h>
 
 #include <SaveLoad.h>
+#include <common/RfabModpackCompat.h>
 #include <Games/IFormFactory.h>
 #include <Games/Memory.h>
+#include <Games/TES.h>
 #include <Services/CharacterService.h>
 #include <Services/CoordinatedSaveService.h>
 #include <Utils.h>
@@ -11,31 +13,37 @@
 #include <atomic>
 #include <climits>
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 namespace
 {
 TP_THIS_FUNCTION(TSaveImpl, bool, BGSSaveLoadManager, int32_t aDeviceId, uint32_t aOutputStats, const char* acpFileName);
+TP_THIS_FUNCTION(TSaveGame2, bool, BGSSaveLoadManager, uint64_t aArg1, uint64_t aArg2, uint64_t aArg3);
 TP_THIS_FUNCTION(TLoadImpl, bool, BGSSaveLoadManager, const char* acpFileName, int32_t aDeviceId, uint32_t aOutputStats, bool aCheckForMods);
-TP_THIS_FUNCTION(TSaveGameCallSite, void, BGSSaveLoadManager, uint64_t* apUnk0);
+TP_THIS_FUNCTION(TLoadMostRecent, bool, BGSSaveLoadManager);
+TP_THIS_FUNCTION(TQueueSaveLoadTask, void, BGSSaveLoadManager, uint32_t aTaskMask);
+TP_THIS_FUNCTION(TProcessEvents, void, BGSSaveLoadManager);
 TP_THIS_FUNCTION(TLoadGameCallSite, bool, BGSSaveLoadManager, uint64_t* apUnk0, uint32_t aUnk1, uint32_t aUnk2, void* apUnk3);
 
 TSaveImpl* RealSaveImpl = nullptr;
+TSaveGame2* RealSaveGame2 = nullptr;
 TLoadImpl* RealLoadImpl = nullptr;
-TSaveGameCallSite* RealSaveCallSite1 = nullptr;
-TSaveGameCallSite* RealSaveCallSite2 = nullptr;
+TLoadMostRecent* RealLoadMostRecent = nullptr;
+TQueueSaveLoadTask* RealQueueSaveLoadTask = nullptr;
+TProcessEvents* RealProcessEvents = nullptr;
 TLoadGameCallSite* RealLoadCallSite = nullptr;
-std::atomic<bool> s_universalHooksInstalled{false};
 
-// Exact Skyrim SE 1.5.97.0.8 call-site offsets verified verbatim against ianpatt/skse64 tag v2.0.20
-// (skse64/Hooks_SaveLoad.cpp lines 122-124):
-// - SaveGame_HookTarget_Enter  = 0x00586DE0 + 0x18B (named / console save path)
-// - SaveGame2_HookTarget_Enter = 0x005875F0 + 0x138 (Journal Menu Save, F5 Quicksave, RegularQuicksaves, Autosave)
-// - LoadGame_HookTarget_Enter  = 0x0058AE30 + 0x26C (Journal Menu Load, F9 Quickload, Continue, named load)
-// Wrapping the 5-byte E8 call instruction AFTER skse64_1_5_97.dll commits its own hooks preserves 100% of
-// SKSE's .skse co-save serialization while intercepting blocked saves/loads BEFORE kMessage_PreLoadGame fires!
-constexpr uintptr_t kSe1597SaveCallSite1Rva = 0x00586DE0 + 0x18B;
-constexpr uintptr_t kSe1597SaveCallSite2Rva = 0x005875F0 + 0x138;
+std::atomic<bool> s_universalHooksInstalled{false};
+std::atomic<bool> s_quarantinedOnce{false};
+thread_local bool s_inDirectProcessEventsSave = false;
+
+// Exact Skyrim SE 1.5.97.0.8 call-site offset verified verbatim against ianpatt/skse64 tag v2.0.20
+// (skse64/Hooks_SaveLoad.cpp line 129: LoadGame_HookTarget_Enter = 0x0058AE30 + 0x26C).
+// Note: SaveGame_HookTarget_Enter (0x00586DE0 + 0x18B) and SaveGame2_HookTarget_Enter (0x005875F0 + 0x138)
+// MUST NEVER be aborted mid-function because BGSSaveLoadManager has already created/truncated the .ess file
+// on disk before reaching those inner call sites! All save gating happens strictly at the outer entry points
+// (34859 QueueSaveLoadTask, 34818 Save_Impl, 34823 SaveGame2) BEFORE any .ess file is opened.
 constexpr uintptr_t kSe1597LoadCallSiteRva = 0x0058AE30 + 0x26C;
 
 const char* ExtractSaveNameFromContext(uint64_t* apUnk0) noexcept
@@ -61,8 +69,6 @@ bool PatchRelativeCallSite(uintptr_t aCallSiteAddr, void* apDetourFn, TFn** appO
     const uintptr_t nextRip = aCallSiteAddr + 5;
     const uintptr_t origTarget = static_cast<uintptr_t>(static_cast<int64_t>(nextRip) + static_cast<int64_t>(origDisp));
 
-    // Emit a clean 14-byte indirect absolute jump (`FF 25 00 00 00 00 <64-bit target>`) inside the ±2 GB
-    // RIP-near executable region (`RipAllocateN` guarantees PAGE_EXECUTE_READWRITE).
     auto* pThunk = static_cast<uint8_t*>(::RipAllocateN(32));
     if (!pThunk)
     {
@@ -106,30 +112,6 @@ bool PatchRelativeCallSite(uintptr_t aCallSiteAddr, void* apDetourFn, TFn** appO
 #endif
 }
 
-void RunSaveCallSiteCommon(TSaveGameCallSite* apOriginal, BGSSaveLoadManager* apThis, uint64_t* apUnk0) noexcept
-{
-    const char* saveName = ExtractSaveNameFromContext(apUnk0);
-    auto& coord = World::Get().GetCoordinatedSaveService();
-    if (!coord.HandleEngineSaveAttempt(saveName))
-        return;
-
-    // Strip all dynamic 0xFFxxxxxx remote clones right before BGSSaveLoadGame serializes forms so
-    // EVERY .ess file written to disk is 100% pure single-player-clean (restored automatically next tick).
-    World::Get().GetCharacterService().PreSavePurgeDynamicActors();
-    TiltedPhoques::ThisCall(apOriginal, apThis, apUnk0);
-    coord.NotifyEngineSaveCompleted(saveName);
-}
-
-void TP_MAKE_THISCALL(HookSaveCallSite1, BGSSaveLoadManager, uint64_t* apUnk0)
-{
-    RunSaveCallSiteCommon(RealSaveCallSite1, apThis, apUnk0);
-}
-
-void TP_MAKE_THISCALL(HookSaveCallSite2, BGSSaveLoadManager, uint64_t* apUnk0)
-{
-    RunSaveCallSiteCommon(RealSaveCallSite2, apThis, apUnk0);
-}
-
 bool TP_MAKE_THISCALL(HookLoadCallSite, BGSSaveLoadManager, uint64_t* apUnk0, uint32_t aUnk1, uint32_t aUnk2, void* apUnk3)
 {
     const char* saveName = ExtractSaveNameFromContext(apUnk0);
@@ -138,82 +120,141 @@ bool TP_MAKE_THISCALL(HookLoadCallSite, BGSSaveLoadManager, uint64_t* apUnk0, ui
         return false;
 
     // Tear down live network session & purge EVERY dynamic 0xFFxxxxxx actor BEFORE kMessage_PreLoadGame
-    // and BGSSaveLoadGame::Revert execute — eliminating the 0xC0000005 UAF crash at SkyrimSE.exe+0x26693B!
+    // and BGSSaveLoadGame::Revert execute — eliminating UAF crashes during world revert!
     coord.PrepareEngineForWorldLoad(saveName);
     const bool ok = TiltedPhoques::ThisCall(RealLoadCallSite, apThis, apUnk0, aUnk1, aUnk2, apUnk3);
     coord.NotifyEngineLoadCompleted(saveName, ok);
     return ok;
 }
 
-bool ExecuteConsoleSaveOrLoadCommand(const std::string& acCommand) noexcept
-{
-    if (acCommand.empty())
-        return false;
-
-    static TESForm* s_pConsoleScript = nullptr;
-    if (!s_pConsoleScript)
-    {
-        auto* pFactory = IFormFactory::GetForType(FormType::Script);
-        if (!pFactory)
-            return false;
-        s_pConsoleScript = pFactory->Create();
-    }
-    if (!s_pConsoleScript)
-        return false;
-
-    // Offset 0x38 inside RE::Script (sizeof == 0x80) is `char* text`
-    char** ppText = reinterpret_cast<char**>(reinterpret_cast<uint8_t*>(s_pConsoleScript) + 0x38);
-    if (*ppText)
-    {
-        Memory::Free(*ppText);
-        *ppText = nullptr;
-    }
-
-    char* pBuf = static_cast<char*>(Memory::Allocate(acCommand.size() + 1));
-    if (!pBuf)
-        return false;
-
-    std::memcpy(pBuf, acCommand.data(), acCommand.size() + 1);
-    *ppText = pBuf;
-
-    struct DummyScriptCompiler
-    {
-        uint8_t pad{0};
-    } compiler{};
-
-    TP_THIS_FUNCTION(TCompileAndRun, void, TESForm, DummyScriptCompiler*, uint32_t, void*);
-    POINTER_SKYRIMSE(TCompileAndRun, s_compileAndRun, 21416);
-    TiltedPhoques::ThisCall(s_compileAndRun, s_pConsoleScript, &compiler, 1U /*kSystemWindowCompiler*/, nullptr);
-    return true;
-}
-
 bool TP_MAKE_THISCALL(HookSaveImpl, BGSSaveLoadManager, int32_t aDeviceId, uint32_t aOutputStats, const char* acpFileName)
 {
-    if (!World::Get().GetCoordinatedSaveService().HandleEngineSaveAttempt(acpFileName))
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+        return TiltedPhoques::ThisCall(RealSaveImpl, apThis, aDeviceId, aOutputStats, acpFileName);
+
+    if (s_inDirectProcessEventsSave)
+        return TiltedPhoques::ThisCall(RealSaveImpl, apThis, aDeviceId, aOutputStats, acpFileName);
+
+    const char* effectiveName = (acpFileName && acpFileName[0] != '\0') ? acpFileName : "ManualSave";
+    auto& coord = World::Get().GetCoordinatedSaveService();
+    if (!coord.HandleEngineSaveAttempt(effectiveName))
         return false;
 
-    return TiltedPhoques::ThisCall(RealSaveImpl, apThis, aDeviceId, aOutputStats, acpFileName);
+    auto& charSvc = World::Get().GetCharacterService();
+    charSvc.PreSavePurgeDynamicActors();
+    const bool ok = TiltedPhoques::ThisCall(RealSaveImpl, apThis, aDeviceId, aOutputStats, acpFileName);
+    charSvc.SchedulePostSaveRemoteRestore();
+    coord.NotifyEngineSaveCompleted(effectiveName);
+    return ok;
+}
+
+bool TP_MAKE_THISCALL(HookSaveGame2, BGSSaveLoadManager, uint64_t aArg1, uint64_t aArg2, uint64_t aArg3)
+{
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+        return TiltedPhoques::ThisCall(RealSaveGame2, apThis, aArg1, aArg2, aArg3);
+
+    auto& coord = World::Get().GetCoordinatedSaveService();
+    if (!coord.HandleEngineSaveAttempt("Autosave"))
+        return false;
+
+    auto& charSvc = World::Get().GetCharacterService();
+    charSvc.PreSavePurgeDynamicActors();
+    const bool ok = TiltedPhoques::ThisCall(RealSaveGame2, apThis, aArg1, aArg2, aArg3);
+    charSvc.SchedulePostSaveRemoteRestore();
+    return ok;
 }
 
 bool TP_MAKE_THISCALL(HookLoadImpl, BGSSaveLoadManager, const char* acpFileName, int32_t aDeviceId, uint32_t aOutputStats, bool aCheckForMods)
 {
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+        return TiltedPhoques::ThisCall(RealLoadImpl, apThis, acpFileName, aDeviceId, aOutputStats, aCheckForMods);
+
     if (!World::Get().GetCoordinatedSaveService().HandleEngineLoadAttempt(acpFileName))
         return false;
 
     return TiltedPhoques::ThisCall(RealLoadImpl, apThis, acpFileName, aDeviceId, aOutputStats, aCheckForMods);
 }
 
+bool TP_MAKE_THISCALL(HookLoadMostRecent, BGSSaveLoadManager)
+{
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+        return TiltedPhoques::ThisCall(RealLoadMostRecent, apThis);
+
+    if (!World::Get().GetCoordinatedSaveService().HandleEngineLoadAttempt(""))
+        return false;
+
+    return TiltedPhoques::ThisCall(RealLoadMostRecent, apThis);
+}
+
+void TP_MAKE_THISCALL(HookQueueSaveLoadTask, BGSSaveLoadManager, uint32_t aTaskMask)
+{
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+    {
+        TiltedPhoques::ThisCall(RealQueueSaveLoadTask, apThis, aTaskMask);
+        return;
+    }
+
+    auto& coord = World::Get().GetCoordinatedSaveService();
+
+    // Note: 0xF0004000 is SkyrimSoulsRE's custom deferred save task; let it pass into ProcessEvents so
+    // SkyrimSoulsRE::SaveHandler resets m_isSaving = false and calls 34818 (HookSaveImpl), which gates it cleanly!
+    switch (aTaskMask)
+    {
+    case 0xF0000040u: // Engine Autosave
+        if (!coord.HandleEngineSaveAttempt("Autosave"))
+            return;
+        break;
+    case 0xF0000080u: // EngineFixes RegularQuicksaves F5 / Regular Save
+    case 0xF0000100u: // Vanilla F5 Quicksave
+    case 0xF0000800u: // Journal Menu Save (when SkyrimSoulsRE is inactive)
+        if (!coord.HandleEngineSaveAttempt("ManualSave"))
+            return;
+        break;
+    case 0xD0000100u: // EngineFixes RegularQuicksaves F9 LoadLastSave
+    case 0xD0000200u: // Vanilla F9 Quickload
+        if (!coord.HandleEngineLoadAttempt(""))
+            return;
+        break;
+    default:
+        break;
+    }
+
+    TiltedPhoques::ThisCall(RealQueueSaveLoadTask, apThis, aTaskMask);
+}
+
+void TP_MAKE_THISCALL(HookProcessEvents, BGSSaveLoadManager)
+{
+    TiltedPhoques::ThisCall(RealProcessEvents, apThis);
+
+    if (!s_universalHooksInstalled.load(std::memory_order_acquire))
+        return;
+
+    World::Get().GetCoordinatedSaveService().ProcessReadyDeferredSaveOrLoad(apThis);
+}
+
 TiltedPhoques::Initializer s_saveLoadHooks(
     []()
     {
         POINTER_SKYRIMSE(TSaveImpl, s_saveImpl, 34818);
+        POINTER_SKYRIMSE(TSaveGame2, s_saveGame2, 34823);
         POINTER_SKYRIMSE(TLoadImpl, s_loadImpl, 34819);
+        POINTER_SKYRIMSE(TLoadMostRecent, s_loadMostRecent, 34856);
+        POINTER_SKYRIMSE(TQueueSaveLoadTask, s_queueTask, 34859);
+        POINTER_SKYRIMSE(TProcessEvents, s_processEvents, 34862);
 
         RealSaveImpl = s_saveImpl.Get();
+        RealSaveGame2 = s_saveGame2.Get();
         RealLoadImpl = s_loadImpl.Get();
+        RealLoadMostRecent = s_loadMostRecent.Get();
+        RealQueueSaveLoadTask = s_queueTask.Get();
+        RealProcessEvents = s_processEvents.Get();
 
         TP_HOOK(&RealSaveImpl, HookSaveImpl);
+        TP_HOOK(&RealSaveGame2, HookSaveGame2);
         TP_HOOK(&RealLoadImpl, HookLoadImpl);
+        TP_HOOK(&RealLoadMostRecent, HookLoadMostRecent);
+        TP_HOOK(&RealQueueSaveLoadTask, HookQueueSaveLoadTask);
+        TP_HOOK(&RealProcessEvents, HookProcessEvents);
     });
 } // namespace
 
@@ -223,58 +264,201 @@ BGSSaveLoadManager* BGSSaveLoadManager::Get() noexcept
     return *s_singleton.Get();
 }
 
+std::filesystem::path BGSSaveLoadManager::ResolveLocalSavesDirectory() noexcept
+{
+#ifdef _WIN32
+    wchar_t docsBuf[MAX_PATH]{};
+    bool haveDocs = false;
+
+    if (HMODULE hShell32 = GetModuleHandleW(L"shell32.dll"))
+    {
+        using TSHGetFolderPathW = HRESULT(WINAPI*)(HWND, int, HANDLE, DWORD, LPWSTR);
+        auto fnGetFolderPath = reinterpret_cast<TSHGetFolderPathW>(GetProcAddress(hShell32, "SHGetFolderPathW"));
+        if (fnGetFolderPath && SUCCEEDED(fnGetFolderPath(nullptr, 0x0005 /*CSIDL_PERSONAL*/, nullptr, 0, docsBuf)) && docsBuf[0] != L'\0')
+            haveDocs = true;
+    }
+
+    std::filesystem::path rootPath;
+    if (haveDocs)
+    {
+        rootPath = std::filesystem::path(docsBuf);
+    }
+    else
+    {
+        wchar_t profileBuf[MAX_PATH]{};
+        const DWORD len = GetEnvironmentVariableW(L"USERPROFILE", profileBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH)
+            rootPath = std::filesystem::path(profileBuf) / L"Documents";
+    }
+
+    if (rootPath.empty())
+        return {};
+
+    rootPath /= L"My Games";
+    rootPath /= L"Skyrim Special Edition";
+
+    std::string localSubPath = "Saves\\";
+    if (auto* pIni = INISettingCollection::Get())
+    {
+        if (Setting* pLocal = pIni->GetSetting("sLocalSavePath:General"))
+        {
+            if (pLocal->name && pLocal->name[0] == 's' && pLocal->data != 0)
+            {
+                const char* cStr = reinterpret_cast<const char*>(pLocal->data);
+                if (cStr && cStr[0] != '\0')
+                    localSubPath = cStr;
+            }
+        }
+    }
+
+    return rootPath / std::filesystem::path(localSubPath);
+#else
+    return {};
+#endif
+}
+
+bool BGSSaveLoadManager::VerifySavedSlotOnDisk(const char* acpFileName) noexcept
+{
+    if (!acpFileName || acpFileName[0] == '\0')
+        return false;
+
+    const std::string stem = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(acpFileName);
+    if (stem.empty())
+        return false;
+
+    const std::filesystem::path savesDir = ResolveLocalSavesDirectory();
+    if (savesDir.empty())
+        return true;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(savesDir, ec) || ec)
+        return true;
+
+    const std::string targetNorm = RfabCompat::Detail::NormalizeSaveSlotStem(stem);
+    const std::filesystem::path directCandidate = savesDir / (stem + ".ess");
+    if (std::filesystem::exists(directCandidate, ec) && !ec)
+        return RfabCompat::Detail::IsValidEssFileOnDisk(directCandidate);
+
+    for (const auto& entry : std::filesystem::directory_iterator(savesDir, ec))
+    {
+        if (ec)
+            break;
+
+        std::error_code entryEc;
+        if (entry.is_regular_file(entryEc) && !entryEc)
+        {
+            const std::string fn = entry.path().filename().string();
+            if (RfabCompat::Detail::EndsWithIgnoreCase(fn, ".ess") &&
+                RfabCompat::Detail::NormalizeSaveSlotStem(fn) == targetNorm)
+            {
+                return RfabCompat::Detail::IsValidEssFileOnDisk(entry.path());
+            }
+        }
+        else if (entry.is_directory(entryEc) && !entryEc)
+        {
+            const std::filesystem::path subCandidate = entry.path() / (stem + ".ess");
+            if (std::filesystem::exists(subCandidate, entryEc) && !entryEc)
+                return RfabCompat::Detail::IsValidEssFileOnDisk(subCandidate);
+        }
+    }
+
+    return false;
+}
+
+size_t BGSSaveLoadManager::QuarantineCorruptSavesOnce() noexcept
+{
+    bool expected = false;
+    if (!s_quarantinedOnce.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        return 0;
+
+    const std::filesystem::path savesDir = ResolveLocalSavesDirectory();
+    if (savesDir.empty())
+        return 0;
+
+    size_t quarantined = RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(savesDir);
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(savesDir, ec))
+    {
+        if (ec)
+            break;
+
+        std::error_code subEc;
+        if (!entry.is_directory(subEc) || subEc)
+            continue;
+
+        const std::string dirName = RfabCompat::Detail::ToLowerAscii(entry.path().filename().string());
+        if (dirName == "quarantined_corrupt_v100" || dirName == "_rfab_corruptquarantine")
+            continue;
+
+        quarantined += RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(entry.path());
+    }
+
+    if (quarantined > 0)
+        spdlog::warn("[RFAB SaveLoad] Quarantined {} corrupt/truncated .ess save file(s) into _RFAB_CorruptQuarantine", quarantined);
+
+    return quarantined;
+}
+
 void BGSSaveLoadManager::InstallUniversalPostSkseHooks() noexcept
 {
     bool expected = false;
     if (!s_universalHooksInstalled.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return;
 
+    QuarantineCorruptSavesOnce();
+
 #ifdef _WIN32
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     if (!base)
         return;
 
-    const bool okSave1 = PatchRelativeCallSite(base + kSe1597SaveCallSite1Rva, reinterpret_cast<void*>(&HookSaveCallSite1), &RealSaveCallSite1);
-    const bool okSave2 = PatchRelativeCallSite(base + kSe1597SaveCallSite2Rva, reinterpret_cast<void*>(&HookSaveCallSite2), &RealSaveCallSite2);
     const bool okLoad = PatchRelativeCallSite(base + kSe1597LoadCallSiteRva, reinterpret_cast<void*>(&HookLoadCallSite), &RealLoadCallSite);
-    spdlog::info(
-        "[RFAB SaveLoad] Installed post-SKSE universal hooks (Save1={}, Save2={}, Load={})",
-        okSave1,
-        okSave2,
-        okLoad);
+    spdlog::info("[RFAB SaveLoad] Installed post-SKSE LoadCallSite hook (Load={})", okLoad);
 #endif
 }
 
 void BGSSaveLoadManager::Save(SaveData* apData)
 {
     apData->flags |= 4;
+}
 
-    const char* cSaveName = "";
-    if (apData->saveName)
-        cSaveName = apData->saveName;
+bool BGSSaveLoadManager::ExecuteDirectSaveFromProcessEvents(const char* acpFileName) noexcept
+{
+    if (!acpFileName || acpFileName[0] == '\0' || !RealSaveImpl)
+        return false;
+
+    const std::string cleanStem = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(acpFileName);
+    if (cleanStem.empty())
+        return false;
+
+    s_inDirectProcessEventsSave = true;
+    const bool rawOk = TiltedPhoques::ThisCall(RealSaveImpl, this, 2, 0u, cleanStem.c_str());
+    s_inDirectProcessEventsSave = false;
+
+    if (!rawOk)
+        return false;
+
+    return VerifySavedSlotOnDisk(cleanStem.c_str());
+}
+
+bool BGSSaveLoadManager::ExecuteDirectLoadFromProcessEvents(const char* acpFileName, bool aCheckForMods) noexcept
+{
+    if (!acpFileName || acpFileName[0] == '\0' || !RealLoadImpl)
+        return false;
+
+    const std::string cleanStem = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(acpFileName);
+    if (cleanStem.empty())
+        return false;
+
+    return TiltedPhoques::ThisCall(RealLoadImpl, this, cleanStem.c_str(), -1, 0u, aCheckForMods);
 }
 
 bool BGSSaveLoadManager::SaveNamed(const char* acpFileName) noexcept
 {
-    if (!acpFileName || acpFileName[0] == '\0')
-        return false;
-
-    // Enqueue via Skyrim's native console command runner (`save "<slot>"`) instead of calling
-    // Save_Impl directly inside Main::Update, avoiding renderer screenshot capture deadlocks.
-    std::string cmd = "save \"";
-    cmd += acpFileName;
-    cmd += "\"";
-    return ExecuteConsoleSaveOrLoadCommand(cmd);
+    return ExecuteDirectSaveFromProcessEvents(acpFileName);
 }
 
 bool BGSSaveLoadManager::LoadNamed(const char* acpFileName, bool aCheckForMods) noexcept
 {
-    TP_UNUSED(aCheckForMods);
-    if (!acpFileName || acpFileName[0] == '\0')
-        return false;
-
-    std::string cmd = "load \"";
-    cmd += acpFileName;
-    cmd += "\"";
-    return ExecuteConsoleSaveOrLoadCommand(cmd);
+    return ExecuteDirectLoadFromProcessEvents(acpFileName, aCheckForMods);
 }

@@ -1,4 +1,5 @@
 #include "MagicItem.h"
+#include <Forms/ActorValueInfo.h>
 #include <Games/TES.h>
 
 bool MagicItem::IsWardSpell() const noexcept
@@ -62,17 +63,38 @@ bool MagicItem::IsInvisibilitySpell() const noexcept
 bool MagicItem::IsHealingSpell() const noexcept
 {
     BGSKeyword* pMagicRestoreHealth = Cast<BGSKeyword>(TESForm::GetById(0x1ceb0));
-    
-    if (keyword.count > 0 && keyword.Contains(pMagicRestoreHealth))
+
+    if (pMagicRestoreHealth && keyword.count > 0 && keyword.Contains(pMagicRestoreHealth))
         return true;
 
+    if (iHostileCount > 0)
+        return false;
+
+    bool hasHealEffect = false;
     for (const EffectItem* pEffect : listOfEffects)
     {
-        if (pEffect->pEffectSetting && pEffect->pEffectSetting->keywordForm.count > 0 &&
-            pEffect->pEffectSetting->keywordForm.Contains(pMagicRestoreHealth))
-            return true;
+        if (!pEffect || !pEffect->pEffectSetting)
+            continue;
+
+        const EffectSetting* pSetting = pEffect->pEffectSetting;
+        if ((pSetting->flags & EffectSetting::kHostile) != 0)
+            return false;
+
+        if (pMagicRestoreHealth && pSetting->keywordForm.count > 0 && pSetting->keywordForm.Contains(pMagicRestoreHealth))
+            hasHealEffect = true;
+
+        // Detect all RFAB / Requiem / Apocalypse / Odin non-hostile Restore Health effects even when they lack 0x1CEB0!
+        if ((pSetting->flags & (EffectSetting::kHostile | EffectSetting::kDetrimental | EffectSetting::kRecover)) == 0 &&
+            (pSetting->eArchetype == EffectArchetypes::ArchetypeID::kValueModifier ||
+             pSetting->eArchetype == EffectArchetypes::ArchetypeID::kDualValueModifier) &&
+            pSetting->primaryAV == ActorValueInfo::kHealth &&
+            pEffect->data.fMagnitude > 0.0f)
+        {
+            hasHealEffect = true;
+        }
     }
-    return false;
+
+    return hasHealEffect;
 }
 
 bool MagicItem::IsBuffSpell() const noexcept
@@ -84,8 +106,48 @@ bool MagicItem::IsBuffSpell() const noexcept
     case 0x7e8dd: // Call to Arms
         return true;
     default:
-        return false;
+        break;
     }
+
+    if (iHostileCount > 0)
+        return false;
+
+    bool hasFriendlyTargetedBuff = false;
+    for (const EffectItem* pEffect : listOfEffects)
+    {
+        if (!pEffect || !pEffect->pEffectSetting)
+            continue;
+
+        const EffectSetting* pSetting = pEffect->pEffectSetting;
+        if ((pSetting->flags & (EffectSetting::kHostile | EffectSetting::kDetrimental)) != 0)
+            return false;
+
+        if (pEffect->IsSummonEffect())
+            continue;
+
+        // Exclude self-only toggles/abilities; player-to-player buffs have AIMED / TARGET_ACTOR / TARGET_LOCATION / CONTACT delivery.
+        if (pSetting->deliveryType == static_cast<uint32_t>(MagicSystem::Delivery::SELF))
+            continue;
+
+        switch (pSetting->eArchetype)
+        {
+        case EffectArchetypes::ArchetypeID::kValueModifier:
+        case EffectArchetypes::ArchetypeID::kPeakValueModifier:
+        case EffectArchetypes::ArchetypeID::kDualValueModifier:
+        case EffectArchetypes::ArchetypeID::kRally:
+        case EffectArchetypes::ArchetypeID::kCureDisease:
+        case EffectArchetypes::ArchetypeID::kCurePoison:
+        case EffectArchetypes::ArchetypeID::kCloak:
+        case EffectArchetypes::ArchetypeID::kEnhanceWeapon:
+        case EffectArchetypes::ArchetypeID::kLight:
+            hasFriendlyTargetedBuff = true;
+            break;
+        default:
+            break;
+        }
+    }
+
+    return hasFriendlyTargetedBuff;
 }
 
 bool MagicItem::IsBoundWeaponSpell() noexcept

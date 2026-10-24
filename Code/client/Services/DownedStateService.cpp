@@ -131,9 +131,10 @@ void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealth
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
         const float healthNow = apPlayer->GetActorValue(ActorValueInfo::kHealth);
-        const float clampDelta = kDownedFloorHealth - healthNow;
-        if (std::fabs(clampDelta) > 1e-4f)
-            apPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, clampDelta);
+        // Note: Actor::ForceActorValue takes the TARGET actor value (computing delta = target - current internally),
+        // NOT a delta! Passing kDownedFloorHealth clamps HP directly to 1.0f without frame-to-frame sign oscillation.
+        if (std::fabs(kDownedFloorHealth - healthNow) > 1e-4f)
+            apPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth);
 
         const float netDelta = apPlayer->GetActorValue(ActorValueInfo::kHealth) - aHealthBefore;
         if (std::fabs(netDelta) > 1e-4f)
@@ -329,7 +330,7 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
         if (healDelta > 0.0f)
         {
-            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, healDelta);
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, targetHp);
             m_world.GetRunner().Trigger(HealthChangeEvent(pPlayer->formID, healDelta));
         }
     }
@@ -663,7 +664,7 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
         else if (m_isLocalDowned && std::fabs(curHp - kDownedFloorHealth) > 0.05f)
         {
             ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
-            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth - curHp);
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth);
         }
     }
 
@@ -675,16 +676,21 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
             if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
                 pCam->ForceThirdPerson();
 
-            RedirectHostileAggroAwayFromPlayer(pPlayer);
             m_bleedoutReassertTimerSec += acEvent.Delta;
-            if (m_bleedoutReassertTimerSec >= 0.85)
+            if (m_bleedoutReassertTimerSec >= 0.5)
             {
                 m_bleedoutReassertTimerSec = 0.0;
-                pPlayer->SetWeaponDrawnEx(false);
-                BSFixedString bleedoutLower("bleedoutStart");
-                pPlayer->SendAnimationEvent(&bleedoutLower);
-                BSFixedString bleedoutStart("BleedoutStart");
-                pPlayer->SendAnimationEvent(&bleedoutStart);
+                RedirectHostileAggroAwayFromPlayer(pPlayer);
+
+                if (pPlayer->actorState.IsWeaponFullyDrawn())
+                    pPlayer->SetWeaponDrawnEx(false);
+
+                BSFixedString inBleedoutVar("bInBleedout");
+                if (pPlayer->GetAnimationVariableInt(&inBleedoutVar) == 0)
+                {
+                    BSFixedString bleedoutLower("bleedoutStart");
+                    pPlayer->SendAnimationEvent(&bleedoutLower);
+                }
             }
         }
     }

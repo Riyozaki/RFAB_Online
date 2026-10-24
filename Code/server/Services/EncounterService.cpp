@@ -48,7 +48,7 @@ EncounterService::EncounterService(World& aWorld, entt::dispatcher& aDispatcher)
 
 void EncounterService::ResetAllStatesAfterRollback() noexcept
 {
-    m_coordinator.ResetAll();
+    m_coordinator.ResetAll(NowEncounterMs());
 }
 
 void EncounterService::BroadcastPlayerDownedState(Player* apPlayer, bool aIsDowned, float aX, float aY, float aZ) noexcept

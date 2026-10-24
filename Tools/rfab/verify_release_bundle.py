@@ -171,6 +171,26 @@ def main():
         hedr_ver, = struct.unpack_from("<f", raw, 30)
         assert abs(hedr_ver - 1.70) < 0.001, f"{esp_name} HEDR={hedr_ver:.4f}, expected 1.7000 for SE 1.5.97!"
 
+    # Verify zero RFAB-colliding vanilla scripts (e.g. TempleBlessingScript.pex) inside RFAB_Online_MO2/scripts
+    scripts_dir = os.path.join(stage_dir, "RFAB_Online_MO2", "scripts")
+    for forbidden_pex in (
+        "TempleBlessingScript.pex",
+        "C00TrainerScript.pex",
+        "ResourceFurnitureScript.pex",
+        "PetFramework_ParentQuestScript.pex",
+        "petframework_petquest.pex",
+    ):
+        assert not os.path.exists(os.path.join(scripts_dir, forbidden_pex)), (
+            f"FATAL: Forbidden RFAB-colliding script present in bundle: {forbidden_pex}"
+        )
+
+    # Verify SkyrimTogether.esp does not carry dirty vanilla Cloak / T03 overrides
+    st_esp_raw = open(os.path.join(stage_dir, "RFAB_Online_MO2", "SkyrimTogether.esp"), "rb").read()
+    for forbidden_edid in (b"flameCloak\x00", b"FrostCloak\x00", b"LightningCloak\x00"):
+        assert forbidden_edid not in st_esp_raw, (
+            f"FATAL: SkyrimTogether.esp still contains dirty vanilla cloak override {forbidden_edid!r}!"
+        )
+
     # Verify offline UI & cursors & bindings
     for rel in (
         r"RFAB_Online_MO2\SKSE\Plugins\RFAB_Online_Bindings.json",

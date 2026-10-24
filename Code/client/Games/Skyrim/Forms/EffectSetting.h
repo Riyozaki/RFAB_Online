@@ -8,6 +8,14 @@
 
 struct EffectSetting : TESForm
 {
+    enum EffectFlag : uint32_t
+    {
+        kNone = 0,
+        kHostile = 1u << 0,
+        kRecover = 1u << 1,
+        kDetrimental = 1u << 2,
+    };
+
     TESFullName fullName;
     BGSMenuDisplayObject menuDisplayObject;
     BGSKeywordForm keywordForm;
@@ -26,10 +34,15 @@ struct EffectSetting : TESForm
     void* unk5C;
     uint8_t unk60[0x18];
     EffectArchetypes::ArchetypeID eArchetype;
+    int32_t primaryAV;
     void* unk80[2];
     uint32_t castType;
     uint32_t deliveryType;
     // more stuff
 };
 
+static_assert(offsetof(EffectSetting, flags) == 0x68);
 static_assert(offsetof(EffectSetting, eArchetype) == 0xC0);
+static_assert(offsetof(EffectSetting, primaryAV) == 0xC4);
+static_assert(offsetof(EffectSetting, castType) == 0xD8);
+static_assert(offsetof(EffectSetting, deliveryType) == 0xDC);

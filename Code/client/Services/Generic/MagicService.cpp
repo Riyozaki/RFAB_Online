@@ -68,10 +68,26 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
         return;
     }
 
-    // only sync concentration spells through spell cast sync, the rest through projectile sync for accuracy
+    // Sync concentration spells (including targeted ally concentration heals/buffs like Healing Hands,
+    // while excluding self-only concentration heals so puppets don't double-heal themselves), wards, and invisibility.
     if (SpellItem* pSpell = Cast<SpellItem>(TESForm::GetById(acEvent.SpellId)))
     {
-        if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || pSpell->IsHealingSpell()) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
+        bool isSelfOnlyHeal = false;
+        if (pSpell->IsHealingSpell())
+        {
+            isSelfOnlyHeal = true;
+            for (const EffectItem* pEffect : pSpell->listOfEffects)
+            {
+                if (pEffect && pEffect->pEffectSetting &&
+                    pEffect->pEffectSetting->deliveryType != static_cast<uint32_t>(MagicSystem::Delivery::SELF))
+                {
+                    isSelfOnlyHeal = false;
+                    break;
+                }
+            }
+        }
+
+        if ((pSpell->eCastingType != MagicSystem::CastingType::CONCENTRATION || isSelfOnlyHeal) && !pSpell->IsWardSpell() && !pSpell->IsInvisibilitySpell())
         {
             spdlog::debug("Canceled magic spell");
             return;
@@ -453,7 +469,12 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
 
 void MagicService::OnRemoveSpellEvent(const RemoveSpellEvent& acEvent) noexcept
 {
-    if (!m_transport.IsConnected())
+    if (!m_transport.IsConnected() || ScopedSpellCastOverride::IsOverriden())
+        return;
+
+    // Never echo RemoveSpell triggered on remote puppets back across the network!
+    Actor* pTargetActor = Cast<Actor>(TESForm::GetById(acEvent.TargetId));
+    if (!pTargetActor || pTargetActor->GetExtension()->IsRemote())
         return;
 
     RemoveSpellRequest request{};
@@ -515,8 +536,8 @@ void MagicService::OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexc
         return;
     }
 
-    // Remove the spell from the actor
-    //spdlog::info(__FUNCTION__ ": removing spell with form id {:X} from actor with form id {:X}", cSpellId, targetFormId);
+    // Remove the spell from the actor without echoing RemoveSpellEvent back over the network
+    ScopedSpellCastOverride _;
     pActor->RemoveSpell(pSpell);
 }
 

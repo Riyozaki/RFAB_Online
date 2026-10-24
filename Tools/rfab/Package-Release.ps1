@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$VersionTag = "v1.0.0",
+    [string]$VersionTag = "v1.1.0",
     [string]$BuildMode = "releasedbg"
 )
 
@@ -168,7 +168,7 @@ Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleAp
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online_MO2\STALE_LEGACY_DIR.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnabled = true`r`n")
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnable autosave = 1`r`nSave after combat = 1`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll"), "stub")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\ModOrganizer.ini"), "[General]`r`nselected_profile=@ByteArray(RFAB)`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\modlist.txt"), "-RFAB_Online`r`n+Requiem`r`n")
@@ -196,6 +196,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "RFAB_Online_Server\Skyrim
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "START_RFAB_SERVER.bat"))) {
     throw "START_RFAB_SERVER.bat missing in <RfabDir>!"
 }
+$patchedAutosave = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"))
+if ($patchedAutosave -notmatch 'Save after combat\s*=\s*0') {
+    throw "[RFAB] Autosave.ini was not patched (PowerShell bracket wildcard regression)!"
+}
 Remove-Item -LiteralPath $MockRfab -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "  [OK] End-to-end clean-wipe installer test passed 100%!" -ForegroundColor Green
 
@@ -215,6 +219,8 @@ New-Item -ItemType Directory -Path $QuickDir, $QuickSrvDir -Force | Out-Null
 foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
     Copy-Item -LiteralPath (Join-Path $StageClient $qf) -Destination (Join-Path $QuickDir $qf) -Force
 }
+Copy-Item -LiteralPath (Join-Path $StageMo2 "SkyrimTogether.esp") -Destination (Join-Path $QuickDir "SkyrimTogether.esp") -Force
+Copy-Item -LiteralPath (Join-Path $StageMo2 "SKSE\Plugins\RFAB_Online_Bindings.json") -Destination (Join-Path $QuickDir "RFAB_Online_Bindings.json") -Force
 Invoke-RobocopySafe -Src (Join-Path $StageClient "UI") -Dst (Join-Path $QuickDir "UI") -ExtraArgs @("/E")
 foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
     Copy-Item -LiteralPath (Join-Path $StageServer $sf) -Destination (Join-Path $QuickSrvDir $sf) -Force
@@ -244,18 +250,38 @@ Write-Host "==> RFAB root: $GameRoot" -ForegroundColor Cyan
 Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 600
 
-$ClientDst = Join-Path $GameRoot "MO2\mods\RFAB_Online\SkyrimTogetherReborn"
+$ModRoot = Join-Path $GameRoot "MO2\mods\RFAB_Online"
+$ClientDst = Join-Path $ModRoot "SkyrimTogetherReborn"
 if (-not (Test-Path -LiteralPath $ClientDst)) {
     throw "Client folder not found: $ClientDst"
 }
 foreach ($cf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
     Copy-Item -LiteralPath (Join-Path $SrcDir $cf) -Destination (Join-Path $ClientDst $cf) -Force
 }
+if (Test-Path -LiteralPath (Join-Path $SrcDir "SkyrimTogether.esp")) {
+    Copy-Item -LiteralPath (Join-Path $SrcDir "SkyrimTogether.esp") -Destination (Join-Path $ModRoot "SkyrimTogether.esp") -Force
+}
+if (Test-Path -LiteralPath (Join-Path $SrcDir "RFAB_Online_Bindings.json")) {
+    New-Item -ItemType Directory -Path (Join-Path $ModRoot "SKSE\Plugins") -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $SrcDir "RFAB_Online_Bindings.json") -Destination (Join-Path $ModRoot "SKSE\Plugins\RFAB_Online_Bindings.json") -Force
+}
+foreach ($badPex in @("TempleBlessingScript.pex","C00TrainerScript.pex","ResourceFurnitureScript.pex","PetFramework_ParentQuestScript.pex","petframework_petquest.pex")) {
+    $badPath = Join-Path $ModRoot "scripts\$badPex"
+    if (Test-Path -LiteralPath $badPath) { Remove-Item -LiteralPath $badPath -Force }
+}
 if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
     Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath (Join-Path $SrcDir "UI") -Destination (Join-Path $ClientDst "UI") -Recurse -Force
 }
-Write-Host "  [OK] Updated Client + Russian UI -> $ClientDst" -ForegroundColor Green
+Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "[RFAB] Autosave.ini" } | ForEach-Object {
+    $rawAs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $updAs = $rawAs
+    foreach ($ak in @("Enable autosave","Save after combat","Save on location change","Save on sleep/wait")) {
+        $updAs = [regex]::Replace($updAs, "(?mi)^(\s*$([regex]::Escape($ak))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}0`${3}")
+    }
+    if ($updAs -ne $rawAs) { [System.IO.File]::WriteAllText($_.FullName, $updAs, (New-Object System.Text.UTF8Encoding($false))) }
+}
+Write-Host "  [OK] Updated Client + ESP + Scripts + Russian UI -> $ClientDst" -ForegroundColor Green
 
 $SrvCandidates = @(
     (Join-Path $GameRoot "RFAB_Online_Server"),
@@ -266,7 +292,20 @@ foreach ($SrvDst in $SrvCandidates) {
         foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
             Copy-Item -LiteralPath (Join-Path $SrcDir "Server\$sf") -Destination (Join-Path $SrvDst $sf) -Force
         }
-        Write-Host "  [OK] Updated Server (SkyrimTogetherServer.exe + STServer.dll) -> $SrvDst" -ForegroundColor Green
+        $SrvIni = Join-Path $SrvDst "config\STServer.ini"
+        if (Test-Path -LiteralPath $SrvIni) {
+            $rawIni = [System.IO.File]::ReadAllText($SrvIni, [System.Text.Encoding]::UTF8)
+            $updIni = $rawIni
+            if ($updIni -match '4=Master \(Requiem default\)') {
+                $updIni = $updIni.Replace('4=Master (Requiem default)', '2=Adept (RFAB/Requiem 1.0x standard!), 4=Master')
+                $updIni = [regex]::Replace($updIni, '(?mi)^(\s*uDifficulty\s*=\s*)4(\s*)$', '${1}2${2}')
+            }
+            if ($updIni -notmatch '(?mi)^\s*bEnableItemDrops\s*=') {
+                $updIni = [regex]::Replace($updIni, '(?mi)^(\s*uDifficulty\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableItemDrops = true`r`n")
+            }
+            if ($updIni -ne $rawIni) { [System.IO.File]::WriteAllText($SrvIni, $updIni, (New-Object System.Text.UTF8Encoding($false))) }
+        }
+        Write-Host "  [OK] Updated Server (SkyrimTogetherServer.exe + STServer.dll + STServer.ini) -> $SrvDst" -ForegroundColor Green
     }
 }
 
