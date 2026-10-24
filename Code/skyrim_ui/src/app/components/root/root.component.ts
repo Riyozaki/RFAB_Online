@@ -44,6 +44,7 @@ export class RootComponent implements OnInit {
   inGame$ = this.client.inGameStateChange.asObservable();
   active$ = this.client.activationStateChange.asObservable();
   connectionInProgress$ = this.client.isConnectionInProgressChange.asObservable();
+  allyProtection$ = this.settingService.settings.allyProtection.asObservable();
   revealingInProgress$ = false;
 
   @ViewChild('chat') private chatComp!: ChatComponent;
@@ -67,6 +68,31 @@ export class RootComponent implements OnInit {
     this.onInGameStateSubscription();
     this.onActivationStateSubscription();
     this.onFontSizeSubscription();
+    this.onAllyProtectionSyncSubscription();
+  }
+
+  public onAllyProtectionSyncSubscription() {
+    this.client.setAllyProtection(
+      this.settingService.settings.allyProtection.getValue(),
+      false,
+    );
+    this.client.connectionStateChange
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(connected => {
+        if (connected) {
+          this.client.setAllyProtection(
+            this.settingService.settings.allyProtection.getValue(),
+            false,
+          );
+        }
+      });
+    this.client.allyProtectionChange
+      .pipe(takeUntil(this.destroy$))
+      .subscribe(enabled => {
+        if (this.settingService.settings.allyProtection.getValue() !== enabled) {
+          this.settingService.settings.allyProtection.next(enabled);
+        }
+      });
   }
 
   public onInGameStateSubscription() {
@@ -134,5 +160,12 @@ export class RootComponent implements OnInit {
 
     this.sound.play(Sound.Focus);
     this.client.revealPlayers();
+  }
+
+  public toggleAllyProtection(): void {
+    const nextState = !this.settingService.settings.allyProtection.getValue();
+    this.settingService.settings.allyProtection.next(nextState);
+    this.sound.play(nextState ? Sound.Check : Sound.Uncheck);
+    this.client.setAllyProtection(nextState, true);
   }
 }

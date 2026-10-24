@@ -359,5 +359,47 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         std::filesystem::current_path(oldCwd);
     }
     std::filesystem::remove_all(loDir);
+
+    // RFAB «Единство в битве (Кооп)» (Co-Op Ally Friendly-Fire Protection) matrix:
+    // 1. Non-party actors, enemies, solo NPC followers, and personal summons are untouched
+    //    (preserving RFAB's Speechcraft 50 «Лидерство» perk).
+    {
+        const auto soloHarm = RfabCompat::EvaluateCoopAllyActionPolicy(false, true, false);
+        REQUIRE_FALSE(soloHarm.BlockHarmfulAction);
+        REQUIRE_FALSE(soloHarm.AllowPartySparring);
+        REQUIRE_FALSE(soloHarm.AllowBeneficialMagic);
+
+        const auto soloHeal = RfabCompat::EvaluateCoopAllyActionPolicy(false, true, true);
+        REQUIRE_FALSE(soloHeal.BlockHarmfulAction);
+        REQUIRE_FALSE(soloHeal.AllowPartySparring);
+        REQUIRE_FALSE(soloHeal.AllowBeneficialMagic);
+    }
+    // 2. Same co-op party with AllyProtection ENABLED (default):
+    //    - 100% of physical attacks, hostile spells, shouts, poisons, cloaks, and debuffs are blocked.
+    //    - 100% of heals & buffs (including RFAB_List_NoAllyDamage_AllowedSpells) still work!
+    {
+        const auto allyHarm = RfabCompat::EvaluateCoopAllyActionPolicy(true, true, false);
+        REQUIRE(allyHarm.BlockHarmfulAction);
+        REQUIRE_FALSE(allyHarm.AllowPartySparring);
+        REQUIRE_FALSE(allyHarm.AllowBeneficialMagic);
+
+        const auto allyHealOrBuff = RfabCompat::EvaluateCoopAllyActionPolicy(true, true, true);
+        REQUIRE_FALSE(allyHealOrBuff.BlockHarmfulAction);
+        REQUIRE_FALSE(allyHealOrBuff.AllowPartySparring);
+        REQUIRE(allyHealOrBuff.AllowBeneficialMagic);
+    }
+    // 3. Same co-op party with AllyProtection DISABLED via Right-Ctrl overlay toggle:
+    //    - Party members can spar / test builds without editing STServer.ini, while heals & buffs still work!
+    {
+        const auto sparHarm = RfabCompat::EvaluateCoopAllyActionPolicy(true, false, false);
+        REQUIRE_FALSE(sparHarm.BlockHarmfulAction);
+        REQUIRE(sparHarm.AllowPartySparring);
+        REQUIRE_FALSE(sparHarm.AllowBeneficialMagic);
+
+        const auto sparHeal = RfabCompat::EvaluateCoopAllyActionPolicy(true, false, true);
+        REQUIRE_FALSE(sparHeal.BlockHarmfulAction);
+        REQUIRE(sparHeal.AllowPartySparring);
+        REQUIRE(sparHeal.AllowBeneficialMagic);
+    }
 }
 #endif

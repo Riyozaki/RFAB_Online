@@ -43,11 +43,35 @@ export class CommandHandler {
     },
   }
 
+  private AllyProtect: Command = {
+    name: 'allyprotect',
+    executor: async (args) => {
+      const raw = (args[0] || '').toLowerCase();
+      let next = true;
+      const stored = localStorage.getItem('party_allyProtection');
+      if (stored !== null) {
+        next = stored !== 'true';
+      } else {
+        next = false;
+      }
+      if (raw === 'on' || raw === '1' || raw === 'true' || raw === 'вкл') {
+        next = true;
+      } else if (raw === 'off' || raw === '0' || raw === 'false' || raw === 'выкл') {
+        next = false;
+      }
+      localStorage.setItem('party_allyProtection', String(next));
+      if (typeof skyrimtogether.setAllyProtection === 'function') {
+        skyrimtogether.setAllyProtection(next, true);
+      }
+    },
+  }
+
   private readonly commands = new Map<string, Command>();
 
   public constructor(private readonly chatService: ChatService) {
     this.register(this.Help);
     this.register(this.SetTime);
+    this.register(this.AllyProtect);
   }
 
   public readonly COMMAND_PREFIX = '/';

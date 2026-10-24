@@ -26,6 +26,7 @@
 #include <World.h>
 #include <Services/PapyrusService.h>
 #include <Services/DownedStateService.h>
+#include <Services/RfabAdapterService.h>
 
 #include <Forms/ActorValueInfo.h>
 #include <Forms/TESRace.h>
@@ -1120,6 +1121,15 @@ struct ScopedDamageHookGuard
 // TODO: this is flawed, since it does not account for invulnerable actors
 bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bool aKillMove)
 {
+    const auto coopPolicy =
+        (apHitter && apThis) ? World::Get().GetRfabAdapterService().EvaluateCoopAction(apHitter, apThis, false)
+                             : RfabCompat::CoopAllyActionPolicy{};
+
+    // RFAB «Единство в битве (Кооп)»: block 100% of physical melee/ranged/bash/explosion damage and HitEvent aggro
+    // from the attacker (and their summons) onto co-op party allies and party allies' summons!
+    if (coopPolicy.BlockHarmfulAction)
+        return false;
+
     if (apHitter)
         World::Get().GetRunner().Trigger(HitEvent(apHitter->formID, apThis->formID));
 
@@ -1155,7 +1165,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     const auto* pExHittee = apThis->GetExtension();
     if (pExHittee->IsLocalPlayer())
     {
-        if (!World::Get().GetServerSettings().PvpEnabled)
+        if (!World::Get().GetServerSettings().PvpEnabled && !coopPolicy.AllowPartySparring)
         {
             if (apHitter && apHitter->GetExtension()->IsRemotePlayer())
                 return false;

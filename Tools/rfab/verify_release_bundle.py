@@ -227,11 +227,43 @@ def main():
         full = os.path.join(stage_dir, rel)
         assert os.path.isfile(full) and os.path.getsize(full) > 20, f"Missing or empty release file: {full}"
 
-    # Windows PowerShell 5.1 requires UTF-8 BOM (EF BB BF) on Cyrillic .ps1 files (otherwise 0x84 = „ closes quotes!)
-    ps1_full = os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1")
-    assert open(ps1_full, "rb").read(3) == b"\xef\xbb\xbf", (
-        "FATAL: Setup-RfabOnline.ps1 is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
+    # Verify custom RFAB Online Right-Ctrl CEF Overlay UI ("Единство в битве" toggle) is staged
+    ui_main_js = open(os.path.join(stage_dir, r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\main.js"), "rb").read()
+    assert b"setAllyProtection" in ui_main_js and b"ALLY_PROTECTION_ON" in ui_main_js, (
+        "FATAL: Staged UI/main.js is missing RFAB Co-Op Ally Protection ('setAllyProtection' / 'ALLY_PROTECTION_ON')!"
     )
+    ui_ru_json = open(
+        os.path.join(stage_dir, r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\assets\i18n\ru.json"),
+        "r",
+        encoding="utf-8",
+    ).read()
+    assert "Единство в битве: ВКЛ" in ui_ru_json, (
+        "FATAL: Staged UI/assets/i18n/ru.json is missing 'Единство в битве: ВКЛ'!"
+    )
+
+    # Windows PowerShell 5.1 requires UTF-8 BOM (EF BB BF) on .ps1 files (otherwise UTF-8 Cyrillic becomes CP1252 mojibake!)
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    for ps1_path in (
+        os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Setup-RfabOnline.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Build-CloudRelease.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Package-Release.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Deploy-RfabOnline.ps1"),
+    ):
+        if os.path.isfile(ps1_path):
+            assert open(ps1_path, "rb").read(3) == b"\xef\xbb\xbf", (
+                f"FATAL: {ps1_path} is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
+            )
+
+    notes_tpl = os.path.join(repo_root, r"Tools\rfab\RELEASE_NOTES_TEMPLATE.md")
+    notes_txt = open(notes_tpl, "r", encoding="utf-8").read()
+    assert "Чистый автономный релиз" in notes_txt and "Единство в битве" in notes_txt, (
+        "FATAL: RELEASE_NOTES_TEMPLATE.md failed UTF-8 Cyrillic integrity check!"
+    )
+    for mojibake_marker in ("\u00d0", "\u00d1", "\u00e2\u20ac"):
+        assert mojibake_marker not in notes_txt, (
+            f"FATAL: RELEASE_NOTES_TEMPLATE.md contains CP1252-decoded UTF-8 mojibake ({mojibake_marker!r})!"
+        )
 
     print(f"[RELEASE GATE PASSED] All {total_files} files in {stage_dir} verified 100% genuine & self-contained!")
 

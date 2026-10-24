@@ -67,6 +67,17 @@
             </span>
           </div>
         </button>
+        <button
+          data-style-ornament="inverted"
+          [attr.data-style-active]="allyProtection$ | async"
+          (click)="toggleAllyProtection()"
+        >
+          {{
+            ((allyProtection$ | async)
+              ? 'COMPONENT.ROOT.ALLY_PROTECTION_ON'
+              : 'COMPONENT.ROOT.ALLY_PROTECTION_OFF') | transloco
+          }}
+        </button>
       </ng-container>
       <button
         data-style-ornament="inverted"

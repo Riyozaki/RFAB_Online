@@ -1,5 +1,5 @@
-param(
-    [string]$VersionTag = "v1.2.0",
+﻿param(
+    [string]$VersionTag = "v1.1.0",
     [string]$BuildMode = "releasedbg"
 )
 
@@ -68,9 +68,11 @@ foreach ($binName in @("SkyrimSE.exe", "EarlyLoad.dll", "TPProcess.exe")) {
 Copy-Item -LiteralPath (Join-Path $StageClient "SkyrimSE.exe") `
           -Destination (Join-Path $StageClient "SkyrimTogether.exe") -Force
 
-if (-not (Test-Path -LiteralPath (Join-Path $StageClient "UI\index.html"))) {
-    $FallbackUi = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2\SkyrimTogetherReborn\UI"
-    Invoke-RobocopySafe -Src $FallbackUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/E")
+# Always stage our custom compiled RFAB Online Angular CEF UI bundle (with «Единство в битве» Right-Ctrl toggle)
+# over any upstream xmake skyrim-together-ui package files in $DistribBin\UI!
+$CustomUi = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2\SkyrimTogetherReborn\UI"
+if (Test-Path -LiteralPath (Join-Path $CustomUi "index.html")) {
+    Invoke-RobocopySafe -Src $CustomUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/MIR")
 }
 
 Write-Host "==> [3/6] Staging Standalone Dedicated Server (RFAB_Online_Server)..." -ForegroundColor Cyan

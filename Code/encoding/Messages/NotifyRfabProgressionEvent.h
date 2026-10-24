@@ -14,6 +14,7 @@ struct NotifyRfabProgressionEvent final : ServerMessage
         GlobalValueSync = 2,
         LedgerXpRebate = 3,
         FullLedgerResync = 4,
+        AllyProtectionSync = 5,
     };
 
     NotifyRfabProgressionEvent()

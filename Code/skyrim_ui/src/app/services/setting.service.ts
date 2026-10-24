@@ -118,6 +118,11 @@ export class SettingService {
       FontSize.M,
     ),
     isPartyShown: new ToggleSetting(this.storeService, 'party_isShown', true),
+    allyProtection: new ToggleSetting(
+      this.storeService,
+      'party_allyProtection',
+      true,
+    ),
     autoHideParty: new ToggleSetting(
       this.storeService,
       'party_autoHide',

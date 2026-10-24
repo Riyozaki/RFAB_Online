@@ -72,6 +72,9 @@ export class ClientService implements OnDestroy {
 
   public protocolMismatchChange = new BehaviorSubject(false);
 
+  /** RFAB Co-Op Ally Protection ("Единство в битве") state. */
+  public allyProtectionChange = new BehaviorSubject(true);
+
   /** Receive error from core */
   public triggerError = new ReplaySubject<ErrorEvents>(1);
 
@@ -151,6 +154,10 @@ export class ClientService implements OnDestroy {
       'partyInviteReceived',
       this.onPartyInviteReceived.bind(this),
     );
+    skyrimtogether.on(
+      'allyProtectionState',
+      this.onAllyProtectionState.bind(this),
+    );
   }
 
   /**
@@ -184,6 +191,7 @@ export class ClientService implements OnDestroy {
     skyrimtogether.off('partyCreated');
     skyrimtogether.off('partyLeft');
     skyrimtogether.off('partyInviteReceived');
+    skyrimtogether.off('allyProtectionState');
   }
 
   /**
@@ -214,6 +222,22 @@ export class ClientService implements OnDestroy {
    */
   public revealPlayers(): void {
     skyrimtogether.revealPlayers();
+  }
+
+  /**
+   * Set RFAB Co-Op Ally Protection ("Единство в битве").
+   */
+  public setAllyProtection(enabled: boolean, notifyHud = false): void {
+    this.allyProtectionChange.next(enabled);
+    if (typeof skyrimtogether.setAllyProtection === 'function') {
+      skyrimtogether.setAllyProtection(enabled, notifyHud);
+    }
+  }
+
+  private onAllyProtectionState(enabled: boolean): void {
+    this.zone.run(() => {
+      this.allyProtectionChange.next(Boolean(enabled));
+    });
   }
 
   /**

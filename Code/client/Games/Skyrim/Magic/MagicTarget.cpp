@@ -15,6 +15,7 @@
 #include <Games/References.h>
 #include <PlayerCharacter.h>
 #include <RfabModpackCompat.h>
+#include <Services/RfabAdapterService.h>
 
 #include <Effects/ActiveEffect.h>
 #include <Forms/EffectSetting.h>
@@ -147,19 +148,34 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             shouldScaleRfab);
     }
 
+    const bool isFriendlySupport =
+        arData.pSpell && (arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell());
+    const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
+    const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+
+    const auto coopPolicy =
+        arData.pCaster ? World::Get().GetRfabAdapterService().EvaluateCoopAction(arData.pCaster, pTargetActor, isFriendlySupport)
+                       : RfabCompat::CoopAllyActionPolicy{};
+
+    // RFAB «Единство в битве (Кооп)»: block 100% of magic damage and negative/hostile effects (shouts, Fus Ro Dah ragdoll,
+    // freezes, slows, paralyze, poisons, diseases, cloaks, weapon enchantments) onto co-op allies and their summons,
+    // while allowing 100% of heals & buffs (including RFAB_List_NoAllyDamage_AllowedSpells)!
+    if (coopPolicy.BlockHarmfulAction)
+        return false;
+
     if (pTargetActorEx->IsRemotePlayer())
     {
         if (!arData.pCaster)
             return false;
 
-        const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
-        const bool isPvpAllowed = World::Get().GetServerSettings().PvpEnabled;
+        const bool isPvpAllowed = World::Get().GetServerSettings().PvpEnabled || coopPolicy.AllowPartySparring;
         if (!isFriendlySupport && !isPvpAllowed)
             return false;
 
         ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
         const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
-        const bool isLocalCaster = pCasterExtension->IsLocalPlayer() || (pCasterCmd && pCasterCmd->formID == 0x14);
+        const bool isLocalCaster =
+            (pCasterExtension && pCasterExtension->IsLocalPlayer()) || (pCasterCmd && pCasterCmd->formID == 0x14);
         if (!isLocalCaster)
             return false;
 
@@ -168,9 +184,6 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
             addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
         }
-
-        const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
-        const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
 
         bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
         // Concentration spells (e.g. Healing Hands / Sparks) are channeled continuously via SpellCastRequest/InterruptCastRequest;
@@ -185,12 +198,14 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         if (arData.pCaster)
         {
             ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
-            if (pCasterExtension->IsRemotePlayer())
-            {
-                const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
-                const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
-                const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+            const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
+            const auto* pCasterCmdExt = pCasterCmd ? pCasterCmd->GetExtension() : nullptr;
+            const bool isFromRemotePlayerOrSummon =
+                (pCasterExtension && pCasterExtension->IsRemotePlayer()) ||
+                (pCasterCmdExt && pCasterCmdExt->IsRemotePlayer());
 
+            if (isFromRemotePlayerOrSummon)
+            {
                 // Allow targeted concentration heals & buffs (e.g. Healing Hands) from allied remote players even when PvP is disabled!
                 if (isFriendlySupport)
                 {
@@ -200,7 +215,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                     return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
                 }
 
-                if (!World::Get().GetServerSettings().PvpEnabled)
+                if (!World::Get().GetServerSettings().PvpEnabled && !coopPolicy.AllowPartySparring)
                     return false;
             }
         }
@@ -219,13 +234,26 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             (pCasterExtension && pCasterExtension->IsLocalPlayer()) || (pCasterCmd && pCasterCmd->formID == 0x14);
         if (isLocalPlayerOrSummon)
         {
+            if (arData.pSpell && arData.pSpell->IsHealingSpell())
+            {
+                addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
+                addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
+            }
+
             bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
-            if (result && arData.ShouldSync())
+            if (result && (!isFriendlySupport || !isConcentration) && arData.ShouldSync())
                 World::Get().GetRunner().Trigger(addTargetEvent);
             return result;
         }
         else if (pCasterExtension && pCasterExtension->IsRemotePlayer())
         {
+            if (isFriendlySupport)
+            {
+                if (isConcentration && pTargetActorEx->IsLocal())
+                    return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+                return false;
+            }
+
             // Send out a HitEvent because TakeDamage is never triggered.
             World::Get().GetRunner().Trigger(HitEvent(arData.pCaster->formID, pTargetActor->formID));
             return false;

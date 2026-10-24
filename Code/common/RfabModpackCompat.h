@@ -1258,4 +1258,31 @@ struct RfabDifficultyMultipliers
     return true;
 }
 
+struct CoopAllyActionPolicy
+{
+    bool BlockHarmfulAction{false};
+    bool AllowPartySparring{false};
+    bool AllowBeneficialMagic{false};
+};
+
+// Mirrors RFAB's Speechcraft 50 «Лидерство» -> «Единство в битве» (RFAB_Power_NoAllyDamage / RFAB_Perk_NoAllyDamage),
+// scoped strictly to distinct Co-Op Party Allies (other players in the same party and their summons/minions),
+// leaving solo NPC followers and personal summons governed by RFAB's native Speechcraft perk.
+[[nodiscard]] inline constexpr CoopAllyActionPolicy EvaluateCoopAllyActionPolicy(
+    bool aAreDistinctCoopPartyAllies,
+    bool aAttackerAllyProtectionEnabled,
+    bool aIsBeneficialHealOrBuff) noexcept
+{
+    if (!aAreDistinctCoopPartyAllies)
+        return {};
+
+    if (aIsBeneficialHealOrBuff)
+        return {false, !aAttackerAllyProtectionEnabled, true};
+
+    if (aAttackerAllyProtectionEnabled)
+        return {true, false, false};
+
+    return {false, true, false};
+}
+
 } // namespace RfabCompat

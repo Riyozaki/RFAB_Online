@@ -1,11 +1,11 @@
-param(
-    [string]$VersionTag = "v1.2.0",
+﻿param(
+    [string]$VersionTag = "v1.1.0",
     [string]$BuildMode = "releasedbg"
 )
 
-if ($VersionTag -eq "v1.0.0" -or $VersionTag -eq "v1.1.0") {
-    Write-Host "[PROTECT RELEASES] Legacy workflow argument -VersionTag '$VersionTag' remapped to 'v1.2.0' so releases v1.0.0 and v1.1.0 remain 100% untouched." -ForegroundColor Yellow
-    $VersionTag = "v1.2.0"
+if ($VersionTag -ne "v1.1.0") {
+    Write-Host "[RELEASE POLICY] Remapping -VersionTag '$VersionTag' -> 'v1.1.0' (only v1.0.0 backup and v1.1.0 current release are maintained; v1.0.0 is never overwritten)." -ForegroundColor Yellow
+    $VersionTag = "v1.1.0"
 }
 if ($VersionTag -eq "v1.0.0") {
     throw "Hard guard: v1.0.0 must never be overwritten!"
@@ -78,70 +78,13 @@ try {
     Invoke-LoggedCmd "[6/7] xmake install + Package-Release.ps1 + Smoke & Clean-Wipe Verification" `
         "xmake install -o distrib && powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tools\rfab\Package-Release.ps1 -VersionTag $VersionTag -BuildMode $BuildMode"
 
+    $NotesTemplateFile = Join-Path $RepoRoot "Tools\rfab\RELEASE_NOTES_TEMPLATE.md"
+    if (-not (Test-Path -LiteralPath $NotesTemplateFile)) {
+        throw "Release notes template missing: $NotesTemplateFile"
+    }
     $NotesFile = Join-Path $RepoRoot "release_artifacts\RELEASE_NOTES.md"
-    $ReleaseNotes = @"
-# RFAB Online $VersionTag — Чистый автономный релиз (Skyrim SE ``1.5.97.0.8``)
-
-Полностью собранный с нуля на чистой облачной машине ``Windows x64`` автономный установщик **RFAB Online** (клиент для **Mod Organizer 2** + выделенный кооп-сервер).
-Никаких консольных команд, ``git``, ``xmake`` или ручного переименования/копирования файлов **не требуется**!
-
-## 📦 Состав релиза
-| Файл | Назначение |
-|---|---|
-| ``RFAB_Online_${VersionTag}_Full_Installer.zip`` | **Основной архив**: полная чистая установка клиента + сервера (GUI-установщик ``INSTALL_RFAB_ONLINE.bat``) |
-| ``RFAB_Online_${VersionTag}_Quick_Update.zip`` | **Быстрое обновление** для тех, кто уже играл (клиент + сервер + ``UPDATE_RFAB_ONLINE.bat``, ≈15 МБ) |
-| ``RFAB_Online_${VersionTag}_PDB_Symbols.zip`` | Отладочные символы (``.pdb``) для разработчиков и диагностики крашей |
-| ``SHA256SUMS.txt`` | Контрольные суммы ``SHA-256`` всех архивов выше |
-
-## 🛠 Установка в 2 клика (одинаково и Хосту, и Друзьям)
-1. Скачайте **``RFAB_Online_${VersionTag}_Full_Installer.zip``** и распакуйте его в любую временную папку.
-2. Закройте игру и **Mod Organizer 2**, затем дважды нажмите на **``INSTALL_RFAB_ONLINE.bat``**:
-   - Откроется удобное окно выбора папки сборки RFAB (автоматически найдёт ``ModOrganizer.exe`` на ваших дисках и покажет точный путь к ``SkyrimSE.exe 1.5.97`` прямо из ``ModOrganizer.ini``, либо позволит выбрать любую папку кнопкой **«Обзор...»**).
-   - Установщик **начисто удаляет** любые старые файлы прошлых тестов в ``MO2\mods\RFAB_Online`` и ``RFAB_Online_Server`` (никакого наслаивания на старые версии!).
-   - Ставит готовый нативный лаунчер ``SkyrimSE.exe``, включает ``+RFAB_Online``, ``*SkyrimTogether.esp`` и ``*SkyrimTogetherQuestPatches.esp`` строго **ДО ``RFAB.esp``** (чтобы ``RFAB.esp`` побеждал по 100% записей), настраивает ``EngineFixes.toml``, ``SkyrimSoulsRE.ini``, ``[RFAB] Autosave.ini``, скрывает конфликтующий ``BetterStealing.dll`` и добавляет кнопку **``RFAB Online - Play``** в MO2.
-   - Ставит автономный сервер прямо в ``<Папка_RFAB>\RFAB_Online_Server`` и создаёт ярлык **``START_RFAB_SERVER.bat``** (после установки скачанный ZIP-архив можно спокойно удалить).
-
-> 💡 **Уже играли в прошлую версию?** Скачайте ``RFAB_Online_${VersionTag}_Quick_Update.zip``, распакуйте и запустите **``UPDATE_RFAB_ONLINE.bat``** — клиент и сервер обновятся без полной переустановки.
-
-## 🎮 Как запустить и играть
-1. **[Только Хост]** Запустите ``<Папка_RFAB>\START_RFAB_SERVER.bat`` (в окне сразу отобразится IP-адрес для друзей, например из **Radmin VPN**).
-2. **[И Хост, и Друзья]** Откройте **Mod Organizer 2** -> выберите **``RFAB Online - Play``** -> нажмите **«Запустить»**.
-3. В игре загрузите сохранение в открытом мире -> нажмите **Правый CTRL** (или **F2**) -> **Подключиться (``Connect``)**:
-   - **Хост вводит:** ``127.0.0.1:10578``
-   - **Друзья вводят:** ``<IP_хоста>:10578``
-   - Все игроки автоматически добавляются в общую группу!
-
-| Клавиша | Действие |
-|---|---|
-| **Правый CTRL** / **F2** | Открыть оверлей (подключение, сессия, отладка) |
-| **F5** | Сохранить игру для **всей группы** (любой игрок) |
-| **F9** | Загрузить последний групповой сейв (**только Хост**) |
-| **E** (у раненого союзника) | Поднять игрока с колена (≈4 с) |
-
-## ⚖️ Правила кооператива
-- **Опыт** — равными долями всем игрокам группы (мобы, боссы, квесты, книги опыта).
-- **Враги** — один комплект на группу (засады **не** дублируются), HP масштабируется: ``2`` игрока = ``×3 HP``, ``3`` игрока = ``×4 HP``.
-- **Смерть** — ``0 HP`` = «Downed-on-Knee» до конца боя или до поднятия союзником; честная победа поднимает павших с ≈``30% HP``; Total Party Wipe откатывает последний чекпоинт.
-- **Сохранения** — ``F5`` у любого игрока сохраняет группу, ``F9``/загрузка — только Хост, автоматический чекпоинт после боя и авто-переподключение после загрузки.
-
-## 🩹 Что нового в релизе v1.2.0 (полная поддержка сложностей RFAB и 0 ванильных перезаписей)
-- **Собственные сложности RFAB («Странник» `x2 / x0.5`, «Довакин» `x1 / x1`, «Легенда» `x1 / x2`) и метка «Проклятый» (`x0.5` к исходящему урону игрока)** — полностью сохраняются индивидуально для каждого игрока без перезаписи сервером, корректно читаются из `GameSettingCollection` (`fDiffMultHPByPCVH` / `fDiffMultHPToPCVH`) и точно передаются по сети для оружия, луков, криков, ядов, чар, разовых и потоковых заклинаний (при этом урон призывных существ остаётся `1.0x`, как в `DifficultyBalance.dll` / `RFAB.dll`).
-- **0 перезаписей контента, статов, перков, камер и ассетов RFAB** — из `SkyrimTogether.esp` вычищен последний ванильный оверрайд `CPTH MagicOrBowCams`, порядок загрузки в MO2 ставит `SkyrimTogether*.esp` строго **перед `RFAB.esp`**, удалён чужой `logo.nif` главного меню и осиротевшие ванильные `.psc`, перк Восстановления `0x000581F8` («Улучшенное лечение») даёт точные `+25%` (`x1.25`) из `RFAB.esp` вместо ванильных `+50%`, а `fAIMinGreetingDistance` (`70.0`) и `KillMove` восстанавливаются к значениям RFAB.
-
-## 🩹 Что исправлено в релизе v1.1.0 по итогам кооп-плейтеста
-1. **Битые сохранения и ошибка «Файл сохранения поврежден» (#1 приоритет)** — безопасная постановка задач сохранения/загрузки через очередь движка `BGSSaveLoadManager` (`34859`) вместо прямого вызова из сетевого колбэка, полная очистка `BGSSaveLoadGame` от временных сетевых `0xFFxxxxxx`-форм (`PurgeDynamicActorCleanly` + `UnsetChanged` + пропуск первых кадров `PlaceAtMe`), валидация заголовков `TESV_SAVEGAME` с карантином повреждённых `.ess`, нормализация имён слотов (без `.ess.ess`) и исправленное отключение `[RFAB] Autosave.ini`.
-2. **Ранение / поднятие (Downed-on-Knee) и бесконечный цикл отката при вайпе группы** — устранён спам чисел урона/лечения (`ForceActorValue` передаёт целевое HP `1.0` / `targetHp`, а не дельту), перенаправление агро троттлится раз в `0.5` с без спама «Вы не можете продолжать бой», добавлено `15`-секундное окно защиты `ResetForWorldRollback` после вайпа и резервный поиск последнего валидного чекпоинта.
-3. **Фиолетовое лицо персонажа (утечка FaceGen-тинта между игроками)** — `FaceGenSystem` клонирует собственный экземпляр `BSMaskedShaderMaterial` с уникальной текстурой `STR_FaceTint_%08X` для каждого удалённого игрока вместо мутации общего ванильного материала головы `0x14`.
-4. **Алтари богов и Даэдра в RFAB** — удалены 5 конфликтующих ванильных `.pex`-скриптов (`TempleBlessingScript.pex` и др.) и 4 грязных оверрайда `SkyrimTogether.esp`, затирающих скрипты и благословения `RFAB.esp`; активация алтарей изолирована локально без дублирования от клонов.
-5. **Урон щитом (~300 ед.) и баланс урона** — сложность сервера по умолчанию приведена к стандарту RFAB Requiem (`uDifficulty = 2`, `1.0x / 1.0x` вместо `uDifficulty = 4`), синхронизация сопротивлений `AV 39..44` переведена на `ForceMode::PERMANENT`, а масштабирование HP мобов считается от нативной базы `1x`.
-6. **«Кольцо авантюриста» ломалось при надевании** — отключён принудительный цикл `UnEquip -> Equip` на локальном игроке `0x14` и учтены 2 слота колец `RFAB.dll`.
-7. **Выброшенные на землю предметы не видны другим игрокам** — включён `bEnableItemDrops = true` (с авто-миграцией `STServer.ini` при обновлении с `v1.0.0`) и добавлено чистое удаление локального `0xFFxxxxxx`-референса при замене на серверный предмет.
-8. **Заклинания игроков друг на друга и призывы существ RFAB** — динамическое определение лечащих и баффающих заклинаний по всем эффектам `MagicItem` при выключенном PvP, поддержка гибридных скриптовых призывов духов/тогглов/некромантии RFAB и привязка `commandingActor` чужих саммонов к их владельцу, а не к локальному игроку.
-9. **Расчёт опыта врагов и анимации** — учёт персонального `RFAB_XP_Multiplier` (кольца, камни) с округлением до `5`, изоляция личного кошелька `RFAB_XP_Amount` от перезаписи чужим `RFAB_Menu`, ускоренный разбор очереди анимаций (до 8 переходов за кадр) и сохранение дискретных переменных графа при интерполяции.
-
----
-Полная документация и исходники: **github.com/Riyozaki/RFAB_Online**
-"@
+    $ReleaseNotes = [System.IO.File]::ReadAllText($NotesTemplateFile, [System.Text.Encoding]::UTF8)
+    $ReleaseNotes = $ReleaseNotes.Replace("{{VERSION_TAG}}", $VersionTag)
     [System.IO.File]::WriteAllText($NotesFile, $ReleaseNotes, (New-Object System.Text.UTF8Encoding($false)))
 
     $CommitSha    = (& git rev-parse HEAD).Trim()
@@ -156,8 +99,8 @@ try {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
             "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     } else {
-        Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag" `
-            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+        Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
+            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     }
 
     foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {

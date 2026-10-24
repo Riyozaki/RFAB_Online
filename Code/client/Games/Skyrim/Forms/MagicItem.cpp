@@ -1,6 +1,9 @@
 #include "MagicItem.h"
 #include <Forms/ActorValueInfo.h>
+#include <Forms/BGSListForm.h>
 #include <Games/TES.h>
+#include <Services/RfabAdapterService.h>
+#include <World.h>
 
 bool MagicItem::IsWardSpell() const noexcept
 {
@@ -101,12 +104,20 @@ bool MagicItem::IsBuffSpell() const noexcept
 {
     switch (formID)
     {
-    case 0x4dee8: // Courage
+    case 0x4dee8: // Courage / Lionheart
     case 0x4deec: // Rally
     case 0x7e8dd: // Call to Arms
         return true;
     default:
         break;
+    }
+
+    // Honor RFAB's explicit FLST RFAB_List_NoAllyDamage_AllowedSpells (0x06005CAA: NecrohealOnTarget, ArcaneMending,
+    // ProtectionFromPoisonDiseaseOnTarget, HealingHands, LionheartCloakProc, AuraOfWarlock, AuraSummoning*, etc.).
+    if (BGSListForm* pAllowedList = World::Get().GetRfabAdapterService().GetNoAllyDamageAllowedSpellsList())
+    {
+        if (pAllowedList->ContainsFormId(formID))
+            return true;
     }
 
     if (iHostileCount > 0)
@@ -141,6 +152,10 @@ bool MagicItem::IsBuffSpell() const noexcept
         case EffectArchetypes::ArchetypeID::kEnhanceWeapon:
         case EffectArchetypes::ArchetypeID::kLight:
             hasFriendlyTargetedBuff = true;
+            break;
+        case EffectArchetypes::ArchetypeID::kScript:
+            if ((pSetting->flags & EffectSetting::kRecover) != 0)
+                hasFriendlyTargetedBuff = true;
             break;
         default:
             break;

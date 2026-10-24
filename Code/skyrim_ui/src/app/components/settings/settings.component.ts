@@ -81,6 +81,12 @@ export class SettingsComponent {
     this.sound.play(Sound.Ok);
   }
 
+  onAllyProtectionChange(enabled: boolean): void {
+    this.settings.allyProtection.next(enabled);
+    this.sound.play(enabled ? Sound.Check : Sound.Uncheck);
+    this.client.setAllyProtection(enabled, true);
+  }
+
   private getVersionTagList(): Promise<Tag[]> {
     return lastValueFrom(
       this.http

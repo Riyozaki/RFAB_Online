@@ -1,6 +1,7 @@
 #include <Services/RfabProgressionService.h>
 
 #include <Events/PlayerJoinEvent.h>
+#include <Events/PlayerLeaveEvent.h>
 #include <GameServer.h>
 #include <Messages/NotifyRfabProgressionEvent.h>
 #include <Messages/SyncRfabProgressionEvent.h>
@@ -16,6 +17,7 @@ RfabProgressionService::RfabProgressionService(World& aWorld, entt::dispatcher& 
     : m_world(aWorld)
     , m_progressionConnection(aDispatcher.sink<PacketEvent<SyncRfabProgressionEvent>>().connect<&RfabProgressionService::OnSyncProgressionEvent>(this))
     , m_playerJoinConnection(aDispatcher.sink<PlayerJoinEvent>().connect<&RfabProgressionService::OnPlayerJoin>(this))
+    , m_playerLeaveConnection(aDispatcher.sink<PlayerLeaveEvent>().connect<&RfabProgressionService::OnPlayerLeave>(this))
 {
 }
 
@@ -121,6 +123,21 @@ void RfabProgressionService::OnSyncProgressionEvent(const PacketEvent<SyncRfabPr
         GameServer::Get()->SendToPlayers(broadcast, pSender);
         break;
     }
+
+    case SyncRfabProgressionEvent::EventKind::AllyProtectionSync:
+    {
+        const bool enabled = (pkt.GlobalValue >= 0.5f);
+        m_playerAllyProtection[pSender->GetId()] = enabled;
+
+        NotifyRfabProgressionEvent broadcast{};
+        broadcast.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+        broadcast.EpochId = currentEpoch;
+        broadcast.XpDelta = static_cast<int32_t>(pSender->GetId());
+        broadcast.GlobalValue = enabled ? 1.0f : 0.0f;
+        broadcast.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
+        GameServer::Get()->SendToPlayers(broadcast, pSender);
+        break;
+    }
     }
 }
 
@@ -163,4 +180,26 @@ void RfabProgressionService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexce
         globalSync.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
         pNewPlayer->Send(globalSync);
     }
+
+    // Sync existing players' Co-Op Ally Protection («Единство в битве») states to the newly joined player.
+    m_playerAllyProtection.try_emplace(pNewPlayer->GetId(), true);
+    for (const auto& [pid, protEnabled] : m_playerAllyProtection)
+    {
+        if (pid == pNewPlayer->GetId())
+            continue;
+
+        NotifyRfabProgressionEvent allySync{};
+        allySync.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+        allySync.EpochId = currentEpoch;
+        allySync.XpDelta = static_cast<int32_t>(pid);
+        allySync.GlobalValue = protEnabled ? 1.0f : 0.0f;
+        allySync.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
+        pNewPlayer->Send(allySync);
+    }
+}
+
+void RfabProgressionService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
+{
+    if (acEvent.pPlayer)
+        m_playerAllyProtection.erase(acEvent.pPlayer->GetId());
 }

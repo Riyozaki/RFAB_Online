@@ -12,6 +12,7 @@ struct UpdateEvent;
 struct ConnectedEvent;
 struct DisconnectedEvent;
 struct NotifyRfabProgressionEvent;
+struct Actor;
 struct TESGlobal;
 struct BGSListForm;
 
@@ -36,6 +37,16 @@ public:
     [[nodiscard]] float GetLocalXpMultiplier() noexcept;
     [[nodiscard]] TESGlobal* ResolveGlobalByEditorId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) noexcept;
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
+    [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
+
+    [[nodiscard]] bool IsLocalAllyProtectionEnabled() const noexcept { return m_localAllyProtectionEnabled; }
+    void SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification = false) noexcept;
+    void ToggleLocalAllyProtection() noexcept;
+    [[nodiscard]] bool IsRemotePlayerAllyProtectionEnabled(uint32_t aPlayerId) const noexcept;
+    [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
+        Actor* apAttacker,
+        Actor* apTarget,
+        bool aIsBeneficialHealOrBuff) const noexcept;
 
     [[nodiscard]] static int32_t ReadRfabXp(TESGlobal* apGlobal) noexcept;
     bool ApplyDualPoolExperienceDelta(int32_t aDelta, int32_t& aOutNewTotalXp) noexcept;
@@ -57,6 +68,9 @@ private:
     void PollSyncedGlobals() noexcept;
     void SuppressSoloRfabAutosave() noexcept;
     void RestoreSoloRfabAutosave() noexcept;
+    void ApplyAllyHitGameSetting(bool aProtectAllies) noexcept;
+    void BroadcastLocalAllyProtectionState() const noexcept;
+    void PushAllyProtectionStateToOverlay() const noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -69,9 +83,16 @@ private:
     TESGlobal* m_pCachedXpMultiplierGlobal{nullptr};
     TESGlobal* m_pNoDeathHandlingGlobal{nullptr};
     BGSListForm* m_pXpBooksFormList{nullptr};
+    BGSListForm* m_pNoAllyDamageAllowedSpellsList{nullptr};
     bool m_scannedGlobalsOnce{false};
     float m_savedNoDeathHandlingValue{0.0f};
     bool m_hasSavedNoDeathHandlingValue{false};
+
+    bool m_localAllyProtectionEnabled{true};
+    std::unordered_map<uint32_t, bool> m_remoteAllyProtection{};
+    int32_t m_savedAllyHitNonCombatAllowed{3};
+    int32_t m_savedAllyHitCombatAllowed{1000};
+    bool m_hasSavedAllyHitSettings{false};
 
     std::filesystem::path m_autosaveIniPath{};
     std::string m_originalAutosaveIniContent{};

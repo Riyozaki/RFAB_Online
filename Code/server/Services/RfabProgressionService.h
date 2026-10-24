@@ -12,6 +12,7 @@
 
 struct World;
 struct PlayerJoinEvent;
+struct PlayerLeaveEvent;
 struct SyncRfabProgressionEvent;
 
 /**
@@ -229,10 +230,13 @@ public:
 private:
     void OnSyncProgressionEvent(const PacketEvent<SyncRfabProgressionEvent>& acMessage) noexcept;
     void OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept;
+    void OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept;
 
     World& m_world;
     RfabProgressionLedger m_ledger;
+    std::unordered_map<uint32_t, bool> m_playerAllyProtection{};
 
     entt::scoped_connection m_progressionConnection;
     entt::scoped_connection m_playerJoinConnection;
+    entt::scoped_connection m_playerLeaveConnection;
 };
