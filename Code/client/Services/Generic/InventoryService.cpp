@@ -241,10 +241,21 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
         return;
     }
 
-    // Never equip/unequip RFAB's self-destructing Adventurer's Ring (RFAB_ExperienceRing = 0x112812) or
-    // dual-ring items on remote player puppets (RFAB.dll's 2-ring patch applies strictly to 0x14!).
-    if (pActor->GetExtension()->IsRemotePlayer() && (itemId & 0x00FFFFFFu) == 0x00112812u)
-        return;
+    // Never equip/unequip RFAB's self-destructing Adventurer's Ring (RFAB_ExperienceRing = local 0x112812 in RFAB.esp,
+    // e.g. 0x07112812 in RFAB Respect Edition or 0x06112812 in classic RFAB) or dual-ring items on remote player puppets
+    // (RFAB.dll's 2-ring patch applies strictly to 0x14!).
+    if (pActor->GetExtension()->IsRemotePlayer())
+    {
+        if (auto* pModManager = ModManager::Get())
+        {
+            if (auto* pRfabMod = pModManager->GetByName("RFAB.esp"); pRfabMod && itemId == pRfabMod->GetFormId(0x00112812u))
+                return;
+        }
+        else if ((itemId & 0x00FFFFFFu) == 0x00112812u)
+        {
+            return;
+        }
+    }
 
     if (acMessage.Unequip)
     {

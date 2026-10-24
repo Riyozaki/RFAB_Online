@@ -19,6 +19,7 @@
 #include <Messages/NotifyScriptAnimation.h>
 
 #include <PlayerCharacter.h>
+#include <Games/TES.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
 #include <Forms/BGSEncounterZone.h>
@@ -237,33 +238,49 @@ bool IsPersonalBlessingActivator(const TESObjectREFR* apObject) noexcept
         }
     }
 
-    const uint32_t baseLocalId = apObject->baseForm->formID & 0x00FFFFFFu;
-    if ((baseLocalId >= 0x0D232Du && baseLocalId <= 0x0D2339u) || // Vanilla DoomstoneWarrior..DoomstoneSerpent
-        (baseLocalId >= 0x01EDA5u && baseLocalId <= 0x01EDB1u) || // Dragonborn All-Maker Stones
-        (baseLocalId >= 0x0D987Bu && baseLocalId <= 0x0D9887u))   // Vanilla Shrine Divines
+    const uint32_t fullFormId = apObject->baseForm->formID;
+    const uint32_t modIdx = (fullFormId >> 24) & 0xFFu;
+    const uint32_t baseLocalId = fullFormId & 0x00FFFFFFu;
+
+    // Vanilla Skyrim.esm (0x00) & Dragonborn.esm (0x04) personal shrines & standing stones
+    if (modIdx == 0x00u &&
+        ((baseLocalId >= 0x0D232Du && baseLocalId <= 0x0D2339u) || // Vanilla DoomstoneWarrior..DoomstoneSerpent
+         (baseLocalId >= 0x0D987Bu && baseLocalId <= 0x0D9887u) || // Vanilla Shrine Divines
+         baseLocalId == 0x06C9E1u))                                // T01DibellasAltarActivator
     {
         return true;
     }
 
-    switch (baseLocalId)
-    {
-    case 0x071854u: // RFAB_Shrine_Arkay
-    case 0x100780u: // RFAB_Shrine_Talos
-    case 0x10E8B0u: // RFAB_Shrine_Nocturnal
-    case 0x00C86Bu: // RFAB_Shrine_Auriel
-    case 0x039E34u: // RFAB_Shrine_Boethiah
-    case 0x03A481u: // RFAB_Shrine_Mephala
-    case 0x03A484u: // RFAB_Shrine_Azura
-    case 0x0031EDu: // RFAB_Shrine_Malacath
-    case 0x0031EEu: // RFAB_Shrine_Peryite
-    case 0x0031EFu: // RFAB_Shrine_Sanguine
-    case 0x0CE38Fu: // RFAB_Shrine_Dagon
-    case 0x239FC5u: // RFAB_BA_UniversalAltar
-    case 0x06C9E1u: // T01DibellasAltarActivator
+    if (modIdx == 0x04u && (baseLocalId >= 0x01EDA5u && baseLocalId <= 0x01EDB1u)) // Dragonborn All-Maker Stones
         return true;
-    default:
-        return false;
+
+    // RFAB.esp personal shrines (dynamically resolved for RFAB Respect Edition 0x07, classic 0x06, or any load-order slot)
+    if (auto* pModManager = ModManager::Get())
+    {
+        if (auto* pRfabMod = pModManager->GetByName("RFAB.esp"); pRfabMod && pRfabMod->GetFormId(baseLocalId) == fullFormId)
+        {
+            switch (baseLocalId)
+            {
+            case 0x071854u: // RFAB_Shrine_Arkay
+            case 0x100780u: // RFAB_Shrine_Talos
+            case 0x10E8B0u: // RFAB_Shrine_Nocturnal
+            case 0x00C86Bu: // RFAB_Shrine_Auriel
+            case 0x039E34u: // RFAB_Shrine_Boethiah
+            case 0x03A481u: // RFAB_Shrine_Mephala
+            case 0x03A484u: // RFAB_Shrine_Azura
+            case 0x0031EDu: // RFAB_Shrine_Malacath
+            case 0x0031EEu: // RFAB_Shrine_Peryite
+            case 0x0031EFu: // RFAB_Shrine_Sanguine
+            case 0x0CE38Fu: // RFAB_Shrine_Dagon
+            case 0x239FC5u: // RFAB_BA_UniversalAltar
+                return true;
+            default:
+                break;
+            }
+        }
     }
+
+    return false;
 }
 } // namespace
 

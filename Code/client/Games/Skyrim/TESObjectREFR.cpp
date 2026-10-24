@@ -352,25 +352,27 @@ void TESObjectREFR::Delete() const noexcept
 
 void TESObjectREFR::Disable() const noexcept
 {
-    using ObjectReference = TESObjectREFR;
-
-    PAPYRUS_FUNCTION(void, ObjectReference, Disable, bool);
-
-    s_pDisable(this, true);
+    // CRITICAL SE 1.5.97 ABI FIX:
+    // Papyrus ObjectReference.Disable(bool abFadeOut) is a LATENT VM native expecting `const RefrOrInventoryObj&`
+    // in R8 (and attempting to suspend a live Papyrus stackID when abFadeOut == true). Calling it via non-latent
+    // PAPYRUS_FUNCTION passed `this` (`TESObjectREFR*`) in R8, causing SkyrimSE.exe to dereference `Actor::vtable`
+    // (.rdata) as `self.pRefr` -> instant 0xC0000005 CTD when a peer changed location!
+    // Always invoke native C++ virtual TESObjectREFR::DisableImpl() (vtable[0x89]) directly without touching GameVM.
+    const_cast<TESObjectREFR*>(this)->DisableImpl();
 }
 
 void TESObjectREFR::Enable() const noexcept
 {
-    using ObjectReference = TESObjectREFR;
-
-    PAPYRUS_FUNCTION(void, ObjectReference, Enable, bool);
-
-    s_pEnable(this, true);
+    // Same as Disable(): Papyrus ObjectReference.Enable(bool abFadeIn) is latent; invoke native C++ EnableImpl() (SE ID 19373).
+    const_cast<TESObjectREFR*>(this)->EnableImpl();
 }
 
 // Skyrim: MoveTo() can fail, causing the object to be deleted
 void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept
 {
+    if (!apCell)
+        return;
+
     ScopedReferencesOverride recursionGuard;
 
     TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);

@@ -188,12 +188,21 @@ void Actor::QueueUpdate() noexcept
 
 GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
 {
+    if (!apBaseForm)
+        return nullptr;
+
+    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
+    if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+        return nullptr;
+
     auto pActor = New();
+    if (!pActor)
+        return nullptr;
+
     // Prevent saving
     pActor->SetSkipSaveFlag(true);
     pActor->GetExtension()->SetRemote(true);
 
-    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
     auto pCell = pPlayer->parentCell;
     const auto pWorldSpace = pPlayer->GetWorldSpace();
 

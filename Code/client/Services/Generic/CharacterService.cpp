@@ -80,7 +80,7 @@ namespace
 {
 constexpr uint32_t cMaxRfabXpDelta = 1'000'000;
 
-void PurgeDynamicActorCleanly(Actor* apActor) noexcept
+void PurgeDynamicActorCleanly(Actor* apActor, bool aImmediateDisable = false) noexcept
 {
     if (!apActor)
         return;
@@ -92,7 +92,13 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
         apActor->baseForm->UnsetChanged(0xFFFFFFFF);
         apActor->baseForm->SetSkipSaveFlag(true);
     }
-    apActor->Disable();
+
+    // During normal runtime cell transitions (NotifyRemoveCharacter / CancelServerAssignment), rely strictly on
+    // Skyrim's deferred end-of-frame Delete() queue (identical to v1.0.0) so 3D/Havok/shader resources are never
+    // torn down mid-tick. Only invoke native C++ virtual DisableImpl() (vtable[0x89]) during pre-save / world-load sweeps.
+    if (aImmediateDisable && !apActor->IsDisabled())
+        apActor->DisableImpl();
+
     apActor->Delete();
 }
 
@@ -326,8 +332,8 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
     const auto cId = *entityIt;
     m_pendingLocalTempSpawns.erase(cId);
 
-    auto& formIdComponent = view.get<FormIdComponent>(cId);
-    CancelServerAssignment(*entityIt, formIdComponent.Id);
+    const uint32_t removedFormId = view.get<FormIdComponent>(cId).Id;
+    CancelServerAssignment(cId, removedFormId);
 
     m_world.remove<EarlyAnimationBufferComponent>(cId);
 
@@ -412,7 +418,7 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
         {
             Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (pActor)
-                PurgeDynamicActorCleanly(pActor);
+                PurgeDynamicActorCleanly(pActor, true);
 
             continue;
         }
@@ -453,7 +459,7 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
                 cached.Rotation.y = pActor->rotation.z;
                 cached.IsDead = pActor->IsDead();
             }
-            PurgeDynamicActorCleanly(pActor);
+            PurgeDynamicActorCleanly(pActor, true);
         }
 
         remoteEntitiesToDestroy.push_back(entity);
@@ -476,7 +482,7 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
             {
                 const bool hasDynamicBase = pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000);
                 if (pActor->GetExtension()->IsRemote() || hasDynamicBase)
-                    PurgeDynamicActorCleanly(pActor);
+                    PurgeDynamicActorCleanly(pActor, true);
             }
         }
     }
@@ -531,7 +537,7 @@ void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
 
         if ((formId & 0xFF000000) == 0xFF000000 || pActor->GetExtension()->IsRemotePlayer())
         {
-            PurgeDynamicActorCleanly(pActor);
+            PurgeDynamicActorCleanly(pActor, true);
             dynamicEntities.push_back(entity);
         }
         else
@@ -556,7 +562,7 @@ void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
             {
                 const bool hasDynamicBase = pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000);
                 if (pActor->GetExtension()->IsRemote() || hasDynamicBase)
-                    PurgeDynamicActorCleanly(pActor);
+                    PurgeDynamicActorCleanly(pActor, true);
             }
         }
     }
@@ -723,7 +729,34 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     if (remoteItor != std::end(remoteView))
     {
-        spdlog::debug("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+        // If this entity is currently an unloaded out-of-grid WaitingFor3D placeholder (no FormIdComponent / CachedRefId == 0),
+        // replace it cleanly so fresh cell-transition / teleport / respawn CharacterSpawnRequest packets materialize immediately!
+        if (m_world.all_of<FormIdComponent>(*remoteItor))
+        {
+            spdlog::debug("Character with remote id {:X} is already spawned.", acMessage.ServerId);
+            return;
+        }
+
+        m_world.destroy(*remoteItor);
+    }
+
+    PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+    if (!pLocalPlayer || !pLocalPlayer->parentCell)
+    {
+        // Local player is mid-cell-transition / loading screen (`parentCell == nullptr`):
+        // stage custom temporary spawns into WaitingFor3D (CachedRefId = 0, no FormIdComponent) instead of
+        // calling Actor::Create / MoveTo(nullptr), so RunSpawnUpdates() materializes them once the cell loads.
+        if (acMessage.FormId == GameId{})
+        {
+            m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
+            const entt::entity deferredEntity = m_world.create();
+            m_world.emplace_or_replace<RemoteComponent>(deferredEntity, acMessage.ServerId, 0u);
+            auto& interp = InterpolationSystem::Setup(m_world, deferredEntity);
+            interp.Position = acMessage.Position;
+            AnimationSystem::Setup(m_world, deferredEntity);
+            AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(deferredEntity), acMessage.ActionsToReplay);
+            m_world.emplace_or_replace<WaitingFor3D>(deferredEntity, acMessage);
+        }
         return;
     }
 
@@ -810,6 +843,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
     if (!pActor)
     {
+        if (entity.has_value() && m_world.valid(*entity) && !m_world.all_of<FormIdComponent>(*entity))
+            m_world.destroy(*entity);
         spdlog::error("Actor object {:X} could not be created.", acMessage.ServerId);
         return;
     }
@@ -1075,9 +1110,10 @@ void CharacterService::OnNotifyRespawn(const NotifyRespawn& acMessage) const noe
     }
 
     const auto cId = *entityIt;
+    m_cachedRemoteSpawns.erase(acMessage.ActorId);
 
-    auto& formIdComponent = view.get<FormIdComponent>(cId);
-    CancelServerAssignment(*entityIt, formIdComponent.Id);
+    const uint32_t respawnFormId = view.get<FormIdComponent>(cId).Id;
+    CancelServerAssignment(cId, respawnFormId);
 
     m_world.remove<EarlyAnimationBufferComponent>(cId);
 
@@ -1898,7 +1934,10 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
             auto respawnCopy = cachedIt->second;
             if (const auto* pInterp = m_world.try_get<InterpolationComponent>(aEntity))
                 respawnCopy.Position = pInterp->Position;
-            m_world.remove<PlayerComponent>(aEntity);
+            // CRITICAL: Atomically strip FormIdComponent alongside PlayerComponent so RunRemoteUpdates() never
+            // calls ForcePosition/ForceAction/FaceGenSystem on the deleted 0xFFxxxxxx Actor*, and RunSpawnUpdates()
+            // (`entt::exclude<FormIdComponent>`) can cleanly recreate 3D when the actor re-enters the 5x5 grid.
+            m_world.remove<FormIdComponent, EarlyAnimationBufferComponent, PlayerComponent>(aEntity);
             m_world.emplace_or_replace<WaitingFor3D>(aEntity, respawnCopy);
         }
         else
@@ -2229,6 +2268,10 @@ void CharacterService::RunSpawnUpdates() const noexcept
     if (m_savePurgeActive)
         return;
 
+    PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+    if (!pLocalPlayer || !pLocalPlayer->parentCell)
+        return;
+
     auto invisibleView = m_world.view<RemoteComponent, InterpolationComponent, RemoteAnimationComponent, WaitingFor3D>(entt::exclude<FormIdComponent>);
     Vector<entt::entity> entities(invisibleView.begin(), invisibleView.end());
 
@@ -2237,12 +2280,15 @@ void CharacterService::RunSpawnUpdates() const noexcept
         auto& remoteComponent = m_world.get<RemoteComponent>(entity);
         auto& interpolationComponent = m_world.get<InterpolationComponent>(entity);
 
-        if (const auto pWorldSpace = PlayerCharacter::Get()->GetWorldSpace())
+        if (pLocalPlayer->GetWorldSpace())
         {
+            const TES* pTES = TES::Get();
+            if (!pTES)
+                continue;
+
             float characterX = interpolationComponent.Position.x;
             float characterY = interpolationComponent.Position.y;
             const auto characterCoords = GridCellCoords::CalculateGridCellCoords(characterX, characterY);
-            const TES* pTES = TES::Get();
             const auto playerCoords = GridCellCoords(pTES->centerGridX, pTES->centerGridY);
 
             // TODO(cosideci): IsDragon probably shouldn't be straight up false here.
@@ -2262,8 +2308,18 @@ void CharacterService::RunSpawnUpdates() const noexcept
                     m_world.emplace_or_replace<FormIdComponent>(entity, pActor->formID);
                 }
 
-                pActor->MoveTo(PlayerCharacter::Get()->parentCell, interpolationComponent.Position);
+                pActor->MoveTo(pLocalPlayer->parentCell, interpolationComponent.Position);
             }
+        }
+        else if (remoteComponent.CachedRefId == 0)
+        {
+            // Materialize deferred interior spawns queued while local parentCell was nullptr during cell load.
+            auto* pActor = CreateCharacterForEntity(entity);
+            if (!pActor)
+                continue;
+
+            remoteComponent.CachedRefId = pActor->formID;
+            pActor->MoveTo(pLocalPlayer->parentCell, interpolationComponent.Position);
         }
     }
 }

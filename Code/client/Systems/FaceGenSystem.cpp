@@ -155,12 +155,21 @@ void FaceGenSystem::Update(World& aWorld, Actor* apActor, FaceGenComponent& aFac
             TiltedPhoques::ThisCall(SetShaderMaterial, pLightingShader, pClonedMaterial, true);
             TiltedPhoques::ThisCall(InitializeShader, pLightingShader, pTriBasedGeom);
 
-            // Destroy temporary material wrapper via scalar deleting destructor (flags = 0) + engine Heap_Free (skee64 pattern).
-            using TScalarDtor = void*(__fastcall*)(BSMaskedShaderMaterial*, uint32_t);
-            void** vtbl = *reinterpret_cast<void***>(pClonedMaterial);
-            if (vtbl && vtbl[0])
-                reinterpret_cast<TScalarDtor>(vtbl[0])(pClonedMaterial, 0);
-            Memory::Free(pClonedMaterial);
+            // CRITICAL CTD-ON-CELL-CHANGE FIX:
+            // 1. Only release pClonedMaterial if SetShaderMaterial cloned a separate pooled material instance!
+            //    If SetShaderMaterial (or FaceGenFixes.dll) adopted pClonedMaterial directly into
+            //    pLightingShader->material, freeing it here caused an immediate Use-After-Free CTD inside
+            //    ~BSLightingShaderProperty() the moment a co-op friend unloaded on location/cell change.
+            // 2. When pClonedMaterial WAS cloned into a separate instance, invoke SkyrimSE.exe's own virtual
+            //    scalar deleting destructor with flags = 1 (never flags = 0 + manual Memory::Free(..., false)),
+            //    matching pMaterial->Create()'s exact heap & alignment under EngineFixes MemoryManager true/false.
+            if (pLightingShader->material != pClonedMaterial)
+            {
+                using TScalarDtor = void*(__fastcall*)(BSMaskedShaderMaterial*, uint32_t);
+                void** vtbl = *reinterpret_cast<void***>(pClonedMaterial);
+                if (vtbl && vtbl[0])
+                    reinterpret_cast<TScalarDtor>(vtbl[0])(pClonedMaterial, 1);
+            }
         }
 
         aFaceGenComponent.Generated = true;
