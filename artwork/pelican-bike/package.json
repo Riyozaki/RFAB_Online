@@ -1,0 +1,14 @@
+{
+  "name": "rfab-artwork-pelican-bike",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SVG-иллюстрация «Пеликан на велосипеде» и рендер в PNG",
+  "type": "module",
+  "scripts": {
+    "render": "node render.mjs pelican-bike.svg pelican-bike.png 1200 && node render.mjs pelican-bike.svg pelican-bike@2x.png 2400"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}
