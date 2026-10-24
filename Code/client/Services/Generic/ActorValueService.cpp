@@ -526,9 +526,19 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
 
     for (const auto& [key, value] : acMessage.Values)
     {
-        // Syncing dragon souls triggers "Dragon soul collected" event
-        if (key == ActorValueInfo::kDragonSouls || key == ActorValueInfo::kHealth)
+        // Syncing dragon souls triggers "Dragon soul collected" event.
+        // Never overwrite locally computed movement/attack speed multipliers (SpeedMult = 30, WeaponSpeedMult = 85,
+        // LeftWeaponSpeedMult = 132): SetActorValue mutates the base AV (Skyrim base WeaponSpeedMult is 0.0f while
+        // effective is 1.0f), compounding with RFAB.dll SpeedLimitHandler / AdjustmentHandler / StaminaSystemEventSink
+        // and poisoning swing speed on ownership handoff! Remote swing speeds sync via Havok behavior floats instead.
+        if (key == ActorValueInfo::kDragonSouls ||
+            key == ActorValueInfo::kHealth ||
+            key == ActorValueInfo::kSpeedMult ||
+            key == ActorValueInfo::kWeaponSpeedMult ||
+            key == ActorValueInfo::kLeftWeaponSpeedMult)
+        {
             continue;
+        }
 
         spdlog::debug("Actor value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
 
@@ -563,8 +573,13 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
 
     for (const auto& [key, value] : acMessage.Values)
     {
-        if (key == ActorValueInfo::kDragonSouls)
+        if (key == ActorValueInfo::kDragonSouls ||
+            key == ActorValueInfo::kSpeedMult ||
+            key == ActorValueInfo::kWeaponSpeedMult ||
+            key == ActorValueInfo::kLeftWeaponSpeedMult)
+        {
             continue;
+        }
 
         if (key == ActorValueInfo::kHealth && ShouldScaleActorHealth(pActor))
             m_world.ctx().at<ActorValueService>().SeedUnscaledMaxHealthFromRemote(pActor->formID, value);

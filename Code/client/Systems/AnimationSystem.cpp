@@ -74,6 +74,14 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         }
 
         apActor->actorState.flags1 = first.State1;
+        if (apActor->GetExtension() && apActor->GetExtension()->IsDownedPlayer() && !apActor->GetExtension()->IsLocalPlayer())
+        {
+            // Preserve ACTOR_LIFE_STATE::kBleedout (8, bits 21..24) on downed remote player clones so native
+            // Skyrim AI / CombatTargetSelector never treats a downed teammate as a standing kAlive target.
+            constexpr uint32_t kLifeStateMask = 0xFu << 21;
+            constexpr uint32_t kLifeStateBleedout = 8u << 21;
+            apActor->actorState.flags1 = (apActor->actorState.flags1 & ~kLifeStateMask) | kLifeStateBleedout;
+        }
         apActor->actorState.flags2 = first.State2;
 
         apActor->LoadAnimationVariables(first.Variables);

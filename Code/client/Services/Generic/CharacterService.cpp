@@ -76,27 +76,117 @@
 
 #include <cmath>
 
+extern thread_local bool g_forceAnimation;
+
 namespace
 {
 constexpr uint32_t cMaxRfabXpDelta = 1'000'000;
 
-void PurgeDynamicActorCleanly(Actor* apActor, bool aImmediateDisable = false) noexcept
+bool IsNetworkCreatedActor(const Actor* apActor) noexcept
 {
-    if (!apActor)
+    if (!apActor || apActor->formID == 0x14)
+        return false;
+
+    const auto* pExt = apActor->GetExtension();
+    if (pExt && (pExt->IsCreatedByNetwork() || pExt->IsRemotePlayer()))
+        return true;
+
+    return ((apActor->formID & 0xFF000000u) == 0xFF000000u) &&
+           apActor->baseForm != nullptr &&
+           ((apActor->baseForm->formID & 0xFF000000u) == 0xFF000000u);
+}
+
+void PurgeDynamicActorCleanly(Actor* apActor) noexcept
+{
+    if (!apActor || apActor->formID == 0x14)
         return;
 
     apActor->UnsetChanged(0xFFFFFFFF);
     apActor->SetSkipSaveFlag(true);
-    if (apActor->baseForm && (apActor->baseForm->formID & 0xFF000000) == 0xFF000000)
+    if (apActor->baseForm && (apActor->baseForm->formID & 0xFF000000u) == 0xFF000000u)
         apActor->baseForm->UnsetChanged(0xFFFFFFFF);
 
-    // During normal runtime cell transitions (NotifyRemoveCharacter / CancelServerAssignment), rely strictly on
-    // Skyrim's deferred end-of-frame Delete() queue (identical to v1.0.0) so 3D/Havok/shader resources are never
-    // torn down mid-tick. Only invoke native C++ virtual DisableImpl() (vtable[0x89]) during pre-save / world-load sweeps.
-    if (aImmediateDisable && !apActor->IsDisabled())
-        apActor->DisableImpl();
+    if (auto* pExt = apActor->GetExtension())
+    {
+        pExt->SetRemote(false);
+        pExt->SetDownedPlayer(false);
+    }
 
-    apActor->Delete();
+    // NEVER call synchronous DisableImpl() right before Delete():
+    // DisableImpl() immediately detaches MovementControllerNPC's Actor* owner pointer (RCX = 0),
+    // while Delete() queues a deferred Disable+Delete task into BSTaskPool (SE 36016) that then
+    // crashes at SkyrimSE.exe+0x6EDFC2 (SE 40691, [RCX + 0x1F0] Actor::race) when flushed.
+    if ((apActor->formID & 0xFF000000u) == 0xFF000000u)
+        apActor->Delete();
+}
+
+void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
+{
+    if (!apActor || apActor->formID == 0x14 || apActor->IsDead())
+        return;
+
+    // Clear stuck transient ActorState bits copied mid-action while the NPC was Remote:
+    // - flags1 bits 28..31 (meleeAttackState) & bits 25..27 (knockState)
+    // - flags2 bits 10..11 (recoil) & bit 13 (staggered)
+    apActor->actorState.flags1 &= ~(0xF0000000u | 0x0E000000u);
+    apActor->actorState.flags2 &= ~(0x00000C00u | 0x00002000u);
+
+    // Normalize stuck intermediate weapon draw/sheathe transition states (1/2 -> 3 Drawn, 4/5 -> 0 Sheathed)
+    // so CombatBehaviorMelee/Ranged never waits forever for a WeapEquip_Out event from the prior owner.
+    const uint32_t weaponState = (apActor->actorState.flags2 >> 5) & 0x7u;
+    if (weaponState == 1u || weaponState == 2u)
+        apActor->actorState.flags2 = (apActor->actorState.flags2 & ~(0x7u << 5)) | (3u << 5);
+    else if (weaponState == 4u || weaponState == 5u)
+        apActor->actorState.flags2 &= ~(0x7u << 5);
+
+    // Repair poisoned near-zero or negative WeaponSpeedMult left over from prior modifier drift.
+    for (uint32_t avId : {static_cast<uint32_t>(ActorValueInfo::kWeaponSpeedMult),
+                          static_cast<uint32_t>(ActorValueInfo::kLeftWeaponSpeedMult)})
+    {
+        const float curSpeed = apActor->GetActorValue(avId);
+        if (curSpeed < 0.0f || (curSpeed > 0.0f && curSpeed < 0.25f))
+        {
+            apActor->SetActorValue(avId, 0.0f);
+            const float afterBaseReset = apActor->GetActorValue(avId);
+            if (afterBaseReset < 0.0f || (afterBaseReset > 0.0f && afterBaseReset < 0.25f))
+                apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, avId, 1.0f);
+        }
+    }
+
+    if (apActor->animationGraphHolder.IsReady())
+    {
+        const bool prevForce = g_forceAnimation;
+        g_forceAnimation = true;
+
+        bool flagVal = false;
+        BSFixedString isAttackingVar("IsAttacking");
+        if (apActor->animationGraphHolder.GetVariableBool(&isAttackingVar, &flagVal) && flagVal)
+        {
+            apActor->animationGraphHolder.SetVariableBool(&isAttackingVar, false);
+            BSFixedString attackStopEvt("attackStop");
+            apActor->SendAnimationEvent(&attackStopEvt);
+        }
+
+        flagVal = false;
+        BSFixedString isStaggeringVar("IsStaggering");
+        if (apActor->animationGraphHolder.GetVariableBool(&isStaggeringVar, &flagVal) && flagVal)
+        {
+            apActor->animationGraphHolder.SetVariableBool(&isStaggeringVar, false);
+            BSFixedString staggerStopEvt("staggerStop");
+            apActor->SendAnimationEvent(&staggerStopEvt);
+        }
+
+        flagVal = false;
+        BSFixedString isRecoilingVar("IsRecoiling");
+        if (apActor->animationGraphHolder.GetVariableBool(&isRecoilingVar, &flagVal) && flagVal)
+        {
+            apActor->animationGraphHolder.SetVariableBool(&isRecoilingVar, false);
+            BSFixedString recoilStopEvt("recoilStop");
+            apActor->SendAnimationEvent(&recoilStopEvt);
+        }
+
+        g_forceAnimation = prevForce;
+    }
 }
 
 void KillActorSuppressingDuplicateXp(Actor* apActor) noexcept
@@ -236,6 +326,7 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
     }
 
     pExtension->SetRemote(false);
+    SanitizeActorCombatStateForLocalOwnership(pActor);
     pExtension->SetNakedDeadline();
 
     const uint64_t effectiveEpoch = aOwnershipEpoch != 0 ? aOwnershipEpoch : m_ownershipEpochTracker.GetEpoch(acServerId);
@@ -256,10 +347,19 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
 void CharacterService::DeleteTempActor(const uint32_t aFormId) noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    if (pActor && ((pActor->formID & 0xFF000000) == 0xFF000000))
+    if (!pActor || aFormId == 0x14)
+        return;
+
+    if (IsNetworkCreatedActor(pActor))
     {
         PurgeDynamicActorCleanly(pActor);
-        spdlog::info("\tDeleted actor {:X}", aFormId);
+        spdlog::info("\tDeleted network actor {:X}", aFormId);
+    }
+    else if (auto* pExt = pActor->GetExtension())
+    {
+        pExt->SetRemote(false);
+        pExt->SetDownedPlayer(false);
+        SanitizeActorCombatStateForLocalOwnership(pActor);
     }
 }
 
@@ -276,14 +376,14 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
         m_world.GetActorValueService().CaptureNativeBaseMaxHealth(pActor);
     }
 
-    entt::entity entity;
+    entt::entity entity = entt::null;
 
     const auto view = m_world.view<RemoteComponent>();
     const auto it = std::find_if(
         std::begin(view), std::end(view),
-        [&acEvent, view](entt::entity entity)
+        [&acEvent, view](entt::entity candidate)
         {
-            auto& remoteComponent = view.get<RemoteComponent>(entity);
+            auto& remoteComponent = view.get<RemoteComponent>(candidate);
             return remoteComponent.CachedRefId == acEvent.FormId;
         });
 
@@ -295,7 +395,17 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
         entity = *it;
     }
     else
-        entity = m_world.create();
+    {
+        const auto existingFormView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+        const auto existingIt = std::find_if(
+            std::begin(existingFormView), std::end(existingFormView),
+            [&acEvent, existingFormView](entt::entity candidate)
+            {
+                return existingFormView.get<FormIdComponent>(candidate).Id == acEvent.FormId;
+            });
+
+        entity = (existingIt != std::end(existingFormView)) ? *existingIt : m_world.create();
+    }
 
     m_world.emplace_or_replace<FormIdComponent>(entity, acEvent.FormId);
     m_world.emplace_or_replace<EarlyAnimationBufferComponent>(entity);
@@ -402,26 +512,41 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexcept
 {
     m_savePurgeActive = false;
+    m_engineWorldLoadInProgress = false;
     m_pendingPostSaveRemoteRestore = false;
     m_pendingLocalTempSpawns.clear();
     m_cachedRemoteSpawns.clear();
     NotifySaveLoadReset();
 
-    // Go through all the forms that were previously detected
+    // Go through all the forms that were previously detected.
+    // Delete ONLY genuine network-created clones (never native TESLevCharacter 0xFFxxxxxx dungeon enemies!).
     auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     Vector<entt::entity> entities(view.begin(), view.end());
 
     for (auto entity : entities)
     {
-        auto& formIdComponent = m_world.get<FormIdComponent>(entity);
-        // Delete all temporary remote clones on connect
-        if (formIdComponent.Id != 0x14 && (formIdComponent.Id & 0xFF000000) == 0xFF000000)
-        {
-            Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-            if (pActor)
-                PurgeDynamicActorCleanly(pActor, true);
-
+        if (!m_world.valid(entity))
             continue;
+
+        const uint32_t formId = m_world.get<FormIdComponent>(entity).Id;
+        Actor* pActor = Cast<Actor>(TESForm::GetById(formId));
+        if (!pActor)
+        {
+            m_world.destroy(entity);
+            continue;
+        }
+
+        if (IsNetworkCreatedActor(pActor))
+        {
+            PurgeDynamicActorCleanly(pActor);
+            m_world.destroy(entity);
+            continue;
+        }
+
+        if (auto* pExt = pActor->GetExtension())
+        {
+            pExt->SetRemote(false);
+            pExt->SetDownedPlayer(false);
         }
 
         ProcessNewEntity(entity);
@@ -430,7 +555,21 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
 
 void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
 {
-    PurgeAllDynamicActorsForWorldLoad();
+    if (m_engineWorldLoadInProgress)
+        return;
+
+    PurgeNetworkActorsOnLiveDisconnect();
+}
+
+void CharacterService::BeginEngineWorldLoad() noexcept
+{
+    m_engineWorldLoadInProgress = true;
+    DetachAllActorsForEngineLoad();
+}
+
+void CharacterService::EndEngineWorldLoad() noexcept
+{
+    m_engineWorldLoadInProgress = false;
 }
 
 void CharacterService::PreSavePurgeDynamicActors() noexcept
@@ -455,12 +594,11 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
 
         if (Actor* pActor = Cast<Actor>(pForm))
         {
-            const bool hasDynamicBase = pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000);
-            if (pActor->GetExtension()->IsRemote() || m_world.all_of<RemoteComponent>(entity) || hasDynamicBase)
+            if (IsNetworkCreatedActor(pActor) || pActor->GetExtension()->IsRemote() || m_world.all_of<RemoteComponent>(entity))
             {
                 pActor->SetSkipSaveFlag(true);
                 pActor->UnsetChanged(0xFFFFFFFF);
-                if (hasDynamicBase)
+                if (pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000))
                     pActor->baseForm->UnsetChanged(0xFFFFFFFF);
             }
         }
@@ -486,7 +624,64 @@ void CharacterService::RestorePurgedRemoteActorsAfterSave() noexcept
     m_pendingPostSaveRemoteRestore = false;
 }
 
-void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
+void CharacterService::DetachAllActorsForEngineLoad() noexcept
+{
+    // CRITICAL FOR SKYRIM SE 1.5.97 SAVE-LOAD STABILITY (+0x6EDFC2):
+    // BGSSaveLoadGame::LoadGame natively tears down all loaded cells and destroys every 0xFFxxxxxx form.
+    // NEVER invoke DisableImpl() or Delete() here: queueing BSTaskPool Disable/Delete tasks right before
+    // LoadGame causes ~MovementControllerNPC to dereference a detached Actor* (RCX = 0, [RCX + 0x1F0]).
+    m_savePurgeActive = false;
+    m_pendingPostSaveRemoteRestore = false;
+    m_pendingLocalTempSpawns.clear();
+    m_cachedRemoteSpawns.clear();
+    m_weaponDrawUpdates.clear();
+    NotifySaveLoadReset();
+
+    auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    Vector<entt::entity> actorEntities(actorView.begin(), actorView.end());
+    for (entt::entity entity : actorEntities)
+    {
+        const uint32_t formId = actorView.get<FormIdComponent>(entity).Id;
+        if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
+        {
+            if (auto* pExt = pActor->GetExtension())
+            {
+                pExt->SetRemote(false);
+                pExt->SetDownedPlayer(false);
+                if (formId != 0x14)
+                    pExt->SetPlayer(false);
+            }
+
+            if (IsNetworkCreatedActor(pActor))
+            {
+                pActor->SetSkipSaveFlag(true);
+                pActor->UnsetChanged(0xFFFFFFFF);
+                if (pActor->baseForm && (pActor->baseForm->formID & 0xFF000000u) == 0xFF000000u)
+                    pActor->baseForm->UnsetChanged(0xFFFFFFFF);
+            }
+        }
+
+        if (m_world.valid(entity))
+            m_world.destroy(entity);
+    }
+
+    m_world.clear<
+        WaitingFor3D,
+        WaitingForAssignmentComponent,
+        EarlyAnimationBufferComponent,
+        CacheComponent,
+        FaceGenComponent,
+        PlayerComponent,
+        LocalComponent,
+        LocalAnimationComponent,
+        RemoteComponent,
+        InterpolationComponent,
+        RemoteAnimationComponent>();
+
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+}
+
+void CharacterService::PurgeNetworkActorsOnLiveDisconnect() noexcept
 {
     m_savePurgeActive = false;
     m_pendingPostSaveRemoteRestore = false;
@@ -495,57 +690,62 @@ void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
     m_weaponDrawUpdates.clear();
     NotifySaveLoadReset();
 
-    auto remoteView = m_world.view<FormIdComponent, RemoteComponent>();
-    Vector<entt::entity> dynamicEntities;
-    for (auto entity : remoteView)
+    auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    Vector<entt::entity> entitiesToDestroy;
+    for (entt::entity entity : actorView)
     {
-        const uint32_t formId = remoteView.get<FormIdComponent>(entity).Id;
+        const uint32_t formId = actorView.get<FormIdComponent>(entity).Id;
         Actor* pActor = Cast<Actor>(TESForm::GetById(formId));
         if (!pActor)
+        {
+            entitiesToDestroy.push_back(entity);
             continue;
-
-        if ((formId & 0xFF000000) == 0xFF000000 || pActor->GetExtension()->IsRemotePlayer())
-        {
-            PurgeDynamicActorCleanly(pActor, true);
-            dynamicEntities.push_back(entity);
         }
-        else
+
+        if (IsNetworkCreatedActor(pActor))
         {
-            pActor->GetExtension()->SetRemote(false);
+            PurgeDynamicActorCleanly(pActor);
+            entitiesToDestroy.push_back(entity);
+        }
+        else if (auto* pExt = pActor->GetExtension())
+        {
+            const bool wasRemote = pExt->IsRemote();
+            pExt->SetRemote(false);
+            pExt->SetDownedPlayer(false);
+            if (wasRemote)
+                SanitizeActorCombatStateForLocalOwnership(pActor);
         }
     }
 
-    for (entt::entity entity : dynamicEntities)
+    auto orphanRemoteView = m_world.view<RemoteComponent>(entt::exclude<FormIdComponent>);
+    for (entt::entity entity : orphanRemoteView)
+        entitiesToDestroy.push_back(entity);
+
+    for (entt::entity entity : entitiesToDestroy)
     {
         if (m_world.valid(entity))
             m_world.destroy(entity);
     }
 
-    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
-
-    auto formView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-    for (auto entity : formView)
-    {
-        const uint32_t formId = formView.get<FormIdComponent>(entity).Id;
-        if (formId != 0x14 && (formId & 0xFF000000) == 0xFF000000)
-        {
-            if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
-            {
-                const bool hasDynamicBase = pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000);
-                if (pActor->GetExtension()->IsRemote() || hasDynamicBase)
-                    PurgeDynamicActorCleanly(pActor, true);
-            }
-        }
-    }
-
     m_world.clear<
         WaitingFor3D,
         WaitingForAssignmentComponent,
+        EarlyAnimationBufferComponent,
+        CacheComponent,
+        FaceGenComponent,
+        PlayerComponent,
         LocalComponent,
         LocalAnimationComponent,
         RemoteComponent,
         InterpolationComponent,
         RemoteAnimationComponent>();
+
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+}
+
+void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
+{
+    DetachAllActorsForEngineLoad();
 }
 
 void CharacterService::NotifySaveLoadReset() noexcept
@@ -643,6 +843,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         auto& localAnimationComponent = m_world.emplace_or_replace<LocalAnimationComponent>(cEntity);
 
         pActor->GetExtension()->SetRemote(false);
+        SanitizeActorCombatStateForLocalOwnership(pActor);
 
         if (auto* pEarlyAnimComponent = m_world.try_get<EarlyAnimationBufferComponent>(cEntity))
         {
@@ -692,22 +893,6 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
 void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept
 {
-    if (m_savePurgeActive)
-    {
-        if (acMessage.FormId == GameId{})
-        {
-            m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
-            const entt::entity deferredEntity = m_world.create();
-            m_world.emplace_or_replace<RemoteComponent>(deferredEntity, acMessage.ServerId, 0u);
-            auto& interp = InterpolationSystem::Setup(m_world, deferredEntity);
-            interp.Position = acMessage.Position;
-            AnimationSystem::Setup(m_world, deferredEntity);
-            AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(deferredEntity), acMessage.ActionsToReplay);
-            m_world.emplace_or_replace<WaitingFor3D>(deferredEntity, acMessage);
-        }
-        return;
-    }
-
     auto remoteView = m_world.view<RemoteComponent>();
     const auto remoteItor = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ServerId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
 
@@ -725,22 +910,24 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     }
 
     PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
-    if (!pLocalPlayer || !pLocalPlayer->parentCell)
+    auto stageDeferredRemoteSpawn = [&]()
     {
-        // Local player is mid-cell-transition / loading screen (`parentCell == nullptr`):
-        // stage custom temporary spawns into WaitingFor3D (CachedRefId = 0, no FormIdComponent) instead of
+        m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
+        const entt::entity deferredEntity = m_world.create();
+        m_world.emplace_or_replace<RemoteComponent>(deferredEntity, acMessage.ServerId, 0u);
+        auto& interp = InterpolationSystem::Setup(m_world, deferredEntity);
+        interp.Position = acMessage.Position;
+        AnimationSystem::Setup(m_world, deferredEntity);
+        AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(deferredEntity), acMessage.ActionsToReplay);
+        m_world.emplace_or_replace<WaitingFor3D>(deferredEntity, acMessage);
+    };
+
+    if (m_savePurgeActive || !pLocalPlayer || !pLocalPlayer->parentCell)
+    {
+        // Local player is mid-save or mid-cell-transition / loading screen (`parentCell == nullptr`):
+        // stage remote spawns into WaitingFor3D (CachedRefId = 0, no FormIdComponent) instead of
         // calling Actor::Create / MoveTo(nullptr), so RunSpawnUpdates() materializes them once the cell loads.
-        if (acMessage.FormId == GameId{})
-        {
-            m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
-            const entt::entity deferredEntity = m_world.create();
-            m_world.emplace_or_replace<RemoteComponent>(deferredEntity, acMessage.ServerId, 0u);
-            auto& interp = InterpolationSystem::Setup(m_world, deferredEntity);
-            interp.Position = acMessage.Position;
-            AnimationSystem::Setup(m_world, deferredEntity);
-            AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(deferredEntity), acMessage.ActionsToReplay);
-            m_world.emplace_or_replace<WaitingFor3D>(deferredEntity, acMessage);
-        }
+        stageDeferredRemoteSpawn();
         return;
     }
 
@@ -785,6 +972,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         }
 
         pActor = Actor::Create(pNpc);
+        if (pActor && pActor->GetExtension())
+            pActor->GetExtension()->SetCreatedByNetwork(true);
     }
     else
     {
@@ -809,10 +998,11 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             return;
         }
 
-        // Moving an uninitialized reference crashes (e.g. null race); local cell discovery will assign it once loaded.
+        // Moving an uninitialized reference crashes (e.g. null race); stage until cell ref finishes loading.
         if (pActor->IsStillLoading())
         {
-            spdlog::info("Skipped spawn for actor {:X} because its cell ref is still loading, server id: {:X}", cActorId, acMessage.ServerId);
+            spdlog::info("Deferring spawn for actor {:X} while cell ref finishes loading, server id: {:X}", cActorId, acMessage.ServerId);
+            stageDeferredRemoteSpawn();
             return;
         }
 
@@ -892,6 +1082,9 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     }
 
     auto& remoteComponent = m_world.emplace_or_replace<RemoteComponent>(*entity, acMessage.ServerId, pActor->formID);
+    m_world.emplace_or_replace<FormIdComponent>(*entity, pActor->formID);
+    if (acMessage.IsPlayer)
+        m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 
     auto& interpolationComponent = InterpolationSystem::Setup(m_world, *entity);
     interpolationComponent.Position = acMessage.Position;
@@ -1076,10 +1269,28 @@ void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage)
 
     if (itor != std::end(view))
     {
-        if (auto* pFormIdComponent = m_world.try_get<FormIdComponent>(*itor))
+        const entt::entity entity = *itor;
+        bool removedNetworkActor = false;
+        if (auto* pFormIdComponent = m_world.try_get<FormIdComponent>(entity))
+        {
+            Actor* pActor = Cast<Actor>(TESForm::GetById(pFormIdComponent->Id));
+            removedNetworkActor = IsNetworkCreatedActor(pActor);
             CharacterService::DeleteTempActor(pFormIdComponent->Id);
+        }
+        else if (const uint32_t cachedRefId = view.get<RemoteComponent>(entity).CachedRefId; cachedRefId != 0)
+        {
+            Actor* pActor = Cast<Actor>(TESForm::GetById(cachedRefId));
+            removedNetworkActor = IsNetworkCreatedActor(pActor);
+            CharacterService::DeleteTempActor(cachedRefId);
+        }
 
-        DeleteRemoteEntityComponents(*itor);
+        DeleteRemoteEntityComponents(entity);
+        if (removedNetworkActor)
+        {
+            m_world.remove<FormIdComponent, EarlyAnimationBufferComponent>(entity);
+            if (m_world.orphan(entity))
+                m_world.destroy(entity);
+        }
     }
 }
 
@@ -1711,9 +1922,11 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 
     if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity); pRemoteComponent)
     {
-        // TODO(cosideci): don't just take all actors (i.e. from other parties),
-        // maybe check it server side, add a variable to the request.
-        if (m_world.GetPartyService().IsLeader() && !pActor->IsTemporary() && !pActor->IsMount())
+        // Never steal actor ownership onto a downed party leader!
+        if (m_world.GetPartyService().IsLeader() &&
+            !m_world.GetDownedStateService().IsLocalPlayerDowned() &&
+            !pActor->IsTemporary() &&
+            !pActor->IsMount())
         {
             spdlog::info("Sending ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
 
@@ -1888,7 +2101,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
     if (m_world.all_of<RemoteComponent>(aEntity))
     {
         auto& remoteComponent = m_world.get<RemoteComponent>(aEntity);
-        const bool isTempActor = pActor && pActor->IsTemporary();
+        const bool isTempActor = IsNetworkCreatedActor(pActor);
 
         if (pActor)
         {
@@ -1897,9 +2110,10 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
                 spdlog::info("Temporary Remote Unloaded {:X}", aFormId);
                 PurgeDynamicActorCleanly(pActor);
             }
-            else
+            else if (auto* pExt = pActor->GetExtension())
             {
-                pActor->GetExtension()->SetRemote(false);
+                pExt->SetRemote(false);
+                pExt->SetDownedPlayer(false);
             }
         }
 
@@ -2037,6 +2251,47 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
         }
 
         pActor = Actor::Create(pNpc);
+        if (pActor && pActor->GetExtension())
+            pActor->GetExtension()->SetCreatedByNetwork(true);
+    }
+    else
+    {
+        const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
+        if (cActorId == 0)
+        {
+            m_world.destroy(aEntity);
+            return nullptr;
+        }
+
+        pActor = Cast<Actor>(TESForm::GetById(cActorId));
+        if (!pActor || pActor->IsStillLoading())
+            return nullptr;
+
+        auto existingView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+        for (entt::entity other : existingView)
+        {
+            if (other == aEntity || existingView.get<FormIdComponent>(other).Id != cActorId)
+                continue;
+
+            if (m_world.any_of<LocalComponent, RemoteComponent>(other))
+            {
+                m_world.destroy(aEntity);
+                return nullptr;
+            }
+
+            if (auto* pWaitAssign = m_world.try_get<WaitingForAssignmentComponent>(other))
+            {
+                CancelAssignmentRequest cancelMsg{};
+                cancelMsg.Cookie = pWaitAssign->Cookie;
+                m_transport.Send(cancelMsg);
+            }
+            m_pendingLocalTempSpawns.erase(other);
+            m_world.destroy(other);
+            break;
+        }
+
+        if (pActor->IsDisabled())
+            pActor->EnableImpl();
     }
 
     auto& remoteComponent = m_world.get<RemoteComponent>(aEntity);
@@ -2047,10 +2302,26 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
         return nullptr;
     }
 
+    // CRITICAL: Always attach FormIdComponent immediately when materializing a deferred WaitingFor3D entity!
+    // Without FormIdComponent, waitingView (FormIdComponent + WaitingFor3D) never equips body/skin/armor meshes
+    // (causing invisible enemies) and damage/death handlers cannot resolve ServerId (causing immortal enemies).
+    remoteComponent.CachedRefId = pActor->formID;
+    m_world.emplace_or_replace<FormIdComponent>(aEntity, pActor->formID);
+
     pActor->GetExtension()->SetRemote(true);
     pActor->rotation.x = acMessage.Rotation.x;
     pActor->rotation.z = acMessage.Rotation.y;
     pActor->MoveTo(PlayerCharacter::Get()->parentCell, pInterpolationComponent->Position);
+
+    if (!acMessage.IsPlayer)
+    {
+        if (const auto maxHealthIt = acMessage.InitialActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+            maxHealthIt != acMessage.InitialActorValues.ActorMaxValuesList.end())
+        {
+            m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+        }
+    }
+
     pActor->SetActorValues(acMessage.InitialActorValues);
 
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
@@ -2060,6 +2331,8 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
         pActor->SetPlayerRespawnMode();
         m_world.emplace_or_replace<PlayerComponent>(aEntity, acMessage.PlayerId);
         m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+        if (m_world.GetDownedStateService().IsRemotePlayerDowned(acMessage.PlayerId))
+            m_world.GetDownedStateService().ApplyRemoteActorDownedPosture(pActor, true);
     }
 
     if (acMessage.IsPlayerSummon)
@@ -2197,6 +2470,13 @@ void CharacterService::RunRemoteUpdates() noexcept
         if (pActor->IsVampireLord())
             pActor->FixVampireLordModel();
 
+        if (waitingFor3D.SpawnRequest.IsPlayer &&
+            m_world.GetDownedStateService().IsRemotePlayerDowned(waitingFor3D.SpawnRequest.PlayerId))
+        {
+            m_weaponDrawUpdates[pActor->formID] = {false};
+            m_world.GetDownedStateService().ApplyRemoteActorDownedPosture(pActor, true);
+        }
+
         // (Re)start naked NPC deadline. Actor MUST be fully constructed before check clock starts.
         pActor->GetExtension()->SetNakedDeadline();
 
@@ -2264,6 +2544,9 @@ void CharacterService::RunSpawnUpdates() const noexcept
 
     for (const auto entity : entities)
     {
+        if (!m_world.valid(entity))
+            continue;
+
         auto& remoteComponent = m_world.get<RemoteComponent>(entity);
         auto& interpolationComponent = m_world.get<InterpolationComponent>(entity);
 
@@ -2285,17 +2568,14 @@ void CharacterService::RunSpawnUpdates() const noexcept
                 if (!pActor)
                 {
                     pActor = CreateCharacterForEntity(entity);
-                    if (!pActor)
+                    if (!pActor || !m_world.valid(entity))
                         continue;
+                }
 
-                    remoteComponent.CachedRefId = pActor->formID;
-                }
-                else
-                {
-                    m_world.emplace_or_replace<FormIdComponent>(entity, pActor->formID);
-                    if (m_world.all_of<PlayerComponent>(entity))
-                        m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
-                }
+                remoteComponent.CachedRefId = pActor->formID;
+                m_world.emplace_or_replace<FormIdComponent>(entity, pActor->formID);
+                if (m_world.all_of<PlayerComponent>(entity))
+                    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 
                 pActor->MoveTo(pLocalPlayer->parentCell, interpolationComponent.Position);
             }
@@ -2304,10 +2584,14 @@ void CharacterService::RunSpawnUpdates() const noexcept
         {
             // Materialize deferred interior spawns queued while local parentCell was nullptr during cell load.
             auto* pActor = CreateCharacterForEntity(entity);
-            if (!pActor)
+            if (!pActor || !m_world.valid(entity))
                 continue;
 
             remoteComponent.CachedRefId = pActor->formID;
+            m_world.emplace_or_replace<FormIdComponent>(entity, pActor->formID);
+            if (m_world.all_of<PlayerComponent>(entity))
+                m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+
             pActor->MoveTo(pLocalPlayer->parentCell, interpolationComponent.Position);
         }
     }

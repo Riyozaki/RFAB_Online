@@ -6,6 +6,9 @@ struct MenuControls
 
     void SetToggle(bool);
 
+    [[nodiscard]] bool InBeastForm() const noexcept { return isBeastForm; }
+    [[nodiscard]] bool InRemapMode() const noexcept { return isRemapMode; }
+
 private:
     char pad_0000[128]; // 0x0000
     bool isProcessing;  // 0x0080

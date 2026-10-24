@@ -179,8 +179,8 @@ bool TP_MAKE_THISCALL(HookLoadCallSite, BGSSaveLoadManager, uint64_t* apUnk0, ui
     const char* saveName = ExtractSaveNameFromContext(apUnk0);
     auto& coord = World::Get().GetCoordinatedSaveService();
 
-    // Tear down live network session & purge EVERY dynamic 0xFFxxxxxx actor BEFORE kMessage_PreLoadGame
-    // and BGSSaveLoadGame::Revert execute — eliminating UAF crashes during world revert!
+    // Detach live network actors & close transport BEFORE kMessage_PreLoadGame and BGSSaveLoadGame::LoadGame
+    // without queueing BSTaskPool Disable/Delete tasks (preventing +0x6EDFC2 ~MovementControllerNPC CTD!).
     // Never return a synthetic `false` here: 0x0058AE30 treats `false` from +0x26C as `sSaveGameCorrupt`.
     coord.PrepareEngineForWorldLoad(saveName);
     const bool ok = TiltedPhoques::ThisCall(RealLoadCallSite, apThis, apUnk0, aUnk1, aUnk2, apUnk3);

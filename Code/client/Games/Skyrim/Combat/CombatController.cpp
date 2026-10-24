@@ -1,5 +1,9 @@
 #include "CombatController.h"
 #include "CombatTargetSelector.h"
+#include <Games/ActorExtension.h>
+#include <Games/References.h>
+#include <Services/RfabAdapterService.h>
+#include <World.h>
 
 void ArrayQuickSortRecursiveCombatTargets(GameArray<CombatTargetSelector*>* apArray, uint32_t aiLowIndex,
                                           uint32_t aiHighIndex)
@@ -64,7 +68,22 @@ static TUpdateTarget* RealUpdateTarget = nullptr;
 
 void TP_MAKE_THISCALL(HookUpdateTarget, CombatController)
 {
-    apThis->UpdateTarget();
+    TiltedPhoques::ThisCall(RealUpdateTarget, apThis);
+
+    if (!apThis || apThis->targetHandle == 0)
+        return;
+
+    // Thread-safe AI worker guard: never touch EnTT views here!
+    // Check atomic ActorExtension::IsDownedPlayer() on the selected target; if the AI picked a downed player
+    // (local 0x14 or remote clone), seamlessly retarget onto the nearest standing player via mutex-protected
+    // CoopCombatSnapshot (or clear target to nullptr if all players in range are downed).
+    Actor* pCurrentTarget = Cast<Actor>(TESObjectREFR::GetByHandle(apThis->targetHandle));
+    if (pCurrentTarget && pCurrentTarget->GetExtension() && pCurrentTarget->GetExtension()->IsDownedPlayer())
+    {
+        Actor* pAttacker = apThis->attackerHandle ? Cast<Actor>(TESObjectREFR::GetByHandle(apThis->attackerHandle)) : nullptr;
+        Actor* pReplacement = World::Get().GetRfabAdapterService().FindBestStandingPlayerTargetFor(pAttacker);
+        apThis->SetTarget(pReplacement);
+    }
 }
 
 void CombatController::SetTarget(Actor* apTarget)
@@ -77,12 +96,10 @@ void CombatController::SetTarget(Actor* apTarget)
 static TiltedPhoques::Initializer s_combatControllerHooks(
     []()
     {
-#if 0
         POINTER_SKYRIMSE(TUpdateTarget, s_updateTarget, 32489);
 
         RealUpdateTarget = s_updateTarget.Get();
 
         TP_HOOK(&RealUpdateTarget, HookUpdateTarget);
-#endif
     });
 

@@ -1,12 +1,15 @@
+#include <TiltedOnlinePCH.h>
+
 #include <Games/Skyrim/Interface/IMenu.h>
+#include <Games/Skyrim/Interface/Menus/SkillsMenu.h>
 #include <Games/Skyrim/Interface/UI.h>
 #include <Games/TES.h>
 #include <Misc/BSFixedString.h>
-#include <TiltedOnlinePCH.h>
 #include "immersive_launcher/stubs/DllBlocklist.h"
 
 #include <World.h>
 
+#include <Windows.h>
 #include <cstring>
 #include <utility>
 
@@ -87,16 +90,53 @@ namespace
 {
 constexpr size_t kAllowListCount = sizeof(kAllowList) / sizeof(kAllowList[0]);
 static UI::TCreate* s_realCreators[kAllowListCount]{};
-static bool s_clearedIntroSequence = false;
+static bool s_postSkseUiInitDone = false;
+
+bool IsSkyrimSoulsRuntimeActive() noexcept
+{
+    if (stubs::g_IsSoulsREActive)
+        return true;
+
+    static int s_cachedModuleCheck = -1;
+    if (s_cachedModuleCheck < 0)
+        s_cachedModuleCheck = (GetModuleHandleW(L"SkyrimSoulsRE.dll") != nullptr) ? 1 : 0;
+
+    return s_cachedModuleCheck == 1;
+}
+
+bool ShouldKeepStatsMenuPaused() noexcept
+{
+    static int s_cachedStatsCheck = -1;
+    if (s_cachedStatsCheck < 0)
+    {
+        const bool hasCustomSkillsOrRfab =
+            GetModuleHandleW(L"CustomSkills.dll") != nullptr || GetModuleHandleW(L"RFAB.dll") != nullptr;
+        s_cachedStatsCheck = hasCustomSkillsOrRfab ? 1 : 0;
+    }
+
+    return s_cachedStatsCheck == 1;
+}
 
 template <size_t Index>
 IMenu* WrappedMenuCreator(UIMessage* apMessage)
 {
     IMenu* pMenu = s_realCreators[Index](apMessage);
-    if (pMenu && World::Get().GetTransport().IsConnected())
-    {
-        UnfreezeMenu(pMenu);
-    }
+    if (!pMenu || !World::Get().GetTransport().IsConnected())
+        return pMenu;
+
+    // CRITICAL FOR RFAB + SKYRIMSOULS RE (SE 1.5.97):
+    // When SkyrimSoulsRE.dll is loaded, SkyrimSoulsRE::CreateMenu wraps our menu creator and checks
+    // `if (menu->PausesGame())` to track MenuFlagEx::kUnpaused & UI::numPausesGame, while deliberately
+    // keeping StatsMenu paused (`bStatsMenu = false` in RFAB's SkyrimSoulsRE.ini) for CustomSkills.dll / RFAB.dll.
+    // Stripping kPausesGame here before SkyrimSoulsRE::CreateMenu sees the menu breaks TweenMenu (`Tab`)
+    // unpause accounting and crashes StatsMenu (`Skills`)!
+    if (IsSkyrimSoulsRuntimeActive())
+        return pMenu;
+
+    if (std::strcmp(kAllowList[Index], "StatsMenu") == 0 && ShouldKeepStatsMenuPaused())
+        return pMenu;
+
+    UnfreezeMenu(pMenu);
     return pMenu;
 }
 
@@ -122,14 +162,24 @@ static TUI_Register* Real_UI_Register = nullptr;
 
 static void Hook_UI_Register(UI* apSelf, const char* apMenuName, UI::TCreate* apCreate)
 {
-    if (!s_clearedIntroSequence)
+    if (!s_postSkseUiInitDone)
     {
-        s_clearedIntroSequence = true;
+        s_postSkseUiInitDone = true;
         if (auto* pIni = INISettingCollection::Get())
         {
             if (auto* pIntro = pIni->GetSetting("sIntroSequence:General"))
                 pIntro->data = reinterpret_cast<uint64_t>("");
         }
+
+        // Hook_UI_Register runs inside Main::Init AFTER StartSKSE() has loaded all SKSE plugins.
+        // Only apply vanilla fallback patches when SkyrimSoulsRE.dll is genuinely absent.
+        if (!IsSkyrimSoulsRuntimeActive())
+        {
+            VersionDbPtr<uint8_t> FavoritesCanProcess(50644);
+            TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
+        }
+
+        ApplyFallbackStatsMenuPatchesPostSkse();
     }
 
     if (apMenuName && apCreate)
@@ -144,18 +194,10 @@ static void Hook_UI_Register(UI* apSelf, const char* apMenuName, UI::TCreate* ap
 static TiltedPhoques::Initializer s_s(
     []()
     {
-        // Hook UI::Register (SE 79949 @ 0xEBF9C0) at function entry (+0x0) so every unpaused menu
-        // clears kPausesGame / kFreezeFrame* right on creation before UI_AddToActiveQueue runs,
-        // with zero mid-function instruction offset sensitivity on Skyrim SE 1.5.97.
+        // Hook UI::Register (SE 79949 @ 0xEBF9C0) at function entry (+0x0).
+        // All SKSE plugin presence checks (SkyrimSoulsRE.dll, CustomSkills.dll, RFAB.dll) are deferred
+        // to Hook_UI_Register / WrappedMenuCreator so they execute AFTER StartSKSE() at [BOOT 4/4].
         VersionDbPtr<TUI_Register> registerMenu(79949);
         Real_UI_Register = registerMenu.Get();
         TP_HOOK(&Real_UI_Register, Hook_UI_Register);
-
-        // Credits to Skyrim Souls RE (v2.1.3 Offsets::Menus::FavoritesMenu::CanProcess = SE 50644 + 0x15):
-        // Allows FavoritesMenu hotkeys 1..8 to work while unpaused unless SkyrimSoulsRE.dll is active.
-        if (!stubs::g_IsSoulsREActive && GetModuleHandleW(L"SkyrimSoulsRE.dll") == nullptr)
-        {
-            VersionDbPtr<uint8_t> FavoritesCanProcess(50644);
-            TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
-        }
     });

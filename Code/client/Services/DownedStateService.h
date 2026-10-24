@@ -92,7 +92,7 @@ private:
     void OnNotifyPlayerDownedState(const NotifyPlayerDownedState& acMessage) noexcept;
     void OnNotifyReviveState(const NotifyReviveState& acMessage) noexcept;
 
-    void RedirectHostileAggroAwayFromPlayer(Actor* apLocalPlayer) noexcept;
+    void RedirectHostileAggroAwayFromActor(Actor* apDownedActor) noexcept;
     void UpdateInteractiveReviveInput(double aDeltaSec) noexcept;
     void SendCombatEncounterReport() noexcept;
     [[nodiscard]] uint32_t GetLocalPlayerId() const noexcept;

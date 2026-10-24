@@ -1,12 +1,14 @@
 #pragma once
 
 #include <common/RfabModpackCompat.h>
+#include <Games/Primitives.h>
 #include <atomic>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 struct World;
 struct TransportService;
@@ -49,6 +51,7 @@ public:
     void ToggleLocalAllyProtection() noexcept;
     void NotifyPartyLeadershipChanged() noexcept;
     void RefreshCoopCombatSnapshot() noexcept;
+    [[nodiscard]] Actor* FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
     [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
         Actor* apAttacker,
         Actor* apTarget,
@@ -74,6 +77,7 @@ private:
 
     void PollReadXpBooks() noexcept;
     void PollSyncedGlobals() noexcept;
+    void SelfHealFreeRoamMenuControls() noexcept;
     void SuppressSoloRfabAutosave() noexcept;
     void RestoreSoloRfabAutosave() noexcept;
     void ApplyAllyHitGameSetting(bool aProtectAllies) noexcept;
@@ -97,6 +101,15 @@ private:
     float m_savedNoDeathHandlingValue{0.0f};
     bool m_hasSavedNoDeathHandlingValue{false};
 
+    struct StandingPlayerSnapshotEntry
+    {
+        uint32_t FormId{0};
+        uint32_t HandleBits{0};
+        uint32_t WorldSpaceId{0};
+        uint32_t CellId{0};
+        NiPoint3 Position{};
+    };
+
     struct CoopCombatSnapshot
     {
         bool Connected{false};
@@ -104,6 +117,7 @@ private:
         bool AllyProtectionEnabled{true};
         std::unordered_map<uint32_t, uint32_t> FormIdToPlayerId{};
         std::unordered_set<uint32_t> PartyMemberIds{};
+        std::vector<StandingPlayerSnapshotEntry> StandingPlayers{};
     };
     mutable std::mutex m_coopSnapshotMutex{};
     CoopCombatSnapshot m_coopCombatSnapshot{};
@@ -121,6 +135,7 @@ private:
     bool m_autosaveSuppressed{false};
 
     double m_pollAccumulatorSec{0.0};
+    double m_controlMapHealAccumulatorSec{0.0};
     uint64_t m_currentWorldEpoch{1};
     bool m_seededReadBooks{false};
     std::unordered_set<uint32_t> m_knownReadBookFormIds{};

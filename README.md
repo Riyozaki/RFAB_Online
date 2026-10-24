@@ -108,6 +108,8 @@
 ## 📚 Документация и инженерные артефакты
 
 - **[`CHANGELOG.md`](./CHANGELOG.md)** — подробный журнал изменений по версиям (`v1.1.0` и `v1.0.0`).
+- **[`docs/PLAYTEST_SIX_ISSUES_ROOT_CAUSE_AND_FIX_SPEC_2026_10_24.md`](./docs/PLAYTEST_SIX_ISSUES_ROOT_CAUSE_AND_FIX_SPEC_2026_10_24.md)** — полный бинарный разбор и архитектурная спецификация исправлений 6 багов кооп-плейтеста (`+0x6EDFC2` при загрузке сейва, `StatsMenu` / `Tab`, агро на раненого, невидимые бессмертные враги и боевой ИИ / скорость атак NPC).
+- **[`docs/THREAD_SAFETY_AND_REENTRANCY_HARDENING.md`](./docs/THREAD_SAFETY_AND_REENTRANCY_HARDENING.md)** — аудит потокобезопасности, защиты от `Use-After-Free` и реентерабельности всех сервисов клиента.
 - **[`docs/CELL_TRANSITION_CTD_AND_RESPECT_EDITION_AUDIT_2026_10_24.md`](./docs/CELL_TRANSITION_CTD_AND_RESPECT_EDITION_AUDIT_2026_10_24.md)** — корневой разбор и устранение вылетов напарника при смене локации (`DisableImpl` ABI, `FormIdComponent`, `FaceGen`) + аудит совместимости с **RFAB Respect Edition** (`07 RFAB.esp`).
 - **[`docs/CORRUPT_SAVE_ROOT_CAUSE_AUDIT_2026_10_24.md`](./docs/CORRUPT_SAVE_ROOT_CAUSE_AUDIT_2026_10_24.md)** — разбор и устранение всех 4 причин ошибки `sSaveGameCorrupt` (`EngineFixes` `ScrapHeap` `128 МБ / 64 МБ`, бинарная валидация SE v12 `.ess` и перехват `0x0058AE30`).
 - **[`docs/RFAB_COOP_ALLY_PROTECTION_AND_RELEASE_FIX_2026_10_24.md`](./docs/RFAB_COOP_ALLY_PROTECTION_AND_RELEASE_FIX_2026_10_24.md)** — разбор механики *«Единство в битве»* в `RFAB.esp`, серверной авторизации Хоста и кодировки релизов.

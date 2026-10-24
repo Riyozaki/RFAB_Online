@@ -318,6 +318,7 @@ AnimationGraphDescriptor_Master_Behavior::AnimationGraphDescriptor_Master_Behavi
              // TODO: this was added extra for spell cast sync
              kPitchOverride, kNotCasting},
             {kTurnDelta, kDirection, kSpeedSampled, kweapAdj, kSpeed,
+             kweaponSpeedMult, k2HMweaponSpeedMult, kleftWeaponSpeedMult,
              // TODO: this was added extra for spell cast sync
              kCastBlend, kPitchOffset, kSpeedDamped, kPitch, kVelocityZ, k1stPRot, k1stPRotDamped, kCastBlendDamped},
             {kiRightHandEquipped, kiLeftHandEquipped, ki1HMState, kiState, kiLeftHandType, kiRightHandType, kiSyncIdleLocomotion, kiSyncForwardState, kiSyncTurnState, kiIsInSneak, kiWantBlock, kiRegularAttack,

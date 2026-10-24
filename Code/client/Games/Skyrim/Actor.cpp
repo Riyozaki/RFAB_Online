@@ -887,11 +887,28 @@ void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
 void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
 {
     ScopedActorValueOverride avOverride;
+    auto isLocallyDerivedSpeedAv = [](uint32_t aAvId) constexpr noexcept
+    {
+        return aAvId == ActorValueInfo::kSpeedMult ||
+               aAvId == ActorValueInfo::kWeaponSpeedMult ||
+               aAvId == ActorValueInfo::kLeftWeaponSpeedMult;
+    };
+
     for (auto& value : acActorValues.ActorMaxValuesList)
+    {
+        if (isLocallyDerivedSpeedAv(value.first))
+            continue;
+
         ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
+    }
 
     for (auto& value : acActorValues.ActorValuesList)
+    {
+        if (isLocallyDerivedSpeedAv(value.first))
+            continue;
+
         ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, value.first, value.second);
+    }
 }
 
 void Actor::SetFactions(const Factions& acFactions) noexcept
@@ -1526,6 +1543,22 @@ void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
             if (pOwnerActor->GetExtension()->IsRemotePlayer() && pTargetActor->GetExtension()->IsLocalPlayer())
             {
                 spdlog::debug("Cancelling detection from remote player to local player, owner: {:X}, target: {:X}", pOwner->formID, pTarget->formID);
+                return;
+            }
+
+            // Suppress AI detection against downed players (both local 0x14 and downed remote clones) directly on
+            // Skyrim's AI worker threads via lock-free atomic ActorExtension::IsDownedPlayer(), preventing enemies
+            // from re-detecting / re-aggroing a downed player or ignoring standing teammates.
+            if (pTargetActor->GetExtension() && pTargetActor->GetExtension()->IsDownedPlayer() &&
+                !(pOwnerActor->GetExtension() && pOwnerActor->GetExtension()->IsPlayer()))
+            {
+                if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object)
+                {
+                    pDet->level = -1000;
+                    pDet->inLos = 0;
+                    pDet->hasLos = 0;
+                    pDet->unk16 = 0;
+                }
                 return;
             }
         }

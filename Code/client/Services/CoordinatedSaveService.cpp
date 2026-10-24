@@ -51,7 +51,17 @@ bool CoordinatedSaveService::IsLocalPlayerAuthorizedLeader() const noexcept
     if (partyService.IsInParty())
         return partyService.IsLeader();
 
-    return partyService.GetPlayers().empty();
+    if (m_world.GetRfabAdapterService().IsLocalPlayerAllyProtectionHost())
+        return true;
+
+    const uint32_t localId = m_transport.GetLocalPlayerId();
+    for (const auto& [peerId, _] : partyService.GetPlayers())
+    {
+        if (peerId != 0 && (localId == 0 || peerId < localId))
+            return false;
+    }
+
+    return true;
 }
 
 bool CoordinatedSaveService::IsLoadingMenuOpen() const noexcept
@@ -195,6 +205,7 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
 
     m_world.GetDownedStateService().ResetAllStates();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
+    m_world.GetCharacterService().BeginEngineWorldLoad();
 
     if (m_transport.IsConnected() && m_transport.HasLastServerEndpoint())
     {
@@ -203,8 +214,6 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
         m_autoReconnectDelaySec = 1.5;
         m_transport.Close();
     }
-
-    m_world.GetCharacterService().PurgeAllDynamicActorsForWorldLoad();
 }
 
 void CoordinatedSaveService::NotifyEngineSaveCompleted(const char* acpFileName) noexcept
@@ -216,6 +225,8 @@ void CoordinatedSaveService::NotifyEngineSaveCompleted(const char* acpFileName) 
 
 void CoordinatedSaveService::NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept
 {
+    m_world.GetCharacterService().EndEngineWorldLoad();
+
     const std::string norm = RfabCompat::Detail::NormalizeSaveSlotStem(acpFileName ? acpFileName : "");
     if (!m_authorizedPendingLoadSlot.empty() && norm == m_authorizedPendingLoadSlot)
         m_authorizedPendingLoadSlot.clear();
