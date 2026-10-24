@@ -144,7 +144,8 @@ void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) n
 
 void PlayerService::OnNotifyPlayerRespawn(const NotifyPlayerRespawn& acMessage) const noexcept
 {
-    PlayerCharacter::Get()->PayGold(acMessage.GoldLost);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->PayGold(acMessage.GoldLost);
 
     std::string message = fmt::format("You died and lost {} gold.", acMessage.GoldLost);
     Utils::ShowHudMessage(String(message));
@@ -207,8 +208,12 @@ void PlayerService::OnPlayerLevelEvent(const PlayerLevelEvent& acEvent) const no
     if (!m_transport.IsConnected())
         return;
 
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
     PlayerLevelRequest request{};
-    request.NewLevel = PlayerCharacter::Get()->GetLevel();
+    request.NewLevel = pPlayer->GetLevel();
 
     m_transport.Send(request);
 }
@@ -241,6 +246,9 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
     static bool s_startTimer = false;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
     if (!pPlayer->actorState.IsBleedingOut())
     {
         m_cachedMainSpellId = pPlayer->magicItems[0] ? pPlayer->magicItems[0]->formID : 0;
@@ -309,8 +317,8 @@ void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
             m_godmodeStart = true;
             m_godmodeTimer = 10.0;
 
-            PlayerCharacter* pPlayer = PlayerCharacter::Get();
-            pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+            if (PlayerCharacter* pPlayer = PlayerCharacter::Get(); pPlayer && pPlayer->currentProcess)
+                pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
 
             FadeOutGame(false, true, 0.5f, true, 2.f);
 
@@ -363,9 +371,13 @@ void PlayerService::RunLevelUpdates() const noexcept
 
     lastSendTimePoint = now;
 
-    static uint16_t oldLevel = PlayerCharacter::Get()->GetLevel();
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
 
-    uint16_t newLevel = PlayerCharacter::Get()->GetLevel();
+    static uint16_t oldLevel = pPlayer->GetLevel();
+
+    uint16_t newLevel = pPlayer->GetLevel();
     if (newLevel != oldLevel)
     {
         PlayerLevelRequest request{};
@@ -390,7 +402,7 @@ void PlayerService::RunBeastFormDetection() const noexcept
     lastSendTimePoint = now;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer->race)
+    if (!pPlayer || !pPlayer->race)
         return;
     
     if (pPlayer->race->formID == lastRaceFormID)
@@ -406,5 +418,6 @@ void PlayerService::ToggleDeathSystem(bool aSet) noexcept
 {
     m_isDeathSystemEnabled = aSet;
 
-    PlayerCharacter::Get()->SetPlayerRespawnMode(aSet);
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetPlayerRespawnMode(aSet);
 }

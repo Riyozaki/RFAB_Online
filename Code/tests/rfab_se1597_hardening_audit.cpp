@@ -6,13 +6,17 @@
 #include <es_loader/TESFile.h>
 
 #ifdef RFAB_STANDALONE_AUDIT_MAIN
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <shared_mutex>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include <BSCore/BSIntrusiveRefCounted.h>
@@ -396,6 +400,132 @@ int main()
             const std::string charSvcCpp = readTextFile("Code/client/Services/Generic/CharacterService.cpp");
             assert(charSvcCpp.find("m_world.remove<FormIdComponent, EarlyAnimationBufferComponent, PlayerComponent>(aEntity)") != std::string::npos);
             assert(charSvcCpp.find("apActor->Disable();") == std::string::npos);
+
+            // Regression audit for all 6 thread-safety / UAF / re-entrancy / null-safety hardening fixes:
+            // (1) RfabAdapterService::EvaluateCoopAction uses mutex-guarded CoopCombatSnapshot (no cross-thread entt view or PartyService vector read)
+            const std::string rfabSvcH = readTextFile("Code/client/Services/RfabAdapterService.h");
+            const std::string rfabSvcCpp = readTextFile("Code/client/Services/RfabAdapterService.cpp");
+            assert(rfabSvcH.find("struct CoopCombatSnapshot") != std::string::npos);
+            assert(rfabSvcH.find("std::atomic<BGSListForm*> m_pNoAllyDamageAllowedSpellsList") != std::string::npos);
+            assert(rfabSvcCpp.find("void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept") != std::string::npos);
+            {
+                const auto evalPos = rfabSvcCpp.find("RfabAdapterService::EvaluateCoopAction(");
+                const auto onConnPos = rfabSvcCpp.find("void RfabAdapterService::OnConnected(");
+                assert(evalPos != std::string::npos && onConnPos != std::string::npos && evalPos < onConnPos);
+                const std::string evalBody = rfabSvcCpp.substr(evalPos, onConnPos - evalPos);
+                assert(evalBody.find("m_world.view<") == std::string::npos);
+                assert(evalBody.find("GetPartyService()") == std::string::npos);
+                assert(evalBody.find("std::lock_guard<std::mutex> lock(m_coopSnapshotMutex)") != std::string::npos);
+            }
+
+            // (2) DownedStateService defers camera/Papyrus/aggro/network side effects out of FinalizeLethalHitCushion into OnUpdate
+            const std::string downedH = readTextFile("Code/client/Services/DownedStateService.h");
+            const std::string downedCpp = readTextFile("Code/client/Services/DownedStateService.cpp");
+            assert(downedH.find("std::atomic<bool> m_isLocalDowned") != std::string::npos);
+            assert(downedH.find("std::atomic<bool> m_pendingEnterDownedTransition") != std::string::npos);
+            assert(downedCpp.find("CompleteEnterLocalDownedState()") != std::string::npos);
+            {
+                const auto cushionPos = downedCpp.find("void DownedStateService::FinalizeLethalHitCushion(");
+                const auto posturePos = downedCpp.find("void DownedStateService::ApplyRemoteActorDownedPosture(");
+                assert(cushionPos != std::string::npos && posturePos != std::string::npos && cushionPos < posturePos);
+                const std::string cushionBody = downedCpp.substr(cushionPos, posturePos - cushionPos);
+                assert(cushionBody.find("EnterLocalDownedState()") == std::string::npos);
+                assert(cushionBody.find("m_pendingEnterDownedTransition.store(true") != std::string::npos);
+            }
+
+            // (3) AnimationGraphDescriptorManager uses std::unordered_map + std::shared_mutex; BehaviorVar::Add has zero heap leaks
+            const std::string agdmH = readTextFile("Code/encoding/Structs/AnimationGraphDescriptorManager.h");
+            const std::string agdmCpp = readTextFile("Code/encoding/Structs/AnimationGraphDescriptorManager.cpp");
+            const std::string behaviorVarCpp = readTextFile("Code/client/ModCompat/BehaviorVar.cpp");
+            const std::string animCpp = readTextFile("Code/client/Games/Animation.cpp");
+            assert(agdmH.find("mutable std::shared_mutex m_mutex") != std::string::npos);
+            assert(agdmH.find("std::unordered_map<uint64_t, AnimationGraphDescriptor> m_descriptors") != std::string::npos);
+            assert(agdmCpp.find("std::shared_lock<std::shared_mutex>") != std::string::npos);
+            assert(agdmCpp.find("std::unique_lock<std::shared_mutex>") != std::string::npos);
+            assert(behaviorVarCpp.find("new AnimationGraphDescriptor()") == std::string::npos);
+            assert(behaviorVarCpp.find("new AnimationGraphDescriptorManager::Builder") == std::string::npos);
+            assert(animCpp.find("if (!apAction || !apAction->actor)") != std::string::npos);
+            assert(animCpp.find("apAction->action ? apAction->action->formID : 0") != std::string::npos);
+
+            // (4) TESObjectCELL::lock (0x118) guards refData.refArray iteration + baseForm null check
+            const std::string cellH = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.h");
+            const std::string cellCpp = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp");
+            const std::string actorCpp = readTextFile("Code/client/Games/Skyrim/Actor.cpp");
+            assert(cellH.find("mutable BSRecursiveLock lock;") != std::string::npos);
+            assert(cellH.find("static_assert(offsetof(TESObjectCELL, lock) == 0x118);") != std::string::npos);
+            assert(cellCpp.find("BSScopedLock<BSRecursiveLock> cellLock(lock);") != std::string::npos);
+            assert(cellCpp.find("if (!pRef || !pRef->baseForm)") != std::string::npos);
+            assert(actorCpp.find("BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);") != std::string::npos);
+
+            // (5) OverlayClient marshals all CEF UI actions onto World::Get().GetRunner().Queue(...) + PartyService null-guards GetOverlayApp()
+            const std::string overlayCpp = readTextFile("Code/client/Services/Generic/OverlayClient.cpp");
+            const std::string partyCpp = readTextFile("Code/client/Services/Generic/PartyService.cpp");
+            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().CreateParty(); });") != std::string::npos);
+            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().LeaveParty(); });") != std::string::npos);
+            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetMagicService().StartRevealingOtherPlayers(); });") != std::string::npos);
+            assert(partyCpp.find("GetOverlayApp()->ExecuteAsync") == std::string::npos);
+
+            // (6) ObjectService & PlayerService null-pointer guards
+            const std::string objSvcCpp = readTextFile("Code/client/Services/Generic/ObjectService.cpp");
+            const std::string playerSvcCpp = readTextFile("Code/client/Services/Generic/PlayerService.cpp");
+            assert(objSvcCpp.find("if (!pObject || !pObject->baseForm)") != std::string::npos);
+            assert(objSvcCpp.find("pObject->parentCell->formID") == std::string::npos);
+            assert(playerSvcCpp.find("PlayerCharacter::Get()->") == std::string::npos);
+        }
+
+        // Multi-threaded pointer-stability stress test mirroring AnimationGraphDescriptorManager (shared_mutex + unordered_map):
+        {
+            struct DummyDescriptor
+            {
+                uint64_t Hash{0};
+                std::vector<uint32_t> Vars;
+            };
+            std::shared_mutex mtx;
+            std::unordered_map<uint64_t, DummyDescriptor> registry;
+            registry.emplace(1001ull, DummyDescriptor{1001ull, {1u, 2u, 3u, 4u}});
+            const DummyDescriptor* pinnedPtr = &registry.at(1001ull);
+
+            std::atomic<bool> stop{false};
+            std::vector<std::thread> readers;
+            for (int r = 0; r < 4; ++r)
+            {
+                readers.emplace_back([&]() {
+                    while (!stop.load(std::memory_order_acquire))
+                    {
+                        const DummyDescriptor* lookedUp = nullptr;
+                        {
+                            std::shared_lock<std::shared_mutex> lk(mtx);
+                            auto it = registry.find(1001ull);
+                            assert(it != registry.end());
+                            lookedUp = &it->second;
+                        }
+                        // Node pointer and vector payload MUST stay valid even while writers force bucket rehashes!
+                        assert(lookedUp == pinnedPtr);
+                        assert(lookedUp->Hash == 1001ull && lookedUp->Vars.size() == 4 && lookedUp->Vars[3] == 4u);
+                    }
+                });
+            }
+
+            std::vector<std::thread> writers;
+            for (int w = 0; w < 2; ++w)
+            {
+                writers.emplace_back([&, w]() {
+                    for (uint64_t i = 0; i < 1500; ++i)
+                    {
+                        const uint64_t key = 100000ull + static_cast<uint64_t>(w) * 10000ull + i;
+                        std::unique_lock<std::shared_mutex> lk(mtx);
+                        registry.try_emplace(key, DummyDescriptor{key, {static_cast<uint32_t>(i), 42u}});
+                    }
+                });
+            }
+
+            for (auto& t : writers)
+                t.join();
+            stop.store(true, std::memory_order_release);
+            for (auto& t : readers)
+                t.join();
+            assert(registry.size() == 3001);
+            assert(&registry.at(1001ull) == pinnedPtr);
         }
     }
 
@@ -407,6 +537,10 @@ int main()
 }
 #else
 #include <catch2/catch.hpp>
+#include <Structs/AnimationGraphDescriptorManager.h>
+#include <atomic>
+#include <thread>
+#include <vector>
 
 TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Overflow Safety", "[rfab][hardening]")
 {
@@ -593,6 +727,75 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
             std::filesystem::current_path(oldCwd);
         }
         std::filesystem::remove_all(respectDir);
+    }
+
+    // Live multi-threaded stress test on AnimationGraphDescriptorManager:
+    // Verifies that concurrent BehaviorVar::Patch registrations on worker threads never race or
+    // invalidate raw const AnimationGraphDescriptor* pointers across hash-table bucket rehashes.
+    {
+        auto& mgr = AnimationGraphDescriptorManager::Get();
+        constexpr uint64_t kAnchorKey = 0x52464142'00000001ull;
+        {
+            const uint32_t bools[] = {3u, 7u, 11u};
+            const uint32_t floats[] = {19u, 23u};
+            const uint32_t ints[] = {29u};
+            AnimationGraphDescriptor anchor(bools, floats, ints);
+            AnimationGraphDescriptorManager::Builder(mgr, kAnchorKey, std::move(anchor));
+        }
+
+        const AnimationGraphDescriptor* const pPinnedAnchor = mgr.GetDescriptor(kAnchorKey);
+        REQUIRE(pPinnedAnchor != nullptr);
+        REQUIRE(pPinnedAnchor->BooleanLookUpTable.size() == 3);
+        REQUIRE(pPinnedAnchor->FloatLookupTable.size() == 2);
+        REQUIRE(pPinnedAnchor->IntegerLookupTable.size() == 1);
+
+        std::atomic<bool> stopReaders{false};
+        std::atomic<bool> pointerMismatch{false};
+        std::vector<std::thread> readers;
+        for (int r = 0; r < 4; ++r)
+        {
+            readers.emplace_back([&]() {
+                while (!stopReaders.load(std::memory_order_acquire))
+                {
+                    const AnimationGraphDescriptor* pFound = mgr.GetDescriptor(kAnchorKey);
+                    if (pFound != pPinnedAnchor ||
+                        pFound->BooleanLookUpTable.size() != 3 ||
+                        pFound->BooleanLookUpTable[2] != 11u ||
+                        pFound->FloatLookupTable[1] != 23u ||
+                        pFound->IntegerLookupTable[0] != 29u)
+                    {
+                        pointerMismatch.store(true, std::memory_order_release);
+                        break;
+                    }
+                }
+            });
+        }
+
+        std::vector<std::thread> writers;
+        for (int w = 0; w < 2; ++w)
+        {
+            writers.emplace_back([&, w]() {
+                for (uint64_t i = 0; i < 1000; ++i)
+                {
+                    const uint64_t dynKey = 0x52464142'10000000ull + (static_cast<uint64_t>(w) << 20) + i;
+                    const uint32_t bools[] = {static_cast<uint32_t>(i), 42u};
+                    const uint32_t floats[] = {100u};
+                    const uint32_t ints[] = {200u};
+                    AnimationGraphDescriptor desc(bools, floats, ints);
+                    AnimationGraphDescriptorManager::Builder(mgr, dynKey, std::move(desc));
+                }
+            });
+        }
+
+        for (auto& t : writers)
+            t.join();
+        stopReaders.store(true, std::memory_order_release);
+        for (auto& t : readers)
+            t.join();
+
+        REQUIRE_FALSE(pointerMismatch.load(std::memory_order_acquire));
+        REQUIRE(mgr.GetDescriptor(kAnchorKey) == pPinnedAnchor);
+        REQUIRE(mgr.GetDescriptors().count(kAnchorKey) == 1);
     }
 }
 #endif

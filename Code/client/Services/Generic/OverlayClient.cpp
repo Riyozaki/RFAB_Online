@@ -53,29 +53,29 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
         else if (eventName == "setTime")
             ProcessSetTimeCommand(eventArgs);
         else if (eventName == "launchParty")
-            World::Get().GetPartyService().CreateParty();
+            World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().CreateParty(); });
         else if (eventName == "leaveParty")
-            World::Get().GetPartyService().LeaveParty();
+            World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().LeaveParty(); });
         else if (eventName == "createPartyInvite")
         {
-            uint32_t aPlayerId = eventArgs->GetInt(0);
-            World::Get().GetPartyService().CreateInvite(aPlayerId);
+            const uint32_t playerId = eventArgs->GetInt(0);
+            World::Get().GetRunner().Queue([playerId]() { World::Get().GetPartyService().CreateInvite(playerId); });
         }
         else if (eventName == "acceptPartyInvite")
         {
-            uint32_t aInviterId = eventArgs->GetInt(0);
+            const uint32_t inviterId = eventArgs->GetInt(0);
             // push to main thread because the party service has to check validity of invite thread safely
-            World::Get().GetRunner().Queue([aInviterId]() { World::Get().GetPartyService().AcceptInvite(aInviterId); });
+            World::Get().GetRunner().Queue([inviterId]() { World::Get().GetPartyService().AcceptInvite(inviterId); });
         }
         else if (eventName == "kickPartyMember")
         {
-            uint32_t aPlayerId = eventArgs->GetInt(0);
-            World::Get().GetPartyService().KickPartyMember(aPlayerId);
+            const uint32_t playerId = eventArgs->GetInt(0);
+            World::Get().GetRunner().Queue([playerId]() { World::Get().GetPartyService().KickPartyMember(playerId); });
         }
         else if (eventName == "changePartyLeader")
         {
-            uint32_t aPlayerId = eventArgs->GetInt(0);
-            World::Get().GetPartyService().ChangePartyLeader(aPlayerId);
+            const uint32_t playerId = eventArgs->GetInt(0);
+            World::Get().GetRunner().Queue([playerId]() { World::Get().GetPartyService().ChangePartyLeader(playerId); });
         }
         else if (eventName == "teleportToPlayer")
             ProcessTeleportMessage(eventArgs);
@@ -105,11 +105,10 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
     const std::string endpoint = RfabCompat::NormalizeServerEndpoint(rawIp, fallbackPort);
     spdlog::info("[RFAB Connect] Normalized connect target '{}' (port={}) -> '{}'", rawIp, fallbackPort, endpoint);
 
-    World::Get().GetTransport().SetServerPassword(password);
-
     World::Get().GetRunner().Queue(
         [endpoint, password]()
         {
+            World::Get().GetTransport().SetServerPassword(password);
             PlayerCharacter* pPlayer = PlayerCharacter::Get();
             if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
             {
@@ -129,7 +128,7 @@ void OverlayClient::ProcessDisconnectMessage()
 void OverlayClient::ProcessRevealPlayersMessage()
 {
     SetUIVisible(false);
-    World::Get().GetMagicService().StartRevealingOtherPlayers();
+    World::Get().GetRunner().Queue([]() { World::Get().GetMagicService().StartRevealingOtherPlayers(); });
 }
 
 void OverlayClient::ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs)
@@ -137,13 +136,17 @@ void OverlayClient::ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs)
     std::string contents = aEventArgs->GetString(1).ToString();
     if (!contents.empty())
     {
-        SendChatMessageRequest messageRequest;
-        messageRequest.MessageType = static_cast<ChatMessageType>(aEventArgs->GetInt(0));
-        messageRequest.ChatMessage = contents;
+        const auto msgType = static_cast<ChatMessageType>(aEventArgs->GetInt(0));
+        spdlog::info(L"Send chat message of type {}: '{}' ", msgType, aEventArgs->GetString(1).ToWString());
 
-        spdlog::info(L"Send chat message of type {}: '{}' ", messageRequest.MessageType, aEventArgs->GetString(1).ToWString());
-
-        m_transport.Send(messageRequest);
+        World::Get().GetRunner().Queue(
+            [msgType, contents = std::move(contents)]()
+            {
+                SendChatMessageRequest messageRequest;
+                messageRequest.MessageType = msgType;
+                messageRequest.ChatMessage = contents;
+                World::Get().GetTransport().Send(messageRequest);
+            });
     }
 }
 
@@ -151,21 +154,30 @@ void OverlayClient::ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs)
 {
     const uint8_t hours = static_cast<uint8_t>(aEventArgs->GetInt(0));
     const uint8_t minutes = static_cast<uint8_t>(aEventArgs->GetInt(1));
-    const uint32_t senderId = m_transport.GetLocalPlayerId();
-    World::Get().GetDispatcher().trigger(SetTimeCommandEvent(hours, minutes, senderId));
+    World::Get().GetRunner().Queue(
+        [hours, minutes]()
+        {
+            const uint32_t senderId = World::Get().GetTransport().GetLocalPlayerId();
+            World::Get().GetDispatcher().trigger(SetTimeCommandEvent(hours, minutes, senderId));
+        });
 }
 
 void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 {
-    TeleportRequest request{};
-    request.PlayerId = aEventArgs->GetInt(0);
-
-    m_transport.Send(request);
+    const uint32_t playerId = aEventArgs->GetInt(0);
+    World::Get().GetRunner().Queue(
+        [playerId]()
+        {
+            TeleportRequest request{};
+            request.PlayerId = playerId;
+            World::Get().GetTransport().Send(request);
+        });
 }
 
 void OverlayClient::ProcessToggleDebugUI()
 {
-    World::Get().GetDebugService().m_showDebugStuff = !World::Get().GetDebugService().m_showDebugStuff;
+    World::Get().GetRunner().Queue(
+        []() { World::Get().GetDebugService().m_showDebugStuff = !World::Get().GetDebugService().m_showDebugStuff; });
 }
 
 void OverlayClient::SetUIVisible(bool aVisible) noexcept

@@ -91,6 +91,9 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
         return;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || !pPlayer->parentCell)
+        return;
+
     TESObjectCELL* pCell = pPlayer->parentCell;
 
     // Player homes should not be synced, so that chest contents,
@@ -323,7 +326,7 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
 
     if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
     {
-        spdlog::error("Server cell id not found for cell form id {:X}", acEvent.pObject->parentCell->formID);
+        spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
         return;
     }
 
@@ -357,7 +360,7 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
 
     const uint32_t cObjectId = World::Get().GetModSystem().GetGameId(acMessage.Id);
     TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
-    if (!pObject)
+    if (!pObject || !pObject->baseForm)
     {
         spdlog::error("Failed to retrieve object to activate.");
         return;
@@ -398,6 +401,11 @@ void ObjectService::OnLockChange(const LockChangeEvent& acEvent) noexcept
     }
 
     const auto* const pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId));
+    if (!pObject)
+    {
+        spdlog::error("Lock object reference not found, form id: {:X}", acEvent.FormId);
+        return;
+    }
 
     TESObjectCELL* pCell = pObject->GetParentCellEx();
     if (!pCell)
@@ -408,7 +416,7 @@ void ObjectService::OnLockChange(const LockChangeEvent& acEvent) noexcept
 
     if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
     {
-        spdlog::error("Server cell id for cell not found, cell form id: {:X}", pObject->parentCell->formID);
+        spdlog::error("Server cell id for cell not found, cell form id: {:X}", pCell->formID);
         return;
     }
 

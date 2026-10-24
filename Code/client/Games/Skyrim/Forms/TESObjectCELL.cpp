@@ -5,13 +5,14 @@ Vector<TESObjectREFR*> TESObjectCELL::GetRefsByFormTypes(const Vector<FormType>&
 {
     Vector<TESObjectREFR*> references{};
 
+    BSScopedLock<BSRecursiveLock> cellLock(lock);
     if (!refData.refArray)
         return references;
 
     for (uint32_t i = 0; i < refData.capacity; i++)
     {
         TESObjectREFR* pRef = refData.refArray[i].Get();
-        if (!pRef)
+        if (!pRef || !pRef->baseForm)
             continue;
 
         for (FormType formType : aFormTypes)

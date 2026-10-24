@@ -94,6 +94,15 @@ try {
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
 
+    if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF -ne "refs/heads/main") {
+        if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
+            [System.IO.File]::WriteAllText($CacheMarker, "ok")
+        }
+        Emit-Annotation "notice" "CI_VERIFIED_HOLD_RELEASE" "All xmake build, TPTests, clean-upgrade installer, and bundle verification gates PASSED on $($env:GITHUB_REF). Skipping GitHub Release $VersionTag publish until merged into main."
+        $global:LASTEXITCODE = 0
+        exit 0
+    }
+
     & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
     if ($LASTEXITCODE -ne 0) {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `

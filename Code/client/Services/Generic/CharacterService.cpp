@@ -204,6 +204,7 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
 void CharacterService::DeleteRemoteEntityComponents(entt::entity aEntity) const noexcept
 {
     m_world.remove<FaceGenComponent, InterpolationComponent, RemoteAnimationComponent, RemoteComponent, CacheComponent, WaitingFor3D, PlayerComponent>(aEntity);
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 }
 
 bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity, uint64_t aOwnershipEpoch) const noexcept
@@ -520,6 +521,8 @@ void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
             m_world.destroy(entity);
     }
 
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+
     auto formView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     for (auto entity : formView)
     {
@@ -605,12 +608,15 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     // TODO: how could this possibly trigger?
     // it's kinda interfering with my WaitingFor3D code
     if (acMessage.PlayerId != 0)
+    {
         m_world.emplace_or_replace<PlayerComponent>(cEntity, acMessage.PlayerId);
+        m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+    }
 
     if (acMessage.Owner)
     {
         m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch);
-        spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm->GetName());
+        spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<null>");
 
         // When taking ownership of an actor already tracked on the server (e.g. a party leader
         // entering a dungeon room where another party member already damaged, looted, or killed an NPC),
@@ -858,6 +864,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         pActor->SetIgnoreFriendlyHit(true);
         pActor->SetPlayerRespawnMode();
         m_world.emplace_or_replace<PlayerComponent>(*entity, acMessage.PlayerId);
+        m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
         if (m_world.GetDownedStateService().IsRemotePlayerDowned(acMessage.PlayerId))
             m_world.GetDownedStateService().ApplyRemoteActorDownedPosture(pActor, true);
     }
@@ -1917,6 +1924,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
             // (`entt::exclude<FormIdComponent>`) can cleanly recreate 3D when the actor re-enters the 5x5 grid.
             m_world.remove<FormIdComponent, EarlyAnimationBufferComponent, PlayerComponent>(aEntity);
             m_world.emplace_or_replace<WaitingFor3D>(aEntity, respawnCopy);
+            m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
         }
         else
         {
@@ -2051,6 +2059,7 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
         pActor->SetIgnoreFriendlyHit(true);
         pActor->SetPlayerRespawnMode();
         m_world.emplace_or_replace<PlayerComponent>(aEntity, acMessage.PlayerId);
+        m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
     }
 
     if (acMessage.IsPlayerSummon)
@@ -2284,6 +2293,8 @@ void CharacterService::RunSpawnUpdates() const noexcept
                 else
                 {
                     m_world.emplace_or_replace<FormIdComponent>(entity, pActor->formID);
+                    if (m_world.all_of<PlayerComponent>(entity))
+                        m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
                 }
 
                 pActor->MoveTo(pLocalPlayer->parentCell, interpolationComponent.Position);
