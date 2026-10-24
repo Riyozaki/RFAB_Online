@@ -92,7 +92,7 @@ bool MagicTarget::AddTargetData::ShouldSync()
 // Some effects are player specific, and do not need to be synced.
 bool MagicTarget::AddTargetData::IsForbiddenEffect(Actor* apTarget)
 {
-    if (apTarget != PlayerCharacter::Get())
+    if (apTarget != PlayerCharacter::Get() || !pEffectItem)
         return false;
 
     return pEffectItem->IsNightVisionEffect() || pEffectItem->IsSlowEffect();
@@ -108,10 +108,29 @@ Actor* MagicTarget::GetTargetAsActor()
 bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& arData)
 {
     Actor* pTargetActor = apThis->GetTargetAsActor();
-    if (!pTargetActor || arData.IsForbiddenEffect(pTargetActor))
+    if (!pTargetActor || !arData.pEffectItem || !arData.pEffectItem->pEffectSetting || !arData.pSpell ||
+        arData.IsForbiddenEffect(pTargetActor))
+    {
         return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+    }
 
     ActorExtension* pTargetActorEx = pTargetActor->GetExtension();
+    if (!pTargetActorEx)
+        return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+
+    const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
+    const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
+    const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+
+    const auto coopPolicy =
+        arData.pCaster ? World::Get().GetRfabAdapterService().EvaluateCoopAction(arData.pCaster, pTargetActor, isFriendlySupport)
+                       : RfabCompat::CoopAllyActionPolicy{};
+
+    // RFAB «Единство в битве (Кооп)»: evaluated BEFORE ScopedSpellCastOverride so synchronous AoE / cloak / touch
+    // effects inside CastSpellImmediate are also 100% blocked on co-op allies and their summons, while 100% of
+    // heals & buffs (including RFAB_List_NoAllyDamage_AllowedSpells) continue working!
+    if (coopPolicy.BlockHarmfulAction)
+        return false;
 
     if (arData.pEffectItem->IsWerewolfEffect())
         pTargetActorEx->GraphDescriptorHash = AnimationGraphDescriptor_WerewolfBehavior::m_key;
@@ -147,21 +166,6 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             Settings::GetRfabOutgoingDamageMult(),
             shouldScaleRfab);
     }
-
-    const bool isFriendlySupport =
-        arData.pSpell && (arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell());
-    const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
-    const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
-
-    const auto coopPolicy =
-        arData.pCaster ? World::Get().GetRfabAdapterService().EvaluateCoopAction(arData.pCaster, pTargetActor, isFriendlySupport)
-                       : RfabCompat::CoopAllyActionPolicy{};
-
-    // RFAB «Единство в битве (Кооп)»: block 100% of magic damage and negative/hostile effects (shouts, Fus Ro Dah ragdoll,
-    // freezes, slows, paralyze, poisons, diseases, cloaks, weapon enchantments) onto co-op allies and their summons,
-    // while allowing 100% of heals & buffs (including RFAB_List_NoAllyDamage_AllowedSpells)!
-    if (coopPolicy.BlockHarmfulAction)
-        return false;
 
     if (pTargetActorEx->IsRemotePlayer())
     {

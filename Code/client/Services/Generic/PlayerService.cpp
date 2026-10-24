@@ -83,7 +83,10 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
     if (!Settings::IsRfabModpackActive() && m_previousDifficulty >= 0 && m_previousDifficulty <= 5)
-        PlayerCharacter::Get()->SetDifficulty(m_previousDifficulty);
+    {
+        if (auto* pPlayer = PlayerCharacter::Get())
+            pPlayer->SetDifficulty(m_previousDifficulty);
+    }
 
     m_serverDifficulty = m_previousDifficulty = 6;
 
@@ -102,7 +105,8 @@ void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 
 void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) noexcept
 {
-    m_previousDifficulty = *Settings::GetDifficulty();
+    if (int32_t* pDiff = Settings::GetDifficulty())
+        m_previousDifficulty = *pDiff;
     m_serverDifficulty = acSettings.Difficulty;
 
     if (Settings::IsRfabModpackActive())
@@ -120,9 +124,9 @@ void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) n
             Settings::GetRfabOutgoingDamageMult(),
             Settings::GetRfabIncomingDamageMult());
     }
-    else
+    else if (auto* pPlayer = PlayerCharacter::Get())
     {
-        PlayerCharacter::Get()->SetDifficulty(acSettings.Difficulty);
+        pPlayer->SetDifficulty(acSettings.Difficulty);
     }
 
     if (!acSettings.GreetingsEnabled)

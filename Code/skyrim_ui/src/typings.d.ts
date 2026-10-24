@@ -221,7 +221,7 @@ interface SkyrimTogether {
 
   on(
     event: 'allyProtectionState',
-    callback: (enabled: boolean) => void,
+    callback: (enabled: boolean, isHost?: boolean) => void,
   ): void;
 
   /** Remove listener from when the application is first initialized. */
@@ -356,7 +356,7 @@ interface SkyrimTogether {
 
   off(
     event: 'allyProtectionState',
-    callback?: (enabled: boolean) => void,
+    callback?: (enabled: boolean, isHost?: boolean) => void,
   ): void;
 
   /**

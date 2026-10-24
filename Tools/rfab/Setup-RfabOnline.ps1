@@ -82,6 +82,22 @@ function Backup-Once([string]$FilePath) {
     }
 }
 
+function Remove-DirectoryClean([string]$DirPath) {
+    if (-not (Test-Path -LiteralPath $DirPath)) { return }
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Get-ChildItem -LiteralPath $DirPath -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                try { $_.Attributes = 'Normal' } catch {}
+            }
+            Remove-Item -LiteralPath $DirPath -Recurse -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $DirPath)) { return }
+        } catch {
+            if ($attempt -eq 5) { throw }
+            Start-Sleep -Milliseconds 450
+        }
+    }
+}
+
 Write-Host "==============================================================" -ForegroundColor Cyan
 Write-Host "  RFAB Online (Skyrim SE 1.5.97.0.8) - Чистая автоустановка   " -ForegroundColor Cyan
 Write-Host "==============================================================" -ForegroundColor Cyan
@@ -160,7 +176,7 @@ if ($HasValidSe -and $HasValidSt) {
 } elseif ($HasValidSt) {
     Copy-Item -LiteralPath $SrcStExe -Destination $SrcSeExe -Force
 } else {
-    throw "В папке '$SrcStrDir' не найден скомпилированный SkyrimSE.exe! Скачайте полный архив RFAB_Online_v1.0.0_Full_Installer.zip со страницы Releases."
+    throw "В папке '$SrcStrDir' не найден скомпилированный SkyrimSE.exe! Скачайте полный архив RFAB_Online_v1.1.0_Full_Installer.zip со страницы Releases."
 }
 
 $RequiredModFiles = @(
@@ -180,13 +196,25 @@ foreach ($rel in $RequiredModFiles) {
     }
     $len = (Get-Item -LiteralPath $full).Length
     if ($len -lt 200 -and ($rel.EndsWith(".exe") -or $rel.EndsWith(".dll") -or $rel.EndsWith(".esp"))) {
-        throw "Файл $full повреждён ($len байт). Скачайте полный архив RFAB_Online_v1.0.0_Full_Installer.zip со страницы Releases!"
+        throw "Файл $full повреждён ($len байт). Скачайте полный архив RFAB_Online_v1.1.0_Full_Installer.zip со страницы Releases!"
     }
 }
 Write-Ok "Дистрибутив проверен: все бинарники, плагины, CEF и UI целые."
 
-# 3. Автоматическое закрытие старого сервера + проверка закрытия игры и MO2 (чтобы ничего не блокировало чистую замену файлов)
-Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# 3. Автоматическое закрытие старого сервера и осиротевших CEF-процессов + проверка закрытия игры и MO2
+$runningSrv = @(Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue)
+if ($runningSrv.Count -gt 0) {
+    $runningSrv | Stop-Process -Force -ErrorAction SilentlyContinue
+    $runningSrv | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+}
+if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
+    -not (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue)) {
+    $orphanTp = @(Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)
+    if ($orphanTp.Count -gt 0) {
+        $orphanTp | Stop-Process -Force -ErrorAction SilentlyContinue
+        $orphanTp | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
 if (-not $NonInteractive) {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     while ((Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -or
@@ -606,19 +634,38 @@ $FullModSrc = [System.IO.Path]::GetFullPath($ModSourceDir)
 $FullTargetMod = [System.IO.Path]::GetFullPath($TargetModDir)
 
 if ((Test-Path -LiteralPath $LegacyModDir) -and ([System.IO.Path]::GetFullPath($LegacyModDir) -ne $FullModSrc)) {
-    Remove-Item -LiteralPath $LegacyModDir -Recurse -Force
+    Remove-DirectoryClean $LegacyModDir
     Write-Ok "Полностью удалена устаревшая папка мода: $LegacyModDir"
 }
 
 if ($FullModSrc -ne $FullTargetMod) {
     if (Test-Path -LiteralPath $TargetModDir) {
-        Remove-Item -LiteralPath $TargetModDir -Recurse -Force
+        Remove-DirectoryClean $TargetModDir
         Write-Ok "Полностью очищена предыдущая установка мода: $TargetModDir"
     }
     New-Item -ItemType Directory -Path $TargetModDir -Force | Out-Null
     & robocopy ($ModSourceDir.TrimEnd('\')) ($TargetModDir.TrimEnd('\')) /MIR /NFL /NDL /NJH /NJS /NP /R:2 /W:1 | Out-Null
     if ($LASTEXITCODE -ge 8) {
         throw "Ошибка копирования файлов мода (robocopy код $LASTEXITCODE)."
+    }
+}
+# Очистка MO2\overwrite от возможных остатков старых версий, чтобы новая версия мода никогда не перекрывалась!
+$Mo2OverwriteDir = Join-Path $Mo2BaseDir "overwrite"
+if (Test-Path -LiteralPath $Mo2OverwriteDir) {
+    foreach ($staleRel in @(
+        "scripts\TempleBlessingScript.pex",
+        "scripts\C00TrainerScript.pex",
+        "scripts\ResourceFurnitureScript.pex",
+        "scripts\PetFramework_ParentQuestScript.pex",
+        "scripts\petframework_petquest.pex",
+        "meshes\Interface\logo\logo.nif",
+        "meshes\Interface\logo\logo01ae.nif",
+        "SkyrimTogetherReborn\UI"
+    )) {
+        $stalePath = Join-Path $Mo2OverwriteDir $staleRel
+        if (Test-Path -LiteralPath $stalePath) {
+            Remove-Item -LiteralPath $stalePath -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 Write-Ok "Чистая версия мода RFAB_Online установлена с нуля в $TargetModDir"
@@ -1022,7 +1069,7 @@ if (-not [string]::IsNullOrWhiteSpace($ServerSourceDir) -and (Test-Path -Literal
 
     if ([System.IO.Path]::GetFullPath($ServerSourceDir) -ne [System.IO.Path]::GetFullPath($InstalledServerDir)) {
         if (Test-Path -LiteralPath $InstalledServerDir) {
-            Remove-Item -LiteralPath $InstalledServerDir -Recurse -Force
+            Remove-DirectoryClean $InstalledServerDir
             Write-Ok "Полностью очищена старая папка сервера: $InstalledServerDir"
         }
         New-Item -ItemType Directory -Path $InstalledServerDir -Force | Out-Null
@@ -1079,7 +1126,13 @@ if ((Test-Path -LiteralPath (Join-Path $ProfDir "plugins.txt")) -and (Test-Path 
         $t = $_.Trim()
         if ($t -and -not $t.StartsWith("#") -and $enabled.Contains($t) -and $seen.Add($t)) { $outList.Add($t) }
     }
-    if ($seen.Add("SkyrimTogether.esp")) { $outList.Add("SkyrimTogether.esp") }
+    if ($seen.Add("SkyrimTogether.esp")) {
+        $rfabIdx = -1
+        for ($i = 0; $i -lt $outList.Count; $i++) {
+            if (($outList[$i] -ieq "RFAB.esp") -or ($outList[$i] -ieq "Requiem.esp")) { $rfabIdx = $i; break }
+        }
+        if ($rfabIdx -ge 0) { $outList.Insert($rfabIdx, "SkyrimTogether.esp") } else { $outList.Add("SkyrimTogether.esp") }
+    }
     [System.IO.File]::WriteAllText((Join-Path $SrvDir "Data\loadorder.txt"), ([string]::Join("`n", $outList) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "[RFAB Server] Автоматически синхронизировано $($outList.Count) активных плагинов из профиля MO2." -ForegroundColor Green
 }

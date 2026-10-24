@@ -1167,8 +1167,17 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     {
         if (!World::Get().GetServerSettings().PvpEnabled && !coopPolicy.AllowPartySparring)
         {
-            if (apHitter && apHitter->GetExtension()->IsRemotePlayer())
-                return false;
+            if (apHitter)
+            {
+                const auto* pHitterExt = apHitter->GetExtension();
+                const Actor* pHitterCmd = apHitter->GetCommandingActor();
+                const auto* pHitterCmdExt = pHitterCmd ? pHitterCmd->GetExtension() : nullptr;
+                if ((pHitterExt && pHitterExt->IsRemotePlayer()) ||
+                    (pHitterCmdExt && pHitterCmdExt->IsRemotePlayer()))
+                {
+                    return false;
+                }
+            }
         }
 
         auto& downedSvc = World::Get().GetDownedStateService();

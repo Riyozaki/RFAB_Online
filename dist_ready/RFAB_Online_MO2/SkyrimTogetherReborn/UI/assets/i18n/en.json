@@ -84,6 +84,8 @@
       "REVEAL_PLAYERS": "Reveal Players",
       "ALLY_PROTECTION_ON": "Unity in Battle: ON",
       "ALLY_PROTECTION_OFF": "Unity in Battle: OFF",
+      "ALLY_PROTECTION_GUEST_ON": "Unity in Battle: ON (Host)",
+      "ALLY_PROTECTION_GUEST_OFF": "Unity in Battle: OFF (Host)",
       "RECONNECT": "Reconnect",
       "PLAYER_MANAGER": "Player Manager",
       "SETTINGS": "Settings",
@@ -117,7 +119,7 @@
       "MUTE_UI": "Mute User Interface",
       "UI_VOLUME": "User Interface Volume",
       "PARTY": "Party",
-      "ALLY_PROTECTION": "Unity in Battle (zero ally damage/debuffs, heals & buffs still work)",
+      "ALLY_PROTECTION": "Unity in Battle — zero ally damage/debuffs, heals & buffs work (Host only)",
       "SHOW_PARTY": "Show Party",
       "AUTO_HIDE_PARTY": "Auto Hide Party",
       "AUTO_HIDE_PARTY_LENGTH": "Auto Hide Timer Length",
@@ -155,7 +157,8 @@
     "COMMANDS": {
       "AVAILABLE_COMMANDS": "Available chat commands: {{cmds}}",
       "COMMAND_NOT_FOUND": "'{{cmd}}' is not a recognized command.",
-      "NOT_ADMIN": "You must be an admin to use that command."
+      "NOT_ADMIN": "You must be an admin to use that command.",
+      "NOT_HOST_ALLY_PROTECT": "Only the Host (party leader) can enable or disable friendly fire."
     },
     "GROUP": {
       "LEVEL_UP": "{{name}} has reached level {{level}}.",

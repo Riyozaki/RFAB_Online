@@ -227,6 +227,11 @@ public:
     [[nodiscard]] RfabProgressionLedger& GetLedger() noexcept { return m_ledger; }
     [[nodiscard]] const RfabProgressionLedger& GetLedger() const noexcept { return m_ledger; }
 
+    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled; }
+    [[nodiscard]] int32_t ResolveAuthorizedHostPlayerId() const noexcept;
+    void BroadcastAllyProtectionState(bool aNotifyHudChange = false) const noexcept;
+    void SendAllyProtectionStateToPlayer(Player* apTarget, bool aNotifyHudChange = false) const noexcept;
+
 private:
     void OnSyncProgressionEvent(const PacketEvent<SyncRfabProgressionEvent>& acMessage) noexcept;
     void OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept;
@@ -234,7 +239,7 @@ private:
 
     World& m_world;
     RfabProgressionLedger m_ledger;
-    std::unordered_map<uint32_t, bool> m_playerAllyProtection{};
+    bool m_allyProtectionEnabled{true};
 
     entt::scoped_connection m_progressionConnection;
     entt::scoped_connection m_playerJoinConnection;

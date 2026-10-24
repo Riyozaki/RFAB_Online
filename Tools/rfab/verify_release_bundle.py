@@ -227,18 +227,19 @@ def main():
         full = os.path.join(stage_dir, rel)
         assert os.path.isfile(full) and os.path.getsize(full) > 20, f"Missing or empty release file: {full}"
 
-    # Verify custom RFAB Online Right-Ctrl CEF Overlay UI ("Единство в битве" toggle) is staged
+    # Verify custom RFAB Online Right-Ctrl CEF Overlay UI ("Единство в битве" Host-only toggle) is staged
     ui_main_js = open(os.path.join(stage_dir, r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\main.js"), "rb").read()
-    assert b"setAllyProtection" in ui_main_js and b"ALLY_PROTECTION_ON" in ui_main_js, (
-        "FATAL: Staged UI/main.js is missing RFAB Co-Op Ally Protection ('setAllyProtection' / 'ALLY_PROTECTION_ON')!"
-    )
+    for required_sym in (b"setAllyProtection", b"ALLY_PROTECTION_ON", b"ALLY_PROTECTION_GUEST_ON"):
+        assert required_sym in ui_main_js, (
+            f"FATAL: Staged UI/main.js is missing RFAB Host-only Co-Op Ally Protection symbol {required_sym!r}!"
+        )
     ui_ru_json = open(
         os.path.join(stage_dir, r"RFAB_Online_MO2\SkyrimTogetherReborn\UI\assets\i18n\ru.json"),
         "r",
         encoding="utf-8",
     ).read()
-    assert "Единство в битве: ВКЛ" in ui_ru_json, (
-        "FATAL: Staged UI/assets/i18n/ru.json is missing 'Единство в битве: ВКЛ'!"
+    assert "Единство в битве: ВКЛ" in ui_ru_json and "Единство в битве: ВКЛ (Хост)" in ui_ru_json, (
+        "FATAL: Staged UI/assets/i18n/ru.json is missing Host/Guest 'Единство в битве' labels!"
     )
 
     # Windows PowerShell 5.1 requires UTF-8 BOM (EF BB BF) on .ps1 files (otherwise UTF-8 Cyrillic becomes CP1252 mojibake!)

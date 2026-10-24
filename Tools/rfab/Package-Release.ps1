@@ -218,12 +218,15 @@ $PdbZip       = Join-Path $OutDir "RFAB_Online_${VersionTag}_PDB_Symbols.zip"
 $QuickDir = Join-Path $StageOuter "Quick_Update"
 $QuickSrvDir = Join-Path $QuickDir "Server"
 New-Item -ItemType Directory -Path $QuickDir, $QuickSrvDir -Force | Out-Null
-foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
+foreach ($qf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll", "TPProcess.exe")) {
     Copy-Item -LiteralPath (Join-Path $StageClient $qf) -Destination (Join-Path $QuickDir $qf) -Force
 }
 Copy-Item -LiteralPath (Join-Path $StageMo2 "SkyrimTogether.esp") -Destination (Join-Path $QuickDir "SkyrimTogether.esp") -Force
+if (Test-Path -LiteralPath (Join-Path $StageMo2 "SkyrimTogetherQuestPatches.esp")) {
+    Copy-Item -LiteralPath (Join-Path $StageMo2 "SkyrimTogetherQuestPatches.esp") -Destination (Join-Path $QuickDir "SkyrimTogetherQuestPatches.esp") -Force
+}
 Copy-Item -LiteralPath (Join-Path $StageMo2 "SKSE\Plugins\RFAB_Online_Bindings.json") -Destination (Join-Path $QuickDir "RFAB_Online_Bindings.json") -Force
-Invoke-RobocopySafe -Src (Join-Path $StageClient "UI") -Dst (Join-Path $QuickDir "UI") -ExtraArgs @("/E")
+Invoke-RobocopySafe -Src (Join-Path $StageClient "UI") -Dst (Join-Path $QuickDir "UI") -ExtraArgs @("/MIR")
 foreach ($sf in @("SkyrimTogetherServer.exe", "STServer.dll")) {
     Copy-Item -LiteralPath (Join-Path $StageServer $sf) -Destination (Join-Path $QuickSrvDir $sf) -Force
 }
@@ -248,28 +251,57 @@ if ([string]::IsNullOrWhiteSpace($GameRoot) -or -not (Test-Path -LiteralPath $Ga
 
 Write-Host "==> RFAB root: $GameRoot" -ForegroundColor Cyan
 
-# Stop running old server / client so DLLs & EXEs can be overwritten cleanly
-Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 600
+# Stop running old server / orphaned TPProcess so DLLs & EXEs can be overwritten cleanly
+$runningSrv = @(Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue)
+if ($runningSrv.Count -gt 0) {
+    $runningSrv | Stop-Process -Force -ErrorAction SilentlyContinue
+    $runningSrv | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+}
+if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
+    -not (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue)) {
+    $orphanTp = @(Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)
+    if ($orphanTp.Count -gt 0) {
+        $orphanTp | Stop-Process -Force -ErrorAction SilentlyContinue
+        $orphanTp | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
+Start-Sleep -Milliseconds 400
 
 $ModRoot = Join-Path $GameRoot "MO2\mods\RFAB_Online"
 $ClientDst = Join-Path $ModRoot "SkyrimTogetherReborn"
 if (-not (Test-Path -LiteralPath $ClientDst)) {
-    throw "Client folder not found: $ClientDst"
+    throw "Client folder not found: $ClientDst (run INSTALL_RFAB_ONLINE.bat from Full_Installer first!)"
 }
-foreach ($cf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll")) {
-    Copy-Item -LiteralPath (Join-Path $SrcDir $cf) -Destination (Join-Path $ClientDst $cf) -Force
+foreach ($cf in @("SkyrimSE.exe", "SkyrimTogether.exe", "EarlyLoad.dll", "TPProcess.exe")) {
+    if (Test-Path -LiteralPath (Join-Path $SrcDir $cf)) {
+        Copy-Item -LiteralPath (Join-Path $SrcDir $cf) -Destination (Join-Path $ClientDst $cf) -Force
+    }
 }
-if (Test-Path -LiteralPath (Join-Path $SrcDir "SkyrimTogether.esp")) {
-    Copy-Item -LiteralPath (Join-Path $SrcDir "SkyrimTogether.esp") -Destination (Join-Path $ModRoot "SkyrimTogether.esp") -Force
+foreach ($espName in @("SkyrimTogether.esp", "SkyrimTogetherQuestPatches.esp")) {
+    if (Test-Path -LiteralPath (Join-Path $SrcDir $espName)) {
+        Copy-Item -LiteralPath (Join-Path $SrcDir $espName) -Destination (Join-Path $ModRoot $espName) -Force
+    }
 }
 if (Test-Path -LiteralPath (Join-Path $SrcDir "RFAB_Online_Bindings.json")) {
     New-Item -ItemType Directory -Path (Join-Path $ModRoot "SKSE\Plugins") -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $SrcDir "RFAB_Online_Bindings.json") -Destination (Join-Path $ModRoot "SKSE\Plugins\RFAB_Online_Bindings.json") -Force
 }
-foreach ($badPex in @("TempleBlessingScript.pex","C00TrainerScript.pex","ResourceFurnitureScript.pex","PetFramework_ParentQuestScript.pex","petframework_petquest.pex")) {
-    $badPath = Join-Path $ModRoot "scripts\$badPex"
-    if (Test-Path -LiteralPath $badPath) { Remove-Item -LiteralPath $badPath -Force }
+foreach ($badRel in @(
+    "scripts\TempleBlessingScript.pex",
+    "scripts\C00TrainerScript.pex",
+    "scripts\ResourceFurnitureScript.pex",
+    "scripts\PetFramework_ParentQuestScript.pex",
+    "scripts\petframework_petquest.pex",
+    "scripts\source\TempleBlessingScript.psc",
+    "scripts\source\C00TrainerScript.psc",
+    "scripts\source\ResourceFurnitureScript.psc",
+    "scripts\source\PetFramework_ParentQuestScript.psc",
+    "scripts\source\PetFramework_PetQuest.psc",
+    "meshes\Interface\logo\logo.nif",
+    "meshes\Interface\logo\logo01ae.nif"
+)) {
+    $badPath = Join-Path $ModRoot $badRel
+    if (Test-Path -LiteralPath $badPath) { Remove-Item -LiteralPath $badPath -Force -ErrorAction SilentlyContinue }
 }
 if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
     Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue

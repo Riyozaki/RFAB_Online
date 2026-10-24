@@ -1,4 +1,5 @@
 #include <Services/MagicService.h>
+#include <Services/RfabAdapterService.h>
 
 #include <World.h>
 
@@ -441,6 +442,14 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
         return;
     }
 
+    if (pCaster && pActor)
+    {
+        const bool isFriendlySupport = pSpell->IsHealingSpell() || pSpell->IsBuffSpell();
+        const auto coopPolicy = m_world.GetRfabAdapterService().EvaluateCoopAction(pCaster, pActor, isFriendlySupport);
+        if (coopPolicy.BlockHarmfulAction)
+            return;
+    }
+
     // This hack is here because slow time seems to be twice as slow when cast by an npc
     if (pEffect->IsSlowEffect())
     {
@@ -468,6 +477,9 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     // This hack is here because slow time seems to be twice as slow when cast by an npc
     if (pEffect->IsSlowEffect())
         pActor = PlayerCharacter::Get();
+
+    if (!pActor)
+        return;
 
     pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
     spdlog::debug("Applied remote magic effect");

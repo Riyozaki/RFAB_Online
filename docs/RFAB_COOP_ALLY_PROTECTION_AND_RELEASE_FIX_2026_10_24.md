@@ -28,12 +28,13 @@
 
 Чтобы **не обесценивать** сам перк Красноречия 50 «Лидерство» для одиночных NPC-спутников и собственных саммонов игрока, кооп-переключатель действует **строго на кооперативных союзников по группе** (других игроков в вашей группе и призывных существ / миньонов других игроков вашей группы):
 
-1. **Переключение прямо в игре через меню `Правый CTRL` (`F2`), Настройки и команду `/allyprotect`:**
-   - В верхней панели меню `Правый CTRL` (рядом с «Подсветить игроков») добавлена кнопка-переключатель **«Единство в битве: ВКЛ / ВЫКЛ»** с подсветкой активного состояния (по умолчанию **ВКЛ** и сохраняется между сессиями).
-   - Дублирующий чекбокс добавлен в **Настройки -> Группа**, а также чат-команда `/allyprotect`.
-   - При переключении выводится внутриигровое уведомление в стиле RFAB: *«Единство в битве (Кооп): урон по союзникам отключен»* / *«...включен»*.
-2. **Сетевая синхронизация состояния между клиентами (`AllyProtectionSync`):**
-   - В Скайриме физические удары и стрелы по Игроку Б обсчитываются на клиенте Б (`HookDamageActor` на `0x14`). Поэтому состояние переключателя каждого игрока синхронизируется через `SyncRfabProgressionEvent::EventKind::AllyProtectionSync` / `NotifyRfabProgressionEvent::EventKind::AllyProtectionSync` при подключении, входе новых игроков и каждом переключении кнопки.
+1. **Переключение в игре через меню `Правый CTRL` (`F2`), Настройки и команду `/allyprotect` — строго под управлением Хоста:**
+   - В верхней панели меню `Правый CTRL` (рядом с «Подсветить игроков») добавлена кнопка-переключатель **«Единство в битве: ВКЛ / ВЫКЛ»** с подсветкой активного состояния (по умолчанию на сервере **ВКЛ**).
+   - **Право переключения принадлежит строго Хосту** (`SaveSnapshotService::IsPlayerAuthorizedHost`: админ-сессия -> лидер кооп-группы `PartyService::IsPlayerLeader` -> первый подключившийся игрок с минимальным `Player::GetId()`). У участников-гостей в оверлее отображается заблокированный индикатор текущего состояния Хоста (`Единство в битве: ВКЛ (Хост)` / `ВЫКЛ (Хост)`), а чекбокс в *Настройки -> Группа* и чат-команда `/allyprotect` также защищены проверкой прав Хоста.
+   - При попытке подделки пакета `SyncRfabProgressionEvent::AllyProtectionSync` не-хостом сервер отклоняет запрос с предупреждением в лог и повторно отправляет клиенту авторитетное состояние сервера. При входе/выходе игроков и смене лидера группы `PartyService` автоматически обновляет статус Хоста на всех клиентах.
+   - При переключении Хостом у всех участников группы выводится внутриигровое уведомление в стиле RFAB: *«Единство в битве (Кооп): урон по союзникам отключен»* / *«...включен»*.
+2. **Серверно-авторизованная синхронизация состояния (`AllyProtectionSync`):**
+   - `RfabProgressionService` хранит авторитетный флаг `m_allyProtectionEnabled{true}` и рассылает `NotifyRfabProgressionEvent::AllyProtectionSync` (`GlobalValue = 1.0f/0.0f`, `XpDelta = hostPlayerId`, `EditorId = "toggle"` при явном переключении или `""` при тихой синхронизации). Клиентский `localStorage` больше никогда не перезаписывает серверное состояние при подключении.
 3. **100% блокировка урона и негативных эффектов при сохранении лечения и баффов:**
    - **Физический урон (`HookDamageActor` в `Actor.cpp`)**: мечи, двуручное оружие, стрелы, болты, удары щитом и силовые атаки от игрока (и его саммонов) по союзникам в группе и их саммонам блокируются до вызова `RealDamageActor` и до генерации `HitEvent` (чужие саммоны никогда не агрятся от случайного задевания), а `iAllyHitNonCombatAllowed` выставляется в `1000`.
    - **Магический урон и негативные эффекты (`HookAddTarget` в `MagicTarget.cpp`)**: все атакующие заклинания, плащи стихий, зачарования оружия, яды, болезни, замедления, паралич, страх, «Смертный приговор» и крики (включая отбрасывание `Безжалостной силы` / `Fus Ro Dah`) блокируются до `RealAddTarget`.
@@ -51,12 +52,31 @@
 
 ---
 
-## 4. Изменённые компоненты проекта
+## 4. Финальный аудит безопасности, стабильности C++ и чистых обновлений установщика
+
+В рамках полного ревью кодовой базы (`Code/server`, `Code/client`, `Code/common`, `Code/tp_process`, `Code/skyrim_ui`, `Tools/rfab`) выявлены и устранены дополнительные краевые случаи:
+
+1. **Защита от крашей и обходов в `MagicTarget::HookAddTarget` и `MagicService::OnNotifyAddTarget`:**
+   - Проверка `EvaluateCoopAction` перенесена **выше** `ScopedSpellCastOverride::IsOverriden()`, чтобы синхронные эффекты (`CastSpellImmediate`, стихийные плащи, скриптовые ауры) не пробивали «Единство в битве».
+   - Добавлена зеркальная фильтрация `EvaluateCoopAction` во входящем сетевом обработчике `MagicService::OnNotifyAddTarget` (плюс ранний возврат `if (!pActor) return;` вместо `continue` в цикле с последующим разыменованием `pActor`).
+   - Добавлены полные `nullptr`-проверки для `arTargetData.pEffectItem`, `pEffectSetting`, `pSpell` и `RTTI_Cast<Actor>(this)` в `HookAddTarget`, а также для `PlayerCharacter::Get()` и `Settings::GetDifficulty()` в `PlayerService`.
+2. **Поддержка скриптовых призывов духов RFAB и защита от саммонов вне группы:**
+   - В `RfabAdapterService::EvaluateCoopAction` добавлен учёт локальных саммонов через `IsPlayerTeammate()` (а не только ванильный `GetCommandingActor()`), что покрывает всех духов и тоггл-миньонов RFAB.
+   - В `Actor::HookDamageActor` защита `!PvpEnabled` на локальном игроке `0x14` расширена на призывных существ удалённых игроков **вне** группы.
+3. **Защита пароля в логах (`OverlayClient.cpp`):**
+   - Удалено логирование `eventArgs->GetString(0..2)` в `connect`-обработчике CEF, которое ранее могло записывать пароль сервера в текстовый клиентский лог и читать аргументы вне границ списка.
+4. **Чистое обновление с версии на версию (`Setup-RfabOnline.ps1`, `Package-Release.ps1`):**
+   - При запуске `INSTALL_RFAB_ONLINE.bat` установщик автоматически останавливает `SkyrimTogetherServer` и осиротевший `TPProcess` (`Wait-Process`), через `Remove-DirectoryClean` полностью сносит старые каталоги `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя и мигрируя `STServer.ini`), очищает устаревшие файлы в `MO2\overwrite` и устанавливает свежую версию с нуля.
+   - В `Quick_Update.zip` (`UPDATE_RFAB_ONLINE.bat`) добавлены `TPProcess.exe`, `SkyrimTogetherQuestPatches.esp`, полная замена папки `UI/` и автоматическое удаление устаревших `.pex`/`.psc`/`logo*.nif` из старых версий.
+
+---
+
+## 5. Изменённые компоненты проекта
 
 - `Code/common/RfabModpackCompat.h` — чистая логика `EvaluateCoopAllyActionPolicy` с юнит-тестами в `Code/tests/rfab_se1597_hardening_audit.cpp`.
-- `Code/encoding/Messages/{SyncRfabProgressionEvent,NotifyRfabProgressionEvent}.h` и `Code/server/Services/RfabProgressionService.{h,cpp}` — сетевая синхронизация `EventKind::AllyProtectionSync` между игроками (с тестами сериализации в `Code/tests/encoding.cpp`).
-- `Code/client/Services/RfabAdapterService.{h,cpp}` — `EvaluateCoopAction`, синхронизация `m_localAllyProtectionEnabled` / `m_remoteAllyProtection`, `iAllyHitNonCombatAllowed = 1000` / `iAllyHitCombatAllowed = 1000`, кэш `FLST RFAB_List_NoAllyDamage_AllowedSpells` и HUD-уведомления.
-- `Code/client/Games/Skyrim/{Actor.cpp,Forms/MagicItem.cpp,Magic/MagicTarget.cpp}` — 100% блокировка физического/магического урона и негативных эффектов по союзникам в группе и их саммонам при сохранении 100% лечения и баффов (включая все 18 заклинаний из `RFAB_List_NoAllyDamage_AllowedSpells`).
-- `Code/tp_process/ProcessHandler.cpp` + `Code/client/Services/Generic/OverlayClient.cpp` + `Code/skyrim_ui/` + `dist_ready/RFAB_Online_MO2/SkyrimTogetherReborn/UI/` — мост CEF V8 `window.skyrimtogether.setAllyProtection`, кнопка **«Единство в битве: ВКЛ / ВЫКЛ»** в меню Правого CTRL, чекбокс в *Настройки -> Группа* и чат-команда `/allyprotect`.
-- `Tools/rfab/{RELEASE_NOTES_TEMPLATE.md,Build-CloudRelease.ps1,Package-Release.ps1,verify_release_bundle.py}` — шаблон релиз-ноутов в чистом UTF-8, UTF-8 BOM на всех `.ps1` и обновление релиза `v1.1.0` на месте.
+- `Code/encoding/Messages/{SyncRfabProgressionEvent,NotifyRfabProgressionEvent}.h`, `Code/server/Services/{RfabProgressionService,PartyService}.{h,cpp}` — серверно-авторизованная синхронизация `EventKind::AllyProtectionSync` строго от Хоста с автообновлением прав при смене лидера группы.
+- `Code/client/Services/RfabAdapterService.{h,cpp}` и `Code/client/Services/Generic/PartyService.cpp` — `EvaluateCoopAction` (включая `IsPlayerTeammate`), проверка прав Хоста `IsLocalPlayerAllyProtectionHost`, синхронизация с CEF `allyProtectionState(enabled, isHost)`, `iAllyHitNonCombatAllowed = 1000` / `iAllyHitCombatAllowed = 1000`, кэш `FLST RFAB_List_NoAllyDamage_AllowedSpells` и HUD-уведомления.
+- `Code/client/Games/Skyrim/{Actor.cpp,Forms/MagicItem.cpp,Magic/MagicTarget.cpp}` и `Code/client/Services/Generic/{MagicService,PlayerService,OverlayClient}.cpp` — 100% блокировка физического/магического урона и негативных эффектов по союзникам в группе и их саммонам при сохранении 100% лечения и баффов, защита саммонов вне группы, null-guards и удаление логирования пароля.
+- `Code/tp_process/ProcessHandler.cpp` + `Code/skyrim_ui/` (`angular.json` с `images`/`fonts`) + `dist_ready/RFAB_Online_MO2/SkyrimTogetherReborn/UI/` — мост CEF V8 `window.skyrimtogether.setAllyProtection`, кнопка Хоста **«Единство в битве: ВКЛ / ВЫКЛ»** (и индикатор для гостей) в меню Правого CTRL, чекбокс в *Настройки -> Группа* и чат-команда `/allyprotect`.
+- `CHANGELOG.md`, `README.md`, `PROCHTI_MENYA.txt`, `Tools/rfab/{RELEASE_NOTES_TEMPLATE.md,Setup-RfabOnline.ps1,Build-CloudRelease.ps1,Package-Release.ps1,verify_release_bundle.py}` — чистая установка/обновление между версиями, журнал изменений, шаблон релиз-ноутов в чистом UTF-8, UTF-8 BOM на всех `.ps1` и обновление релиза `v1.1.0` на месте.
 

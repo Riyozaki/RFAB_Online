@@ -46,6 +46,10 @@ export class CommandHandler {
   private AllyProtect: Command = {
     name: 'allyprotect',
     executor: async (args) => {
+      if (localStorage.getItem('party_allyProtection_isHost') !== 'true') {
+        this.chatService.pushSystemMessage('SERVICE.COMMANDS.NOT_HOST_ALLY_PROTECT');
+        return;
+      }
       const raw = (args[0] || '').toLowerCase();
       let next = true;
       const stored = localStorage.getItem('party_allyProtection');

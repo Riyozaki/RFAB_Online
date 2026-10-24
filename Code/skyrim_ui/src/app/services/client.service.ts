@@ -72,8 +72,9 @@ export class ClientService implements OnDestroy {
 
   public protocolMismatchChange = new BehaviorSubject(false);
 
-  /** RFAB Co-Op Ally Protection ("Единство в битве") state. */
+  /** RFAB Co-Op Ally Protection ("Единство в битве") state & Host authority. */
   public allyProtectionChange = new BehaviorSubject(true);
+  public isAllyProtectionHostChange = new BehaviorSubject(false);
 
   /** Receive error from core */
   public triggerError = new ReplaySubject<ErrorEvents>(1);
@@ -225,18 +226,30 @@ export class ClientService implements OnDestroy {
   }
 
   /**
-   * Set RFAB Co-Op Ally Protection ("Единство в битве").
+   * Set RFAB Co-Op Ally Protection ("Единство в битве") — strictly Host-authoritative.
    */
   public setAllyProtection(enabled: boolean, notifyHud = false): void {
+    if (!this.isAllyProtectionHostChange.getValue()) {
+      if (notifyHud) {
+        this.chatService.pushSystemMessage('SERVICE.COMMANDS.NOT_HOST_ALLY_PROTECT');
+      }
+      return;
+    }
     this.allyProtectionChange.next(enabled);
+    localStorage.setItem('party_allyProtection', String(enabled));
     if (typeof skyrimtogether.setAllyProtection === 'function') {
       skyrimtogether.setAllyProtection(enabled, notifyHud);
     }
   }
 
-  private onAllyProtectionState(enabled: boolean): void {
+  private onAllyProtectionState(enabled: boolean, isHost = false): void {
     this.zone.run(() => {
-      this.allyProtectionChange.next(Boolean(enabled));
+      const nextEnabled = Boolean(enabled);
+      const nextHost = Boolean(isHost);
+      this.allyProtectionChange.next(nextEnabled);
+      this.isAllyProtectionHostChange.next(nextHost);
+      localStorage.setItem('party_allyProtection', String(nextEnabled));
+      localStorage.setItem('party_allyProtection_isHost', String(nextHost));
     });
   }
 
@@ -379,6 +392,9 @@ export class ClientService implements OnDestroy {
       this.localPlayerId = undefined;
       this.connectionStateChange.next(false);
       this.isConnectionInProgressChange.next(false);
+      this.allyProtectionChange.next(true);
+      this.isAllyProtectionHostChange.next(false);
+      localStorage.setItem('party_allyProtection_isHost', 'false');
 
       if (isError && this._remainingReconnectionAttempt > 0) {
         this._remainingReconnectionAttempt--;

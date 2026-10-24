@@ -830,6 +830,19 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
         castNotify.DesiredTarget = 99;
         castNotify.EffectivenessMult = 2.0f; // Strannik player
         AssertServerPacketRoundtrip(castNotify);
+
+        // 7. Host-only Co-Op Ally Protection («Единство в битве») wire packets round-trip via factories:
+        SyncRfabProgressionEvent allySyncReq{};
+        allySyncReq.Kind = SyncRfabProgressionEvent::EventKind::AllyProtectionSync;
+        allySyncReq.GlobalValue = 0.0f;
+        AssertClientPacketRoundtrip(allySyncReq);
+
+        NotifyRfabProgressionEvent allyNotify{};
+        allyNotify.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+        allyNotify.XpDelta = 1; // Authorized Host PlayerId
+        allyNotify.EditorId = "toggle";
+        allyNotify.GlobalValue = 1.0f;
+        AssertServerPacketRoundtrip(allyNotify);
     }
 }
 

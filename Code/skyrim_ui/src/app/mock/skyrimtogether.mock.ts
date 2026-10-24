@@ -110,7 +110,7 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
   }
 
   setAllyProtection(enabled: boolean, notifyHud = false): void {
-    this.emit('allyProtectionState', enabled);
+    this.emit('allyProtectionState', enabled, true);
     if (notifyHud) {
       this.sendMessage(
         MessageTypes.SYSTEM_MESSAGE,

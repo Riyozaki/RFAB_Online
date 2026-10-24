@@ -11,6 +11,8 @@ struct TransportService;
 struct UpdateEvent;
 struct ConnectedEvent;
 struct DisconnectedEvent;
+struct PartyJoinedEvent;
+struct PartyLeftEvent;
 struct NotifyRfabProgressionEvent;
 struct Actor;
 struct TESGlobal;
@@ -39,10 +41,11 @@ public:
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
     [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
 
-    [[nodiscard]] bool IsLocalAllyProtectionEnabled() const noexcept { return m_localAllyProtectionEnabled; }
+    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled; }
+    [[nodiscard]] bool IsLocalPlayerAllyProtectionHost() const noexcept;
     void SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification = false) noexcept;
     void ToggleLocalAllyProtection() noexcept;
-    [[nodiscard]] bool IsRemotePlayerAllyProtectionEnabled(uint32_t aPlayerId) const noexcept;
+    void NotifyPartyLeadershipChanged() const noexcept;
     [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
         Actor* apAttacker,
         Actor* apTarget,
@@ -61,6 +64,8 @@ public:
 private:
     void OnConnected(const ConnectedEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+    void OnPartyJoined(const PartyJoinedEvent& acEvent) noexcept;
+    void OnPartyLeft(const PartyLeftEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnNotifyProgressionEvent(const NotifyRfabProgressionEvent& acMessage) noexcept;
 
@@ -69,7 +74,7 @@ private:
     void SuppressSoloRfabAutosave() noexcept;
     void RestoreSoloRfabAutosave() noexcept;
     void ApplyAllyHitGameSetting(bool aProtectAllies) noexcept;
-    void BroadcastLocalAllyProtectionState() const noexcept;
+    void SendHostAllyProtectionRequest(bool aEnabled, bool aNotifyPeers) const noexcept;
     void PushAllyProtectionStateToOverlay() const noexcept;
 
     World& m_world;
@@ -88,8 +93,10 @@ private:
     float m_savedNoDeathHandlingValue{0.0f};
     bool m_hasSavedNoDeathHandlingValue{false};
 
-    bool m_localAllyProtectionEnabled{true};
-    std::unordered_map<uint32_t, bool> m_remoteAllyProtection{};
+    bool m_allyProtectionEnabled{true};
+    uint32_t m_localPlayerId{0};
+    bool m_hasLocalPlayerId{false};
+    bool m_isServerHost{false};
     int32_t m_savedAllyHitNonCombatAllowed{3};
     int32_t m_savedAllyHitCombatAllowed{1000};
     bool m_hasSavedAllyHitSettings{false};
@@ -107,6 +114,8 @@ private:
 
     entt::scoped_connection m_connectedConnection;
     entt::scoped_connection m_disconnectedConnection;
+    entt::scoped_connection m_partyJoinedConnection;
+    entt::scoped_connection m_partyLeftConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_progressionConnection;
 };

@@ -82,7 +82,8 @@
         <input
           type="checkbox"
           id="allyProtection"
-          [ngModel]="settings.allyProtection | async"
+          [disabled]="!(isAllyProtectionHost$ | async)"
+          [ngModel]="allyProtection$ | async"
           (ngModelChange)="onAllyProtectionChange($event)"
         />
       </div>
