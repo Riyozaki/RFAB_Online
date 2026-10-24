@@ -1,6 +1,7 @@
 
 
 #include "ESLoader.h"
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -107,15 +108,48 @@ bool ESLoader::LoadLoadOrder()
 
         const char extensionType = static_cast<char>(std::tolower(static_cast<unsigned char>(line.back())));
 
+        // Peek TES4 record header flags (bytes 8..11: 0x001 = ESM master, 0x200 = ESL light plugin) when the plugin
+        // file exists in Data/, matching Skyrim SE 1.5.97 TESDataHandler & MO2 for ESL-flagged .esp files
+        // (e.g. SkyrimTogetherQuestPatches.esp, MCMHelper.esp, QuickLootIE.esp) and ESM-flagged RFAB.esp!
+        bool hasTes4Flags = false;
+        uint32_t tes4Flags = 0;
+        {
+            std::error_code ec;
+            const fs::path candidatePath = m_directory / line.c_str();
+            if (fs::is_regular_file(candidatePath, ec))
+            {
+                std::ifstream hdrStream(candidatePath, std::ios::binary);
+                char rawHdr[12]{};
+                if (hdrStream.read(rawHdr, sizeof(rawHdr)) && std::memcmp(rawHdr, "TES4", 4) == 0)
+                {
+                    std::memcpy(&tes4Flags, rawHdr + 8, sizeof(uint32_t));
+                    hasTes4Flags = true;
+                }
+            }
+        }
+
+        const bool isEslFlagged = (extensionType == 'l') || (hasTes4Flags && (tes4Flags & 0x00000200u) != 0);
+        const bool isEsmFlagged = (extensionType == 'm') || (hasTes4Flags && (tes4Flags & 0x00000001u) != 0);
+
+        if (isEslFlagged)
+        {
+            if (liteId < 0x0FFF)
+            {
+                plugin.m_liteId = liteId++;
+                plugin.m_isLite = true;
+                m_loadOrder.push_back(plugin);
+            }
+            continue;
+        }
+
         switch (extensionType)
         {
         case 'm':
-            if (standardId < 0xFE)
-                m_masterFiles[line] = static_cast<uint8_t>(standardId);
-            [[fallthrough]];
         case 'p':
             if (standardId < 0xFE)
             {
+                if (isEsmFlagged)
+                    m_masterFiles[line] = static_cast<uint8_t>(standardId);
                 plugin.m_standardId = static_cast<uint8_t>(standardId);
                 ++standardId;
                 plugin.m_isLite = false;
@@ -123,16 +157,8 @@ bool ESLoader::LoadLoadOrder()
             }
             else if (liteId < 0x0FFF)
             {
-                // ESL-flagged .esp/.esm in large MO2 modpacks (like drake1ch/RFAB with 500+ plugins):
+                // ESL-flagged .esp/.esm in large MO2 modpacks (when Data/ files are absent on headless server):
                 // assign into FE light-plugin space instead of wrapping uint8_t back to 0x00 (Skyrim.esm)!
-                plugin.m_liteId = liteId++;
-                plugin.m_isLite = true;
-                m_loadOrder.push_back(plugin);
-            }
-            break;
-        case 'l':
-            if (liteId < 0x0FFF)
-            {
                 plugin.m_liteId = liteId++;
                 plugin.m_isLite = true;
                 m_loadOrder.push_back(plugin);
