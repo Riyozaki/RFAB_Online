@@ -1,9 +1,11 @@
 #include <Services/RfabProgressionService.h>
 
 #include <Events/PlayerJoinEvent.h>
+#include <Events/PlayerLeaveEvent.h>
 #include <GameServer.h>
 #include <Messages/NotifyRfabProgressionEvent.h>
 #include <Messages/SyncRfabProgressionEvent.h>
+#include <Services/PartyService.h>
 #include <Services/SaveSnapshotService.h>
 #include <World.h>
 
@@ -16,6 +18,7 @@ RfabProgressionService::RfabProgressionService(World& aWorld, entt::dispatcher& 
     : m_world(aWorld)
     , m_progressionConnection(aDispatcher.sink<PacketEvent<SyncRfabProgressionEvent>>().connect<&RfabProgressionService::OnSyncProgressionEvent>(this))
     , m_playerJoinConnection(aDispatcher.sink<PlayerJoinEvent>().connect<&RfabProgressionService::OnPlayerJoin>(this))
+    , m_playerLeaveConnection(aDispatcher.sink<PlayerLeaveEvent>().connect<&RfabProgressionService::OnPlayerLeave>(this))
 {
 }
 
@@ -121,7 +124,85 @@ void RfabProgressionService::OnSyncProgressionEvent(const PacketEvent<SyncRfabPr
         GameServer::Get()->SendToPlayers(broadcast, pSender);
         break;
     }
+
+    case SyncRfabProgressionEvent::EventKind::AllyProtectionSync:
+    {
+        // Strictly Host-authoritative: only the authorized Host (Party Leader / Server Admin / first host)
+        // may enable or disable Co-Op Ally Protection («Единство в битве») for the group!
+        if (!m_world.GetSaveSnapshotService().IsPlayerAuthorizedHost(pSender))
+        {
+            spdlog::warn(
+                "[RFAB AllyProtection] Rejected non-host toggle request from '{}' (id={})",
+                pSender->GetUsername().c_str(),
+                pSender->GetId());
+            SendAllyProtectionStateToPlayer(pSender, false);
+            break;
+        }
+
+        const bool requestedEnabled = (pkt.GlobalValue >= 0.5f);
+        const bool changed = (m_allyProtectionEnabled != requestedEnabled);
+        m_allyProtectionEnabled = requestedEnabled;
+
+        spdlog::info(
+            "[RFAB AllyProtection] Host '{}' (id={}) set Co-Op Ally Protection = {}",
+            pSender->GetUsername().c_str(),
+            pSender->GetId(),
+            m_allyProtectionEnabled ? "ON (zero ally damage)" : "OFF (ally damage enabled)");
+
+        BroadcastAllyProtectionState(changed || pkt.EditorId == "toggle");
+        break;
     }
+    }
+}
+
+int32_t RfabProgressionService::ResolveAuthorizedHostPlayerId() const noexcept
+{
+    auto& partyService = m_world.GetPartyService();
+    Player* pLowestIdPlayer = nullptr;
+
+    for (Player* pCandidate : m_world.GetPlayerManager())
+    {
+        if (!pCandidate)
+            continue;
+
+        if (partyService.IsPlayerInParty(pCandidate) && partyService.IsPlayerLeader(pCandidate))
+            return static_cast<int32_t>(pCandidate->GetId());
+
+        if (!pLowestIdPlayer || pCandidate->GetId() < pLowestIdPlayer->GetId())
+            pLowestIdPlayer = pCandidate;
+    }
+
+    return pLowestIdPlayer ? static_cast<int32_t>(pLowestIdPlayer->GetId()) : -1;
+}
+
+void RfabProgressionService::SendAllyProtectionStateToPlayer(Player* apTarget, bool aNotifyHudChange) const noexcept
+{
+    if (!apTarget)
+        return;
+
+    NotifyRfabProgressionEvent allySync{};
+    allySync.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+    allySync.EpochId = m_world.GetSaveSnapshotService().GetCurrentWorldEpoch();
+    allySync.XpDelta = ResolveAuthorizedHostPlayerId();
+    allySync.GlobalValue = m_allyProtectionEnabled ? 1.0f : 0.0f;
+    allySync.EditorId = aNotifyHudChange ? String("toggle") : String("");
+    allySync.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
+    apTarget->Send(allySync);
+}
+
+void RfabProgressionService::BroadcastAllyProtectionState(bool aNotifyHudChange) const noexcept
+{
+    if (!GameServer::Get())
+        return;
+
+    NotifyRfabProgressionEvent allySync{};
+    allySync.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+    allySync.EpochId = m_world.GetSaveSnapshotService().GetCurrentWorldEpoch();
+    allySync.XpDelta = ResolveAuthorizedHostPlayerId();
+    allySync.GlobalValue = m_allyProtectionEnabled ? 1.0f : 0.0f;
+    allySync.EditorId = aNotifyHudChange ? String("toggle") : String("");
+    allySync.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
+    GameServer::Get()->SendToPlayers(allySync, nullptr);
 }
 
 void RfabProgressionService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
@@ -163,4 +244,12 @@ void RfabProgressionService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexce
         globalSync.AuthoritativeTotalXp = m_ledger.GetTotalSharedXp();
         pNewPlayer->Send(globalSync);
     }
+
+    // Sync authoritative Host-controlled Co-Op Ally Protection («Единство в битве») state & Host ID.
+    SendAllyProtectionStateToPlayer(pNewPlayer, false);
+}
+
+void RfabProgressionService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
+{
+    (void)acEvent;
 }

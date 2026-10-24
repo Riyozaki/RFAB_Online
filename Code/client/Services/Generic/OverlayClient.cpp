@@ -4,6 +4,7 @@
 #include <DInputHook.hpp>
 
 #include <Services/OverlayClient.h>
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
 #include <Messages/SendChatMessageRequest.h>
@@ -35,10 +36,7 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
         auto eventName = pArguments->GetString(0).ToString();
         auto eventArgs = pArguments->GetList(1);
 
-        spdlog::info(eventName);
-        spdlog::info(eventArgs->GetString(0).ToString());
-        spdlog::info(std::to_string(eventArgs->GetInt(1)));
-        spdlog::info(eventArgs->GetString(2).ToString());
+        spdlog::debug("[OverlayClient] ui-event: {}", eventName);
 
 #ifndef PUBLIC_BUILD
         LOG(INFO) << "event=ui_event name=" << eventName;
@@ -83,6 +81,14 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
             ProcessTeleportMessage(eventArgs);
         else if (eventName == "toggleDebugUI")
             ProcessToggleDebugUI();
+        else if (eventName == "setAllyProtection")
+        {
+            const bool enabled = eventArgs->GetSize() > 0 ? eventArgs->GetBool(0) : true;
+            const bool notifyHud = eventArgs->GetSize() > 1 ? eventArgs->GetBool(1) : false;
+            World::Get().GetRunner().Queue([enabled, notifyHud]() {
+                World::Get().GetRfabAdapterService().SetLocalAllyProtectionEnabled(enabled, notifyHud);
+            });
+        }
 
         return true;
     }

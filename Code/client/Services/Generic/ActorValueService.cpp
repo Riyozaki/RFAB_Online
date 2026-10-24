@@ -84,16 +84,49 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
     m_dispatcher.sink<NotifyDeathStateChange>().connect<&ActorValueService::OnDeathStateChange>(this);
 }
 
+void ActorValueService::CaptureNativeBaseMaxHealth(Actor* apActor) noexcept
+{
+    if (!apActor || !ShouldScaleActorHealth(apActor))
+        return;
+
+    if (m_unscaledMaxHealth.find(apActor->formID) != m_unscaledMaxHealth.end())
+        return;
+
+    const float nativeMax = apActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+    if (nativeMax > 0.0f)
+        m_unscaledMaxHealth[apActor->formID] = nativeMax;
+}
+
 void ActorValueService::SeedUnscaledMaxHealthFromRemote(uint32_t aFormId, float aScaledMaxHealth) noexcept
 {
     if (aFormId == 0 || aScaledMaxHealth <= 0.0f)
         return;
 
-    if (m_unscaledMaxHealth.find(aFormId) != m_unscaledMaxHealth.end())
-        return;
-
     const float multiplier = m_transport.IsConnected() ? GetHealthMultiplier(m_world.GetServerSettings()) : 1.0f;
-    m_unscaledMaxHealth[aFormId] = aScaledMaxHealth / multiplier;
+
+    // For pre-placed ESP NPCs, prefer their native local 1x permanent health before remote SetActorValues runs
+    // (avoiding 1/3x shrinkage if the initial spawn packet arrived before the owner finished scaling!).
+    if ((aFormId & 0xFF000000) != 0xFF000000)
+    {
+        if (m_unscaledMaxHealth.find(aFormId) != m_unscaledMaxHealth.end())
+            return;
+
+        if (Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId)))
+        {
+            const float nativeMax = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+            if (nativeMax > 0.0f && std::abs(nativeMax - aScaledMaxHealth) > 0.01f)
+            {
+                m_unscaledMaxHealth[aFormId] = nativeMax;
+                return;
+            }
+        }
+    }
+
+    // For dynamic 0xFFxxxxxx spawns (or already-scaled NPCs), update unscaled base whenever remote max increases.
+    const float candidateUnscaled = aScaledMaxHealth / multiplier;
+    auto it = m_unscaledMaxHealth.find(aFormId);
+    if (it == m_unscaledMaxHealth.end() || ((aFormId & 0xFF000000) == 0xFF000000 && candidateUnscaled > it->second))
+        m_unscaledMaxHealth[aFormId] = candidateUnscaled;
 }
 
 void ActorValueService::CreateActorValuesComponent(const entt::entity aEntity, Actor* apActor) noexcept
@@ -502,6 +535,11 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
         if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
         {
             pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
+            continue;
+        }
+        if (key >= ActorValueInfo::kDamageResist && key <= ActorValueInfo::kMagicResist)
+        {
+            pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, key, value);
             continue;
         }
         pActor->SetActorValue(key, value);

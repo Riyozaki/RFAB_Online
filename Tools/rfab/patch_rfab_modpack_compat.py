@@ -93,6 +93,7 @@ def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
 
     patches_entries: List[Tuple[str, str]] = [
         ("RegularQuicksaves", "true"),
+        ("CleanSkseCosaves", "true"),
         ("MaxStdio", "8192"),
     ]
     if not has_v7_mm:
@@ -107,14 +108,25 @@ def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
     cur, d = ensure_section_keys(cur, "Patches", patches_entries)
     diffs.extend(d)
 
-    cur, d = ensure_section_keys(cur, "SaveGameMaxSize", [("SaveGameMaxSize", "true")])
+    cur = re.sub(r"^\s*\[SaveGameMaxSize\]\s*$", "[Experimental]", cur, flags=re.MULTILINE | re.IGNORECASE)
+    cur, d = ensure_section_keys(cur, "Experimental", [("SaveGameMaxSize", "true")])
     diffs.extend(d)
     return cur, diffs
 
 
 def patch_rfab_autosave_ini(content: str) -> Tuple[str, bool]:
-    cur, _, changed = patch_toml_key(content, "Enabled", "false")
-    return cur, changed
+    cur = content
+    any_changed = False
+    for k, v in [
+        ("Enabled", "false"),
+        ("Enable autosave", "0"),
+        ("Save after combat", "0"),
+        ("Save on location change", "0"),
+        ("Save on sleep/wait", "0"),
+    ]:
+        cur, _, ch = patch_toml_key(cur, k, v)
+        any_changed = any_changed or ch
+    return cur, any_changed
 
 
 def patch_skyrim_souls_ini(content: str) -> Tuple[str, bool]:

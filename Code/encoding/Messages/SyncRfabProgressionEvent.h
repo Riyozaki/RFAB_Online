@@ -12,6 +12,7 @@ struct SyncRfabProgressionEvent final : ClientMessage
         LedgerXpGrant = 0,
         BookRead = 1,
         GlobalValueSync = 2,
+        AllyProtectionSync = 3,
     };
 
     SyncRfabProgressionEvent()

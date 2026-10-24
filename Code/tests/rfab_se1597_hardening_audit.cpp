@@ -27,6 +27,8 @@
 #include <Forms/TESForm.h>
 #include <Components/TESSpellList.h>
 #include <Forms/TESActorBase.h>
+#include <Forms/EffectSetting.h>
+#include <NetImmerse/BSMaskedShaderMaterial.h>
 
 namespace
 {
@@ -213,6 +215,86 @@ int main()
         assert(!missingPlugin.LoadFile("/tmp/definitely_missing_rfab_plugin_99999.esp"));
     }
 
+    // 7. v1.1.0 Playtest Regressions: TESV_SAVEGAME validator, stem normalizer, quarantine,
+    //    RFAB_XP_Amount/Multiplier wallet isolation, [RFAB] Autosave.ini full suppression,
+    //    EncounterCoordinator post-rollback wipe-loop guard, and cleaned SkyrimTogether.esp!
+    {
+        // Stem normalizer strips .ess/.bak/paths cleanly
+        assert(RfabCompat::Detail::StripSaveSlotExtensionPreserveCase("RFAB_MP_S123_Auto_0.ess") == "RFAB_MP_S123_Auto_0");
+        assert(RfabCompat::Detail::StripSaveSlotExtensionPreserveCase("Saves\\Quicksave0_FFFFFFFF.ess.bak") == "Quicksave0_FFFFFFFF");
+        assert(RfabCompat::Detail::NormalizeSaveSlotStem("  RFAB_MP_S123_Manual_1.ESS  ") == "rfab_mp_s123_manual_1");
+
+        // TESV_SAVEGAME validator & corrupt-file quarantine
+        const fs::path saveTmpDir = fs::temp_directory_path() / "rfab_save_validator_test";
+        fs::remove_all(saveTmpDir);
+        fs::create_directories(saveTmpDir);
+
+        const fs::path zeroEss = saveTmpDir / "CorruptZero.ess";
+        {
+            std::ofstream f(zeroEss, std::ios::binary);
+        }
+        assert(!RfabCompat::Detail::IsValidEssFileOnDisk(zeroEss));
+        assert(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 1);
+        assert(!fs::exists(zeroEss));
+        assert(fs::exists(saveTmpDir / "Quarantined_Corrupt_v100" / "CorruptZero.ess"));
+
+        const fs::path truncatedEss = saveTmpDir / "TruncatedHeader.ess";
+        {
+            std::ofstream f(truncatedEss, std::ios::binary);
+            f.write("TESV_SAVEGAME_SHORT", 19);
+        }
+        assert(!RfabCompat::Detail::IsValidEssFileOnDisk(truncatedEss));
+
+        // Construct valid SE 1.5.97 v12 TESV_SAVEGAME header + payload
+        const fs::path validEss = saveTmpDir / "RFAB_MP_S1_Manual_0.ess";
+        {
+            std::vector<uint8_t> bytes(512, 0xAB);
+            std::memcpy(bytes.data(), "TESV_SAVEGAME", 13);
+            std::ofstream f(validEss, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        }
+        assert(RfabCompat::Detail::IsValidEssFileOnDisk(validEss));
+        assert(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 1); // quarantines TruncatedHeader.ess only
+        assert(fs::exists(validEss));
+        fs::remove_all(saveTmpDir);
+
+        // RFAB_XP_Amount & RFAB_XP_Multiplier must NEVER be broadcast via GlobalValueSync
+        const auto bindings = RfabCompat::LoadBindingsFromDisk(fs::current_path());
+        assert(!RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Amount", bindings));
+        assert(!RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Multiplier", bindings));
+        assert(!RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Bonus", bindings));
+
+        // [RFAB] Autosave.ini full suppression (including location change & sleep/wait)
+        const std::string autosaveRaw =
+            "[Main]\r\nEnable autosave = 1\r\nSave after combat = 1\r\nSave on location change = 1\r\nSave on sleep/wait = 1\r\n";
+        const std::string autosaveSuppressed = RfabCompat::SuppressRfabAutosaveIniContent(autosaveRaw);
+        assert(autosaveSuppressed.find("Enable autosave = 0") != std::string::npos);
+        assert(autosaveSuppressed.find("Save after combat = 0") != std::string::npos);
+        assert(autosaveSuppressed.find("Save on location change = 0") != std::string::npos);
+        assert(autosaveSuppressed.find("Save on sleep/wait = 0") != std::string::npos);
+
+        // Verify SkyrimTogether.esp is clean & TempleBlessingScript.pex / logo.nif are absent
+        assert(!fs::exists("GameFiles/Skyrim/scripts/TempleBlessingScript.pex"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/scripts/TempleBlessingScript.pex"));
+        assert(!fs::exists("GameFiles/Skyrim/scripts/source/TempleBlessingScript.psc"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/scripts/source/TempleBlessingScript.psc"));
+        assert(!fs::exists("GameFiles/Skyrim/meshes/Interface/logo/logo.nif"));
+        assert(!fs::exists("dist_ready/RFAB_Online_MO2/meshes/Interface/logo/logo.nif"));
+
+        // Verify v1.2.0 RFAB Difficulty Modes (Странник / Довакин / Легенда + Проклятый) & Perk 0x581F8 (1.25x)
+        const auto mStrannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Strannik, false);
+        assert(std::abs(mStrannik.OutgoingByPlayer - 2.0f) < 0.001f && std::abs(mStrannik.IncomingToPlayer - 0.5f) < 0.001f);
+        const auto mDragon = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Dragonborn, false);
+        assert(std::abs(mDragon.OutgoingByPlayer - 1.0f) < 0.001f && std::abs(mDragon.IncomingToPlayer - 1.0f) < 0.001f);
+        const auto mLegend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Legend, false);
+        assert(std::abs(mLegend.OutgoingByPlayer - 1.0f) < 0.001f && std::abs(mLegend.IncomingToPlayer - 2.0f) < 0.001f);
+        const auto mCursed = RfabCompat::ResolveRfabDifficultyMultipliers(RfabCompat::RfabDifficultyMode::Strannik, true);
+        assert(std::abs(mCursed.OutgoingByPlayer - 0.5f) < 0.001f && std::abs(mCursed.IncomingToPlayer - 0.5f) < 0.001f);
+        assert(RfabCompat::NormalizeRfabEngineDifficultyIndex(2) == 4);
+        assert(RfabCompat::NormalizeRfabEngineDifficultyIndex(0) == 0);
+        assert(std::abs(RfabCompat::GetRestorationImprovedHealingMultiplier(true) - 1.25f) < 0.001f);
+    }
+
     std::cout << "[PASS] All SE 1.5.97 struct static_asserts, BSTSmartPointer RAII, Havok stepInfo/IsWordVariable guards, "
                  "TESSpellList null-sanitizer, TESForm::IsStillLoading, ESLoader BOM/CRLF/overflow safety, "
                  "NormalizeServerEndpoint, and MO2 VFS self-healers passed!"
@@ -277,5 +359,47 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         std::filesystem::current_path(oldCwd);
     }
     std::filesystem::remove_all(loDir);
+
+    // RFAB «Единство в битве (Кооп)» (Co-Op Ally Friendly-Fire Protection) matrix:
+    // 1. Non-party actors, enemies, solo NPC followers, and personal summons are untouched
+    //    (preserving RFAB's Speechcraft 50 «Лидерство» perk).
+    {
+        const auto soloHarm = RfabCompat::EvaluateCoopAllyActionPolicy(false, true, false);
+        REQUIRE_FALSE(soloHarm.BlockHarmfulAction);
+        REQUIRE_FALSE(soloHarm.AllowPartySparring);
+        REQUIRE_FALSE(soloHarm.AllowBeneficialMagic);
+
+        const auto soloHeal = RfabCompat::EvaluateCoopAllyActionPolicy(false, true, true);
+        REQUIRE_FALSE(soloHeal.BlockHarmfulAction);
+        REQUIRE_FALSE(soloHeal.AllowPartySparring);
+        REQUIRE_FALSE(soloHeal.AllowBeneficialMagic);
+    }
+    // 2. Same co-op party with AllyProtection ENABLED (default):
+    //    - 100% of physical attacks, hostile spells, shouts, poisons, cloaks, and debuffs are blocked.
+    //    - 100% of heals & buffs (including RFAB_List_NoAllyDamage_AllowedSpells) still work!
+    {
+        const auto allyHarm = RfabCompat::EvaluateCoopAllyActionPolicy(true, true, false);
+        REQUIRE(allyHarm.BlockHarmfulAction);
+        REQUIRE_FALSE(allyHarm.AllowPartySparring);
+        REQUIRE_FALSE(allyHarm.AllowBeneficialMagic);
+
+        const auto allyHealOrBuff = RfabCompat::EvaluateCoopAllyActionPolicy(true, true, true);
+        REQUIRE_FALSE(allyHealOrBuff.BlockHarmfulAction);
+        REQUIRE_FALSE(allyHealOrBuff.AllowPartySparring);
+        REQUIRE(allyHealOrBuff.AllowBeneficialMagic);
+    }
+    // 3. Same co-op party with AllyProtection DISABLED via Right-Ctrl overlay toggle:
+    //    - Party members can spar / test builds without editing STServer.ini, while heals & buffs still work!
+    {
+        const auto sparHarm = RfabCompat::EvaluateCoopAllyActionPolicy(true, false, false);
+        REQUIRE_FALSE(sparHarm.BlockHarmfulAction);
+        REQUIRE(sparHarm.AllowPartySparring);
+        REQUIRE_FALSE(sparHarm.AllowBeneficialMagic);
+
+        const auto sparHeal = RfabCompat::EvaluateCoopAllyActionPolicy(true, false, true);
+        REQUIRE_FALSE(sparHeal.BlockHarmfulAction);
+        REQUIRE(sparHeal.AllowPartySparring);
+        REQUIRE(sparHeal.AllowBeneficialMagic);
+    }
 }
 #endif

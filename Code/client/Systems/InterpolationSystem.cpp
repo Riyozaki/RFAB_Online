@@ -9,7 +9,7 @@
 #include <Games/References.h>
 #include <World.h>
 
-void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick) noexcept
+void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick, const RemoteAnimationComponent* apAnimComponent) noexcept
 {
     auto& movements = aInterpolationComponent.TimePoints;
 
@@ -36,7 +36,7 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
         delta = 1.f / tickDelta * static_cast<float>(aTick - first.Tick);
     }
 
-    delta = TiltedPhoques::Min(delta, 1.0f);
+    delta = std::clamp(delta, 0.0f, 1.0f);
 
     const NiPoint3 position{TiltedPhoques::Lerp(first.Position, second.Position, delta)};
 
@@ -47,11 +47,35 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
         return;
 
     apActor->ForcePosition(position);
-    apActor->LoadAnimationVariables(second.Variables);
+
+    // Causal + smooth animation variable blending:
+    // - Use discrete Booleans & Integers from LastRanAction when an ActionEvent ran more recently than first.Tick
+    //   (preventing 100ms snapshots from clobbering newly-fired ForceAction combo/attack/dodge/bleedout states!),
+    //   otherwise from causal first.Variables (never future second.Variables!).
+    // - Smoothly blend continuous Floats (SpeedSampled, Direction, TurnDelta) between first and second.
+    const bool useActionDiscreteVars =
+        apAnimComponent && apAnimComponent->LastRanAction.Tick > first.Tick &&
+        !apAnimComponent->LastRanAction.Variables.Booleans.empty();
+
+    AnimationVariables blendedVars = useActionDiscreteVars ? apAnimComponent->LastRanAction.Variables : first.Variables;
+    if (first.Variables.Floats.size() == second.Variables.Floats.size() && !first.Variables.Floats.empty())
+    {
+        blendedVars.Floats.resize(first.Variables.Floats.size());
+        for (size_t i = 0; i < first.Variables.Floats.size(); ++i)
+        {
+            const float a = first.Variables.Floats[i];
+            const float b = second.Variables.Floats[i];
+            if (std::isfinite(a) && std::isfinite(b) && std::fabs(b - a) < 500.0f)
+                blendedVars.Floats[i] = a + (b - a) * delta;
+            else
+                blendedVars.Floats[i] = b;
+        }
+    }
+    apActor->LoadAnimationVariables(blendedVars);
 
     if (apActor->currentProcess && apActor->currentProcess->middleProcess)
     {
-        apActor->currentProcess->middleProcess->direction = second.Direction;
+        apActor->currentProcess->middleProcess->direction = first.Direction + TiltedPhoques::DeltaAngle(first.Direction, second.Direction, false) * delta;
     }
 
     auto rotA = first.Rotation;

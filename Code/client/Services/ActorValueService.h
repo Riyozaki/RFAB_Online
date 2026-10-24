@@ -32,8 +32,10 @@ public:
     TP_NOCOPYMOVE(ActorValueService);
 
     /**
-     * @brief Records the unscaled base max health for an actor whose current max health came from a scaled remote owner.
+     * @brief Records the native unscaled 1x engine permanent health before remote SetActorValues mutates it,
+     *        or divides a dynamic 0xFFxxxxxx actor's scaled remote health cleanly without 1/3 or 9x drift.
      */
+    void CaptureNativeBaseMaxHealth(Actor* apActor) noexcept;
     void SeedUnscaledMaxHealthFromRemote(uint32_t aFormId, float aScaledMaxHealth) noexcept;
 
 private:

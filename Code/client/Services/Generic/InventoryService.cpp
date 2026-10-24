@@ -26,6 +26,7 @@
 #include <Games/ActorExtension.h>
 #include <Forms/TESNPC.h>
 #include <Forms/BGSOutfit.h>
+#include <Forms/TESObjectARMO.h>
 #include <DefaultObjectManager.h>
 
 InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
@@ -50,6 +51,22 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
 {
     if (!m_transport.IsConnected())
         return;
+
+    if (Actor* pTargetActor = Cast<Actor>(TESForm::GetById(acEvent.FormId)))
+    {
+        if (const auto* pExt = pTargetActor->GetExtension())
+        {
+            if (pExt->IsRemotePlayer())
+                return;
+
+            if (pExt->IsRemote() && !pTargetActor->IsDead())
+            {
+                auto* pUi = UI::Get();
+                if (!pUi || !pUi->GetMenuOpen(BSFixedString("ContainerMenu")))
+                    return;
+            }
+        }
+    }
 
     auto view = m_world.view<FormIdComponent>();
 
@@ -101,7 +118,7 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
     Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.ActorId));
-    if (!pActor)
+    if (!pActor || pActor->GetExtension()->IsRemote())
         return;
 
     std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
@@ -202,6 +219,8 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
         slotId = 1;
 
     auto* pEquipManager = EquipManager::Get();
+    ScopedEquipOverride equipGuard;
+    ScopedInventoryOverride invGuard;
 
     if (acMessage.IsSpell)
     {
@@ -222,38 +241,47 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
         return;
     }
 
-    auto* pObject = Cast<TESBoundObject>(pItem);
+    // Never equip/unequip RFAB's self-destructing Adventurer's Ring (RFAB_ExperienceRing = 0x112812) or
+    // dual-ring items on remote player puppets (RFAB.dll's 2-ring patch applies strictly to 0x14!).
+    if (pActor->GetExtension()->IsRemotePlayer() && (itemId & 0x00FFFFFFu) == 0x00112812u)
+        return;
 
-    // TODO: ExtraData necessary? probably
     if (acMessage.Unequip)
     {
         pEquipManager->UnEquip(pActor, pItem, nullptr, acMessage.Count, pEquipSlot, false, true, false, false, nullptr);
     }
     else
     {
-        // Unequip all armor first, since the game won't auto unequip armor
-        Inventory wornArmor{};
         if (pItem->formType == FormType::Armor)
         {
-            wornArmor = pActor->GetWornArmor();
-            for (const auto& armor : wornArmor.Entries)
+            const auto* pIncomingArmor = Cast<TESObjectARMO>(pItem);
+            const uint32_t incomingSlotMask = pIncomingArmor ? pIncomingArmor->slotType : 0u;
+            constexpr uint32_t kBipedRingSlotMask = (1u << 6); // Biped slot 36 (Ring)
+
+            // On remote players, never displace worn rings (since RFAB 0x14 wears 2 rings while 0xFF puppets have 1 slot).
+            if (pActor->GetExtension()->IsRemotePlayer() && (incomingSlotMask & kBipedRingSlotMask) != 0)
+                return;
+
+            // Only unequip existing worn armor pieces whose Biped slot mask overlaps incomingSlotMask,
+            // instead of unequipping every worn item (which triggered OnUnequipped break scripts!).
+            if (incomingSlotMask != 0)
             {
-                uint32_t armorId = modSystem.GetGameId(armor.BaseId);
-                TESForm* pArmor = TESForm::GetById(armorId);
-                if (pArmor)
-                    pEquipManager->UnEquip(pActor, pArmor, nullptr, 1, pEquipSlot, false, true, false, false, nullptr);
+                const Inventory wornArmor = pActor->GetWornArmor();
+                for (const auto& armor : wornArmor.Entries)
+                {
+                    const uint32_t armorId = modSystem.GetGameId(armor.BaseId);
+                    if (armorId == itemId)
+                        continue;
+
+                    TESForm* pArmorForm = TESForm::GetById(armorId);
+                    const auto* pWornArmor = Cast<TESObjectARMO>(pArmorForm);
+                    if (pArmorForm && pWornArmor && (pWornArmor->slotType & incomingSlotMask) != 0)
+                        pEquipManager->UnEquip(pActor, pArmorForm, nullptr, 1, pEquipSlot, false, true, false, false, nullptr);
+                }
             }
         }
 
         pEquipManager->Equip(pActor, pItem, nullptr, acMessage.Count, pEquipSlot, false, true, false, false);
-
-        for (const auto& armor : wornArmor.Entries)
-        {
-            uint32_t armorId = modSystem.GetGameId(armor.BaseId);
-            TESForm* pArmor = TESForm::GetById(armorId);
-            if (pArmor)
-                pEquipManager->Equip(pActor, pArmor, nullptr, 1, pEquipSlot, false, true, false, false);
-        }
     }
 }
 

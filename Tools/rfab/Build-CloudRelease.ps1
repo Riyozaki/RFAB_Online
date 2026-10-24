@@ -1,7 +1,15 @@
 ﻿param(
-    [string]$VersionTag = "v1.0.0",
+    [string]$VersionTag = "v1.1.0",
     [string]$BuildMode = "releasedbg"
 )
+
+if ($VersionTag -ne "v1.1.0") {
+    Write-Host "[RELEASE POLICY] Remapping -VersionTag '$VersionTag' -> 'v1.1.0' (only v1.0.0 backup and v1.1.0 current release are maintained; v1.0.0 is never overwritten)." -ForegroundColor Yellow
+    $VersionTag = "v1.1.0"
+}
+if ($VersionTag -eq "v1.0.0") {
+    throw "Hard guard: v1.0.0 must never be overwritten!"
+}
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
@@ -70,62 +78,13 @@ try {
     Invoke-LoggedCmd "[6/7] xmake install + Package-Release.ps1 + Smoke & Clean-Wipe Verification" `
         "xmake install -o distrib && powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tools\rfab\Package-Release.ps1 -VersionTag $VersionTag -BuildMode $BuildMode"
 
+    $NotesTemplateFile = Join-Path $RepoRoot "Tools\rfab\RELEASE_NOTES_TEMPLATE.md"
+    if (-not (Test-Path -LiteralPath $NotesTemplateFile)) {
+        throw "Release notes template missing: $NotesTemplateFile"
+    }
     $NotesFile = Join-Path $RepoRoot "release_artifacts\RELEASE_NOTES.md"
-    $ReleaseNotes = @"
-# RFAB Online $VersionTag — Чистый автономный релиз (Skyrim SE ``1.5.97.0.8``)
-
-Полностью собранный с нуля на чистой облачной машине ``Windows x64`` автономный установщик **RFAB Online** (клиент для **Mod Organizer 2** + выделенный кооп-сервер).
-Никаких консольных команд, ``git``, ``xmake`` или ручного переименования/копирования файлов **не требуется**!
-
-## 📦 Состав релиза
-| Файл | Назначение |
-|---|---|
-| ``RFAB_Online_${VersionTag}_Full_Installer.zip`` | **Основной архив**: полная чистая установка клиента + сервера (GUI-установщик ``INSTALL_RFAB_ONLINE.bat``) |
-| ``RFAB_Online_${VersionTag}_Quick_Update.zip`` | **Быстрое обновление** для тех, кто уже играл (клиент + сервер + ``UPDATE_RFAB_ONLINE.bat``, ≈15 МБ) |
-| ``RFAB_Online_${VersionTag}_PDB_Symbols.zip`` | Отладочные символы (``.pdb``) для разработчиков и диагностики крашей |
-| ``SHA256SUMS.txt`` | Контрольные суммы ``SHA-256`` всех архивов выше |
-
-## 🛠 Установка в 2 клика (одинаково и Хосту, и Друзьям)
-1. Скачайте **``RFAB_Online_${VersionTag}_Full_Installer.zip``** и распакуйте его в любую временную папку.
-2. Закройте игру и **Mod Organizer 2**, затем дважды нажмите на **``INSTALL_RFAB_ONLINE.bat``**:
-   - Откроется удобное окно выбора папки сборки RFAB (автоматически найдёт ``ModOrganizer.exe`` на ваших дисках и покажет точный путь к ``SkyrimSE.exe 1.5.97`` прямо из ``ModOrganizer.ini``, либо позволит выбрать любую папку кнопкой **«Обзор...»**).
-   - Установщик **начисто удаляет** любые старые файлы прошлых тестов в ``MO2\mods\RFAB_Online`` и ``RFAB_Online_Server`` (никакого наслаивания на старые версии!).
-   - Ставит готовый нативный лаунчер ``SkyrimSE.exe``, включает ``+RFAB_Online``, ``*SkyrimTogether.esp`` и ``*SkyrimTogetherQuestPatches.esp`` строго перед ``Requiem.esp``, настраивает ``EngineFixes.toml``, ``SkyrimSoulsRE.ini``, ``[RFAB] Autosave.ini``, скрывает конфликтующий ``BetterStealing.dll`` и добавляет кнопку **``RFAB Online - Play``** в MO2.
-   - Ставит автономный сервер прямо в ``<Папка_RFAB>\RFAB_Online_Server`` и создаёт ярлык **``START_RFAB_SERVER.bat``** (после установки скачанный ZIP-архив можно спокойно удалить).
-
-> 💡 **Уже играли в прошлую версию?** Скачайте ``RFAB_Online_${VersionTag}_Quick_Update.zip``, распакуйте и запустите **``UPDATE_RFAB_ONLINE.bat``** — клиент и сервер обновятся без полной переустановки.
-
-## 🎮 Как запустить и играть
-1. **[Только Хост]** Запустите ``<Папка_RFAB>\START_RFAB_SERVER.bat`` (в окне сразу отобразится IP-адрес для друзей, например из **Radmin VPN**).
-2. **[И Хост, и Друзья]** Откройте **Mod Organizer 2** -> выберите **``RFAB Online - Play``** -> нажмите **«Запустить»**.
-3. В игре загрузите сохранение в открытом мире -> нажмите **Правый CTRL** (или **F2**) -> **Подключиться (``Connect``)**:
-   - **Хост вводит:** ``127.0.0.1:10578``
-   - **Друзья вводят:** ``<IP_хоста>:10578``
-   - Все игроки автоматически добавляются в общую группу!
-
-| Клавиша | Действие |
-|---|---|
-| **Правый CTRL** / **F2** | Открыть оверлей (подключение, сессия, отладка) |
-| **F5** | Сохранить игру для **всей группы** (любой игрок) |
-| **F9** | Загрузить последний групповой сейв (**только Хост**) |
-| **E** (у раненого союзника) | Поднять игрока с колена (≈4 с) |
-
-## ⚖️ Правила кооператива
-- **Опыт** — равными долями всем игрокам группы (мобы, боссы, квесты, книги опыта).
-- **Враги** — один комплект на группу (засады **не** дублируются), HP масштабируется: ``2`` игрока = ``×3 HP``, ``3`` игрока = ``×4 HP``.
-- **Смерть** — ``0 HP`` = «Downed-on-Knee» до конца боя или до поднятия союзником; честная победа поднимает павших с ≈``30% HP``; Total Party Wipe откатывает последний чекпоинт.
-- **Сохранения** — ``F5`` у любого игрока сохраняет группу, ``F9``/загрузка — только Хост, автоматический чекпоинт после боя и авто-переподключение после загрузки.
-
-## 🩹 Что исправлено по итогам плейтеста
-1. HP уходил в минус без анимации смерти -> единый C++-хук ``RestoreActorValue`` + система ``Downed-on-Knee``.
-2. Нестабильный опыт за убийства -> серверный журнал XP и двойной пул: теперь ``490/490`` паритет у всех участников.
-3. Краш ``0xC0000005`` при загрузке старого сейва и ``F9`` -> UAF динамических NPC при откате ``BGSSaveLoadGame`` исправлен очисткой/восстановлением акторов вокруг каждого save/load.
-4. «Голые» NPC у подключившегося друга -> рекурсивный резолвер экипировки из уровневых списков + досинхронизация инвентаря.
-5. Путаница синхронизации сейвов -> единые правила ``host_sync_plus_postcombat_auto`` (см. выше).
-
----
-Полная документация и исходники: **github.com/Riyozaki/RFAB_Online**
-"@
+    $ReleaseNotes = [System.IO.File]::ReadAllText($NotesTemplateFile, [System.Text.Encoding]::UTF8)
+    $ReleaseNotes = $ReleaseNotes.Replace("{{VERSION_TAG}}", $VersionTag)
     [System.IO.File]::WriteAllText($NotesFile, $ReleaseNotes, (New-Object System.Text.UTF8Encoding($false)))
 
     $CommitSha    = (& git rev-parse HEAD).Trim()
@@ -140,8 +99,8 @@ try {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
             "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     } else {
-        Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag" `
-            "gh release edit $VersionTag --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+        Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
+            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     }
 
     foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {

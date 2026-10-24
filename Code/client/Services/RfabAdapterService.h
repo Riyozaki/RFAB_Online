@@ -11,7 +11,10 @@ struct TransportService;
 struct UpdateEvent;
 struct ConnectedEvent;
 struct DisconnectedEvent;
+struct PartyJoinedEvent;
+struct PartyLeftEvent;
 struct NotifyRfabProgressionEvent;
+struct Actor;
 struct TESGlobal;
 struct BGSListForm;
 
@@ -33,8 +36,20 @@ public:
     TP_NOCOPYMOVE(RfabAdapterService);
 
     [[nodiscard]] TESGlobal* GetRfabXpGlobal() noexcept;
+    [[nodiscard]] float GetLocalXpMultiplier() noexcept;
     [[nodiscard]] TESGlobal* ResolveGlobalByEditorId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) noexcept;
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
+    [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
+
+    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled; }
+    [[nodiscard]] bool IsLocalPlayerAllyProtectionHost() const noexcept;
+    void SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification = false) noexcept;
+    void ToggleLocalAllyProtection() noexcept;
+    void NotifyPartyLeadershipChanged() const noexcept;
+    [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
+        Actor* apAttacker,
+        Actor* apTarget,
+        bool aIsBeneficialHealOrBuff) const noexcept;
 
     [[nodiscard]] static int32_t ReadRfabXp(TESGlobal* apGlobal) noexcept;
     bool ApplyDualPoolExperienceDelta(int32_t aDelta, int32_t& aOutNewTotalXp) noexcept;
@@ -49,6 +64,8 @@ public:
 private:
     void OnConnected(const ConnectedEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+    void OnPartyJoined(const PartyJoinedEvent& acEvent) noexcept;
+    void OnPartyLeft(const PartyLeftEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnNotifyProgressionEvent(const NotifyRfabProgressionEvent& acMessage) noexcept;
 
@@ -56,6 +73,9 @@ private:
     void PollSyncedGlobals() noexcept;
     void SuppressSoloRfabAutosave() noexcept;
     void RestoreSoloRfabAutosave() noexcept;
+    void ApplyAllyHitGameSetting(bool aProtectAllies) noexcept;
+    void SendHostAllyProtectionRequest(bool aEnabled, bool aNotifyPeers) const noexcept;
+    void PushAllyProtectionStateToOverlay() const noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -65,11 +85,21 @@ private:
     RfabCompat::RfabLiveXpTable m_liveXpTable{};
 
     TESGlobal* m_pCachedXpGlobal{nullptr};
+    TESGlobal* m_pCachedXpMultiplierGlobal{nullptr};
     TESGlobal* m_pNoDeathHandlingGlobal{nullptr};
     BGSListForm* m_pXpBooksFormList{nullptr};
+    BGSListForm* m_pNoAllyDamageAllowedSpellsList{nullptr};
     bool m_scannedGlobalsOnce{false};
     float m_savedNoDeathHandlingValue{0.0f};
     bool m_hasSavedNoDeathHandlingValue{false};
+
+    bool m_allyProtectionEnabled{true};
+    uint32_t m_localPlayerId{0};
+    bool m_hasLocalPlayerId{false};
+    bool m_isServerHost{false};
+    int32_t m_savedAllyHitNonCombatAllowed{3};
+    int32_t m_savedAllyHitCombatAllowed{1000};
+    bool m_hasSavedAllyHitSettings{false};
 
     std::filesystem::path m_autosaveIniPath{};
     std::string m_originalAutosaveIniContent{};
@@ -84,6 +114,8 @@ private:
 
     entt::scoped_connection m_connectedConnection;
     entt::scoped_connection m_disconnectedConnection;
+    entt::scoped_connection m_partyJoinedConnection;
+    entt::scoped_connection m_partyLeftConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_progressionConnection;
 };

@@ -109,6 +109,18 @@ export class SkyrimtogetherMock extends EventEmitter implements SkyrimTogether {
     this.sendMessage(MessageTypes.SYSTEM_MESSAGE, "Revealing players...");
   }
 
+  setAllyProtection(enabled: boolean, notifyHud = false): void {
+    this.emit('allyProtectionState', enabled, true);
+    if (notifyHud) {
+      this.sendMessage(
+        MessageTypes.SYSTEM_MESSAGE,
+        enabled
+          ? 'Единство в битве (Кооп): урон по союзникам отключен'
+          : 'Единство в битве (Кооп): урон по союзникам включен',
+      );
+    }
+  }
+
   setTime(hours: number, minutes: number): void {
     this.sendMessage(MessageTypes.SYSTEM_MESSAGE, `Setting time to "${hours}:${minutes}"!`);
   }

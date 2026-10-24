@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 
 #include <Events/PacketEvent.h>
 #include <GameServer.h>
@@ -15,11 +16,10 @@
 #include <Messages/RequestDeathStateChange.h>
 #include <Messages/NotifyDeathStateChange.h>
 
-#include <algorithm>
-
 namespace
 {
 constexpr uint32_t kHealthActorValueIndex = 24;
+constexpr float kMaxSanitizedActorValue = 100000.0f;
 }
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -45,15 +45,22 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
     if (ownerComponent.GetOwner() != acMessage.pPlayer)
         return;
 
-    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-    for (auto& [id, value] : message.Values)
-    {
-        actorValuesComponent.CurrentActorValues.ActorValuesList[id] = value;
-    }
-
     NotifyActorValueChanges notify;
     notify.Id = acMessage.Packet.Id;
-    notify.Values = acMessage.Packet.Values;
+
+    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    for (const auto& [id, value] : message.Values)
+    {
+        if (!std::isfinite(value))
+            continue;
+
+        const float sanitized = std::clamp(value, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
+        actorValuesComponent.CurrentActorValues.ActorValuesList[id] = sanitized;
+        notify.Values[id] = sanitized;
+    }
+
+    if (notify.Values.empty())
+        return;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
@@ -74,15 +81,22 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
     if (ownerComponent.GetOwner() != acMessage.pPlayer)
         return;
 
-    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-    for (auto& [id, value] : message.Values)
-    {
-        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[id] = value;
-    }
-
     NotifyActorMaxValueChanges notify;
     notify.Id = message.Id;
-    notify.Values = message.Values;
+
+    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    for (const auto& [id, value] : message.Values)
+    {
+        if (!std::isfinite(value))
+            continue;
+
+        const float sanitized = std::clamp(value, 0.0f, kMaxSanitizedActorValue);
+        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[id] = sanitized;
+        notify.Values[id] = sanitized;
+    }
+
+    if (notify.Values.empty())
+        return;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
@@ -92,33 +106,39 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
 void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthChangeBroadcast>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    if (!std::isfinite(message.DeltaHealth) || message.DeltaHealth == 0.f)
+        return;
+
+    const float sanitizedDelta = std::clamp(message.DeltaHealth, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
 
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
     auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+    if (it == actorValuesView.end())
+        return;
 
-    if (it != actorValuesView.end())
+    if (const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it))
     {
-        if (const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it))
-        {
-            // Never allow late in-flight regen/heal packets to add health above 0 on an already-dead non-player NPC.
-            if (!pCharacterComponent->IsPlayer() && pCharacterComponent->IsDead() && message.DeltaHealth > 0.f)
-                return;
-        }
-
-        auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-        const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
-        float updatedHealth = std::max(0.f, currentHealth + message.DeltaHealth);
-
-        const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
-        if (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() && maxIt->second > 0.f)
-            updatedHealth = std::min(updatedHealth, maxIt->second);
-
-        actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = updatedHealth;
+        // Never allow late in-flight regen/heal packets to add health above 0 on an already-dead non-player NPC.
+        if (!pCharacterComponent->IsPlayer() && pCharacterComponent->IsDead() && sanitizedDelta > 0.f)
+            return;
     }
+
+    auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
+    float updatedHealth = std::max(0.f, (std::isfinite(currentHealth) ? currentHealth : 0.f) + sanitizedDelta);
+
+    const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
+    if (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() &&
+        std::isfinite(maxIt->second) && maxIt->second > 0.f)
+    {
+        updatedHealth = std::min(updatedHealth, maxIt->second);
+    }
+
+    actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = updatedHealth;
 
     NotifyHealthChangeBroadcast notify;
     notify.Id = message.Id;
-    notify.DeltaHealth = message.DeltaHealth;
+    notify.DeltaHealth = sanitizedDelta;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
@@ -131,30 +151,29 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
 
     auto characterView = m_world.view<CharacterComponent, OwnerComponent>();
     const auto it = characterView.find(static_cast<entt::entity>(message.Id));
+    if (it == characterView.end())
+        return;
 
-    if (it != characterView.end())
+    auto& characterComponent = characterView.get<CharacterComponent>(*it);
+    const auto& ownerComponent = characterView.get<OwnerComponent>(*it);
+
+    // Any peer may deal the killing blow (IsDead == true), whereas resurrecting/respawning an already-dead NPC
+    // (IsDead == false) is accepted strictly from the authoritative owner to prevent stale non-owner resurrection!
+    if (!message.IsDead && characterComponent.IsDead() && ownerComponent.GetOwner() != acMessage.pPlayer)
     {
-        auto& characterComponent = characterView.get<CharacterComponent>(*it);
-        const auto& ownerComponent = characterView.get<OwnerComponent>(*it);
-
-        // Any peer may deal the killing blow (IsDead == true), whereas resurrecting/respawning an already-dead NPC
-        // (IsDead == false) is accepted strictly from the authoritative owner to prevent stale non-owner resurrection!
-        if (!message.IsDead && characterComponent.IsDead() && ownerComponent.GetOwner() != acMessage.pPlayer)
-        {
-            spdlog::debug("Ignored stale non-owner resurrection on dead actor {:x}", message.Id);
-            return;
-        }
-
-        characterComponent.SetDead(message.IsDead);
-
-        if (message.IsDead)
-        {
-            if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
-                pActorValues->CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = 0.f;
-        }
-
-        spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
+        spdlog::debug("Ignored stale non-owner resurrection on dead actor {:x}", message.Id);
+        return;
     }
+
+    characterComponent.SetDead(message.IsDead);
+
+    if (message.IsDead)
+    {
+        if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
+            pActorValues->CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = 0.f;
+    }
+
+    spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
 
     NotifyDeathStateChange notify;
     notify.Id = message.Id;

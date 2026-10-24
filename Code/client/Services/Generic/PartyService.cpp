@@ -1,5 +1,5 @@
 #include <Services/PartyService.h>
-
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
 #include <Events/UpdateEvent.h>
@@ -135,6 +135,7 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
 
         m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInfo", pArguments);
+        m_world.GetRfabAdapterService().NotifyPartyLeadershipChanged();
     }
 }
 

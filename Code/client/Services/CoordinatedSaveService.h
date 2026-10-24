@@ -7,6 +7,7 @@
 
 struct World;
 struct TransportService;
+struct BGSSaveLoadManager;
 struct UpdateEvent;
 struct ConnectedEvent;
 struct DisconnectedEvent;
@@ -16,15 +17,14 @@ struct NotifyExecuteLoad;
 
 /**
  * Client-side participant in RFAB_Online's two-phase coordinated save/load protocol:
- * - Intercepts BGSSaveLoadManager::Save_Impl (SE 34818) & Load_Impl (SE 34819) while connected:
+ * - Intercepts outer BGSSaveLoadManager save/load entry points while connected (never mid-save after
+ *   opening .ess files on disk):
  *   * Silently blocks uncoordinated solo autosaves (including RFAB.dll's [RFAB] Autosave).
- *   * Converts Party Leader's F5 / Pause->Save into a party-wide two-phase checkpoint request.
+ *   * Converts F5 / Pause->Save into a party-wide two-phase checkpoint request.
  *   * Converts Party Leader's F9 / Pause->Load into a synchronized server+party checkpoint rollback.
- *   * Prevents accidental non-leader F5/F9 desyncs with clear Russian HUD feedback.
- * - Executes server-prepared ring-buffer saves ("RFAB_MP_<Session>_Manual_<0..2>" / "_Auto_<0..2>")
- *   under ScopedSaveLoadAllowance and reports immediate CoordinatedSaveAck.
- * - Creates a local "RFAB_MP_PreJoin_Backup" slot upon connection and safely defers LoadNamed
- *   until any active cell transition ("Loading Menu") completes to prevent engine double-load CTDs.
+ * - Purges dynamic 0xFFxxxxxx remote clones for 2 frames before executing Save_Impl directly inside
+ *   BGSSaveLoadManager::ProcessEvents (SE 34862), verifies the written "TESV_SAVEGAME" header on disk,
+ *   restores remote actors only after Save_Impl completes, and reports CoordinatedSaveAck.
  */
 class CoordinatedSaveService
 {
@@ -48,13 +48,12 @@ public:
 
     TP_NOCOPYMOVE(CoordinatedSaveService);
 
-    // Returns true if the native engine Save_Impl / Load_Impl should proceed immediately,
-    // or false if intercepted/converted into a coordinated multiplayer action.
     [[nodiscard]] bool HandleEngineSaveAttempt(const char* acpFileName) noexcept;
     [[nodiscard]] bool HandleEngineLoadAttempt(const char* acpFileName) noexcept;
     void PrepareEngineForWorldLoad(const char* acpFileName) noexcept;
     void NotifyEngineSaveCompleted(const char* acpFileName) noexcept;
     void NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept;
+    void ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* apMgr) noexcept;
 
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_lastCommittedEpoch; }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_lastCommittedSlot; }
@@ -70,8 +69,7 @@ private:
     [[nodiscard]] bool IsLocalPlayerAuthorizedLeader() const noexcept;
     [[nodiscard]] bool CanSafelySaveNow(std::string& aOutReason) const noexcept;
     [[nodiscard]] bool IsLoadingMenuOpen() const noexcept;
-    bool ExecuteAuthorizedSave(const std::string& acSlotName) noexcept;
-    bool ExecuteAuthorizedLoad(const std::string& acSlotName) noexcept;
+    void QueuePurgedAuthorizedSave(const std::string& acSlotName, uint64_t aEpochId, bool aSendServerAck) noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -85,6 +83,12 @@ private:
     bool m_initialPartyCheckpointSent{false};
     double m_partyCheckpointSettleSec{0.0};
     std::string m_preJoinBackupSlot{"RFAB_MP_PreJoin_Backup"};
+
+    std::string m_pendingSaveSlot{};
+    uint64_t m_pendingSaveEpochId{0};
+    bool m_pendingSaveSendAck{false};
+    uint8_t m_pendingSavePurgeFrames{0};
+
     std::string m_authorizedPendingSaveSlot{};
     std::string m_authorizedPendingLoadSlot{};
     std::string m_deferredLoadSlot{};

@@ -10,6 +10,8 @@
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
+#include <Messages/SpellCastRequest.h>
+#include <Messages/NotifySpellCast.h>
 #include <Structs/ServerSettings.h>
 
 #include <entt/entt.hpp>
@@ -699,6 +701,148 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
         REQUIRE(coord.GetLastCommittedEpoch() == 1);
         REQUIRE(coord.GetLastCommittedSlot() == committed.SlotName);
         REQUIRE(coord.GetCurrentWorldEpoch() > worldGenAfterWipe1);
+    }
+
+    SECTION("v1.1.0 Save integrity: TESV_SAVEGAME validation, corrupt quarantine, stem normalization & post-rollback wipe-loop immunity")
+    {
+        REQUIRE(RfabCompat::Detail::StripSaveSlotExtensionPreserveCase("RFAB_MP_S1_Auto_0.ess") == "RFAB_MP_S1_Auto_0");
+        REQUIRE(RfabCompat::Detail::StripSaveSlotExtensionPreserveCase("Saves/Autosave1_00000000.ess.bak") == "Autosave1_00000000");
+        REQUIRE(RfabCompat::Detail::NormalizeSaveSlotStem("Saves\\RFAB_MP_S1_Auto_0.ESS") == "rfab_mp_s1_auto_0");
+
+        const auto saveTmpDir = std::filesystem::temp_directory_path() / "rfab_tptests_save_validator";
+        std::filesystem::remove_all(saveTmpDir);
+        std::filesystem::create_directories(saveTmpDir);
+        {
+            std::ofstream badEss(saveTmpDir / "BadSave.ess", std::ios::binary);
+            badEss << "TRUNCATED";
+            std::vector<uint8_t> goodBytes(512, 0xAB);
+            std::memcpy(goodBytes.data(), "TESV_SAVEGAME", 13);
+            std::ofstream goodEss(saveTmpDir / "GoodSave.ess", std::ios::binary);
+            goodEss.write(reinterpret_cast<const char*>(goodBytes.data()), static_cast<std::streamsize>(goodBytes.size()));
+        }
+        REQUIRE_FALSE(RfabCompat::Detail::IsValidEssFileOnDisk(saveTmpDir / "BadSave.ess"));
+        REQUIRE(RfabCompat::Detail::IsValidEssFileOnDisk(saveTmpDir / "GoodSave.ess"));
+        REQUIRE(RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(saveTmpDir) == 1);
+        REQUIRE_FALSE(std::filesystem::exists(saveTmpDir / "BadSave.ess"));
+        REQUIRE(std::filesystem::exists(saveTmpDir / "Quarantined_Corrupt_v100" / "BadSave.ess"));
+        REQUIRE(std::filesystem::exists(saveTmpDir / "GoodSave.ess"));
+        std::filesystem::remove_all(saveTmpDir);
+
+        const auto cfg = RfabCompat::LoadBindingsFromDisk(std::filesystem::current_path());
+        REQUIRE_FALSE(RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Amount", cfg));
+        REQUIRE_FALSE(RfabCompat::ShouldAutoSyncGlobalEditorId("RFAB_XP_Multiplier", cfg));
+
+        const std::string autosaveRaw =
+            "[Main]\r\nEnable autosave = 1\r\nSave after combat = 1\r\nSave on location change = 1\r\nSave on sleep/wait = 1\r\n";
+        const std::string autosaveSuppressed = RfabCompat::SuppressRfabAutosaveIniContent(autosaveRaw);
+        REQUIRE(autosaveSuppressed.find("Enable autosave = 0") != std::string::npos);
+        REQUIRE(autosaveSuppressed.find("Save after combat = 0") != std::string::npos);
+        REQUIRE(autosaveSuppressed.find("Save on location change = 0") != std::string::npos);
+        REQUIRE(autosaveSuppressed.find("Save on sleep/wait = 0") != std::string::npos);
+
+        EncounterCoordinator::Config encCfg{};
+        encCfg.PartyWipeDelaySec = 3.0f;
+        EncounterCoordinator enc(encCfg);
+        enc.SetPlayerDowned(1, true, 0.f, 0.f, 0.f, 2, 1000);
+        enc.SetPlayerDowned(2, true, 20.f, 0.f, 0.f, 2, 1050);
+        REQUIRE(enc.Tick(1100).PartyWipeWarningStarted);
+        REQUIRE(enc.Tick(4200).PartyWipeTriggered);
+
+        // After rollback, stale in-flight downed packets during load screen MUST NOT re-trigger an infinite reload loop!
+        enc.ResetAll(4200);
+        enc.SetPlayerDowned(1, true, 0.f, 0.f, 0.f, 2, 5000);
+        enc.SetPlayerDowned(2, true, 20.f, 0.f, 0.f, 2, 5050);
+        REQUIRE_FALSE(enc.Tick(9000).PartyWipeTriggered);
+    }
+
+    SECTION("v1.2.0 RFAB Native Difficulty Modes (Странник / Довакин / Легенда + Проклятый) & Zero Vanilla Overrides")
+    {
+        using RfabCompat::RfabDifficultyMode;
+
+        // 1. Exact RFAB StartMenu.json + RFAB_StartMenu.UpdateDifficulty() multipliers:
+        const auto strannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Strannik, false);
+        REQUIRE(strannik.OutgoingByPlayer == Approx(2.0f));
+        REQUIRE(strannik.IncomingToPlayer == Approx(0.5f));
+
+        const auto dragonborn = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Dragonborn, false);
+        REQUIRE(dragonborn.OutgoingByPlayer == Approx(1.0f));
+        REQUIRE(dragonborn.IncomingToPlayer == Approx(1.0f));
+
+        const auto legend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Legend, false);
+        REQUIRE(legend.OutgoingByPlayer == Approx(1.0f));
+        REQUIRE(legend.IncomingToPlayer == Approx(2.0f));
+
+        // 2. "Проклятый" (Cursed) halves outgoing player damage (0.5x) while keeping mode's incoming multiplier:
+        const auto cursedStrannik = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Strannik, true);
+        REQUIRE(cursedStrannik.OutgoingByPlayer == Approx(0.5f));
+        REQUIRE(cursedStrannik.IncomingToPlayer == Approx(0.5f));
+
+        const auto cursedDragonborn = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Dragonborn, true);
+        REQUIRE(cursedDragonborn.OutgoingByPlayer == Approx(0.5f));
+        REQUIRE(cursedDragonborn.IncomingToPlayer == Approx(1.0f));
+
+        const auto cursedLegend = RfabCompat::ResolveRfabDifficultyMultipliers(RfabDifficultyMode::Legend, true);
+        REQUIRE(cursedLegend.OutgoingByPlayer == Approx(0.5f));
+        REQUIRE(cursedLegend.IncomingToPlayer == Approx(2.0f));
+
+        // 3. Engine difficulty index normalization (Skyrim SE has no GMST for index 2 Adept):
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(0) == 0); // RFAB SkyrimPrefs.ini default (VE)
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(4) == 4); // Master (VH, read by RFAB.dll)
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(2) == 4); // Stale Adept -> VH
+        REQUIRE(RfabCompat::NormalizeRfabEngineDifficultyIndex(6) == 4); // Uninitialized -> VH
+
+        // 4. Cross-client outgoing spell/enchantment/poison scaling (0x14 only; summons stay 1.0x; heals unscaled):
+        constexpr uint32_t kHostileDetrimental = 0x5u;
+        constexpr uint32_t kRecover = 0x2u;
+        REQUIRE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0x14u, kHostileDetrimental, 24, 100.0f));
+        REQUIRE(RfabCompat::ScalePlayerOutgoingSpellMagnitude(100.0f, strannik.OutgoingByPlayer, true) == Approx(200.0f));
+        REQUIRE(RfabCompat::ScalePlayerOutgoingSpellMagnitude(100.0f, cursedLegend.OutgoingByPlayer, true) == Approx(50.0f));
+
+        // Summon (caster != 0x14) must NEVER inherit player's 2.0x Strannik or 0.5x Cursed multiplier:
+        REQUIRE_FALSE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0xFF001234u, kHostileDetrimental, 24, 100.0f));
+        // Friendly heal (flags == 0) and Fortify Health (kRecover) must NOT be scaled as hostile damage:
+        REQUIRE_FALSE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0x14u, 0x0u, 24, 100.0f));
+        REQUIRE_FALSE(RfabCompat::ShouldScalePlayerOutgoingHealthEffect(true, 0x14u, kHostileDetrimental | kRecover, 24, 100.0f));
+
+        // 5. PERK 0x000581F8 RFAB_Perk_Restoration_ImprovedHealing (1.25x in RFAB.esp vs 1.50x vanilla):
+        REQUIRE(RfabCompat::GetRestorationImprovedHealingMultiplier(true) == Approx(1.25f));
+        REQUIRE(RfabCompat::GetRestorationImprovedHealingMultiplier(false) == Approx(1.50f));
+        REQUIRE(RfabCompat::ShouldApplyImprovedHealingPerk(0x0u, 24, 0, 50.0f));       // Pure Restoration heal
+        REQUIRE_FALSE(RfabCompat::ShouldApplyImprovedHealingPerk(0x0u, 24, 8, 50.0f)); // Absorb (Vampiric Drain) excluded
+        REQUIRE_FALSE(RfabCompat::ShouldApplyImprovedHealingPerk(kRecover, 24, 0, 50.0f)); // Fortify Health excluded
+        REQUIRE_FALSE(RfabCompat::ShouldApplyImprovedHealingPerk(kHostileDetrimental, 24, 0, 50.0f));
+
+        // 6. Channeled concentration spell wire packets carry caster's EffectivenessMult (Странник 2.0x / Проклятый 0.5x):
+        SpellCastRequest castReq{};
+        castReq.CasterId = 42;
+        castReq.SpellFormId = GameId(0x06, 0x012FCD);
+        castReq.CastingSource = 1;
+        castReq.IsDualCasting = true;
+        castReq.DesiredTarget = 99;
+        castReq.EffectivenessMult = 0.5f; // Cursed player
+        AssertClientPacketRoundtrip(castReq);
+
+        NotifySpellCast castNotify{};
+        castNotify.CasterId = 42;
+        castNotify.SpellFormId = GameId(0x06, 0x012FCD);
+        castNotify.CastingSource = 1;
+        castNotify.IsDualCasting = true;
+        castNotify.DesiredTarget = 99;
+        castNotify.EffectivenessMult = 2.0f; // Strannik player
+        AssertServerPacketRoundtrip(castNotify);
+
+        // 7. Host-only Co-Op Ally Protection («Единство в битве») wire packets round-trip via factories:
+        SyncRfabProgressionEvent allySyncReq{};
+        allySyncReq.Kind = SyncRfabProgressionEvent::EventKind::AllyProtectionSync;
+        allySyncReq.GlobalValue = 0.0f;
+        AssertClientPacketRoundtrip(allySyncReq);
+
+        NotifyRfabProgressionEvent allyNotify{};
+        allyNotify.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
+        allyNotify.XpDelta = 1; // Authorized Host PlayerId
+        allyNotify.EditorId = "toggle";
+        allyNotify.GlobalValue = 1.0f;
+        AssertServerPacketRoundtrip(allyNotify);
     }
 }
 

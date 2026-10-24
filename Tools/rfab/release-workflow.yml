@@ -22,8 +22,8 @@ jobs:
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: 3.1.0
-      - name: Clean Build, Test & Publish Release v1.0.0
+      - name: Clean Build, Test & Publish Release v1.1.0 (Preserving v1.0.0)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: powershell
-        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "v1.0.0"
+        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "v1.1.0"

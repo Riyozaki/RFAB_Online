@@ -1,5 +1,6 @@
 #include <Services/SaveSnapshotService.h>
 
+#include <common/RfabModpackCompat.h>
 #include <Components.h>
 #include <Events/PlayerLeaveEvent.h>
 #include <Events/UpdateEvent.h>
@@ -383,9 +384,10 @@ bool SaveSnapshotService::TriggerRollbackToPrevious() noexcept
 
 bool SaveSnapshotService::TriggerRollbackToSlot(const std::string& acSlotName, bool aIsPartyWipe) noexcept
 {
+    const std::string normTarget = RfabCompat::Detail::NormalizeSaveSlotStem(acSlotName);
     for (auto it = m_snapshots.rbegin(); it != m_snapshots.rend(); ++it)
     {
-        if (it->SlotName == acSlotName)
+        if (!normTarget.empty() && RfabCompat::Detail::NormalizeSaveSlotStem(it->SlotName) == normTarget)
         {
             const WorldSnapshot target = *it;
             ApplyWorldSnapshot(target, aIsPartyWipe);

@@ -1,5 +1,6 @@
 #include <Services/ObjectService.h>
 
+#include <common/RfabModpackCompat.h>
 #include <World.h>
 #include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
@@ -216,6 +217,56 @@ entt::entity ObjectService::CreateObjectEntity(const uint32_t acFormId, const ui
     return entity;
 }
 
+namespace
+{
+bool IsPersonalBlessingActivator(const TESObjectREFR* apObject) noexcept
+{
+    if (!apObject || !apObject->baseForm || apObject->baseForm->formType != FormType::Activator)
+        return false;
+
+    if (const char* rawEdid = apObject->baseForm->GetFormEditorID(); rawEdid && rawEdid[0] != '\0')
+    {
+        const std::string edid = RfabCompat::Detail::ToLowerAscii(rawEdid);
+        if (RfabCompat::Detail::StartsWithIgnoreCase(edid, "rfab_shrine_") ||
+            RfabCompat::Detail::StartsWithIgnoreCase(edid, "doomstone") ||
+            RfabCompat::Detail::StartsWithIgnoreCase(edid, "dlc2standingstone") ||
+            edid == "rfab_ba_universalaltar" ||
+            edid == "t01dibellasaltaractivator")
+        {
+            return true;
+        }
+    }
+
+    const uint32_t baseLocalId = apObject->baseForm->formID & 0x00FFFFFFu;
+    if ((baseLocalId >= 0x0D232Du && baseLocalId <= 0x0D2339u) || // Vanilla DoomstoneWarrior..DoomstoneSerpent
+        (baseLocalId >= 0x01EDA5u && baseLocalId <= 0x01EDB1u) || // Dragonborn All-Maker Stones
+        (baseLocalId >= 0x0D987Bu && baseLocalId <= 0x0D9887u))   // Vanilla Shrine Divines
+    {
+        return true;
+    }
+
+    switch (baseLocalId)
+    {
+    case 0x071854u: // RFAB_Shrine_Arkay
+    case 0x100780u: // RFAB_Shrine_Talos
+    case 0x10E8B0u: // RFAB_Shrine_Nocturnal
+    case 0x00C86Bu: // RFAB_Shrine_Auriel
+    case 0x039E34u: // RFAB_Shrine_Boethiah
+    case 0x03A481u: // RFAB_Shrine_Mephala
+    case 0x03A484u: // RFAB_Shrine_Azura
+    case 0x0031EDu: // RFAB_Shrine_Malacath
+    case 0x0031EEu: // RFAB_Shrine_Peryite
+    case 0x0031EFu: // RFAB_Shrine_Sanguine
+    case 0x0CE38Fu: // RFAB_Shrine_Dagon
+    case 0x239FC5u: // RFAB_BA_UniversalAltar
+    case 0x06C9E1u: // T01DibellasAltarActivator
+        return true;
+    default:
+        return false;
+    }
+}
+} // namespace
+
 void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
 {
     if (acEvent.ActivateFlag)
@@ -224,6 +275,12 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
     }
 
     if (!m_transport.IsConnected())
+        return;
+
+    // Personal RFAB Aedra/Daedra shrines, Universal Altars, and Standing Stones are strictly per-character:
+    // forwarding Activate to peers triggers RFAB_BA_UniversalShrine.psc / TempleBlessingScript on Game.GetPlayer()
+    // or locks the shrine in its cooldown state on peer clients before they can pray!
+    if (IsPersonalBlessingActivator(acEvent.pObject))
         return;
 
     if (Lock* pLock = acEvent.pObject->GetLock())
@@ -288,6 +345,9 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
         spdlog::error("Failed to retrieve object to activate.");
         return;
     }
+
+    if (IsPersonalBlessingActivator(pObject))
+        return;
 
     if (pObject->baseForm->formType == FormType::Door)
     {

@@ -124,6 +124,9 @@ public:
         uint32_t aNearbyHostiles,
         uint64_t aNowMs)
     {
+        if (aIsDowned && m_ignoreDownedReportsUntilMs.has_value() && aNowMs < *m_ignoreDownedReportsUntilMs)
+            return false;
+
         auto& rec = m_players[aPlayerId];
         rec.PlayerId = aPlayerId;
         rec.PosX = aPosX;
@@ -240,6 +243,9 @@ public:
         // (even if another party member is peacefully crafting 5 km away in another city and never entered the fight!).
         if (!m_players.empty() && !AreAnyEncounterParticipantsAlive() && CountDownedPlayers() > 0)
         {
+            if (m_wipeCooldownUntilMs.has_value() && aNowMs < *m_wipeCooldownUntilMs)
+                return events;
+
             if (!m_wipeStartedAtMs.has_value())
             {
                 m_wipeStartedAtMs = aNowMs;
@@ -252,6 +258,7 @@ public:
                 {
                     events.PartyWipeTriggered = true;
                     m_wipeStartedAtMs.reset();
+                    m_wipeCooldownUntilMs = aNowMs + 15000;
                     return events;
                 }
             }
@@ -318,7 +325,7 @@ public:
         return events;
     }
 
-    void ResetAll() noexcept
+    void ResetAll(uint64_t aNowMs = 0) noexcept
     {
         for (auto& [_, rec] : m_players)
         {
@@ -333,6 +340,16 @@ public:
         m_bossDefeatedInCurrentEncounter = false;
         m_combatClearSinceMs.reset();
         m_wipeStartedAtMs.reset();
+        if (aNowMs > 0)
+        {
+            m_ignoreDownedReportsUntilMs = aNowMs + 6000;
+            m_wipeCooldownUntilMs = aNowMs + 15000;
+        }
+        else
+        {
+            m_ignoreDownedReportsUntilMs.reset();
+            m_wipeCooldownUntilMs.reset();
+        }
     }
 
     [[nodiscard]] bool IsPlayerDowned(uint32_t aPlayerId) const noexcept
@@ -416,6 +433,8 @@ private:
     bool m_bossDefeatedInCurrentEncounter{false};
     std::optional<uint64_t> m_combatClearSinceMs{};
     std::optional<uint64_t> m_wipeStartedAtMs{};
+    std::optional<uint64_t> m_ignoreDownedReportsUntilMs{};
+    std::optional<uint64_t> m_wipeCooldownUntilMs{};
 };
 
 class EncounterService

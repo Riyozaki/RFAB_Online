@@ -9,15 +9,19 @@
     flex-direction: column;
     flex-wrap: nowrap;
     justify-content: flex-start;
-    padding: 1vw;
-    width: 16vw;
+    padding: 0.8vw;
+    width: 18vw;
 
     .group-member {
-      font-size: 1.5em;
+      font-size: 1.15em;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
       color: rgb(192, 192, 192);
 
       &.not-loaded {
-        opacity: 0.6;
+        opacity: 0.65;
       }
 
       .member-name {
@@ -26,7 +30,7 @@
 
       .group-member-level {
         text-align: center;
-        font-size: 1.2em;
+        font-size: 1.1em;
         color: rgb(221, 221, 221);
         text-shadow: 1px 1px 2px #000000;
       }

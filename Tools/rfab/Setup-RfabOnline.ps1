@@ -82,6 +82,22 @@ function Backup-Once([string]$FilePath) {
     }
 }
 
+function Remove-DirectoryClean([string]$DirPath) {
+    if (-not (Test-Path -LiteralPath $DirPath)) { return }
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Get-ChildItem -LiteralPath $DirPath -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+                try { $_.Attributes = 'Normal' } catch {}
+            }
+            Remove-Item -LiteralPath $DirPath -Recurse -Force -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $DirPath)) { return }
+        } catch {
+            if ($attempt -eq 5) { throw }
+            Start-Sleep -Milliseconds 450
+        }
+    }
+}
+
 Write-Host "==============================================================" -ForegroundColor Cyan
 Write-Host "  RFAB Online (Skyrim SE 1.5.97.0.8) - Чистая автоустановка   " -ForegroundColor Cyan
 Write-Host "==============================================================" -ForegroundColor Cyan
@@ -160,7 +176,7 @@ if ($HasValidSe -and $HasValidSt) {
 } elseif ($HasValidSt) {
     Copy-Item -LiteralPath $SrcStExe -Destination $SrcSeExe -Force
 } else {
-    throw "В папке '$SrcStrDir' не найден скомпилированный SkyrimSE.exe! Скачайте полный архив RFAB_Online_v1.0.0_Full_Installer.zip со страницы Releases."
+    throw "В папке '$SrcStrDir' не найден скомпилированный SkyrimSE.exe! Скачайте полный архив RFAB_Online_v1.1.0_Full_Installer.zip со страницы Releases."
 }
 
 $RequiredModFiles = @(
@@ -180,13 +196,25 @@ foreach ($rel in $RequiredModFiles) {
     }
     $len = (Get-Item -LiteralPath $full).Length
     if ($len -lt 200 -and ($rel.EndsWith(".exe") -or $rel.EndsWith(".dll") -or $rel.EndsWith(".esp"))) {
-        throw "Файл $full повреждён ($len байт). Скачайте полный архив RFAB_Online_v1.0.0_Full_Installer.zip со страницы Releases!"
+        throw "Файл $full повреждён ($len байт). Скачайте полный архив RFAB_Online_v1.1.0_Full_Installer.zip со страницы Releases!"
     }
 }
 Write-Ok "Дистрибутив проверен: все бинарники, плагины, CEF и UI целые."
 
-# 3. Автоматическое закрытие старого сервера + проверка закрытия игры и MO2 (чтобы ничего не блокировало чистую замену файлов)
-Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# 3. Автоматическое закрытие старого сервера и осиротевших CEF-процессов + проверка закрытия игры и MO2
+$runningSrv = @(Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue)
+if ($runningSrv.Count -gt 0) {
+    $runningSrv | Stop-Process -Force -ErrorAction SilentlyContinue
+    $runningSrv | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+}
+if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
+    -not (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue)) {
+    $orphanTp = @(Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)
+    if ($orphanTp.Count -gt 0) {
+        $orphanTp | Stop-Process -Force -ErrorAction SilentlyContinue
+        $orphanTp | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
 if (-not $NonInteractive) {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     while ((Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -or
@@ -606,13 +634,13 @@ $FullModSrc = [System.IO.Path]::GetFullPath($ModSourceDir)
 $FullTargetMod = [System.IO.Path]::GetFullPath($TargetModDir)
 
 if ((Test-Path -LiteralPath $LegacyModDir) -and ([System.IO.Path]::GetFullPath($LegacyModDir) -ne $FullModSrc)) {
-    Remove-Item -LiteralPath $LegacyModDir -Recurse -Force
+    Remove-DirectoryClean $LegacyModDir
     Write-Ok "Полностью удалена устаревшая папка мода: $LegacyModDir"
 }
 
 if ($FullModSrc -ne $FullTargetMod) {
     if (Test-Path -LiteralPath $TargetModDir) {
-        Remove-Item -LiteralPath $TargetModDir -Recurse -Force
+        Remove-DirectoryClean $TargetModDir
         Write-Ok "Полностью очищена предыдущая установка мода: $TargetModDir"
     }
     New-Item -ItemType Directory -Path $TargetModDir -Force | Out-Null
@@ -621,9 +649,28 @@ if ($FullModSrc -ne $FullTargetMod) {
         throw "Ошибка копирования файлов мода (robocopy код $LASTEXITCODE)."
     }
 }
+# Очистка MO2\overwrite от возможных остатков старых версий, чтобы новая версия мода никогда не перекрывалась!
+$Mo2OverwriteDir = Join-Path $Mo2BaseDir "overwrite"
+if (Test-Path -LiteralPath $Mo2OverwriteDir) {
+    foreach ($staleRel in @(
+        "scripts\TempleBlessingScript.pex",
+        "scripts\C00TrainerScript.pex",
+        "scripts\ResourceFurnitureScript.pex",
+        "scripts\PetFramework_ParentQuestScript.pex",
+        "scripts\petframework_petquest.pex",
+        "meshes\Interface\logo\logo.nif",
+        "meshes\Interface\logo\logo01ae.nif",
+        "SkyrimTogetherReborn\UI"
+    )) {
+        $stalePath = Join-Path $Mo2OverwriteDir $staleRel
+        if (Test-Path -LiteralPath $stalePath) {
+            Remove-Item -LiteralPath $stalePath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 Write-Ok "Чистая версия мода RFAB_Online установлена с нуля в $TargetModDir"
 
-# 6. Активация +RFAB_Online и *SkyrimTogether.esp (+ *SkyrimTogetherQuestPatches.esp) с оптимальным порядком до Requiem.esp
+# 6. Активация +RFAB_Online и *SkyrimTogether.esp (+ *SkyrimTogetherQuestPatches.esp) строго ДО RFAB.esp
 Write-Step "Шаг 4/7. Включение +RFAB_Online и *SkyrimTogether.esp в профиле MO2"
 $HasQuestPatchesEsp = Test-Path -LiteralPath (Join-Path $TargetModDir "SkyrimTogetherQuestPatches.esp")
 $ProfileDirs = @(Get-ChildItem -LiteralPath $ProfilesDir -Directory -ErrorAction SilentlyContinue | Where-Object {
@@ -634,7 +681,7 @@ if ($ProfileDirs.Count -eq 0) {
     throw "В '$ProfilesDir' не найдено ни одного профиля MO2 с modlist.txt и plugins.txt."
 }
 
-function Insert-StPluginsBeforeRequiem([string[]]$Lines, [bool]$StarPrefix, [bool]$WithQuestPatches) {
+function Insert-StPluginsBeforeRfab([string[]]$Lines, [bool]$StarPrefix, [bool]$WithQuestPatches) {
     $stripNames = @("SkyrimTogether.esp", "*SkyrimTogether.esp", "SkyrimTogetherQuestPatches.esp", "*SkyrimTogetherQuestPatches.esp")
     $clean = New-Object System.Collections.Generic.List[string]
     foreach ($l in $Lines) {
@@ -642,17 +689,29 @@ function Insert-StPluginsBeforeRequiem([string[]]$Lines, [bool]$StarPrefix, [boo
             $clean.Add($l)
         }
     }
-    # Place right before Requiem.esp (so Requiem/RFAB spell localizations & balance win on vanilla cloak spells while SkyrimTogether gets a rock-solid low slot!), or after master .esm/.esl block
+    # Place strictly BEFORE RFAB.esp (or Requiem.esp) and AFTER all .esm/.esl/USSEP master plugins,
+    # guaranteeing RFAB.esp wins 100% of records while SkyrimTogether gets a deterministic early slot!
     $idx = -1
+    $lastMasterIdx = -1
     for ($i = 0; $i -lt $clean.Count; $i++) {
-        $rawName = $clean[$i].Trim().TrimStart('*')
-        if ($rawName -ieq "Requiem.esp") {
+        $trimmed = $clean[$i].Trim()
+        if ($trimmed.StartsWith("#") -or [string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+        $rawName = $trimmed.TrimStart('*')
+        if ($rawName.EndsWith(".esm", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $rawName.EndsWith(".esl", [System.StringComparison]::OrdinalIgnoreCase) -or
+            ($rawName -ieq "Unofficial Skyrim Special Edition Patch.esp")) {
+            $lastMasterIdx = $i
+        }
+        if ($idx -lt 0 -and (($rawName -ieq "RFAB.esp") -or ($rawName -ieq "Requiem.esp"))) {
             $idx = $i
-            break
         }
     }
     if ($idx -lt 0) {
-        $idx = $clean.Count
+        $idx = if ($lastMasterIdx -ge 0) { $lastMasterIdx + 1 } else { $clean.Count }
+    } elseif ($lastMasterIdx -ge $idx) {
+        $idx = $lastMasterIdx + 1
     }
     $stEntry = if ($StarPrefix) { "*SkyrimTogether.esp" } else { "SkyrimTogether.esp" }
     $qpEntry = if ($StarPrefix) { "*SkyrimTogetherQuestPatches.esp" } else { "SkyrimTogetherQuestPatches.esp" }
@@ -696,12 +755,12 @@ foreach ($pd in $ProfileDirs) {
     [System.IO.File]::WriteAllLines($modlistPath, $newMl, (New-Object System.Text.UTF8Encoding($false)))
 
     $plLines = [System.IO.File]::ReadAllLines($pluginsPath, [System.Text.Encoding]::UTF8)
-    $newPl = Insert-StPluginsBeforeRequiem -Lines $plLines -StarPrefix $true -WithQuestPatches $HasQuestPatchesEsp
+    $newPl = Insert-StPluginsBeforeRfab -Lines $plLines -StarPrefix $true -WithQuestPatches $HasQuestPatchesEsp
     [System.IO.File]::WriteAllLines($pluginsPath, $newPl, (New-Object System.Text.UTF8Encoding($false)))
 
     if (Test-Path -LiteralPath $loadOrderPath) {
         $loLines = [System.IO.File]::ReadAllLines($loadOrderPath, [System.Text.Encoding]::UTF8)
-        $newLo = Insert-StPluginsBeforeRequiem -Lines $loLines -StarPrefix $false -WithQuestPatches $HasQuestPatchesEsp
+        $newLo = Insert-StPluginsBeforeRfab -Lines $loLines -StarPrefix $false -WithQuestPatches $HasQuestPatchesEsp
         [System.IO.File]::WriteAllLines($loadOrderPath, $newLo, (New-Object System.Text.UTF8Encoding($false)))
     }
     Write-Ok "Профиль '$($pd.Name)': активирован +RFAB_Online и *SkyrimTogether.esp"
@@ -802,6 +861,7 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
         }
         $updated = Ensure-SectionKeys $updated "Patches" @(
             @("RegularQuicksaves", "true"),
+            @("CleanSkseCosaves", "true"),
             @("MaxStdio", "8192")
         )
     } else {
@@ -809,6 +869,7 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
             @("MemoryManager", "false"),
             @("ScaleformAllocator", "false"),
             @("RegularQuicksaves", "true"),
+            @("CleanSkseCosaves", "true"),
             @("MaxStdio", "8192")
         )
     }
@@ -842,11 +903,16 @@ foreach ($sf in ($SkyrimSoulsFiles | Select-Object -Unique -Property FullName)) 
 }
 
 $AutosaveFiles = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "[RFAB] Autosave.ini" -Recurse -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath $cr -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -ieq "[RFAB] Autosave.ini"
+    }
 }
 foreach ($af in ($AutosaveFiles | Select-Object -Unique -Property FullName)) {
     $raw = [System.IO.File]::ReadAllText($af.FullName, [System.Text.Encoding]::UTF8)
-    $updated = [regex]::Replace($raw, "(?m)^(\s*Enabled\s*=\s*)([^\r\n#]+)(.*)$", "`${1}false`${3}")
+    $updated = [regex]::Replace($raw, "(?mi)^(\s*Enabled\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}false`${3}")
+    foreach ($asKey in @("Enable autosave", "Save after combat", "Save on location change", "Save on sleep/wait")) {
+        $updated = [regex]::Replace($updated, "(?mi)^(\s*$([regex]::Escape($asKey))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}0`${3}")
+    }
     if ($updated -ne $raw) {
         Backup-Once $af.FullName
         [System.IO.File]::WriteAllText($af.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
@@ -1003,7 +1069,7 @@ if (-not [string]::IsNullOrWhiteSpace($ServerSourceDir) -and (Test-Path -Literal
 
     if ([System.IO.Path]::GetFullPath($ServerSourceDir) -ne [System.IO.Path]::GetFullPath($InstalledServerDir)) {
         if (Test-Path -LiteralPath $InstalledServerDir) {
-            Remove-Item -LiteralPath $InstalledServerDir -Recurse -Force
+            Remove-DirectoryClean $InstalledServerDir
             Write-Ok "Полностью очищена старая папка сервера: $InstalledServerDir"
         }
         New-Item -ItemType Directory -Path $InstalledServerDir -Force | Out-Null
@@ -1019,8 +1085,21 @@ if (-not [string]::IsNullOrWhiteSpace($ServerSourceDir) -and (Test-Path -Literal
     New-Item -ItemType Directory -Path $SrvCfgDir -Force | Out-Null
 
     if ($null -ne $SavedServerIni -and $SavedServerIni.Length -gt 20) {
-        [System.IO.File]::WriteAllBytes((Join-Path $SrvCfgDir "STServer.ini"), $SavedServerIni)
-        Write-Ok "Сохранены ваши пользовательские настройки STServer.ini"
+        $TargetIniFile = Join-Path $SrvCfgDir "STServer.ini"
+        [System.IO.File]::WriteAllBytes($TargetIniFile, $SavedServerIni)
+        $rawSavedIni = [System.IO.File]::ReadAllText($TargetIniFile, [System.Text.Encoding]::UTF8)
+        $migratedIni = $rawSavedIni
+        if ($migratedIni -match '4=Master \(Requiem default\)') {
+            $migratedIni = $migratedIni.Replace('4=Master (Requiem default)', '2=Adept (RFAB/Requiem 1.0x standard!), 4=Master')
+            $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*uDifficulty\s*=\s*)4(\s*)$', '${1}2${2}')
+        }
+        if ($migratedIni -notmatch '(?mi)^\s*bEnableItemDrops\s*=') {
+            $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*uDifficulty\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableItemDrops = true`r`n")
+        }
+        if ($migratedIni -ne $rawSavedIni) {
+            [System.IO.File]::WriteAllText($TargetIniFile, $migratedIni, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        Write-Ok "Сохранены и обновлены настройки STServer.ini (сложность Adept 1.0x, видимые предметы на земле)"
     }
 
     [System.IO.File]::WriteAllText((Join-Path $SrvDataDir "loadorder.txt"), $CleanLoadOrderText, (New-Object System.Text.UTF8Encoding($false)))
@@ -1047,7 +1126,13 @@ if ((Test-Path -LiteralPath (Join-Path $ProfDir "plugins.txt")) -and (Test-Path 
         $t = $_.Trim()
         if ($t -and -not $t.StartsWith("#") -and $enabled.Contains($t) -and $seen.Add($t)) { $outList.Add($t) }
     }
-    if ($seen.Add("SkyrimTogether.esp")) { $outList.Add("SkyrimTogether.esp") }
+    if ($seen.Add("SkyrimTogether.esp")) {
+        $rfabIdx = -1
+        for ($i = 0; $i -lt $outList.Count; $i++) {
+            if (($outList[$i] -ieq "RFAB.esp") -or ($outList[$i] -ieq "Requiem.esp")) { $rfabIdx = $i; break }
+        }
+        if ($rfabIdx -ge 0) { $outList.Insert($rfabIdx, "SkyrimTogether.esp") } else { $outList.Add("SkyrimTogether.esp") }
+    }
     [System.IO.File]::WriteAllText((Join-Path $SrvDir "Data\loadorder.txt"), ([string]::Join("`n", $outList) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "[RFAB Server] Автоматически синхронизировано $($outList.Count) активных плагинов из профиля MO2." -ForegroundColor Green
 }

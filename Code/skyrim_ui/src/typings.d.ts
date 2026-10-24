@@ -219,6 +219,11 @@ interface SkyrimTogether {
     callback: SkyrimTogetherTypes.PartyInviteReceivedCallback,
   ): void;
 
+  on(
+    event: 'allyProtectionState',
+    callback: (enabled: boolean, isHost?: boolean) => void,
+  ): void;
+
   /** Remove listener from when the application is first initialized. */
   off(event: 'init', callback?: SkyrimTogetherTypes.InitCallback): void;
 
@@ -349,6 +354,11 @@ interface SkyrimTogether {
     callback?: SkyrimTogetherTypes.PartyInviteReceivedCallback,
   ): void;
 
+  off(
+    event: 'allyProtectionState',
+    callback?: (enabled: boolean, isHost?: boolean) => void,
+  ): void;
+
   /**
    * Connect to server at given address and port.
    *
@@ -367,6 +377,11 @@ interface SkyrimTogether {
    * Reveal other players in the immediate area.
    */
   revealPlayers(): void;
+
+  /**
+   * Enable or disable RFAB Co-Op Ally Protection ("Единство в битве").
+   */
+  setAllyProtection(enabled: boolean, notifyHud?: boolean): void;
 
   /**
    * Send message to server.
