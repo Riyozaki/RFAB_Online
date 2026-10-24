@@ -19,15 +19,21 @@
 
 ## 🔥 О проекте
 
-**RFAB Online** — готовый к игре кооперативный мультиплеер «из коробки», специально адаптированный под модпак **[Skyrim Requiem for a Balance (RFAB)](https://github.com/drake1ch/RFAB)** и движок **Skyrim Special Edition `1.5.97.0.8`** (`SKSE64 2.0.20`, `version-1-5-97-0.bin`).
+**RFAB Online** — готовый к игре кооперативный мультиплеер «из коробки», специально адаптированный под модпак **[Skyrim Requiem for a Balance (RFAB)](https://github.com/drake1ch/RFAB)** (включая **RFAB Respect Edition**) и движок **Skyrim Special Edition `1.5.97.0.8`** (`SKSE64 2.0.20`, `version-1-5-97-0.bin`).
 
-- **0 перезаписей баланса и контента RFAB:** плагины коопа очищены от ванильных оверрайдов и ставятся строго **перед `RFAB.esp`**, сохраняя 100% перков, алтарей, заклинаний, колец, призывов, камер и интерфейса RFAB.
+- **0 перезаписей баланса и контента RFAB:** плагины коопа полностью очищены от ванильных оверрайдов (всего 5 собственных форм в `SkyrimTogether.esp`), сохраняя 100% перков, алтарей, заклинаний, колец, призывов, камер и интерфейса RFAB при любом порядке загрузки (в том числе когда `RFAB.esp` помечен ESM-флагом на слоте `07` в **RFAB Respect Edition**).
 - **Установка и обновление в 2 клика:** готовый нативный лаунчер `SkyrimSE.exe`, клиент под **Mod Organizer 2**, русский оверлей и выделенный сервер ставятся автоматически без `git`, консольных команд и ручного копирования файлов.
-- **Чёткая политика версий:** в разделе [Releases](https://github.com/Riyozaki/RFAB_Online/releases) поддерживаются ровно два релиза — актуальный **[`v1.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)** и резервный эталонный бэкап **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)**.
+- **Чёткая политика версий:** в разделе [Releases](https://github.com/Riyozaki/RFAB_Online/releases) поддерживаются ровно два релиза — актуальный **[`v1.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)** (обновляется на месте) и неприкосновенный эталонный бэкап **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)**.
 
 ---
 
 ## 📦 Быстрый старт и обновление
+
+| Архив в релизе [`v1.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0) | Назначение |
+|---|---|
+| **[`RFAB_Online_v1.1.0_Full_Installer.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v1.1.0/RFAB_Online_v1.1.0_Full_Installer.zip)** | **Полная установка с нуля или чистое обновление** (`INSTALL_RFAB_ONLINE.bat`): клиент MO2 + UI + выделенный сервер + автонастройка конфигов |
+| **[`RFAB_Online_v1.1.0_Quick_Update.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v1.1.0/RFAB_Online_v1.1.0_Quick_Update.zip)** | **Быстрое обновление за 10 секунд** (`UPDATE_RFAB_ONLINE.bat`, ≈15 МБ): обновляет все `.exe`/`.dll`/`.esp`, `UI` и сервер поверх установленного мода |
+| **[`RFAB_Online_v1.1.0_PDB_Symbols.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v1.1.0/RFAB_Online_v1.1.0_PDB_Symbols.zip)** | Отладочные символы `.pdb` и [`SHA256SUMS.txt`](https://github.com/Riyozaki/RFAB_Online/releases/download/v1.1.0/SHA256SUMS.txt) |
 
 ### 1. Чистая установка (одинаково для Хоста и Друзей)
 
@@ -64,7 +70,8 @@
 | 🐉 **Честный спавн и масштаб HP** | Враги и скриптовые засады **не умножаются** (`1×` спавн), а их здоровье масштабируется по числу игроков: `1` игрок = `×1 HP`, `2` игрока = `×3 HP`, `3` игрока = `×4 HP` (настраивается в `STServer.ini`). |
 | 📈 **Общий опыт + личный кошелёк** | Опыт за врагов, боссов, квесты и книги `XPBooksReaded` начисляется всем участникам группы с учётом персонального `RFAB_XP_Multiplier` (кольца, камни), при этом личный кошелёк `RFAB_XP_Amount` защищён от перезаписи чужим `RFAB_Menu`. |
 | 🙏 **Downed-on-Knee вместо смерти** | При падении до `0 HP` персонаж встаёт на колено (без вызова одиночного `REQ_DeathHandler`): союзник может поднять его клавишей **`E`** (~4 с), либо группа побеждает в бою и павшие встают с `30% HP`. Если пала вся группа — сервер синхронно откатывает последний чекпоинт. |
-| 💾 **Безопасные синхронные сейвы** | Двухфазный барьер `PREPARE → ACK → COMMIT` через нативную очередь `BGSSaveLoadManager` с полной очисткой временных `0xFFxxxxxx`-клонов и проверкой заголовка `TESV_SAVEGAME` исключает повреждение сохранений. |
+| 💾 **Безопасные синхронные сейвы** | Двухфазный барьер `PREPARE → ACK → COMMIT` через нативную очередь `BGSSaveLoadManager`, автонастройка `EngineFixes.toml` (`SaveGameMaxSize = false` при `MemoryManager = false`, `_setmaxstdio(8192)`), полная очистка временных `0xFFxxxxxx`-клонов и глубокая бинарная проверка LZ4-структуры `.ess` с авто-карантином повреждённых файлов. |
+| 🚪 **Бесшовные переходы по локациям** | Нативная C++-выгрузка и буферизация удалённых акторов (`DisableImpl` / `WaitingFor3D`) и изолированное клонирование FaceGen-материалов гарантируют стабильные переходы между интерьерами, городами и открытым миром без вылетов у напарников. |
 
 ---
 
@@ -101,9 +108,11 @@
 ## 📚 Документация и инженерные артефакты
 
 - **[`CHANGELOG.md`](./CHANGELOG.md)** — подробный журнал изменений по версиям (`v1.1.0` и `v1.0.0`).
+- **[`docs/CELL_TRANSITION_CTD_AND_RESPECT_EDITION_AUDIT_2026_10_24.md`](./docs/CELL_TRANSITION_CTD_AND_RESPECT_EDITION_AUDIT_2026_10_24.md)** — корневой разбор и устранение вылетов напарника при смене локации (`DisableImpl` ABI, `FormIdComponent`, `FaceGen`) + аудит совместимости с **RFAB Respect Edition** (`07 RFAB.esp`).
+- **[`docs/CORRUPT_SAVE_ROOT_CAUSE_AUDIT_2026_10_24.md`](./docs/CORRUPT_SAVE_ROOT_CAUSE_AUDIT_2026_10_24.md)** — разбор и устранение всех 4 причин ошибки `sSaveGameCorrupt` (`EngineFixes` `ScrapHeap` `128 МБ / 64 МБ`, бинарная валидация SE v12 `.ess` и перехват `0x0058AE30`).
 - **[`docs/RFAB_COOP_ALLY_PROTECTION_AND_RELEASE_FIX_2026_10_24.md`](./docs/RFAB_COOP_ALLY_PROTECTION_AND_RELEASE_FIX_2026_10_24.md)** — разбор механики *«Единство в битве»* в `RFAB.esp`, серверной авторизации Хоста и кодировки релизов.
 - **[`docs/RFAB_DIFFICULTY_AND_VANILLA_OVERRIDE_AUDIT_2026_10_24.md`](./docs/RFAB_DIFFICULTY_AND_VANILLA_OVERRIDE_AUDIT_2026_10_24.md)** — аудит сложностей RFAB (*Странник / Довакин / Легенда / Проклятый*) и полной зачистки ванильных перезаписей.
-- **[`docs/PLAYTEST_ROOT_CAUSE_AUDIT_2026_10_24.md`](./docs/PLAYTEST_ROOT_CAUSE_AUDIT_2026_10_24.md)** — корневой разбор 9 проблем живого кооп-плейтеста (сейвы, FaceGen, алтари, кольца, саммоны, анимации).
+- **[`docs/PLAYTEST_ROOT_CAUSE_AUDIT_2026_10_24.md`](./docs/PLAYTEST_ROOT_CAUSE_AUDIT_2026_10_24.md)** — корневой разбор проблем живого кооп-плейтеста (сейвы, FaceGen, алтари, кольца, саммоны, анимации).
 - **[`docs/RFAB_PORT_NOTES.md`](./docs/RFAB_PORT_NOTES.md)** и **[`docs/SE_1597_PORT_SPEC.md`](./docs/SE_1597_PORT_SPEC.md)** — архитектура сервисов и бинарная спецификация порта под `Skyrim SE 1.5.97.0.8` (`docs/se-1597-id-map.csv`).
 - **[`Data/SKSE/Plugins/RFAB_Online_Bindings.json`](./Data/SKSE/Plugins/RFAB_Online_Bindings.json)** — внешний манифест `EditorID`-привязок для совместимости с обновлениями `drake1ch/RFAB` без перекомпиляции.
 - **[`BUILD.md`](./BUILD.md)** — инструкция по самостоятельной сборке клиента, UI и сервера (`xmake` + Visual Studio 2022 + Node.js).
