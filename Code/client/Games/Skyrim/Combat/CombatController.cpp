@@ -1,6 +1,7 @@
 #include "CombatController.h"
 #include "CombatTargetSelector.h"
 #include <Games/ActorExtension.h>
+#include <Games/References.h>
 #include <Services/RfabAdapterService.h>
 #include <World.h>
 

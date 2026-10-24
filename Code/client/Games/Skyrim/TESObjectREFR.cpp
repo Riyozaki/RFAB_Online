@@ -3,6 +3,7 @@
 #include <Games/References.h>
 #include <Games/Overrides.h>
 #include <Games/Skyrim/Interface/UI.h>
+#include <Games/TES.h>
 
 #include <World.h>
 #include <Services/PapyrusService.h>
