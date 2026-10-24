@@ -88,10 +88,7 @@ void PurgeDynamicActorCleanly(Actor* apActor, bool aImmediateDisable = false) no
     apActor->UnsetChanged(0xFFFFFFFF);
     apActor->SetSkipSaveFlag(true);
     if (apActor->baseForm && (apActor->baseForm->formID & 0xFF000000) == 0xFF000000)
-    {
         apActor->baseForm->UnsetChanged(0xFFFFFFFF);
-        apActor->baseForm->SetSkipSaveFlag(true);
-    }
 
     // During normal runtime cell transitions (NotifyRemoveCharacter / CancelServerAssignment), rely strictly on
     // Skyrim's deferred end-of-frame Delete() queue (identical to v1.0.0) so 3D/Havok/shader resources are never
@@ -325,7 +322,10 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 
     if (entityIt == view.end())
     {
-        spdlog::error("Actor to remove not found in form ids map {:X}", acEvent.FormId);
+        if ((acEvent.FormId & 0xFF000000) == 0xFF000000)
+            spdlog::debug("Dynamic actor {:X} already removed from form ids map", acEvent.FormId);
+        else
+            spdlog::error("Actor to remove not found in form ids map {:X}", acEvent.FormId);
         return;
     }
 
@@ -437,52 +437,38 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
     m_savePurgeActive = true;
     m_pendingPostSaveRemoteRestore = false;
 
-    auto remoteView = m_world.view<FormIdComponent, RemoteComponent>();
-    Vector<entt::entity> remoteEntitiesToDestroy;
-
-    for (auto entity : remoteView)
-    {
-        const uint32_t formId = remoteView.get<FormIdComponent>(entity).Id;
-        const uint32_t serverId = remoteView.get<RemoteComponent>(entity).Id;
-
-        if ((formId & 0xFF000000) != 0xFF000000)
-            continue;
-
-        Actor* pActor = Cast<Actor>(TESForm::GetById(formId));
-        if (pActor)
-        {
-            if (auto cacheIt = m_cachedRemoteSpawns.find(serverId); cacheIt != m_cachedRemoteSpawns.end())
-            {
-                auto& cached = cacheIt.value();
-                cached.Position = pActor->position;
-                cached.Rotation.x = pActor->rotation.x;
-                cached.Rotation.y = pActor->rotation.z;
-                cached.IsDead = pActor->IsDead();
-            }
-            PurgeDynamicActorCleanly(pActor, true);
-        }
-
-        remoteEntitiesToDestroy.push_back(entity);
-    }
-
-    for (entt::entity entity : remoteEntitiesToDestroy)
-    {
-        if (m_world.valid(entity))
-            m_world.destroy(entity);
-    }
-
-    // Sweep any stray remote/heap-NPC 0xFFxxxxxx actor tracked in FormIdComponent (preserving 0x14 and local ESP summons).
-    auto allForms = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    // Non-destructively mark all dynamic 0xFFxxxxxx multiplayer actors/references so Skyrim SE's
+    // TESObjectREFR::CheckSaveGame (unk10 = 0xFFFF) and BGSSaveLoadGame::saveLoadChanges
+    // (UnsetChanged(0xFFFFFFFF)) completely omit them from .ess WITHOUT deleting live remote players
+    // or respawning 0xFFxxxxxx TESNPC/Actor forms off-thread after save.
+    auto allForms = m_world.view<FormIdComponent>();
     for (auto entity : allForms)
     {
         const uint32_t formId = allForms.get<FormIdComponent>(entity).Id;
-        if (formId != 0x14 && (formId & 0xFF000000) == 0xFF000000)
+        if (formId == 0x14 || (formId & 0xFF000000) != 0xFF000000)
+            continue;
+
+        TESForm* pForm = TESForm::GetById(formId);
+        if (!pForm)
+            continue;
+
+        if (Actor* pActor = Cast<Actor>(pForm))
         {
-            if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
+            const bool hasDynamicBase = pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000);
+            if (pActor->GetExtension()->IsRemote() || m_world.all_of<RemoteComponent>(entity) || hasDynamicBase)
             {
-                const bool hasDynamicBase = pActor->baseForm && ((pActor->baseForm->formID & 0xFF000000) == 0xFF000000);
-                if (pActor->GetExtension()->IsRemote() || hasDynamicBase)
-                    PurgeDynamicActorCleanly(pActor, true);
+                pActor->SetSkipSaveFlag(true);
+                pActor->UnsetChanged(0xFFFFFFFF);
+                if (hasDynamicBase)
+                    pActor->baseForm->UnsetChanged(0xFFFFFFFF);
+            }
+        }
+        else if (m_world.all_of<ObjectComponent>(entity))
+        {
+            if (TESObjectREFR* pRef = Cast<TESObjectREFR>(pForm))
+            {
+                pRef->SetSkipSaveFlag(true);
+                pRef->UnsetChanged(0xFFFFFFFF);
             }
         }
     }
@@ -491,30 +477,12 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
 void CharacterService::SchedulePostSaveRemoteRestore() noexcept
 {
     m_savePurgeActive = false;
-    if (!m_cachedRemoteSpawns.empty() && m_transport.IsConnected())
-        m_pendingPostSaveRemoteRestore = true;
+    m_pendingPostSaveRemoteRestore = false;
 }
 
 void CharacterService::RestorePurgedRemoteActorsAfterSave() noexcept
 {
     m_pendingPostSaveRemoteRestore = false;
-    if (m_savePurgeActive || !m_transport.IsConnected() || m_cachedRemoteSpawns.empty())
-        return;
-
-    PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
-        return;
-
-    Vector<CharacterSpawnRequest> snapshots;
-    snapshots.reserve(m_cachedRemoteSpawns.size());
-    for (const auto& [serverId, req] : m_cachedRemoteSpawns)
-    {
-        if (req.FormId == GameId{} && (req.IsPlayer || !req.IsDead))
-            snapshots.push_back(req);
-    }
-
-    for (const auto& req : snapshots)
-        OnCharacterSpawn(req);
 }
 
 void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
@@ -720,7 +688,17 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 {
     if (m_savePurgeActive)
     {
-        m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
+        if (acMessage.FormId == GameId{})
+        {
+            m_cachedRemoteSpawns[acMessage.ServerId] = acMessage;
+            const entt::entity deferredEntity = m_world.create();
+            m_world.emplace_or_replace<RemoteComponent>(deferredEntity, acMessage.ServerId, 0u);
+            auto& interp = InterpolationSystem::Setup(m_world, deferredEntity);
+            interp.Position = acMessage.Position;
+            AnimationSystem::Setup(m_world, deferredEntity);
+            AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(deferredEntity), acMessage.ActionsToReplay);
+            m_world.emplace_or_replace<WaitingFor3D>(deferredEntity, acMessage);
+        }
         return;
     }
 

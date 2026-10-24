@@ -78,6 +78,8 @@ int main()
         assert(RfabCompat::PatchEngineFixesTomlContent(v5Toml));
         assert(v5Toml.find("MemoryManager = false") != std::string::npos);
         assert(v5Toml.find("ScaleformAllocator = false") != std::string::npos);
+        assert(v5Toml.find("FormCaching = false") != std::string::npos);
+        assert(v5Toml.find("TreeLODReferenceCaching = false") != std::string::npos);
         assert(v5Toml.find("RegularQuicksaves = true") != std::string::npos);
         assert(v5Toml.find("MaxStdio = 8192") != std::string::npos);
         assert(v5Toml.find("SaveGameMaxSize = false") != std::string::npos);
@@ -88,6 +90,8 @@ int main()
         assert(RfabCompat::PatchEngineFixesTomlContent(partialOverride));
         assert(partialOverride.find("MemoryManager = false") != std::string::npos);
         assert(partialOverride.find("ScaleformAllocator = false") != std::string::npos);
+        assert(partialOverride.find("FormCaching = false") != std::string::npos);
+        assert(partialOverride.find("TreeLODReferenceCaching = false") != std::string::npos);
         assert(partialOverride.find("RegularQuicksaves = true") != std::string::npos);
         assert(partialOverride.find("MaxStdio = 8192") != std::string::npos);
         assert(!RfabCompat::PatchEngineFixesTomlContent(partialOverride));
@@ -101,7 +105,22 @@ int main()
         assert(RfabCompat::PatchEngineFixesTomlContent(v7Toml));
         assert(v7Toml.find("OverrideVanilla = false") != std::string::npos);
         assert(v7Toml.find("OverrideScaleform = false") != std::string::npos);
+        assert(v7Toml.find("FormCaching = false") != std::string::npos);
+        assert(v7Toml.find("TreeLODReferenceCaching = false") != std::string::npos);
         assert(v7Toml.find("RegularQuicksaves = true") != std::string::npos);
+        assert(!RfabCompat::PatchEngineFixesTomlContent(v7Toml));
+
+        std::string v7BPefixToml =
+            "[Patches]\r\n"
+            "bVerboseLogging = false\r\n"
+            "bFormCaching = true\r\n"
+            "bTreeLodReferenceCaching = true\r\n"
+            "bRegularQuicksaves = false\r\n";
+        assert(RfabCompat::PatchEngineFixesTomlContent(v7BPefixToml));
+        assert(v7BPefixToml.find("bFormCaching = false") != std::string::npos);
+        assert(v7BPefixToml.find("bTreeLodReferenceCaching = false") != std::string::npos);
+        assert(v7BPefixToml.find("bRegularQuicksaves = true") != std::string::npos);
+        assert(!RfabCompat::PatchEngineFixesTomlContent(v7BPefixToml));
     }
 
     // 3. SkyrimSoulsRE.ini [SLOWMOTION] neutralizer + full MO2 VFS tree scan + BetterStealing auto-hide
