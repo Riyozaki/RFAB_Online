@@ -822,6 +822,38 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
     bool changed = false;
     const bool hasCrLf = aToml.find("\r\n") != std::string::npos;
     const std::string newline = hasCrLf ? "\r\n" : "\n";
+
+    // Auto-heal invalid single-letter TOML lines ("S = a", "t = r", "f = a") left by an earlier
+    // PowerShell single-element array-unrolling bug, which otherwise abort EngineFixes.toml parsing
+    // and drop MaxStdio back to 512 (causing EMFILE -> sSaveGameCorrupt in 600-BSA RFAB installs).
+    {
+        std::istringstream cleanIss(aToml);
+        std::ostringstream cleanOss;
+        std::string cleanLine;
+        bool cleanFirst = true;
+        bool strippedAny = false;
+        while (std::getline(cleanIss, cleanLine))
+        {
+            if (!cleanLine.empty() && cleanLine.back() == '\r')
+                cleanLine.pop_back();
+            const std::string t = Detail::Trim(cleanLine);
+            if (t == "S = a" || t == "t = r" || t == "f = a")
+            {
+                strippedAny = true;
+                continue;
+            }
+            if (!cleanFirst)
+                cleanOss << newline;
+            cleanFirst = false;
+            cleanOss << cleanLine;
+        }
+        if (strippedAny)
+        {
+            aToml = cleanOss.str() + ((!aToml.empty() && aToml.back() == '\n') ? newline : "");
+            changed = true;
+        }
+    }
+
     const bool hasBPrefixV7 = aToml.find("bVerboseLogging") != std::string::npos || aToml.find("bMemoryManager") != std::string::npos;
     const bool hasMemMgrSectionV7 = aToml.find("[MemoryManager]") != std::string::npos &&
                                     (aToml.find("OverrideVanilla") != std::string::npos || aToml.find("OverrideScaleform") != std::string::npos);

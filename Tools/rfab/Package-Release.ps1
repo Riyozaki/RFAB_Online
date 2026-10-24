@@ -168,7 +168,7 @@ Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleAp
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online_MO2\STALE_LEGACY_DIR.txt"), "must be wiped")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n[Experimental]`r`nSaveGameMaxSize = true`r`n")
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n[Experimental]`r`nS = a`r`nt = r`r`nSaveGameMaxSize = true`r`n")
 New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\profiles\RFAB\saves") -Force | Out-Null
 $MockTruncEss = New-Object byte[] 512
 [System.Text.Encoding]::ASCII.GetBytes("TESV_SAVEGAME").CopyTo($MockTruncEss, 0)
@@ -203,8 +203,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "START_RFAB_SERVER.bat")))
     throw "START_RFAB_SERVER.bat missing in <RfabDir>!"
 }
 $patchedEf = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"))
-if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false') {
-    throw "EngineFixes.toml was not healed to MemoryManager = false & SaveGameMaxSize = false!"
+if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false' -or $patchedEf -match '(?m)^\s*S\s*=\s*a') {
+    throw "EngineFixes.toml was not healed to MemoryManager = false & SaveGameMaxSize = false (or retained invalid 'S = a'):`n$patchedEf"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\profiles\RFAB\saves\Quarantined_Corrupt_v100\TruncatedScrapHeap.ess"))) {
     throw "TruncatedScrapHeap.ess was not quarantined during Setup-RfabOnline.ps1!"
@@ -320,10 +320,19 @@ if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
 }
 Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
     $rawEf = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-    $updEf = [regex]::Replace($rawEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
+    $updEf = [regex]::Replace($rawEf, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
+    $updEf = [regex]::Replace($updEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
     foreach ($pair in @(@("MemoryManager","false"),@("ScaleformAllocator","false"),@("RegularQuicksaves","true"),@("MaxStdio","8192"),@("SaveGameMaxSize","false"))) {
         $k = $pair[0]; $v = $pair[1]
         $updEf = [regex]::Replace($updEf, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}$v`${3}")
+    }
+    if ($updEf -notmatch '(?mi)^\s*SaveGameMaxSize\s*=') {
+        $nlEf = if ($updEf.Contains("`r`n")) { "`r`n" } else { "`n" }
+        if ($updEf -match '(?mi)^\s*\[Experimental\]') {
+            $updEf = [regex]::Replace($updEf, '(?mi)^(\s*\[Experimental\][^\r\n]*\r?\n)', "`${1}SaveGameMaxSize = false$nlEf")
+        } else {
+            $updEf = $updEf.TrimEnd() + "$nlEf[Experimental]$nlEf" + "SaveGameMaxSize = false$nlEf"
+        }
     }
     if ($updEf -ne $rawEf) { [System.IO.File]::WriteAllText($_.FullName, $updEf, (New-Object System.Text.UTF8Encoding($false))) }
 }

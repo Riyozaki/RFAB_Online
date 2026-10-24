@@ -296,6 +296,23 @@ void TP_MAKE_THISCALL(HookProcessEvents, BGSSaveLoadManager)
 TiltedPhoques::Initializer s_saveLoadHooks(
     []()
     {
+#ifdef _WIN32
+        // Raise CRT open-file handle cap to 8192 BEFORE Skyrim opens 600+ RFAB BSAs/ESPs!
+        // Prevents EMFILE (512-file limit) from causing "Файл сохранения поврежден и не может быть загружен."
+        // even if EngineFixes.toml failed to parse or EngineFixes.dll was not loaded.
+        for (const wchar_t* crtModName : {L"ucrtbase.dll", L"api-ms-win-crt-stdio-l1-1-0.dll"})
+        {
+            if (HMODULE hCrt = GetModuleHandleW(crtModName))
+            {
+                using TSetMaxStdio = int(__cdecl*)(int);
+                if (auto fnSetMaxStdio = reinterpret_cast<TSetMaxStdio>(GetProcAddress(hCrt, "_setmaxstdio")))
+                {
+                    fnSetMaxStdio(8192);
+                    break;
+                }
+            }
+        }
+#endif
         POINTER_SKYRIMSE(TSaveImpl, s_saveImpl, 34818);
         POINTER_SKYRIMSE(TSaveGame2, s_saveGame2, 34823);
         POINTER_SKYRIMSE(TLoadImpl, s_loadImpl, 34819);

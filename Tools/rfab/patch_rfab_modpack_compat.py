@@ -80,7 +80,9 @@ def ensure_section_keys(content: str, section: str, entries: List[Tuple[str, str
 
 def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
     diffs: List[str] = []
-    cur = content
+    cur = re.sub(r"(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?", "", content)
+    if cur != content:
+        diffs.append("stripped invalid single-char TOML entries")
     has_v7_mm = bool(re.search(r"^\s*\[MemoryManager\]", cur, re.MULTILINE | re.IGNORECASE))
 
     if has_v7_mm:

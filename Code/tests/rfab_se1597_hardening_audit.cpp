@@ -72,6 +72,8 @@ int main()
             "ScaleformAllocator = true\r\n"
             "RegularQuicksaves = false\r\n"
             "[Experimental]\r\n"
+            "S = a\r\n"
+            "t = r\r\n"
             "SaveGameMaxSize = true\r\n";
         assert(RfabCompat::PatchEngineFixesTomlContent(v5Toml));
         assert(v5Toml.find("MemoryManager = false") != std::string::npos);
@@ -79,6 +81,7 @@ int main()
         assert(v5Toml.find("RegularQuicksaves = true") != std::string::npos);
         assert(v5Toml.find("MaxStdio = 8192") != std::string::npos);
         assert(v5Toml.find("SaveGameMaxSize = false") != std::string::npos);
+        assert(v5Toml.find("S = a") == std::string::npos);
         assert(!RfabCompat::PatchEngineFixesTomlContent(v5Toml));
 
         std::string partialOverride = "[Patches]\r\nRegularQuicksaves = false\r\n";

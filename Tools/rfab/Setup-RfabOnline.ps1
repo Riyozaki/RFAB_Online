@@ -818,6 +818,10 @@ $CompatRoots = @((Join-Path $Mo2BaseDir "overwrite"), $ModsDir, (Join-Path $Game
 function Ensure-SectionKeys([string]$Content, [string]$Section, [array]$Pairs) {
     $nl = if ($Content.Contains("`r`n")) { "`r`n" } else { "`n" }
     $cur = $Content
+    # Guard against PowerShell single-element `@( @("Key","Val") )` array unrolling into `@("Key","Val")`!
+    if ($Pairs.Count -eq 2 -and ($Pairs[0] -is [string]) -and ($Pairs[1] -is [string])) {
+        $Pairs = @( , @($Pairs[0], $Pairs[1]) )
+    }
     $missing = New-Object System.Collections.Generic.List[object]
     foreach ($pair in $Pairs) {
         $k = [string]$pair[0]; $v = [string]$pair[1]
@@ -848,7 +852,7 @@ $EngineFixesFiles = foreach ($cr in $CompatRoots) {
 }
 foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) {
     $raw = [System.IO.File]::ReadAllText($ef.FullName, [System.Text.Encoding]::UTF8)
-    $updated = $raw
+    $updated = [regex]::Replace($raw, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
     $hasV7Mm = [regex]::IsMatch($updated, '(?mi)^\s*\[MemoryManager\]')
     if ($hasV7Mm) {
         $updated = Ensure-SectionKeys $updated "MemoryManager" @(
@@ -878,7 +882,7 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
     # Setting SaveGameMaxSize = true while MemoryManager = false forces Win32FileType to allocate 128 MB
     # from vanilla's 64 MB ScrapHeap -> nullptr -> truncated saves & "Файл сохранения поврежден"!
     $updated = Ensure-SectionKeys $updated "Experimental" @(
-        @("SaveGameMaxSize", "false")
+        , @("SaveGameMaxSize", "false")
     )
     if ($updated -ne $raw) {
         Backup-Once $ef.FullName
