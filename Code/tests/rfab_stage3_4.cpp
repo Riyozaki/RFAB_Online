@@ -747,7 +747,7 @@ TEST_CASE("Live 2-Player RFAB Playtest Regressions: Dual-Pool XP Parity, Joint-K
         REQUIRE(enc.Tick(4200).PartyWipeTriggered);
 
         // After rollback, stale in-flight downed packets during load screen MUST NOT re-trigger an infinite reload loop!
-        enc.ResetForWorldRollback(4200, 15000);
+        enc.ResetAll(4200);
         enc.SetPlayerDowned(1, true, 0.f, 0.f, 0.f, 2, 5000);
         enc.SetPlayerDowned(2, true, 20.f, 0.f, 0.f, 2, 5050);
         REQUIRE_FALSE(enc.Tick(9000).PartyWipeTriggered);
