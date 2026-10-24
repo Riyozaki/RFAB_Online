@@ -102,14 +102,13 @@ void TESForm::Save_Reversed(const uint32_t aChangeFlags, Buffer::Writer& aWriter
 
 void TESForm::SetSkipSaveFlag(bool aSet) noexcept
 {
-    // Skyrim SE TESForm::RecordFlags::kTemporary (1 << 14 = 0x4000) instructs BGSSaveLoadGame
-    // not to serialize this form into .ess change-records without corrupting inGameFormFlags (unk10).
-    constexpr uint32_t kRecordFlagTemporary = 1u << 14;
-
+    // Skyrim SE TESForm::inGameFormFlags (unk10 at +0x18 = 0xFFFF, matching upstream TiltedEvolution & v1.0.0)
+    // instructs TESObjectREFR::CheckSaveGame (vslot 0x0D) to skip serializing temporary 0xFFxxxxxx
+    // multiplayer references into .ess WITHOUT deleting live remote actors from the world.
     if (aSet)
-        flags |= kRecordFlagTemporary;
+        unk10 = 0xFFFF;
     else
-        flags &= ~kRecordFlagTemporary;
+        unk10 = 0;
 }
 
 uint32_t TESForm::GetChangeFlags() const noexcept
@@ -140,10 +139,8 @@ TESNPC* TESNPC::Create(const String& acBuffer, const uint32_t aChangeFlags) noex
 {
     auto pNpc = IFormFactory::Create<TESNPC>();
 
-    pNpc->SetSkipSaveFlag(true);
     pNpc->Initialize();
     pNpc->Deserialize(acBuffer, aChangeFlags);
-    pNpc->SetSkipSaveFlag(true);
     pNpc->UnsetChanged(0xFFFFFFFF);
 
     // This forces facegen for some reason

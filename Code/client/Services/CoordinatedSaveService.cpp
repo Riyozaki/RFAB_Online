@@ -108,10 +108,14 @@ void CoordinatedSaveService::QueuePurgedAuthorizedSave(const std::string& acSlot
     m_pendingSaveSlot = cleanStem;
     m_pendingSaveEpochId = aEpochId;
     m_pendingSaveSendAck = aSendServerAck;
-    // Allow 2 engine frames for Actor::Delete() to completely remove 0xFFxxxxxx clones before Save_Impl runs.
-    m_pendingSavePurgeFrames = 2;
+    // Dynamic 0xFFxxxxxx multiplayer actors stay alive in-world and are excluded from .ess non-destructively
+    // via SetSkipSaveFlag(true) (unk10 = 0xFFFF) + UnsetChanged(0xFFFFFFFF), so Save_Impl can run on the very next
+    // BGSSaveLoadManager::ProcessEvents tick on the Main Thread without deleting/respawning remote avatars.
+    m_pendingSavePurgeFrames = 0;
 
-    m_world.GetCharacterService().PreSavePurgeDynamicActors();
+    auto& charSvc = m_world.GetCharacterService();
+    charSvc.PreSavePurgeDynamicActors();
+    charSvc.SchedulePostSaveRemoteRestore();
 }
 
 void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* apMgr) noexcept

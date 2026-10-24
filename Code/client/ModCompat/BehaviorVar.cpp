@@ -414,10 +414,9 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     case 1: break;
 
     default:
-        spdlog::critical(__FUNCTION__ ": multiple behavior replacers have the same signature, this must be corrected:");
+        spdlog::debug(__FUNCTION__ ": multiple behavior replacers share signature {:x} (selecting first match {}):", hash, behaviorPool[matchedReplacers[0]].creatureName);
         for (auto& item : matchedReplacers)
-            spdlog::critical("   {}", behaviorPool[item].creatureName);
-        spdlog::warn("Multiple behavior replacers have the same signature, choosing the first one.");
+            spdlog::debug("   {}", behaviorPool[item].creatureName);
         break;
     }
 

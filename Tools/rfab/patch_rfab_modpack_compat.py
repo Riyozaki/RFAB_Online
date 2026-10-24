@@ -94,6 +94,8 @@ def patch_engine_fixes_toml(content: str) -> Tuple[str, List[str]]:
         diffs.extend(d)
 
     patches_entries: List[Tuple[str, str]] = [
+        ("FormCaching", "false"),
+        ("TreeLODReferenceCaching", "false"),
         ("RegularQuicksaves", "true"),
         ("CleanSkseCosaves", "true"),
         ("MaxStdio", "8192"),

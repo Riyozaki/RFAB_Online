@@ -944,12 +944,29 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
 
     if (hasBPrefixV7)
     {
-        patchKey("bMemoryManager", "false");
-        patchKey("bScaleformAllocator", "false");
+        const bool hasBMem = patchKey("bMemoryManager", "false");
+        const bool hasBScale = patchKey("bScaleformAllocator", "false");
         patchKey("bOverrideScrapHeap", "false");
         patchKey("iSaveGameMaxSize", "64");
-        patchKey("bRegularQuicksaves", "true");
-        patchKey("iMaxStdio", "8192");
+        const bool hasBQuick = patchKey("bRegularQuicksaves", "true");
+        const bool hasBStdio = patchKey("iMaxStdio", "8192");
+        const bool hasBFormCache = patchKey("bFormCaching", "false");
+        const bool hasBTreeLodCache = patchKey("bTreeLodReferenceCaching", "false");
+
+        std::vector<std::pair<std::string_view, std::string_view>> missingV7Patches;
+        if (!hasBMem)
+            missingV7Patches.emplace_back("bMemoryManager", "false");
+        if (!hasBScale)
+            missingV7Patches.emplace_back("bScaleformAllocator", "false");
+        if (!hasBQuick)
+            missingV7Patches.emplace_back("bRegularQuicksaves", "true");
+        if (!hasBStdio)
+            missingV7Patches.emplace_back("iMaxStdio", "8192");
+        if (!hasBFormCache)
+            missingV7Patches.emplace_back("bFormCaching", "false");
+        if (!hasBTreeLodCache)
+            missingV7Patches.emplace_back("bTreeLodReferenceCaching", "false");
+        insertUnderSection("Patches", missingV7Patches);
     }
     if (hasMemMgrSectionV7)
     {
@@ -972,14 +989,23 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
             changed = true;
         }
 
-        // CRITICAL: In SSE Engine Fixes v5.x / v6.0.2 (used by Skyrim SE 1.5.97 & drake1ch/RFAB),
-        // `PatchSaveGameMaxSize()` lacks v7's `if (!bOverrideScrapHeap) return;` guard: when
-        // `SaveGameMaxSize = true` and `MemoryManager = false`, it patches `Win32FileType` to request
-        // 128 MB (`0x08000000`) from vanilla's 64 MB (`0x04000000`) `ScrapHeap`, causing
-        // `ScrapHeap::Allocate` to return `nullptr` and corrupting saves/loads (`sSaveGameCorrupt`).
-        // Always keep `SaveGameMaxSize = false` (matching upstream drake1ch/RFAB) whenever `MemoryManager = false`.
+        // CRITICAL:
+        // 1. In SSE Engine Fixes v5.7.0 / v6.0.2 (Skyrim SE 1.5.97 & drake1ch/RFAB), `PatchFormCaching()`
+        //    replaces thread-safe `GlobalFormTableLock` with an unlocked `tbb::concurrent_hash_map` whose
+        //    `.emplace(baseId, Value)` fails to overwrite recycled 0xFFxxxxxx FormIDs and lacks ClearData hooks,
+        //    causing `TreeLODReferenceCaching::hk_UpdateBlockVisibility` (`EngineFixes.dll+0x411EB` -> `__RTDynamicCast`)
+        //    on background render threads to throw `0xE06D7363` (`std::__non_rtti_object: Access violation - no RTTI data!`)
+        //    during co-op dynamic actor spawns/despawns/saves. Disabling `FormCaching = false` & `TreeLODReferenceCaching = false`
+        //    restores Bethesda's native `BSReadWriteLock`-protected form lookup with zero performance loss on ~30-plugin RFAB.
+        // 2. `PatchSaveGameMaxSize()` lacks v7's `if (!bOverrideScrapHeap) return;` guard: when
+        //    `SaveGameMaxSize = true` and `MemoryManager = false`, it patches `Win32FileType` to request
+        //    128 MB (`0x08000000`) from vanilla's 64 MB (`0x04000000`) `ScrapHeap`, causing
+        //    `ScrapHeap::Allocate` to return `nullptr` and corrupting saves/loads (`sSaveGameCorrupt`).
+        //    Always keep `SaveGameMaxSize = false` whenever `MemoryManager = false`.
         const bool hasMemMgr = patchKey("MemoryManager", "false");
         const bool hasScaleform = patchKey("ScaleformAllocator", "false");
+        const bool hasFormCache = patchKey("FormCaching", "false");
+        const bool hasTreeLodCache = patchKey("TreeLODReferenceCaching", "false");
         const bool hasQuicksaves = patchKey("RegularQuicksaves", "true");
         const bool hasMaxStdio = patchKey("MaxStdio", "8192");
         const bool hasSaveMax = patchKey("SaveGameMaxSize", "false");
@@ -991,6 +1017,10 @@ inline bool PatchEngineFixesTomlContent(std::string& aToml)
             missingPatches.emplace_back("MemoryManager", "false");
         if (!hasScaleform && !hasMemMgrSectionV7)
             missingPatches.emplace_back("ScaleformAllocator", "false");
+        if (!hasFormCache)
+            missingPatches.emplace_back("FormCaching", "false");
+        if (!hasTreeLodCache)
+            missingPatches.emplace_back("TreeLODReferenceCaching", "false");
         if (!hasQuicksaves)
             missingPatches.emplace_back("RegularQuicksaves", "true");
         if (!hasMaxStdio)

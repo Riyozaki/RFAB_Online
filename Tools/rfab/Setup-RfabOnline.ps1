@@ -864,6 +864,8 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
             $updated = [regex]::Replace($updated, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n#;]+)(.*)$", "`${1}$v`${3}")
         }
         $updated = Ensure-SectionKeys $updated "Patches" @(
+            @("FormCaching", "false"),
+            @("TreeLODReferenceCaching", "false"),
             @("RegularQuicksaves", "true"),
             @("CleanSkseCosaves", "true"),
             @("MaxStdio", "8192")
@@ -872,6 +874,8 @@ foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) 
         $updated = Ensure-SectionKeys $updated "Patches" @(
             @("MemoryManager", "false"),
             @("ScaleformAllocator", "false"),
+            @("FormCaching", "false"),
+            @("TreeLODReferenceCaching", "false"),
             @("RegularQuicksaves", "true"),
             @("CleanSkseCosaves", "true"),
             @("MaxStdio", "8192")

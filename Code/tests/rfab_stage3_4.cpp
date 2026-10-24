@@ -235,6 +235,8 @@ TEST_CASE("Stage 3: External RFAB bindings, EngineFixes override patcher & Autos
         REQUIRE(RfabCompat::PatchEngineFixesTomlContent(overrideToml));
         REQUIRE(overrideToml.find("MemoryManager = false") != std::string::npos);
         REQUIRE(overrideToml.find("ScaleformAllocator = false") != std::string::npos);
+        REQUIRE(overrideToml.find("FormCaching = false") != std::string::npos);
+        REQUIRE(overrideToml.find("TreeLODReferenceCaching = false") != std::string::npos);
         REQUIRE(overrideToml.find("MaxStdio = 8192") != std::string::npos);
         REQUIRE(overrideToml.find("RegularQuicksaves = true") != std::string::npos);
 

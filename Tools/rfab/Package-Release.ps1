@@ -203,8 +203,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "START_RFAB_SERVER.bat")))
     throw "START_RFAB_SERVER.bat missing in <RfabDir>!"
 }
 $patchedEf = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"))
-if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false' -or $patchedEf -match '(?m)^\s*S\s*=\s*a') {
-    throw "EngineFixes.toml was not healed to MemoryManager = false & SaveGameMaxSize = false (or retained invalid 'S = a'):`n$patchedEf"
+if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'FormCaching\s*=\s*false' -or $patchedEf -notmatch 'TreeLODReferenceCaching\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false' -or $patchedEf -match '(?m)^\s*S\s*=\s*a') {
+    throw "EngineFixes.toml was not healed to MemoryManager/FormCaching/TreeLODReferenceCaching/SaveGameMaxSize = false (or retained invalid 'S = a'):`n$patchedEf"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\profiles\RFAB\saves\Quarantined_Corrupt_v100\TruncatedScrapHeap.ess"))) {
     throw "TruncatedScrapHeap.ess was not quarantined during Setup-RfabOnline.ps1!"
@@ -322,12 +322,22 @@ Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "EngineFixes.toml
     $rawEf = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
     $updEf = [regex]::Replace($rawEf, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
     $updEf = [regex]::Replace($updEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
-    foreach ($pair in @(@("MemoryManager","false"),@("ScaleformAllocator","false"),@("RegularQuicksaves","true"),@("MaxStdio","8192"),@("SaveGameMaxSize","false"))) {
+    foreach ($pair in @(@("MemoryManager","false"),@("ScaleformAllocator","false"),@("FormCaching","false"),@("TreeLODReferenceCaching","false"),@("RegularQuicksaves","true"),@("MaxStdio","8192"),@("SaveGameMaxSize","false"))) {
         $k = $pair[0]; $v = $pair[1]
         $updEf = [regex]::Replace($updEf, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}$v`${3}")
     }
+    $nlEf = if ($updEf.Contains("`r`n")) { "`r`n" } else { "`n" }
+    foreach ($reqPatchPair in @(@("FormCaching","false"),@("TreeLODReferenceCaching","false"))) {
+        $rk = $reqPatchPair[0]; $rv = $reqPatchPair[1]
+        if ($updEf -notmatch "(?mi)^\s*$([regex]::Escape($rk))\s*=") {
+            if ($updEf -match '(?mi)^\s*\[Patches\]') {
+                $updEf = [regex]::Replace($updEf, '(?mi)^(\s*\[Patches\][^\r\n]*\r?\n)', "`${1}$rk = $rv$nlEf")
+            } else {
+                $updEf = $updEf.TrimEnd() + "$nlEf[Patches]$nlEf$rk = $rv$nlEf"
+            }
+        }
+    }
     if ($updEf -notmatch '(?mi)^\s*SaveGameMaxSize\s*=') {
-        $nlEf = if ($updEf.Contains("`r`n")) { "`r`n" } else { "`n" }
         if ($updEf -match '(?mi)^\s*\[Experimental\]') {
             $updEf = [regex]::Replace($updEf, '(?mi)^(\s*\[Experimental\][^\r\n]*\r?\n)', "`${1}SaveGameMaxSize = false$nlEf")
         } else {
