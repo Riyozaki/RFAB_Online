@@ -14,3 +14,6 @@ struct StatsMenu final : IMenu, MenuEventHandler
 {
     // TBD
 };
+
+void ApplyFallbackStatsMenuPatchesPostSkse() noexcept;
+

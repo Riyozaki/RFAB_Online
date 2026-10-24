@@ -230,7 +230,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
 
             bool isOwner = false;
 
-            if (partyService.IsPlayerInParty(acMessage.pPlayer) && partyService.IsPlayerLeader(acMessage.pPlayer) && !characterComponent.IsMount())
+            if (partyService.IsPlayerInParty(acMessage.pPlayer) && !characterComponent.IsMount())
             {
                 PartyService::Party* pParty = partyService.GetPlayerParty(acMessage.pPlayer);
                 auto& existingOwnerComp = view.get<OwnerComponent>(*itor);
@@ -241,27 +241,35 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                 const bool ownerDowned = pOwningPlayer != nullptr &&
                                          m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pOwningPlayer->GetId());
                 const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
+                const bool canChallengeOwnership =
+                    partyService.IsPlayerLeader(acMessage.pPlayer) || ownerDowned || !ownerValidInRange;
 
-                const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
-                    pOwningPlayer ? pOwningPlayer->GetId() : 0,
-                    acMessage.pPlayer->GetId(),
-                    existingOwnerComp.LastChangedAtMs,
-                    SteadyClockMs(),
-                    characterComponent.IsPlayer(),
-                    characterComponent.IsPlayerSummon(),
-                    ownerValidInRange,
-                    ownerDowned,
-                    challengerDowned);
-
-                // Transfer ownership if owning player is in the same party as the leader and passes anti-flap/summon/downed rules.
-                // Preserve the server's authoritative battle-damaged/dead/looted state instead of
-                // overwriting it with the newly arriving party leader's untouched local NPC state!
-                if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
-                    std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end())
+                if (canChallengeOwnership && pParty)
                 {
-                    const ActorData authoritativeActorData = BuildActorData(*itor);
-                    TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), authoritativeActorData);
-                    isOwner = true;
+                    const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
+                        pOwningPlayer ? pOwningPlayer->GetId() : 0,
+                        acMessage.pPlayer->GetId(),
+                        existingOwnerComp.LastChangedAtMs,
+                        SteadyClockMs(),
+                        characterComponent.IsPlayer(),
+                        characterComponent.IsPlayerSummon(),
+                        ownerValidInRange,
+                        ownerDowned,
+                        challengerDowned);
+
+                    // Transfer ownership if owning player is in the same party (or disconnected) and passes anti-flap/summon/downed rules.
+                    // Preserve the server's authoritative battle-damaged/dead/looted state instead of
+                    // overwriting it with the newly arriving peer's untouched local NPC state!
+                    const bool samePartyOrOrphan =
+                        pOwningPlayer == nullptr ||
+                        std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end();
+                    if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
+                        samePartyOrOrphan)
+                    {
+                        const ActorData authoritativeActorData = BuildActorData(*itor);
+                        TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), authoritativeActorData);
+                        isOwner = true;
+                    }
                 }
             }
 

@@ -102,8 +102,12 @@ struct CharacterService
     [[nodiscard]] bool IsSavePurgeActive() const noexcept { return m_savePurgeActive; }
     void RestorePurgedRemoteActorsAfterSave() noexcept;
     void PurgeAllDynamicActorsForWorldLoad() noexcept;
+    void BeginEngineWorldLoad() noexcept;
+    void EndEngineWorldLoad() noexcept;
 
 private:
+    void DetachAllActorsForEngineLoad() noexcept;
+    void PurgeNetworkActorsOnLiveDisconnect() noexcept;
     void MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
 
     void RequestServerAssignment(entt::entity aEntity) const noexcept;
@@ -138,6 +142,7 @@ private:
     Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};
     bool m_pendingPostSaveRemoteRestore{false};
     bool m_savePurgeActive{false};
+    bool m_engineWorldLoadInProgress{false};
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData

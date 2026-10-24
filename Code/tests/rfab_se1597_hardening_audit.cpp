@@ -471,6 +471,90 @@ int main()
             assert(objSvcCpp.find("if (!pObject || !pObject->baseForm)") != std::string::npos);
             assert(objSvcCpp.find("pObject->parentCell->formID") == std::string::npos);
             assert(playerSvcCpp.find("PlayerCharacter::Get()->") == std::string::npos);
+
+            // Regression audit for the 6 active co-op playtest fixes (2026-10-24):
+            // [Issue #1] Save-load +0x6EDFC2 CTD: never call ->DisableImpl() before ->Delete() or during world-load detach!
+            {
+                const auto purgePos = charSvcCpp.find("void PurgeDynamicActorCleanly(");
+                const auto sanitizePos = charSvcCpp.find("void SanitizeActorCombatStateForLocalOwnership(");
+                assert(purgePos != std::string::npos && sanitizePos != std::string::npos && purgePos < sanitizePos);
+                const std::string purgeBody = charSvcCpp.substr(purgePos, sanitizePos - purgePos);
+                assert(purgeBody.find("->DisableImpl()") == std::string::npos);
+
+                const auto detachPos = charSvcCpp.find("void CharacterService::DetachAllActorsForEngineLoad() noexcept");
+                const auto liveDiscPos = charSvcCpp.find("void CharacterService::PurgeNetworkActorsOnLiveDisconnect() noexcept");
+                assert(detachPos != std::string::npos && liveDiscPos != std::string::npos && detachPos < liveDiscPos);
+                const std::string detachBody = charSvcCpp.substr(detachPos, liveDiscPos - detachPos);
+                assert(detachBody.find("->DisableImpl()") == std::string::npos);
+                assert(detachBody.find("->Delete()") == std::string::npos);
+                assert(detachBody.find("PurgeDynamicActorCleanly(") == std::string::npos);
+
+                const std::string coordSaveCpp = readTextFile("Code/client/Services/CoordinatedSaveService.cpp");
+                assert(coordSaveCpp.find("IsLocalPlayerAllyProtectionHost()") != std::string::npos);
+                assert(coordSaveCpp.find("BeginEngineWorldLoad()") != std::string::npos);
+                assert(coordSaveCpp.find("EndEngineWorldLoad()") != std::string::npos);
+            }
+
+            // [Issue #2] StatsMenu CTD & Tab (TweenMenu) lockout: post-SKSE SoulsRE/CustomSkills/RFAB guards + ControlMap self-heal
+            {
+                const std::string skillsCpp = readTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp");
+                const std::string uiCpp = readTextFile("Code/client/Games/Skyrim/Interface/UI.cpp");
+                const std::string playerControlsH = readTextFile("Code/client/Games/Skyrim/AI/Movement/PlayerControls.h");
+                assert(skillsCpp.find("s_skillsMenuInit") == std::string::npos);
+                assert(skillsCpp.find("ApplyFallbackStatsMenuPatchesPostSkse()") != std::string::npos);
+                assert(skillsCpp.find("CustomSkills.dll") != std::string::npos);
+                assert(uiCpp.find("if (IsSkyrimSoulsRuntimeActive())") != std::string::npos);
+                assert(uiCpp.find("ApplyFallbackStatsMenuPatchesPostSkse();") != std::string::npos);
+                assert(playerControlsH.find("GetEnabledControlsMask()") != std::string::npos);
+                assert(rfabSvcCpp.find("SelfHealFreeRoamMenuControls()") != std::string::npos);
+            }
+
+            // [Issues #3 & #4] Equip slot/count, speed AV protection, Havok descriptors, & combat-state sanitization on ownership handoff
+            {
+                const std::string weapH = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectWEAP.h");
+                const std::string avSvcCpp = readTextFile("Code/client/Services/Generic/ActorValueService.cpp");
+                const std::string masterDescCpp = readTextFile("Code/encoding/Structs/Skyrim/AnimationGraphDescriptor_Master_Behavior.cpp");
+                const std::string draugrDescCpp = readTextFile("Code/encoding/Structs/Skyrim/AnimationGraphDescriptor_DraugrBehavior.cpp");
+                const std::string falmerDescCpp = readTextFile("Code/encoding/Structs/Skyrim/AnimationGraphDescriptor_Falmer_Master_Behavior.cpp");
+                assert(weapH.find("UsesSingleHandEquipSlot") != std::string::npos);
+                assert(refrCpp.find("pWeapon->UsesSingleHandEquipSlot(dom)") != std::string::npos);
+                assert(actorCpp.find("ActorValueInfo::kWeaponSpeedMult") != std::string::npos);
+                assert(avSvcCpp.find("ActorValueInfo::kWeaponSpeedMult") != std::string::npos);
+                assert(avSvcCpp.find("ActorValueInfo::kLeftWeaponSpeedMult") != std::string::npos);
+                assert(masterDescCpp.find("kweaponSpeedMult, k2HMweaponSpeedMult, kleftWeaponSpeedMult") != std::string::npos);
+                assert(draugrDescCpp.find("kIsStaggering, kIsBlocking, kIsPowerAttacking") != std::string::npos);
+                assert(falmerDescCpp.find("kiRightHandType") != std::string::npos);
+                assert(charSvcCpp.find("SanitizeActorCombatStateForLocalOwnership(pActor);") != std::string::npos);
+            }
+
+            // [Issues #5 & #6] Network-created vs native cell 0xFFxxxxxx tracking, FormIdComponent on deferred spawns,
+            // non-leader ownership handoff from downed owner, and lock-free AI downed detection/target switching
+            {
+                const std::string actorExtH = readTextFile("Code/client/Games/ActorExtension.h");
+                const std::string srvCharCpp = readTextFile("Code/server/Services/CharacterService.cpp");
+                const std::string animSysCpp = readTextFile("Code/client/Systems/AnimationSystem.cpp");
+                const std::string combatCtrlCpp = readTextFile("Code/client/Games/Skyrim/Combat/CombatController.cpp");
+                assert(actorExtH.find("std::atomic<uint32_t> onlineFlags{0};") != std::string::npos);
+                assert(actorExtH.find("IsCreatedByNetwork()") != std::string::npos);
+                assert(actorExtH.find("IsDownedPlayer()") != std::string::npos);
+                assert(charSvcCpp.find("pActor->GetExtension()->SetCreatedByNetwork(true);") != std::string::npos);
+                assert(charSvcCpp.find("m_world.emplace_or_replace<FormIdComponent>(aEntity, pActor->formID);") != std::string::npos);
+                assert(srvCharCpp.find("partyService.IsPlayerLeader(acMessage.pPlayer) || ownerDowned || !ownerValidInRange") != std::string::npos);
+                assert(animSysCpp.find("kLifeStateBleedout") != std::string::npos);
+                assert(actorCpp.find("pTargetActor->GetExtension()->IsDownedPlayer()") != std::string::npos);
+                assert(combatCtrlCpp.find("#if 0") == std::string::npos);
+                assert(combatCtrlCpp.find("FindBestStandingPlayerTargetFor(pAttacker)") != std::string::npos);
+                assert(downedCpp.find("->StartCombatEx(") == std::string::npos);
+                assert(downedCpp.find("pNpc->SetCombatTargetEx(pNearestLivingAlly);") != std::string::npos);
+
+                const auto findPos = rfabSvcCpp.find("Actor* RfabAdapterService::FindBestStandingPlayerTargetFor(");
+                const auto setAllyPos = rfabSvcCpp.find("void RfabAdapterService::SetLocalAllyProtectionEnabled(");
+                assert(findPos != std::string::npos && setAllyPos != std::string::npos && findPos < setAllyPos);
+                const std::string findBody = rfabSvcCpp.substr(findPos, setAllyPos - findPos);
+                assert(findBody.find("m_world.view<") == std::string::npos);
+                assert(findBody.find("GetPartyService()") == std::string::npos);
+                assert(findBody.find("std::lock_guard<std::mutex> lock(m_coopSnapshotMutex)") != std::string::npos);
+            }
         }
 
         // Multi-threaded pointer-stability stress test mirroring AnimationGraphDescriptorManager (shared_mutex + unordered_map):
@@ -537,7 +621,11 @@ int main()
 }
 #else
 #include <catch2/catch.hpp>
+#include <common/CoopOwnership.h>
 #include <Structs/AnimationGraphDescriptorManager.h>
+#include <Structs/Skyrim/AnimationGraphDescriptor_DraugrBehavior.h>
+#include <Structs/Skyrim/AnimationGraphDescriptor_Falmer_Master_Behavior.h>
+#include <Structs/Skyrim/AnimationGraphDescriptor_Master_Behavior.h>
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -796,6 +884,60 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE_FALSE(pointerMismatch.load(std::memory_order_acquire));
         REQUIRE(mgr.GetDescriptor(kAnchorKey) == pPinnedAnchor);
         REQUIRE(mgr.GetDescriptors().count(kAnchorKey) == 1);
+    }
+
+    // Playtest Combat & Downed Ownership Regression Checks:
+    // 1. Verify Master_Behavior, DraugrBehavior, and Falmer_Master_Behavior register synced weapon-speed and combat state variables
+    //    within the 64-variable per-type wire limit.
+    {
+        auto& mgr = AnimationGraphDescriptorManager::Get();
+        AnimationGraphDescriptor_Master_Behavior initMaster(mgr);
+        AnimationGraphDescriptor_DraugrBehavior initDraugr(mgr);
+        AnimationGraphDescriptor_Falmer_Master_Behavior initFalmer(mgr);
+
+        const auto* pMaster = mgr.GetDescriptor(AnimationGraphDescriptor_Master_Behavior::m_key);
+        REQUIRE(pMaster != nullptr);
+        REQUIRE(pMaster->FloatLookupTable.size() == 16);
+        REQUIRE(pMaster->FloatLookupTable.size() <= 64);
+
+        const auto* pDraugr = mgr.GetDescriptor(1556693752012287718ull);
+        REQUIRE(pDraugr != nullptr);
+        REQUIRE(pDraugr->BooleanLookUpTable.size() == 15);
+        REQUIRE(pDraugr->BooleanLookUpTable.size() <= 64);
+
+        const auto* pFalmer = mgr.GetDescriptor(3009402738794250552ull);
+        REQUIRE(pFalmer != nullptr);
+        REQUIRE(pFalmer->BooleanLookUpTable.size() == 12);
+        REQUIRE(pFalmer->IntegerLookupTable.size() == 8);
+        REQUIRE(pFalmer->IntegerLookupTable.size() <= 64);
+    }
+
+    // 2. Verify CoopOwnership::EvaluateVoluntaryClaim accepts a standing non-leader party member claiming an enemy
+    //    from a downed leader immediately (even within the 1500ms anti-flap window) while rejecting claims FROM a downed player.
+    {
+        const auto acceptFromDownedLeader = CoopOwnership::EvaluateVoluntaryClaim(
+            /*aCurrentOwnerId=*/1u,
+            /*aChallengerId=*/2u,
+            /*aLastChangedAtMs=*/1000ull,
+            /*aNowMs=*/1200ull,
+            /*aIsPlayerActor=*/false,
+            /*aIsPlayerSummon=*/false,
+            /*aOwnerValidInRange=*/true,
+            /*aOwnerDowned=*/true,
+            /*aChallengerDowned=*/false);
+        REQUIRE(acceptFromDownedLeader == CoopOwnership::ClaimDecision::kAccept);
+
+        const auto rejectDownedChallenger = CoopOwnership::EvaluateVoluntaryClaim(
+            /*aCurrentOwnerId=*/2u,
+            /*aChallengerId=*/1u,
+            /*aLastChangedAtMs=*/1000ull,
+            /*aNowMs=*/5000ull,
+            /*aIsPlayerActor=*/false,
+            /*aIsPlayerSummon=*/false,
+            /*aOwnerValidInRange=*/true,
+            /*aOwnerDowned=*/false,
+            /*aChallengerDowned=*/true);
+        REQUIRE(rejectDownedChallenger == CoopOwnership::ClaimDecision::kRejectChallengerDowned);
     }
 }
 #endif

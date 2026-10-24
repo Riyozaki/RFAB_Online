@@ -89,6 +89,8 @@ AnimationGraphDescriptor_DraugrBehavior::AnimationGraphDescriptor_DraugrBehavior
     AnimationGraphDescriptorManager::Builder s_builder(
         aManager, key,
         AnimationGraphDescriptor(
-            {kbAnimationDriven, kIsAttackReady, kbAllowRotation, kIsFiringBow, kIsEquipping, kIsUnequipping, kbWeapReady, kbEquipOk, kbMLh_Ready, kbCastReady, kbCanHeadTrack, kbHeadTracking}, {kTurnDelta, kDirection, kSpeed, kSampledSpeed},
+            {kbAnimationDriven, kIsAttackReady, kbAllowRotation, kIsFiringBow, kIsEquipping, kIsUnequipping, kbWeapReady, kbEquipOk, kbMLh_Ready, kbCastReady, kbCanHeadTrack, kbHeadTracking,
+             kIsStaggering, kIsBlocking, kIsPowerAttacking},
+            {kTurnDelta, kDirection, kSpeed, kSampledSpeed},
             {kiSyncTurnState, kiRightHandType, kiLeftHandType, kiSyncIdleLocomotion, kcurrentDefaultState, kiState}));
 }

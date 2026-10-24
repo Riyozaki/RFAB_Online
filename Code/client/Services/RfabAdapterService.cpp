@@ -12,7 +12,12 @@
 #include <Events/UpdateEvent.h>
 #include <Forms/BGSListForm.h>
 #include <Forms/TESGlobal.h>
+#include <Forms/TESObjectCELL.h>
+#include <Forms/TESWorldSpace.h>
 #include <Games/Overrides.h>
+#include <Games/Skyrim/AI/Movement/PlayerControls.h>
+#include <Games/Skyrim/Interface/MenuControls.h>
+#include <Games/Skyrim/Interface/UI.h>
 #include <Games/TES.h>
 #include <Messages/NotifyRfabProgressionEvent.h>
 #include <Messages/SyncRfabProgressionEvent.h>
@@ -21,6 +26,7 @@
 #include <Games/ActorExtension.h>
 #include <PlayerCharacter.h>
 #include <Services/CharacterService.h>
+#include <Services/DownedStateService.h>
 #include <Services/OverlayService.h>
 #include <Services/PapyrusService.h>
 #include <Services/PartyService.h>
@@ -388,17 +394,109 @@ void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept
                 next.PartyMemberIds.insert(pid);
         }
 
+        const auto& downedSvc = m_world.GetDownedStateService();
+        auto tryAppendStandingPlayer = [&](Actor* apPlayerActor, bool aIsDowned)
+        {
+            if (!apPlayerActor || aIsDowned || apPlayerActor->VirtIsDead(false))
+                return;
+            if (auto* pExt = apPlayerActor->GetExtension(); pExt && pExt->IsDownedPlayer())
+                return;
+
+            StandingPlayerSnapshotEntry entry{};
+            entry.FormId = apPlayerActor->formID;
+            entry.HandleBits = apPlayerActor->GetHandle().handle.iBits;
+            entry.WorldSpaceId = apPlayerActor->GetWorldSpace() ? apPlayerActor->GetWorldSpace()->formID : 0u;
+            entry.CellId = apPlayerActor->parentCell ? apPlayerActor->parentCell->formID : 0u;
+            entry.Position = apPlayerActor->position;
+            next.StandingPlayers.push_back(entry);
+        };
+
         auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+        bool includedLocalPlayer = false;
         for (auto entity : playerView)
         {
             const uint32_t fid = playerView.get<FormIdComponent>(entity).Id;
+            const uint32_t pid = playerView.get<PlayerComponent>(entity).Id;
             if (fid != 0)
-                next.FormIdToPlayerId[fid] = playerView.get<PlayerComponent>(entity).Id;
+            {
+                next.FormIdToPlayerId[fid] = pid;
+                Actor* pPlayerActor = Cast<Actor>(TESForm::GetById(fid));
+                const bool isLocal = (fid == 0x14);
+                if (isLocal)
+                    includedLocalPlayer = true;
+
+                const bool isDowned = isLocal
+                    ? downedSvc.IsLocalPlayerDowned()
+                    : downedSvc.IsRemotePlayerDowned(pid);
+                tryAppendStandingPlayer(pPlayerActor, isDowned);
+            }
+        }
+
+        if (!includedLocalPlayer)
+        {
+            if (PlayerCharacter* pLocal = PlayerCharacter::Get())
+                tryAppendStandingPlayer(pLocal, downedSvc.IsLocalPlayerDowned());
         }
     }
 
     std::lock_guard<std::mutex> lock(m_coopSnapshotMutex);
     m_coopCombatSnapshot = std::move(next);
+}
+
+Actor* RfabAdapterService::FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept
+{
+    if (!apAttacker)
+        return nullptr;
+
+    const uint32_t attackerWorldId = apAttacker->GetWorldSpace() ? apAttacker->GetWorldSpace()->formID : 0u;
+    const uint32_t attackerCellId = apAttacker->parentCell ? apAttacker->parentCell->formID : 0u;
+    const float maxUnits = RfabCompat::MetersToSkyrimUnits(120.0f);
+    const float maxUnitsSq = maxUnits * maxUnits;
+
+    uint32_t bestHandleBits = 0;
+    uint32_t bestFormId = 0;
+    float bestDistSq = maxUnitsSq;
+
+    {
+        std::lock_guard<std::mutex> lock(m_coopSnapshotMutex);
+        if (!m_coopCombatSnapshot.Connected || m_coopCombatSnapshot.StandingPlayers.empty())
+            return nullptr;
+
+        for (const auto& candidate : m_coopCombatSnapshot.StandingPlayers)
+        {
+            if (attackerWorldId != 0)
+            {
+                if (candidate.WorldSpaceId != attackerWorldId)
+                    continue;
+            }
+            else if (attackerCellId != 0 && candidate.CellId != attackerCellId)
+            {
+                continue;
+            }
+
+            const float dx = candidate.Position.x - apAttacker->position.x;
+            const float dy = candidate.Position.y - apAttacker->position.y;
+            const float dz = candidate.Position.z - apAttacker->position.z;
+            const float distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq < bestDistSq)
+            {
+                bestDistSq = distSq;
+                bestHandleBits = candidate.HandleBits;
+                bestFormId = candidate.FormId;
+            }
+        }
+    }
+
+    Actor* pReplacement = bestHandleBits ? Cast<Actor>(TESObjectREFR::GetByHandle(bestHandleBits)) : nullptr;
+    if (!pReplacement && bestFormId == 0x14)
+        pReplacement = PlayerCharacter::Get();
+
+    if (!pReplacement || pReplacement == apAttacker || pReplacement->VirtIsDead(false))
+        return nullptr;
+    if (auto* pExt = pReplacement->GetExtension(); pExt && pExt->IsDownedPlayer())
+        return nullptr;
+
+    return pReplacement;
 }
 
 void RfabAdapterService::SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification) noexcept
@@ -609,8 +707,66 @@ void RfabAdapterService::NotifySaveLoadReset() noexcept
     m_pollAccumulatorSec = -2.0;
 }
 
+void RfabAdapterService::SelfHealFreeRoamMenuControls() noexcept
+{
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || !pPlayer->parentCell || pPlayer->VirtIsDead(false))
+        return;
+
+    if (m_world.GetDownedStateService().IsLocalPlayerDowned())
+        return;
+    if (auto* pExt = pPlayer->GetExtension(); pExt && pExt->IsDownedPlayer())
+        return;
+
+    if (auto* pMenuControls = MenuControls::GetInstance())
+    {
+        if (pMenuControls->InBeastForm() || pMenuControls->InRemapMode())
+            return;
+    }
+
+    if (auto* pUi = UI::Get())
+    {
+        static constexpr const char* kModalOrSceneMenus[] = {
+            "Loading Menu",  "Main Menu",        "Dialogue Menu",  "BarterMenu",
+            "Crafting Menu", "Lockpicking Menu", "Book Menu",      "Sleep/Wait Menu",
+            "RaceSex Menu",  "MapMenu",          "StatsMenu",      "Journal Menu",
+            "MessageBoxMenu","Console",          "TweenMenu",      "CustomMenu"};
+        for (const char* menuName : kModalOrSceneMenus)
+        {
+            if (pUi->GetMenuOpen(BSFixedString(menuName)))
+                return;
+        }
+    }
+
+    auto* pInputEnable = BSInputEnableManager::Get();
+    if (!pInputEnable)
+        return;
+
+    const uint32_t mask = pInputEnable->GetEnabledControlsMask();
+    constexpr uint32_t kFreeRoamActiveMask =
+        BSInputEnableManager::kMovement | BSInputEnableManager::kLooking | BSInputEnableManager::kFighting;
+    constexpr uint32_t kMenuAndMainFourMask =
+        BSInputEnableManager::kMenu | BSInputEnableManager::kMainFour;
+
+    // Only restore kMenu / kMainFour when full free-roam movement + look + fighting are already enabled
+    // (never override genuine cutscenes, bound-hands intros, or furniture animations!).
+    if ((mask & kFreeRoamActiveMask) == kFreeRoamActiveMask &&
+        (mask & kMenuAndMainFourMask) != kMenuAndMainFourMask)
+    {
+        pInputEnable->EnableOtherEvent(static_cast<int32_t>(kMenuAndMainFourMask), true, true);
+        spdlog::info("[RFAB Input] Self-healed stuck ControlMap kMenu/kMainFour flags (mask was 0x{:X})", mask);
+    }
+}
+
 void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    m_controlMapHealAccumulatorSec += acEvent.Delta;
+    if (m_controlMapHealAccumulatorSec >= 1.0)
+    {
+        m_controlMapHealAccumulatorSec = 0.0;
+        SelfHealFreeRoamMenuControls();
+    }
+
     if (!m_transport.IsConnected())
         return;
 

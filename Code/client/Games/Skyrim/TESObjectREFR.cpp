@@ -23,6 +23,7 @@
 #include <ExtraData/ExtraWornLeft.h>
 #include <Forms/EnchantmentItem.h>
 #include <Forms/AlchemyItem.h>
+#include <Forms/TESObjectWEAP.h>
 #include <EquipManager.h>
 #include <DefaultObjectManager.h>
 #include <BSAnimationGraphManager.h>
@@ -883,11 +884,51 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
         spdlog::debug("Adding item {:X}, count {}", pObject->formID, arEntry.Count);
         AddObjectToContainer(pObject, pExtraDataList, arEntry.Count, nullptr);
 
-        // TODO: check Actor cast first?
-        if (isWorn)
-            EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().rightEquipSlot, false, true, false, false);
-        else if (isWornLeft)
-            EquipManager::Get()->Equip(Cast<Actor>(this), pObject, nullptr, arEntry.Count, DefaultObjectManager::Get().leftEquipSlot, false, true, false, false);
+        Actor* pActor = Cast<Actor>(this);
+        if ((isWorn || isWornLeft) && pActor)
+        {
+            // Never equip RFAB's self-destructing Adventurer's Ring (0x112812 in RFAB.esp) on remote player clones.
+            bool skipRemoteRing = false;
+            if (pActor->GetExtension() && pActor->GetExtension()->IsRemotePlayer())
+            {
+                if (auto* pModManager = ModManager::Get())
+                {
+                    if (auto* pRfabMod = pModManager->GetByName("RFAB.esp");
+                        pRfabMod && objectId == pRfabMod->GetFormId(0x00112812u))
+                    {
+                        skipRemoteRing = true;
+                    }
+                }
+                else if ((objectId & 0x00FFFFFFu) == 0x00112812u)
+                {
+                    skipRemoteRing = true;
+                }
+            }
+
+            if (!skipRemoteRing)
+            {
+                // CRITICAL FOR SKYRIM SE 1.5.97 + RFAB COMBAT:
+                // Only pass rightEquipSlot / leftEquipSlot (and count = 1) for genuine single-hand weapons/staves!
+                // Passing rightEquipSlot on 2H greatswords/battleaxes/warhammers, bows, crossbows, shields, armor,
+                // or arrows forces 2H weapons into 1H hand slots (swinging 2H weapons one-handed or failing to attack),
+                // breaks bow+arrow / crossbow+bolt equipping, and corrupts stacked 1H dagger/axe equipping.
+                const auto& dom = DefaultObjectManager::Get();
+                TESForm* pEquipSlot = nullptr;
+                int32_t equipCount = 1;
+
+                if (const auto* pWeapon = Cast<TESObjectWEAP>(pObject))
+                {
+                    if (pWeapon->UsesSingleHandEquipSlot(dom))
+                        pEquipSlot = isWornLeft ? dom.leftEquipSlot : dom.rightEquipSlot;
+                }
+                else if (pObject->formType == FormType::Ammo)
+                {
+                    equipCount = arEntry.Count;
+                }
+
+                EquipManager::Get()->Equip(pActor, pObject, nullptr, equipCount, pEquipSlot, false, true, false, false);
+            }
+        }
     }
     else if (arEntry.Count < 0)
     {

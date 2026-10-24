@@ -22,7 +22,11 @@
 #include <Misc/ActorValueOwner.h>
 #include <AI/Movement/PlayerControls.h>
 #include <Camera/PlayerCamera.h>
+#include <Combat/CombatController.h>
+#include <Forms/TESObjectCELL.h>
+#include <Forms/TESWorldSpace.h>
 #include <PlayerCharacter.h>
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
 #include <algorithm>
@@ -143,7 +147,10 @@ void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealth
 
     // Do NOT invoke ForceThirdPerson, Papyrus StopCombat/StartCombat, entt views, or TransportService::Send inside
     // HookDamageActor / HookRestoreActorValue (which run mid-combat and on worker threads). Arm atomic downed state
-    // immediately so all subsequent hits/regen in this frame are frozen, and finish transition at the top of OnUpdate.
+    // immediately so all subsequent hits/regen AND AI worker detection/target hooks see IsDownedPlayer() right away!
+    if (auto* pExt = apPlayer->GetExtension())
+        pExt->SetDownedPlayer(true);
+
     bool expected = false;
     if (m_isLocalDowned.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         m_pendingEnterDownedTransition.store(true, std::memory_order_release);
@@ -154,6 +161,24 @@ void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, boo
     if (!apRemoteActor)
         return;
 
+    if (auto* pExt = apRemoteActor->GetExtension())
+    {
+        pExt->SetDownedPlayer(aIsDowned);
+        if (!pExt->IsLocalPlayer())
+        {
+            constexpr uint32_t kLifeStateMask = 0xFu << 21;
+            constexpr uint32_t kLifeStateBleedout = 8u << 21;
+            if (aIsDowned)
+            {
+                apRemoteActor->actorState.flags1 = (apRemoteActor->actorState.flags1 & ~kLifeStateMask) | kLifeStateBleedout;
+            }
+            else if (((apRemoteActor->actorState.flags1 & kLifeStateMask) >> 21) == 8u)
+            {
+                apRemoteActor->actorState.flags1 &= ~kLifeStateMask;
+            }
+        }
+    }
+
     apRemoteActor->InterruptCast(false);
     if (aIsDowned)
         apRemoteActor->SetWeaponDrawnEx(false);
@@ -163,6 +188,10 @@ void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, boo
     apRemoteActor->SendAnimationEvent(&animEventLower);
     BSFixedString animEventPascal(aIsDowned ? "BleedoutStart" : "BleedoutStop");
     apRemoteActor->SendAnimationEvent(&animEventPascal);
+
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+    if (aIsDowned)
+        RedirectHostileAggroAwayFromActor(apRemoteActor);
 }
 
 void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
@@ -263,6 +292,11 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
     m_channelTargetPlayerId = 0;
     m_bleedoutReassertTimerSec = 0.0;
 
+    if (auto* pExt = pPlayer->GetExtension())
+        pExt->SetDownedPlayer(true);
+
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+
     // 1st-person skeleton in Skyrim SE has no bleedout pose; switch cleanly to 3rd-person so the player visibly
     // sees their character drop to one knee, and restore 1st-person automatically upon revive.
     m_wasFirstPersonBeforeDowned = false;
@@ -283,7 +317,7 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
     BSFixedString bleedoutStart("BleedoutStart");
     pPlayer->SendAnimationEvent(&bleedoutStart);
 
-    RedirectHostileAggroAwayFromPlayer(pPlayer);
+    RedirectHostileAggroAwayFromActor(pPlayer);
 
     uint32_t nearbyHostiles = 0;
     const float maxUnits = RfabCompat::MetersToSkyrimUnits(kHostileScanRadiusMeters);
@@ -329,8 +363,11 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
     m_pendingEnterDownedTransition.store(false, std::memory_order_release);
     m_isLocalDowned.store(false, std::memory_order_release);
+    if (auto* pExt = pPlayer->GetExtension())
+        pExt->SetDownedPlayer(false);
     m_graceRemainingSec = std::clamp(static_cast<double>(aGraceSec), 0.0, 15.0);
     m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
@@ -400,10 +437,28 @@ void DownedStateService::ResetAllStates() noexcept
     m_liveBossesSeenInCombat.clear();
     m_remoteDownedByPlayerId.clear();
 
+    auto remotePlayerView = m_world.view<FormIdComponent, PlayerComponent>();
+    for (auto entity : remotePlayerView)
+    {
+        const uint32_t fid = remotePlayerView.get<FormIdComponent>(entity).Id;
+        if (fid == 0 || fid == 0x14)
+            continue;
+        if (Actor* pRemote = Cast<Actor>(TESForm::GetById(fid)))
+        {
+            if (auto* pExt = pRemote->GetExtension())
+                pExt->SetDownedPlayer(false);
+            constexpr uint32_t kLifeStateMask = 0xFu << 21;
+            if (((pRemote->actorState.flags1 & kLifeStateMask) >> 21) == 8u)
+                pRemote->actorState.flags1 &= ~kLifeStateMask;
+        }
+    }
+
     SetDownedControlLock(false);
 
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
     {
+        if (auto* pExt = pPlayer->GetExtension())
+            pExt->SetDownedPlayer(false);
         pPlayer->SetNoBleedoutRecovery(false);
         if (wasLocalDowned)
         {
@@ -418,6 +473,8 @@ void DownedStateService::ResetAllStates() noexcept
             }
         }
     }
+
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 }
 
 void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
@@ -432,50 +489,101 @@ void DownedStateService::OnDisconnected(const DisconnectedEvent&) noexcept
     ResetAllStates();
 }
 
-void DownedStateService::RedirectHostileAggroAwayFromPlayer(Actor* apLocalPlayer) noexcept
+void DownedStateService::RedirectHostileAggroAwayFromActor(Actor* apDownedActor) noexcept
 {
-    if (!apLocalPlayer)
+    if (!apDownedActor)
         return;
+
+    const uint32_t downedWorldId = apDownedActor->GetWorldSpace() ? apDownedActor->GetWorldSpace()->formID : 0u;
+    const uint32_t downedCellId = apDownedActor->parentCell ? apDownedActor->parentCell->formID : 0u;
+
+    auto isSameWorldOrCell = [&](Actor* apCandidate) noexcept
+    {
+        if (!apCandidate)
+            return false;
+        const uint32_t candWorldId = apCandidate->GetWorldSpace() ? apCandidate->GetWorldSpace()->formID : 0u;
+        const uint32_t candCellId = apCandidate->parentCell ? apCandidate->parentCell->formID : 0u;
+        if (downedWorldId != 0)
+            return candWorldId == downedWorldId;
+        return downedCellId == 0 || candCellId == downedCellId;
+    };
 
     Actor* pNearestLivingAlly = nullptr;
     float bestAllyDistSq = std::numeric_limits<float>::max();
+
+    auto considerStandingAlly = [&](Actor* apAlly) noexcept
+    {
+        if (!apAlly || apAlly == apDownedActor || apAlly->IsDead() || !isSameWorldOrCell(apAlly))
+            return;
+        if (auto* pExt = apAlly->GetExtension(); pExt && pExt->IsDownedPlayer())
+            return;
+
+        const float dx = apAlly->position.x - apDownedActor->position.x;
+        const float dy = apAlly->position.y - apDownedActor->position.y;
+        const float dz = apAlly->position.z - apDownedActor->position.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq < bestAllyDistSq)
+        {
+            bestAllyDistSq = distSq;
+            pNearestLivingAlly = apAlly;
+        }
+    };
+
+    if (!IsLocalPlayerDowned())
+    {
+        if (PlayerCharacter* pLocal = PlayerCharacter::Get())
+            considerStandingAlly(pLocal);
+    }
 
     auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
     for (auto entity : playerView)
     {
         const auto& playerComp = playerView.get<PlayerComponent>(entity);
-        if (IsRemotePlayerDowned(playerComp.Id))
-            continue;
-
-        Actor* pAlly = Cast<Actor>(TESForm::GetById(playerView.get<FormIdComponent>(entity).Id));
-        if (!pAlly || pAlly == apLocalPlayer || pAlly->IsDead())
-            continue;
-
-        const float dx = pAlly->position.x - apLocalPlayer->position.x;
-        const float dy = pAlly->position.y - apLocalPlayer->position.y;
-        const float dz = pAlly->position.z - apLocalPlayer->position.z;
-        const float distSq = dx * dx + dy * dy + dz * dz;
-        if (distSq < bestAllyDistSq)
+        const uint32_t fid = playerView.get<FormIdComponent>(entity).Id;
+        if (fid == 0x14)
         {
-            bestAllyDistSq = distSq;
-            pNearestLivingAlly = pAlly;
+            if (IsLocalPlayerDowned())
+                continue;
         }
+        else if (IsRemotePlayerDowned(playerComp.Id))
+        {
+            continue;
+        }
+
+        Actor* pAlly = Cast<Actor>(TESForm::GetById(fid));
+        considerStandingAlly(pAlly);
     }
 
-    auto actorView = m_world.view<FormIdComponent>();
+    auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     for (auto entity : actorView)
     {
         Actor* pNpc = Cast<Actor>(TESForm::GetById(actorView.get<FormIdComponent>(entity).Id));
-        if (!pNpc || pNpc == apLocalPlayer || pNpc->IsDead())
+        if (!pNpc || pNpc == apDownedActor || pNpc->IsDead())
             continue;
         if (auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
             continue;
 
-        if (pNpc->GetCombatTarget() == apLocalPlayer)
+        Actor* pCurrentTarget = pNpc->GetCombatTarget();
+        if (!pCurrentTarget && pNpc->pCombatController && pNpc->pCombatController->targetHandle != 0)
+            pCurrentTarget = Cast<Actor>(TESObjectREFR::GetByHandle(pNpc->pCombatController->targetHandle));
+
+        if (pCurrentTarget == apDownedActor)
         {
-            pNpc->StopCombat();
+            // NEVER call StopCombat() + StartCombatEx() on a timer: that forced enemies out of combat and back in
+            // every 0.5s (infinite taunt/sheath/draw loop!). Instead, switch CombatController::SetTarget directly
+            // onto the nearest standing player (backed by HookUpdateDetectionState + HookUpdateTarget on AI workers).
             if (pNearestLivingAlly)
-                pNpc->StartCombatEx(pNearestLivingAlly);
+            {
+                pNpc->SetCombatTargetEx(pNearestLivingAlly);
+                if (!pNpc->IsInCombat())
+                    pNpc->StartCombat(pNearestLivingAlly);
+            }
+            else
+            {
+                pNpc->SetCombatTargetEx(nullptr);
+                if (pNpc->IsInCombat())
+                    pNpc->StopCombat();
+            }
         }
     }
 }
@@ -704,7 +812,7 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
             if (m_bleedoutReassertTimerSec >= 0.5)
             {
                 m_bleedoutReassertTimerSec = 0.0;
-                RedirectHostileAggroAwayFromPlayer(pPlayer);
+                RedirectHostileAggroAwayFromActor(pPlayer);
 
                 if (pPlayer->actorState.IsWeaponFullyDrawn())
                     pPlayer->SetWeaponDrawnEx(false);
@@ -772,6 +880,21 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
 
     case NotifyReviveState::ReviveStatus::RevivedByAlly:
         m_remoteDownedByPlayerId[acMessage.TargetPlayerId] = false;
+        {
+            auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+            for (auto entity : playerView)
+            {
+                if (playerView.get<PlayerComponent>(entity).Id != acMessage.TargetPlayerId)
+                    continue;
+                const uint32_t fid = playerView.get<FormIdComponent>(entity).Id;
+                if (fid != 0 && fid != 0x14)
+                {
+                    if (Actor* pRemoteActor = Cast<Actor>(TESForm::GetById(fid)))
+                        ApplyRemoteActorDownedPosture(pRemoteActor, false);
+                }
+                break;
+            }
+        }
         if (m_isChannelingRevive && m_channelTargetPlayerId == acMessage.TargetPlayerId)
         {
             m_isChannelingRevive = false;
@@ -784,6 +907,21 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
 
     case NotifyReviveState::ReviveStatus::RevivedPostCombat:
         m_remoteDownedByPlayerId[acMessage.TargetPlayerId] = false;
+        {
+            auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+            for (auto entity : playerView)
+            {
+                if (playerView.get<PlayerComponent>(entity).Id != acMessage.TargetPlayerId)
+                    continue;
+                const uint32_t fid = playerView.get<FormIdComponent>(entity).Id;
+                if (fid != 0 && fid != 0x14)
+                {
+                    if (Actor* pRemoteActor = Cast<Actor>(TESForm::GetById(fid)))
+                        ApplyRemoteActorDownedPosture(pRemoteActor, false);
+                }
+                break;
+            }
+        }
         if (m_isLocalDowned && targetsLocalPlayer)
             ApplyAuthoritativeRevive(acMessage.HealthFraction, acMessage.GraceSec, true);
         break;

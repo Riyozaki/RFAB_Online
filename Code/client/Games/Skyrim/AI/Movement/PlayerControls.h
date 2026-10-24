@@ -83,7 +83,27 @@ static_assert(offsetof(PlayerControls, PlayerControls::Data) == 0x20);
 
 struct BSInputEnableManager
 {
+    enum UEFlag : int32_t
+    {
+        kMovement = 1 << 0,
+        kLooking = 1 << 1,
+        kActivate = 1 << 2,
+        kMenu = 1 << 3,
+        kConsole = 1 << 4,
+        kPOVSwitch = 1 << 5,
+        kFighting = 1 << 6,
+        kSneaking = 1 << 7,
+        kMainFour = 1 << 8,
+    };
+
     static BSInputEnableManager* Get();
 
     void EnableOtherEvent(int32_t aFlags, bool aEnable, bool aUnk2);
+
+    // ControlMap::enabledControls at +0x118 on Skyrim SE 1.5.97 (sizeof(ControlMap) == 0x128).
+    [[nodiscard]] uint32_t GetEnabledControlsMask() const noexcept
+    {
+        return *reinterpret_cast<const uint32_t*>(reinterpret_cast<const uint8_t*>(this) + 0x118);
+    }
 };
+
