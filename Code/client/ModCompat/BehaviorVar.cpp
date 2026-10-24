@@ -294,26 +294,22 @@ const AnimationGraphDescriptor* BehaviorVar::ConstructModdedDescriptor(
     TiltedPhoques::Vector<uint32_t> floatVector(floatVarSorted.begin(), floatVarSorted.end());
     TiltedPhoques::Vector<uint32_t> intVector(intVarSorted.begin(), intVarSorted.end());
 
-    // Construct a new descriptor
-    auto panimGraphDescriptor = new AnimationGraphDescriptor();
+    // Construct a new descriptor on the stack (no heap leak) and register into the
+    // node-stable, shared_mutex-protected AnimationGraphDescriptorManager.
+    AnimationGraphDescriptor animGraphDescriptor{};
+    animGraphDescriptor.BooleanLookUpTable = std::move(boolVector);
+    animGraphDescriptor.FloatLookupTable = std::move(floatVector);
+    animGraphDescriptor.IntegerLookupTable = std::move(intVector);
 
-    // This is a bit grubby, but it IS a struct with public members.
-    // Maybe the devs will help us out by agreeing to an additional constructor.
-    panimGraphDescriptor->BooleanLookUpTable = boolVector;
-    panimGraphDescriptor->FloatLookupTable = floatVector;
-    panimGraphDescriptor->IntegerLookupTable = intVector;
-
-    // Add the new graph to the known behavior graphs
-    // TODO: doesn't handle case of the acNewHash already existing.
-    // That has to be addressed before we can support just adding
-    // more pre-existing vars to sync. For now, only get here
-    // when mods have changed the hash.
-    new AnimationGraphDescriptorManager::Builder(AnimationGraphDescriptorManager::Get(), acNewHash, *panimGraphDescriptor);
+    AnimationGraphDescriptorManager::Builder(AnimationGraphDescriptorManager::Get(), acNewHash, std::move(animGraphDescriptor));
     return AnimationGraphDescriptorManager::Get().GetDescriptor(acNewHash);
 }
 
 const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apManager, Actor* apActor)
 {
+    if (!apManager || !apActor)
+        return nullptr;
+
     // Serialize, Actors are multi-threaded. Might not be strictly necessary between being on
     // the main game loop and under a BSRecursiveLock, but if so it won't hurt anything.
     std::lock_guard guard(mutex_lock);
@@ -321,6 +317,9 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     // Check if the animation descriptor has already been built.
     uint32_t hexFormID = apActor->formID;
     auto pExtendedActor = apActor->GetExtension();
+    if (!pExtendedActor)
+        return nullptr;
+
     auto hash = pExtendedActor->GraphDescriptorHash;
     const AnimationGraphDescriptor* pGraph = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
 
@@ -328,10 +327,13 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     // Use the base game animation graphs until a Master Behavior actor enters the room. Could be an NPC,
     // but will always happen no later than when the 2nd person joins the server and room.
     // Remote players are ALWAYS in 3rd person by definition
-    if (hexFormID == 0x14 && PlayerCamera::Get()->IsFirstPerson())
+    if (hexFormID == 0x14)
     {
-        hash = AnimationGraphDescriptor_Master_Behavior::m_key;
-        pGraph = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
+        if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
+        {
+            hash = AnimationGraphDescriptor_Master_Behavior::m_key;
+            pGraph = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
+        }
     }
 
     // If we found the descriptor we're done.

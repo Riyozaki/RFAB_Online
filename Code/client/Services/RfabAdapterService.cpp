@@ -100,7 +100,7 @@ void RfabAdapterService::RefreshRuntimeBindings() noexcept
     m_pCachedXpMultiplierGlobal = nullptr;
     m_pNoDeathHandlingGlobal = nullptr;
     m_pXpBooksFormList = nullptr;
-    m_pNoAllyDamageAllowedSpellsList = nullptr;
+    m_pNoAllyDamageAllowedSpellsList.store(nullptr, std::memory_order_release);
     m_scannedGlobalsOnce = false;
     m_watchedGlobals.clear();
     m_lastGlobalValues.clear();
@@ -271,19 +271,26 @@ void RfabAdapterService::RestoreSoloRfabAutosave() noexcept
 
 BGSListForm* RfabAdapterService::GetNoAllyDamageAllowedSpellsList() noexcept
 {
-    if (!m_pNoAllyDamageAllowedSpellsList)
+    if (BGSListForm* pCached = m_pNoAllyDamageAllowedSpellsList.load(std::memory_order_acquire))
+        return pCached;
+
+    std::lock_guard<std::mutex> lock(m_allowedSpellsMutex);
+    if (BGSListForm* pCached = m_pNoAllyDamageAllowedSpellsList.load(std::memory_order_relaxed))
+        return pCached;
+
+    BGSListForm* pResolved = ResolveFormListByEditorId("RFAB_List_NoAllyDamage_AllowedSpells");
+    if (!pResolved)
     {
-        m_pNoAllyDamageAllowedSpellsList = ResolveFormListByEditorId("RFAB_List_NoAllyDamage_AllowedSpells");
-        if (!m_pNoAllyDamageAllowedSpellsList)
+        if (auto* pModManager = ModManager::Get())
         {
-            if (auto* pModManager = ModManager::Get())
-            {
-                if (auto* pMod = pModManager->GetByName(m_bindings.PluginName.c_str()))
-                    m_pNoAllyDamageAllowedSpellsList = Cast<BGSListForm>(TESForm::GetById(pMod->GetFormId(0x005CAA)));
-            }
+            if (auto* pMod = pModManager->GetByName(m_bindings.PluginName.c_str()))
+                pResolved = Cast<BGSListForm>(TESForm::GetById(pMod->GetFormId(0x005CAA)));
         }
     }
-    return m_pNoAllyDamageAllowedSpellsList;
+
+    if (pResolved)
+        m_pNoAllyDamageAllowedSpellsList.store(pResolved, std::memory_order_release);
+    return pResolved;
 }
 
 void RfabAdapterService::ApplyAllyHitGameSetting(bool aProtectAllies) noexcept
@@ -350,15 +357,48 @@ void RfabAdapterService::PushAllyProtectionStateToOverlay() const noexcept
     if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
     {
         auto pArgs = CefListValue::Create();
-        pArgs->SetBool(0, m_allyProtectionEnabled);
+        pArgs->SetBool(0, m_allyProtectionEnabled.load(std::memory_order_relaxed));
         pArgs->SetBool(1, IsLocalPlayerAllyProtectionHost());
         pOverlayApp->ExecuteAsync("allyProtectionState", pArgs);
     }
 }
 
-void RfabAdapterService::NotifyPartyLeadershipChanged() const noexcept
+void RfabAdapterService::NotifyPartyLeadershipChanged() noexcept
 {
+    RefreshCoopCombatSnapshot();
     PushAllyProtectionStateToOverlay();
+}
+
+void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept
+{
+    // Must only be called on the World::Update() thread where entt views and PartyService are mutated.
+    CoopCombatSnapshot next{};
+    next.Connected = m_transport.IsConnected();
+    next.AllyProtectionEnabled = m_allyProtectionEnabled.load(std::memory_order_relaxed);
+
+    if (next.Connected)
+    {
+        const auto& partySvc = m_world.GetPartyService();
+        next.InParty = partySvc.IsInParty();
+        if (next.InParty)
+        {
+            const auto& members = partySvc.GetPartyMembers();
+            next.PartyMemberIds.reserve(members.size());
+            for (const uint32_t pid : members)
+                next.PartyMemberIds.insert(pid);
+        }
+
+        auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+        for (auto entity : playerView)
+        {
+            const uint32_t fid = playerView.get<FormIdComponent>(entity).Id;
+            if (fid != 0)
+                next.FormIdToPlayerId[fid] = playerView.get<PlayerComponent>(entity).Id;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_coopSnapshotMutex);
+    m_coopCombatSnapshot = std::move(next);
 }
 
 void RfabAdapterService::SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification) noexcept
@@ -377,15 +417,16 @@ void RfabAdapterService::SetLocalAllyProtectionEnabled(bool aEnabled, bool aShow
         return;
     }
 
-    m_allyProtectionEnabled = aEnabled;
-    ApplyAllyHitGameSetting(m_allyProtectionEnabled);
-    SendHostAllyProtectionRequest(m_allyProtectionEnabled, aShowHudNotification);
+    m_allyProtectionEnabled.store(aEnabled, std::memory_order_relaxed);
+    ApplyAllyHitGameSetting(aEnabled);
+    RefreshCoopCombatSnapshot();
+    SendHostAllyProtectionRequest(aEnabled, aShowHudNotification);
     PushAllyProtectionStateToOverlay();
 }
 
 void RfabAdapterService::ToggleLocalAllyProtection() noexcept
 {
-    SetLocalAllyProtectionEnabled(!m_allyProtectionEnabled, true);
+    SetLocalAllyProtectionEnabled(!m_allyProtectionEnabled.load(std::memory_order_relaxed), true);
 }
 
 RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
@@ -393,8 +434,18 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
     Actor* apTarget,
     bool aIsBeneficialHealOrBuff) const noexcept
 {
-    if (!apAttacker || !apTarget || apAttacker == apTarget || !m_transport.IsConnected())
+    if (!apAttacker || !apTarget || apAttacker == apTarget)
         return {};
+
+    // Read a mutex-protected snapshot built on the World::Update() thread instead of touching
+    // entt::registry views or TiltedPhoques::Vector<uint32_t> directly from combat/magic worker threads.
+    CoopCombatSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_coopSnapshotMutex);
+        if (!m_coopCombatSnapshot.Connected || !m_coopCombatSnapshot.InParty)
+            return {};
+        snapshot = m_coopCombatSnapshot;
+    }
 
     struct ControllingPlayer
     {
@@ -403,16 +454,13 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
         uint32_t RemotePlayerId{0};
     };
 
-    const auto findPlayerIdByFormId = [this](uint32_t aFormId) -> std::optional<uint32_t>
+    const auto findPlayerIdByFormId = [&snapshot](uint32_t aFormId) -> std::optional<uint32_t>
     {
         if (aFormId == 0)
             return std::nullopt;
-        auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
-        for (auto entity : playerView)
-        {
-            if (playerView.get<FormIdComponent>(entity).Id == aFormId)
-                return playerView.get<PlayerComponent>(entity).Id;
-        }
+        const auto it = snapshot.FormIdToPlayerId.find(aFormId);
+        if (it != snapshot.FormIdToPlayerId.end())
+            return it->second;
         return std::nullopt;
     };
 
@@ -461,14 +509,9 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
     if (!attacker.IsLocal && !target.IsLocal && attacker.RemotePlayerId == target.RemotePlayerId)
         return {};
 
-    const auto& partySvc = m_world.GetPartyService();
-    if (!partySvc.IsInParty())
-        return {};
-
-    const auto& partyMembers = partySvc.GetPartyMembers();
-    const auto isMember = [&partyMembers](uint32_t aPid) -> bool
+    const auto isMember = [&snapshot](uint32_t aPid) -> bool
     {
-        return std::find(partyMembers.begin(), partyMembers.end(), aPid) != partyMembers.end();
+        return snapshot.PartyMemberIds.find(aPid) != snapshot.PartyMemberIds.end();
     };
 
     bool areSameCoopParty = false;
@@ -479,7 +522,7 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
     else
         areSameCoopParty = isMember(attacker.RemotePlayerId) && isMember(target.RemotePlayerId);
 
-    return RfabCompat::EvaluateCoopAllyActionPolicy(areSameCoopParty, m_allyProtectionEnabled, aIsBeneficialHealOrBuff);
+    return RfabCompat::EvaluateCoopAllyActionPolicy(areSameCoopParty, snapshot.AllyProtectionEnabled, aIsBeneficialHealOrBuff);
 }
 
 void RfabAdapterService::OnConnected(const ConnectedEvent& acEvent) noexcept
@@ -489,8 +532,10 @@ void RfabAdapterService::OnConnected(const ConnectedEvent& acEvent) noexcept
     m_localPlayerId = acEvent.PlayerId;
     m_hasLocalPlayerId = true;
     m_isServerHost = false;
-    m_allyProtectionEnabled = true;
-    ApplyAllyHitGameSetting(m_allyProtectionEnabled);
+    m_allyProtectionEnabled.store(true, std::memory_order_relaxed);
+    ApplyAllyHitGameSetting(true);
+    (void)GetNoAllyDamageAllowedSpellsList();
+    RefreshCoopCombatSnapshot();
     PushAllyProtectionStateToOverlay();
 
     m_pNoDeathHandlingGlobal = ResolveGlobalByEditorId(m_bindings.NoDeathHandlingGlobalEditorId, 0);
@@ -522,7 +567,8 @@ void RfabAdapterService::OnDisconnected(const DisconnectedEvent&) noexcept
     ApplyAllyHitGameSetting(false);
     m_hasLocalPlayerId = false;
     m_isServerHost = false;
-    m_allyProtectionEnabled = true;
+    m_allyProtectionEnabled.store(true, std::memory_order_relaxed);
+    RefreshCoopCombatSnapshot();
     PushAllyProtectionStateToOverlay();
 
     if (m_pNoDeathHandlingGlobal && m_hasSavedNoDeathHandlingValue)
@@ -541,11 +587,13 @@ void RfabAdapterService::OnDisconnected(const DisconnectedEvent&) noexcept
 
 void RfabAdapterService::OnPartyJoined(const PartyJoinedEvent&) noexcept
 {
+    RefreshCoopCombatSnapshot();
     PushAllyProtectionStateToOverlay();
 }
 
 void RfabAdapterService::OnPartyLeft(const PartyLeftEvent&) noexcept
 {
+    RefreshCoopCombatSnapshot();
     PushAllyProtectionStateToOverlay();
 }
 
@@ -565,6 +613,8 @@ void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     if (!m_transport.IsConnected())
         return;
+
+    RefreshCoopCombatSnapshot();
 
     m_pollAccumulatorSec += acEvent.Delta;
     if (m_pollAccumulatorSec < 0.5)
@@ -731,19 +781,20 @@ void RfabAdapterService::OnNotifyProgressionEvent(const NotifyRfabProgressionEve
     case NotifyRfabProgressionEvent::EventKind::AllyProtectionSync:
     {
         const bool newState = (acMessage.GlobalValue >= 0.5f);
-        m_allyProtectionEnabled = newState;
+        m_allyProtectionEnabled.store(newState, std::memory_order_relaxed);
 
         if (m_hasLocalPlayerId && acMessage.XpDelta >= 0)
             m_isServerHost = (static_cast<uint32_t>(acMessage.XpDelta) == m_localPlayerId);
         else
             m_isServerHost = false;
 
-        ApplyAllyHitGameSetting(m_allyProtectionEnabled);
+        ApplyAllyHitGameSetting(newState);
+        RefreshCoopCombatSnapshot();
         PushAllyProtectionStateToOverlay();
 
         if (acMessage.EditorId == "toggle")
         {
-            if (m_allyProtectionEnabled)
+            if (newState)
                 Utils::ShowHudMessage(String("Единство в битве (Кооп): урон по союзникам отключен"));
             else
                 Utils::ShowHudMessage(String("Единство в битве (Кооп): урон по союзникам включен"));

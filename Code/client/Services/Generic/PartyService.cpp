@@ -134,7 +134,8 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         pArguments->SetList(0, pPlayerIds);
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
 
-        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInfo", pArguments);
+        if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
+            pOverlayApp->ExecuteAsync("partyInfo", pArguments);
         m_world.GetRfabAdapterService().NotifyPartyLeadershipChanged();
     }
 }
@@ -145,9 +146,12 @@ void PartyService::OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcep
 
     m_invitations[acPartyInvite.InviterId] = acPartyInvite.ExpiryTick;
 
-    auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, acPartyInvite.InviterId);
-    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInviteReceived", pArguments);
+    if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
+    {
+        auto pArguments = CefListValue::Create();
+        pArguments->SetInt(0, acPartyInvite.InviterId);
+        pOverlayApp->ExecuteAsync("partyInviteReceived", pArguments);
+    }
 }
 
 void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept

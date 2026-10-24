@@ -79,16 +79,16 @@ bool DownedStateService::ShouldBlockPlayerHealthMutation(float aDelta) const noe
     if (!IsSystemActive())
         return false;
 
-    if (m_allowAuthorizedHeal)
+    if (m_allowAuthorizedHeal.load(std::memory_order_acquire))
         return false;
 
-    if (m_isLocalDowned)
+    if (m_isLocalDowned.load(std::memory_order_acquire))
     {
         // Freeze BOTH positive regen/potions/spells AND negative poison/bleed/ground-fire ticks while on knee.
         return aDelta != 0.0f;
     }
 
-    if (m_graceRemainingSec > 0.0 && aDelta < 0.0f)
+    if (m_isGraceActive.load(std::memory_order_acquire) && aDelta < 0.0f)
         return true;
 
     return false;
@@ -108,7 +108,7 @@ bool DownedStateService::InterceptPotentialFatalPlayerDamage(
     if (!IsSystemActive() || !apPlayer)
         return false;
 
-    if (m_isLocalDowned || m_graceRemainingSec > 0.0)
+    if (m_isLocalDowned.load(std::memory_order_acquire) || m_isGraceActive.load(std::memory_order_acquire))
         return true;
 
     if (aIncomingDamage <= 0.0f)
@@ -118,7 +118,7 @@ bool DownedStateService::InterceptPotentialFatalPlayerDamage(
         return false;
 
     // Clamp player health safely down to 1.0f under ScopedReviveHealAllowance so Skyrim never triggers Actor::Kill
-    // or REQ_DeathHandler, then transition immediately into frozen Downed-on-Knee state.
+    // or REQ_DeathHandler, and arm atomic downed state; heavy camera/Papyrus/aggro/network side effects execute on OnUpdate.
     FinalizeLethalHitCushion(apPlayer, aCurrentHealth);
     return true;
 }
@@ -141,7 +141,12 @@ void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealth
             m_world.GetRunner().Trigger(HealthChangeEvent(apPlayer->formID, netDelta));
     }
 
-    EnterLocalDownedState();
+    // Do NOT invoke ForceThirdPerson, Papyrus StopCombat/StartCombat, entt views, or TransportService::Send inside
+    // HookDamageActor / HookRestoreActorValue (which run mid-combat and on worker threads). Arm atomic downed state
+    // immediately so all subsequent hits/regen in this frame are frozen, and finish transition at the top of OnUpdate.
+    bool expected = false;
+    if (m_isLocalDowned.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+        m_pendingEnterDownedTransition.store(true, std::memory_order_release);
 }
 
 void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept
@@ -240,14 +245,20 @@ void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
 
 void DownedStateService::EnterLocalDownedState() noexcept
 {
-    if (m_isLocalDowned)
+    bool expected = false;
+    if (!m_isLocalDowned.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return;
 
+    m_pendingEnterDownedTransition.store(false, std::memory_order_release);
+    CompleteEnterLocalDownedState();
+}
+
+void DownedStateService::CompleteEnterLocalDownedState() noexcept
+{
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
     if (!pPlayer)
         return;
 
-    m_isLocalDowned = true;
     m_isChannelingRevive = false;
     m_channelTargetPlayerId = 0;
     m_bleedoutReassertTimerSec = 0.0;
@@ -316,8 +327,10 @@ void DownedStateService::ApplyAuthoritativeRevive(
     if (!pPlayer)
         return;
 
-    m_isLocalDowned = false;
+    m_pendingEnterDownedTransition.store(false, std::memory_order_release);
+    m_isLocalDowned.store(false, std::memory_order_release);
     m_graceRemainingSec = std::clamp(static_cast<double>(aGraceSec), 0.0, 15.0);
+    m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
 
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
@@ -368,13 +381,15 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
 void DownedStateService::ResetAllStates() noexcept
 {
-    const bool wasLocalDowned = m_isLocalDowned;
+    const bool wasLocalDowned = m_isLocalDowned.load(std::memory_order_acquire);
     const bool restoreFirstPerson = m_wasFirstPersonBeforeDowned;
 
-    m_isLocalDowned = false;
-    m_allowAuthorizedHeal = false;
+    m_pendingEnterDownedTransition.store(false, std::memory_order_release);
+    m_isLocalDowned.store(false, std::memory_order_release);
+    m_allowAuthorizedHeal.store(false, std::memory_order_release);
     m_wasFirstPersonBeforeDowned = false;
     m_graceRemainingSec = 0.0;
+    m_isGraceActive.store(false, std::memory_order_release);
     m_bleedoutReassertTimerSec = 0.0;
     m_revivePromptCooldownSec = 0.0;
     m_isChannelingRevive = false;
@@ -647,7 +662,10 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
         return;
 
     if (m_graceRemainingSec > 0.0)
+    {
         m_graceRemainingSec = std::max(0.0, m_graceRemainingSec - acEvent.Delta);
+        m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
+    }
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
@@ -657,18 +675,24 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (pPlayer)
     {
         const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
-        if (!m_isLocalDowned && m_graceRemainingSec <= 0.0 && curHp <= kDownedFloorHealth)
+        if (!m_isLocalDowned.load(std::memory_order_acquire) && m_graceRemainingSec <= 0.0 && curHp <= kDownedFloorHealth)
         {
             FinalizeLethalHitCushion(pPlayer, curHp);
         }
-        else if (m_isLocalDowned && std::fabs(curHp - kDownedFloorHealth) > 0.05f)
+        else if (m_isLocalDowned.load(std::memory_order_acquire) && std::fabs(curHp - kDownedFloorHealth) > 0.05f)
         {
             ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
             pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth);
         }
     }
 
-    if (m_isLocalDowned)
+    if (m_pendingEnterDownedTransition.exchange(false, std::memory_order_acq_rel))
+    {
+        if (m_isLocalDowned.load(std::memory_order_acquire))
+            CompleteEnterLocalDownedState();
+    }
+
+    if (m_isLocalDowned.load(std::memory_order_acquire))
     {
         SetDownedControlLock(true);
         if (pPlayer)

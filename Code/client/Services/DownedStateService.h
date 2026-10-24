@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
@@ -30,16 +31,15 @@ class DownedStateService
 public:
     struct ScopedReviveHealAllowance
     {
-        explicit ScopedReviveHealAllowance(bool& aFlag) noexcept
+        explicit ScopedReviveHealAllowance(std::atomic<bool>& aFlag) noexcept
             : m_flag(aFlag)
-            , m_prev(aFlag)
+            , m_prev(aFlag.exchange(true, std::memory_order_acq_rel))
         {
-            m_flag = true;
         }
-        ~ScopedReviveHealAllowance() noexcept { m_flag = m_prev; }
+        ~ScopedReviveHealAllowance() noexcept { m_flag.store(m_prev, std::memory_order_release); }
 
     private:
-        bool& m_flag;
+        std::atomic<bool>& m_flag;
         bool m_prev;
     };
 
@@ -49,8 +49,8 @@ public:
     TP_NOCOPYMOVE(DownedStateService);
 
     [[nodiscard]] bool IsSystemActive() const noexcept;
-    [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned; }
-    [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_graceRemainingSec > 0.0; }
+    [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
+    [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
     [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
     [[nodiscard]] bool IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept;
 
@@ -84,6 +84,7 @@ private:
         bool TogglePOV{true};
     };
 
+    void CompleteEnterLocalDownedState() noexcept;
     void SetDownedControlLock(bool aLocked) noexcept;
     void OnConnected(const ConnectedEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
@@ -100,8 +101,10 @@ private:
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
 
-    bool m_isLocalDowned{false};
-    bool m_allowAuthorizedHeal{false};
+    std::atomic<bool> m_isLocalDowned{false};
+    std::atomic<bool> m_pendingEnterDownedTransition{false};
+    std::atomic<bool> m_allowAuthorizedHeal{false};
+    std::atomic<bool> m_isGraceActive{false};
     bool m_wasFirstPersonBeforeDowned{false};
     double m_graceRemainingSec{0.0};
     double m_reportTimerSec{0.0};

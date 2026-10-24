@@ -25,8 +25,13 @@ thread_local bool g_forceAnimation = false;
 
 uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apAction)
 {
+    if (!apAction || !apAction->actor)
+        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
+
     auto pActor = apAction->actor;
     const auto pExtension = pActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
     if (!pExtension->IsRemote() || g_forceAnimation)
     {
@@ -36,7 +41,7 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
         action.Type = apAction->unkInput | (apAction->someFlag ? 0x4 : 0);
         action.Tick = World::Get().GetTick();
         action.ActorId = pActor->formID;
-        action.ActionId = apAction->action->formID;
+        action.ActionId = apAction->action ? apAction->action->formID : 0;
         action.TargetId = apAction->target ? apAction->target->formID : 0;
 
         pActor->SaveAnimationVariables(action.Variables);

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <common/RfabModpackCompat.h>
+#include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -41,11 +43,12 @@ public:
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
     [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
 
-    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled; }
+    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled.load(std::memory_order_relaxed); }
     [[nodiscard]] bool IsLocalPlayerAllyProtectionHost() const noexcept;
     void SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification = false) noexcept;
     void ToggleLocalAllyProtection() noexcept;
-    void NotifyPartyLeadershipChanged() const noexcept;
+    void NotifyPartyLeadershipChanged() noexcept;
+    void RefreshCoopCombatSnapshot() noexcept;
     [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
         Actor* apAttacker,
         Actor* apTarget,
@@ -88,12 +91,24 @@ private:
     TESGlobal* m_pCachedXpMultiplierGlobal{nullptr};
     TESGlobal* m_pNoDeathHandlingGlobal{nullptr};
     BGSListForm* m_pXpBooksFormList{nullptr};
-    BGSListForm* m_pNoAllyDamageAllowedSpellsList{nullptr};
+    std::atomic<BGSListForm*> m_pNoAllyDamageAllowedSpellsList{nullptr};
+    mutable std::mutex m_allowedSpellsMutex{};
     bool m_scannedGlobalsOnce{false};
     float m_savedNoDeathHandlingValue{0.0f};
     bool m_hasSavedNoDeathHandlingValue{false};
 
-    bool m_allyProtectionEnabled{true};
+    struct CoopCombatSnapshot
+    {
+        bool Connected{false};
+        bool InParty{false};
+        bool AllyProtectionEnabled{true};
+        std::unordered_map<uint32_t, uint32_t> FormIdToPlayerId{};
+        std::unordered_set<uint32_t> PartyMemberIds{};
+    };
+    mutable std::mutex m_coopSnapshotMutex{};
+    CoopCombatSnapshot m_coopCombatSnapshot{};
+
+    std::atomic<bool> m_allyProtectionEnabled{true};
     uint32_t m_localPlayerId{0};
     bool m_hasLocalPlayerId{false};
     bool m_isServerHost{false};

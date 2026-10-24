@@ -1454,13 +1454,17 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
 
         auto scanCell = [&](TESObjectCELL* apCell)
         {
-            if (!apCell || !apCell->refData.refArray)
+            if (!apCell)
+                return;
+
+            BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);
+            if (!apCell->refData.refArray)
                 return;
 
             for (uint32_t i = 0; i < apCell->refData.capacity; ++i)
             {
                 TESObjectREFR* pRef = apCell->refData.refArray[i].Get();
-                if (!pRef || pRef == this || pRef->IsDisabled() || pRef->baseForm != pObject)
+                if (!pRef || !pRef->baseForm || pRef == this || pRef->IsDisabled() || pRef->baseForm != pObject)
                     continue;
                 if ((pRef->formID & 0xFF000000) != 0xFF000000)
                     continue;
