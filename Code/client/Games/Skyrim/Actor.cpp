@@ -252,6 +252,11 @@ ActorExtension* Actor::GetExtension() noexcept
     return nullptr;
 }
 
+const ActorExtension* Actor::GetExtension() const noexcept
+{
+    return const_cast<Actor*>(this)->GetExtension();
+}
+
 ExActor* Actor::AsExActor() noexcept
 {
     if (formType == Type && this != PlayerCharacter::Get())
@@ -675,7 +680,8 @@ bool Actor::IsPlayerSummon() const noexcept
     if (!pCommandingActor)
         return false;
 
-    return pCommandingActor->formID == 0x14 || pCommandingActor->GetExtension()->IsRemotePlayer();
+    const auto* pCmdExt = pCommandingActor->GetExtension();
+    return pCommandingActor->formID == 0x14 || (pCmdExt && pCmdExt->IsRemotePlayer());
 }
 
 TESForm* Actor::GetCurrentLocation()
@@ -1198,14 +1204,15 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     {
         const auto* pExHitter = apHitter->GetExtension();
         const Actor* pHitterCmd = apHitter->GetCommandingActor();
+        const auto* pHitterCmdExt = pHitterCmd ? pHitterCmd->GetExtension() : nullptr;
         const bool isLocalPlayerSummon = pHitterCmd && pHitterCmd->formID == 0x14;
         const bool isRemotePlayerSummon =
-            (pHitterCmd && pHitterCmd->GetExtension()->IsRemotePlayer()) ||
-            (pExHitter->IsRemote() && apHitter->IsPlayerSummon());
+            (pHitterCmdExt && pHitterCmdExt->IsRemotePlayer()) ||
+            (pExHitter && pExHitter->IsRemote() && apHitter->IsPlayerSummon());
 
-        if (pExHitter->IsLocalPlayer() || isLocalPlayerSummon)
+        if ((pExHitter && pExHitter->IsLocalPlayer()) || isLocalPlayerSummon)
             return applyAuthoritativeDamage();
-        if (pExHitter->IsRemotePlayer() || isRemotePlayerSummon)
+        if ((pExHitter && pExHitter->IsRemotePlayer()) || isRemotePlayerSummon)
             return wouldKill;
     }
 
