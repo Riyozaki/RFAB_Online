@@ -73,6 +73,7 @@ public:
     void EnterLocalDownedState() noexcept;
     void ApplyAuthoritativeRevive(float aHealthFraction, float aGraceSec, bool aShowPostCombatNotice) noexcept;
     void ResetAllStates() noexcept;
+    [[nodiscard]] std::atomic<bool>& GetAuthorizedHealFlag() noexcept { return m_allowAuthorizedHeal; }
 
 private:
     struct SavedControlFlags

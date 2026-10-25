@@ -119,15 +119,21 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
     Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.ActorId));
-    if (!pActor || pActor->GetExtension()->IsRemote())
+    if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
+
+    const auto* pActorExt = pActor->GetExtension();
+    if (!pActorExt || pActorExt->IsRemote())
+        return;
+
+    const char* pActorBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
 
     std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
     if (!serverIdRes.has_value())
     {
         spdlog::error(
             __FUNCTION__ ": failed to find server id, actorId: {:X}, isLeader: {}, item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
-            acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId, pActor->baseForm->GetName());
+            acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId, pActorBaseName);
         return;
     }
 
@@ -137,7 +143,7 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
             __FUNCTION__ ": WaitingForAssignment, don't send equipment changes actorId: {:X}, serverId {:X}, isLeader: {}, "
                          "item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
             acEvent.ActorId, serverIdRes.value(), isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId,
-            pActor->baseForm->GetName());
+            pActorBaseName);
         return;
     }
 
@@ -162,7 +168,7 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     spdlog::info(
         __FUNCTION__ ": sending equipment change, actorId: {:X}, serverId {:X}, isLeader: {}, item: {:X}, count: {}, name: {}",
-        acEvent.ActorId, request.ServerId, isLeader, acEvent.ItemId, acEvent.Count, pActor->baseForm->GetName());
+        acEvent.ActorId, request.ServerId, isLeader, acEvent.ItemId, acEvent.Count, pActorBaseName);
 }
 
 void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& acMessage) noexcept
@@ -245,7 +251,8 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
     // Never equip/unequip RFAB's self-destructing Adventurer's Ring (RFAB_ExperienceRing = local 0x112812 in RFAB.esp,
     // e.g. 0x07112812 in RFAB Respect Edition or 0x06112812 in classic RFAB) or dual-ring items on remote player puppets
     // (RFAB.dll's 2-ring patch applies strictly to 0x14!).
-    if (pActor->GetExtension()->IsRemotePlayer())
+    const auto* pActorExt = pActor->GetExtension();
+    if (pActorExt && pActorExt->IsRemotePlayer())
     {
         const auto& rfabAdapter = m_world.GetRfabAdapterService();
         const auto& bindings = rfabAdapter.GetBindings();
@@ -274,7 +281,7 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
             constexpr uint32_t kBipedRingSlotMask = (1u << 6); // Biped slot 36 (Ring)
 
             // On remote players, never displace worn rings (since RFAB 0x14 wears 2 rings while 0xFF puppets have 1 slot).
-            if (pActor->GetExtension()->IsRemotePlayer() && (incomingSlotMask & kBipedRingSlotMask) != 0)
+            if (pActorExt && pActorExt->IsRemotePlayer() && (incomingSlotMask & kBipedRingSlotMask) != 0)
                 return;
 
             // Only unequip existing worn armor pieces whose Biped slot mask overlaps incomingSlotMask,
@@ -320,7 +327,7 @@ void InventoryService::RunWeaponStateUpdates() noexcept
     {
         const auto& formIdComponent = view.get<FormIdComponent>(entity);
         Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-        if (!pActor)
+        if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted() || !pActor->GetExtension())
             continue;
 
         auto& localComponent = view.get<LocalComponent>(entity);
@@ -361,25 +368,26 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
     {
         const auto& formIdComponent = view.get<FormIdComponent>(entity);
         Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-        if (!pActor)
+        if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
             continue;
 
-        if (pActor->GetExtension()->IsPlayer())
+        auto* pActorExt = pActor->GetExtension();
+        if (!pActorExt || pActorExt->IsPlayer())
             continue;
 
-        if (pActor->GetExtension()->nakedDeadline == cNoDeadline)
+        if (pActorExt->nakedDeadline == cNoDeadline)
             continue;
 
         const char* pBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
 
         if (pActor->IsDead() || !pActor->ShouldWearBodyPiece())
         {
-            pActor->GetExtension()->nakedDeadline = cNoDeadline;
+            pActorExt->nakedDeadline = cNoDeadline;
             spdlog::debug(__FUNCTION__ ": actorId {:X} naked check is irrelevant {}", pActor->formID, pBaseName);
             continue; 
         }
 
-        if (now < pActor->GetExtension()->nakedDeadline + cDelayAfterAssignment)
+        if (now < pActorExt->nakedDeadline + cDelayAfterAssignment)
         {
             spdlog::debug(__FUNCTION__ ": actorId {:X} with naked check deadline {}", pActor->formID, pBaseName);
             continue; 

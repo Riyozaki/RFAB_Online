@@ -74,6 +74,9 @@ void PlayerCharacter::SetDifficulty(const int32_t aDifficulty, bool aForceUpdate
 void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noexcept
 {
     Skills::Skill skill = Skills::GetSkillFromActorValue(aSkill);
+    if (!pSkills || !pSkills->data || skill >= Skills::Skill::kTotal || static_cast<int32_t>(skill) < 0)
+        return;
+
     float oldExperience = GetSkillExperience(skill);
 
     ScopedExperienceOverride _;
@@ -103,12 +106,20 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
     {
         // TP to Whiterun temple when killed in world space
         TES* pTes = TES::Get();
-        pCell = ModManager::Get()->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
+        ModManager* pModMgr = ModManager::Get();
+        if (pTes && pModMgr)
+            pCell = pModMgr->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
     }
     else
     {
         // TP to start of cell when killed in an interior
         pCell = GetParentCell();
+    }
+
+    if (!pCell)
+    {
+        SetNoBleedoutRecovery(true);
+        return position;
     }
 
     NiPoint3 pos{};

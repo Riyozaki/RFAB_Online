@@ -4,12 +4,17 @@
 
 #include <World.h>
 #include <Utils.h>
+#include <common/CoopCheckpointStore.h>
+#include <common/CoopOwnership.h>
 #include <common/RfabModpackCompat.h>
 #include <Events/ConnectedEvent.h>
 #include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
+#include <Forms/TESObjectCELL.h>
+#include <Forms/TESWorldSpace.h>
 #include <Games/Overrides.h>
 #include <Games/Skyrim/Interface/UI.h>
+#include <Games/TES.h>
 #include <Messages/CoordinatedSaveAck.h>
 #include <Messages/NotifyCommitSave.h>
 #include <Messages/NotifyExecuteLoad.h>
@@ -24,12 +29,39 @@
 #include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
+#include <array>
+#include <cmath>
+
 namespace
 {
 bool IsAutosaveName(std::string_view aName) noexcept
 {
     return RfabCompat::Detail::StartsWithIgnoreCase(aName, "autosave") ||
            RfabCompat::Detail::ToLowerAscii(aName).find("autosave") != std::string::npos;
+}
+
+struct CachedSaveBlockedMenus
+{
+    std::array<BSFixedString, 8> HardBlocked{
+        BSFixedString("Dialogue Menu"),
+        BSFixedString("Lockpicking Menu"),
+        BSFixedString("BarterMenu"),
+        BSFixedString("ContainerMenu"),
+        BSFixedString("Crafting Menu"),
+        BSFixedString("RaceSex Menu"),
+        BSFixedString("Sleep/Wait Menu"),
+        BSFixedString("Training Menu"),
+    };
+    BSFixedString LoadingMenu{"Loading Menu"};
+    BSFixedString MainMenu{"Main Menu"};
+    BSFixedString JournalMenu{"Journal Menu"};
+    BSFixedString TweenMenu{"TweenMenu"};
+};
+
+const CachedSaveBlockedMenus& GetSaveMenus() noexcept
+{
+    static const CachedSaveBlockedMenus* s_pMenus = new CachedSaveBlockedMenus();
+    return *s_pMenus;
 }
 } // namespace
 
@@ -69,8 +101,25 @@ bool CoordinatedSaveService::IsLoadingMenuOpen() const noexcept
 {
     if (auto* pUi = UI::Get())
     {
-        return pUi->GetMenuOpen(BSFixedString("Loading Menu")) ||
-               pUi->GetMenuOpen(BSFixedString("Main Menu"));
+        const auto& menus = GetSaveMenus();
+        return pUi->GetMenuOpen(menus.LoadingMenu) || pUi->GetMenuOpen(menus.MainMenu);
+    }
+    return false;
+}
+
+bool CoordinatedSaveService::IsBlockingInteractiveMenuOpen(std::string& aOutReason) const noexcept
+{
+    if (auto* pUi = UI::Get())
+    {
+        const auto& menus = GetSaveMenus();
+        for (const auto& menuName : menus.HardBlocked)
+        {
+            if (pUi->GetMenuOpen(menuName))
+            {
+                aOutReason = "открыто интерактивное меню";
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -84,7 +133,7 @@ bool CoordinatedSaveService::CanSafelySaveNow(std::string& aOutReason) const noe
     }
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer || pPlayer->IsDead() || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+    if (!pPlayer || pPlayer->IsDead() || pPlayer->IsStillLoading() || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
     {
         aOutReason = "персонаж недоступен";
         return false;
@@ -95,6 +144,15 @@ bool CoordinatedSaveService::CanSafelySaveNow(std::string& aOutReason) const noe
         aOutReason = "персонаж тяжело ранен";
         return false;
     }
+
+    if (pPlayer->IsInCombat())
+    {
+        aOutReason = "персонаж в бою";
+        return false;
+    }
+
+    if (IsBlockingInteractiveMenuOpen(aOutReason))
+        return false;
 
     return true;
 }
@@ -116,17 +174,22 @@ void CoordinatedSaveService::QueuePurgedAuthorizedSave(const std::string& acSlot
         return;
     }
 
+    if (auto* pUi = UI::Get())
+    {
+        const auto& menus = GetSaveMenus();
+        if (pUi->GetMenuOpen(menus.JournalMenu) || pUi->GetMenuOpen(menus.TweenMenu))
+            pUi->CloseAllMenus();
+    }
+
     m_pendingSaveSlot = cleanStem;
     m_pendingSaveEpochId = aEpochId;
     m_pendingSaveSendAck = aSendServerAck;
-    // Dynamic 0xFFxxxxxx multiplayer actors stay alive in-world and are excluded from .ess non-destructively
-    // via SetSkipSaveFlag(true) (unk10 = 0xFFFF) + UnsetChanged(0xFFFFFFFF), so Save_Impl can run on the very next
-    // BGSSaveLoadManager::ProcessEvents tick on the Main Thread without deleting/respawning remote avatars.
-    m_pendingSavePurgeFrames = 0;
+    // Allow 2 calm main-thread frames after marking all 0xFFxxxxxx dynamic actors & pooled TESNPCs
+    // skip-save + UnsetChanged(0xFFFFFFFF) before executing Save_Impl inside BGSSaveLoadManager::ProcessEvents.
+    m_pendingSavePurgeFrames = 2;
 
     auto& charSvc = m_world.GetCharacterService();
     charSvc.PreSavePurgeDynamicActors();
-    charSvc.SchedulePostSaveRemoteRestore();
 }
 
 void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* apMgr) noexcept
@@ -139,9 +202,11 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
         const std::string slot = std::move(m_pendingSaveSlot);
         const uint64_t epochId = m_pendingSaveEpochId;
         const bool sendAck = m_pendingSaveSendAck;
+        const bool wasPreJoinBackup = m_isExecutingPreJoinBackup;
         m_pendingSaveSlot.clear();
         m_pendingSaveEpochId = 0;
         m_pendingSaveSendAck = false;
+        m_isExecutingPreJoinBackup = false;
 
         std::string failReason;
         bool saveOk = false;
@@ -156,13 +221,40 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
             m_authorizedPendingSaveSlot.clear();
         }
 
-        // Only restore purged remote clones AFTER Save_Impl has completely finished writing .ess to disk!
+        // Restore remote actor tracking after Save_Impl has completely finished writing .ess to disk.
         charSvc.SchedulePostSaveRemoteRestore();
 
         if (saveOk)
         {
+            const std::string normSlot = RfabCompat::Detail::NormalizeSaveSlotStem(slot);
             m_writtenSlotsInSession.insert(slot);
-            m_writtenSlotsInSession.insert(RfabCompat::Detail::NormalizeSaveSlotStem(slot));
+            m_writtenSlotsInSession.insert(normSlot);
+            if (wasPreJoinBackup || normSlot == RfabCompat::Detail::NormalizeSaveSlotStem(m_preJoinBackupSlot))
+            {
+                m_preJoinBackupWrittenThisSession = true;
+                spdlog::info("[RFAB SaveLoad] Refreshed current-session PreJoin backup '{}'", slot);
+            }
+            else
+            {
+                spdlog::info("[RFAB SaveLoad] Wrote coordinated .ess checkpoint '{}' (Epoch={})", slot, epochId);
+            }
+        }
+        else
+        {
+            spdlog::warn(
+                "[RFAB SaveLoad] Deferred save for slot '{}' (Epoch={}, PreJoin={}) did not complete: {}",
+                slot,
+                epochId,
+                wasPreJoinBackup,
+                failReason.empty() ? "Save_Impl rejected or .ess verification failed" : failReason);
+
+            if (wasPreJoinBackup)
+            {
+                // Re-arm PreJoin backup so a temporary jump/combat/menu right after joining never leaves
+                // the session without a fresh backup or forces fallback to a stale save on disk.
+                m_pendingPreJoinBackup = true;
+                m_preJoinBackupDelaySec = 5.0;
+            }
         }
 
         if (sendAck && m_transport.IsConnected())
@@ -172,7 +264,7 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
             ack.SlotName = String(slot.c_str());
             ack.Success = saveOk;
             if (!saveOk)
-                ack.Reason = String(failReason.empty() ? "не удалось записать или проверить .ess слот" : failReason.c_str());
+                ack.Reason = String(failReason.empty() ? "не удалось записать .ess слот (персонаж занят или в прыжке)" : failReason.c_str());
             m_transport.Send(ack);
         }
         return;
@@ -191,6 +283,7 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
         if (!loadOk)
         {
             m_autoReconnectPendingAfterLoad = false;
+            m_wasAutoReconnecting = false;
             spdlog::error("[RFAB SaveLoad] ExecuteDirectLoadFromProcessEvents failed for slot '{}'", slot);
             Utils::ShowHudMessage(String("RFAB Online: Не удалось загрузить слот чекпоинта"));
         }
@@ -203,6 +296,8 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_pendingSaveSlot.clear();
     m_pendingSaveSendAck = false;
     m_pendingSavePurgeFrames = 0;
+    m_hasDeferredPrepareSave = false;
+    m_isExecutingPreJoinBackup = false;
 
     m_world.GetDownedStateService().ResetAllStates();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
@@ -214,6 +309,7 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
         if (m_transport.HasLastServerEndpoint())
         {
             m_autoReconnectPendingAfterLoad = true;
+            m_wasAutoReconnecting = true;
             m_sawLoadingScreenForReconnect = false;
             m_autoReconnectDelaySec = 1.5;
             m_autoReconnectAttemptsLeft = 6;
@@ -238,7 +334,10 @@ void CoordinatedSaveService::NotifyEngineLoadCompleted(const char* acpFileName, 
         m_authorizedPendingLoadSlot.clear();
 
     if (!aSucceeded)
+    {
         m_autoReconnectPendingAfterLoad = false;
+        m_wasAutoReconnecting = false;
+    }
 }
 
 bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) noexcept
@@ -256,6 +355,15 @@ bool CoordinatedSaveService::HandleEngineSaveAttempt(const char* acpFileName) no
 
     if (IsAutosaveName(rawName))
         return false;
+
+    // Close paused Journal Menu immediately if the player clicked ESC -> Save so the 2-frame calm
+    // pre-save detachment and ProcessEvents execution are not stalled by a paused menu.
+    if (auto* pUi = UI::Get())
+    {
+        const auto& menus = GetSaveMenus();
+        if (pUi->GetMenuOpen(menus.JournalMenu))
+            pUi->CloseAllMenus();
+    }
 
     if (m_lastInterceptNoticeCooldownSec <= 0.0)
     {
@@ -287,6 +395,13 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
         if (m_lastInterceptNoticeCooldownSec <= 0.0)
         {
             m_lastInterceptNoticeCooldownSec = 1.5;
+            if (auto* pUi = UI::Get())
+            {
+                const auto& menus = GetSaveMenus();
+                if (pUi->GetMenuOpen(menus.JournalMenu))
+                    pUi->CloseAllMenus();
+            }
+
             RequestCoordinatedSaveLoad req{};
             const std::string cleanStem = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(rawName);
             if (RfabCompat::Detail::StartsWithIgnoreCase(cleanStem, "RFAB_MP_"))
@@ -313,34 +428,42 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
 
 void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
 {
+    const bool reconnectedAfterAuthorizedLoad = m_wasAutoReconnecting;
+
     m_pendingSaveSlot.clear();
     m_pendingSaveEpochId = 0;
     m_pendingSaveSendAck = false;
     m_pendingSavePurgeFrames = 0;
+    m_isExecutingPreJoinBackup = false;
+    m_hasDeferredPrepareSave = false;
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
     m_autoReconnectPendingAfterLoad = false;
+    m_wasAutoReconnecting = false;
     m_sawLoadingScreenForReconnect = false;
     m_autoReconnectAttemptsLeft = 0;
     m_partyCheckpointSettleSec = 0.0;
+    m_initialPartyCheckpointRetries = 0;
 
-    const std::string normBackup = RfabCompat::Detail::NormalizeSaveSlotStem(m_preJoinBackupSlot);
-    if (!m_writtenSlotsInSession.contains(normBackup) && !BGSSaveLoadManager::VerifySavedSlotOnDisk(m_preJoinBackupSlot.c_str()))
+    if (!reconnectedAfterAuthorizedLoad)
     {
+        // Fresh session entry: ALWAYS overwrite RFAB_MP_PreJoin_Backup with the player's current state
+        // instead of trusting any stale RFAB_MP_PreJoin_Backup.ess left over from an earlier session!
+        m_writtenSlotsInSession.clear();
+        m_lastCommittedEpoch = 0;
+        m_lastCommittedSlot.clear();
+        m_preJoinBackupWrittenThisSession = false;
         m_pendingPreJoinBackup = true;
         m_preJoinBackupDelaySec = 3.5;
-    }
-    else
-    {
-        m_writtenSlotsInSession.insert(m_preJoinBackupSlot);
-        m_writtenSlotsInSession.insert(normBackup);
     }
 }
 
 void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
     m_pendingPreJoinBackup = false;
+    m_isExecutingPreJoinBackup = false;
+    m_hasDeferredPrepareSave = false;
     m_initialPartyCheckpointSent = false;
     m_partyCheckpointSettleSec = 0.0;
     if (!m_pendingSaveSlot.empty())
@@ -383,6 +506,7 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
                 if (m_autoReconnectAttemptsLeft == 0)
                 {
                     m_autoReconnectPendingAfterLoad = false;
+                    m_wasAutoReconnecting = false;
                     m_sawLoadingScreenForReconnect = false;
                     return;
                 }
@@ -401,6 +525,30 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (!m_transport.IsConnected())
         return;
 
+    if (m_hasDeferredPrepareSave)
+    {
+        m_deferredPrepareWaitSec -= acEvent.Delta;
+        std::string failReason;
+        if (CanSafelySaveNow(failReason))
+        {
+            const std::string slot = std::move(m_deferredPrepareSlotName);
+            const uint64_t epochId = m_deferredPrepareEpochId;
+            m_hasDeferredPrepareSave = false;
+            QueuePurgedAuthorizedSave(slot, epochId, true);
+        }
+        else if (m_deferredPrepareWaitSec <= 0.0)
+        {
+            CoordinatedSaveAck ack{};
+            ack.EpochId = m_deferredPrepareEpochId;
+            ack.SlotName = String(m_deferredPrepareSlotName.c_str());
+            ack.Success = false;
+            ack.Reason = String(failReason.c_str());
+            m_hasDeferredPrepareSave = false;
+            m_transport.Send(ack);
+        }
+        return;
+    }
+
     if (m_pendingPreJoinBackup && m_pendingSaveSlot.empty() && !IsLoadingMenuOpen())
     {
         m_preJoinBackupDelaySec -= acEvent.Delta;
@@ -410,7 +558,12 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
             if (CanSafelySaveNow(reason))
             {
                 m_pendingPreJoinBackup = false;
+                m_isExecutingPreJoinBackup = true;
                 QueuePurgedAuthorizedSave(m_preJoinBackupSlot, 0, false);
+            }
+            else
+            {
+                m_preJoinBackupDelaySec = 3.0;
             }
         }
     }
@@ -418,12 +571,13 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (!m_initialPartyCheckpointSent &&
         m_lastCommittedEpoch == 0 &&
         m_pendingSaveSlot.empty() &&
+        !m_pendingPreJoinBackup &&
         !IsLoadingMenuOpen() &&
         IsLocalPlayerAuthorizedLeader() &&
         m_world.GetPartyService().GetPlayers().size() >= 2)
     {
         m_partyCheckpointSettleSec += acEvent.Delta;
-        if (m_partyCheckpointSettleSec >= 4.0)
+        if (m_partyCheckpointSettleSec >= 5.0)
         {
             std::string reason;
             if (CanSafelySaveNow(reason))
@@ -432,6 +586,10 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
                 RequestCoordinatedSaveLoad req{};
                 req.Action = RequestCoordinatedSaveLoad::ActionType::ManualSave;
                 m_transport.Send(req);
+            }
+            else
+            {
+                m_partyCheckpointSettleSec = 2.0;
             }
         }
     }
@@ -443,8 +601,28 @@ void CoordinatedSaveService::OnNotifyPrepareSave(const NotifyPrepareSave& acMess
         std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()));
     std::string failReason;
 
+    if (auto* pUi = UI::Get())
+    {
+        const auto& menus = GetSaveMenus();
+        if (pUi->GetMenuOpen(menus.JournalMenu) || pUi->GetMenuOpen(menus.TweenMenu))
+            pUi->CloseAllMenus();
+    }
+
     if (!CanSafelySaveNow(failReason))
     {
+        // If blocked only by a closing menu (not combat or downed bleedout), wait up to 2.5s before rejecting.
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        const bool hardCombatOrDowned = !pPlayer || pPlayer->IsDead() || pPlayer->IsInCombat() ||
+                                        m_world.GetDownedStateService().IsLocalPlayerDowned();
+        if (!hardCombatOrDowned)
+        {
+            m_hasDeferredPrepareSave = true;
+            m_deferredPrepareEpochId = acMessage.EpochId;
+            m_deferredPrepareSlotName = slotName;
+            m_deferredPrepareWaitSec = 2.5;
+            return;
+        }
+
         CoordinatedSaveAck ack{};
         ack.EpochId = acMessage.EpochId;
         ack.SlotName = acMessage.SlotName;
@@ -465,9 +643,97 @@ void CoordinatedSaveService::OnNotifyCommitSave(const NotifyCommitSave& acMessag
         m_lastCommittedSlot = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(
             std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()));
     }
+    else if (m_lastCommittedEpoch == 0 && m_initialPartyCheckpointSent && m_initialPartyCheckpointRetries < 3)
+    {
+        ++m_initialPartyCheckpointRetries;
+        m_initialPartyCheckpointSent = false;
+        m_partyCheckpointSettleSec = 0.0;
+    }
 
     if (!acMessage.Message.empty())
         Utils::ShowHudMessage(acMessage.Message);
+}
+
+void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acMessage) noexcept
+{
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    // 1. Clear downed/bleedout posture, drop active combat, and grant post-rollback invulnerability + full recovery
+    const float restoreFrac = std::clamp(acMessage.RestoreHealthFraction, 0.30f, 1.0f);
+    m_world.GetDownedStateService().ResetAllStates();
+    m_world.GetDownedStateService().ApplyAuthoritativeRevive(restoreFrac, 5.0f, false);
+
+    if (pPlayer->IsInCombat())
+        pPlayer->StopCombat();
+    pPlayer->DispelAllSpells();
+
+    // 2. Restore checkpoint inventory if provided by server
+    if (acMessage.HasRestoreInventory)
+    {
+        ScopedInventoryOverride invGuard;
+        ScopedEquipOverride equipGuard;
+        pPlayer->SetActorInventory(acMessage.RestoreInventory);
+    }
+
+    // 3. Teleport local player seamlessly to checkpoint WorldOrCell + Position without .ess reload or disconnect
+    if (acMessage.HasRestoreTransform &&
+        CoopOwnership::IsValidHandoffCoordinates(acMessage.PositionX, acMessage.PositionY, acMessage.PositionZ))
+    {
+        auto& modSystem = m_world.GetModSystem();
+        const uint32_t targetCellFormId = modSystem.GetGameId(acMessage.TargetCellId);
+        const uint32_t targetWorldFormId = modSystem.GetGameId(acMessage.TargetWorldSpaceId);
+
+        TESObjectCELL* pTargetCell = targetCellFormId != 0 ? Cast<TESObjectCELL>(TESForm::GetById(targetCellFormId)) : nullptr;
+        if (!pTargetCell && targetWorldFormId != 0)
+        {
+            if (auto* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(targetWorldFormId)))
+            {
+                const int32_t gridX = static_cast<int32_t>(std::floor(acMessage.PositionX / 4096.0f));
+                const int32_t gridY = static_cast<int32_t>(std::floor(acMessage.PositionY / 4096.0f));
+                if (auto* pModMgr = ModManager::Get())
+                    pTargetCell = pModMgr->GetCellFromCoordinates(gridX, gridY, pWorldSpace, false);
+            }
+        }
+
+        NiPoint3 targetPos{};
+        targetPos.x = acMessage.PositionX;
+        targetPos.y = acMessage.PositionY;
+        targetPos.z = acMessage.PositionZ;
+
+        const uint32_t curCellId = pPlayer->parentCell ? pPlayer->parentCell->formID : 0u;
+        const uint32_t curWorldId = pPlayer->GetWorldSpace() ? pPlayer->GetWorldSpace()->formID : 0u;
+        const bool sameLoadedContext =
+            (targetWorldFormId != 0 && curWorldId == targetWorldFormId && pTargetCell && curCellId == pTargetCell->formID) ||
+            (targetWorldFormId == 0 && targetCellFormId != 0 && curCellId == targetCellFormId);
+
+        ScopedReferencesOverride refGuard;
+        pPlayer->ResetTeleportPhysics(targetPos.z);
+        if (sameLoadedContext || !pTargetCell)
+        {
+            pPlayer->SetPosition(targetPos, true);
+        }
+        else
+        {
+            pPlayer->MoveTo(pTargetCell, targetPos);
+        }
+        pPlayer->SetRotation(0.0f, 0.0f, acMessage.RotationZ);
+        pPlayer->ResetTeleportPhysics(targetPos.z);
+    }
+
+    // Re-restore full HP/Stamina/Magicka AFTER SetActorInventory so Fortify-Health gear scales cleanly!
+    {
+        DownedStateService::ScopedReviveHealAllowance allowHeal(m_world.GetDownedStateService().GetAuthorizedHealFlag());
+        const float maxHp = std::max(1.0f, pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth));
+        pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, maxHp * restoreFrac);
+    }
+
+    spdlog::info(
+        "[RFAB SaveLoad] Completed seamless in-session checkpoint rollback (Epoch={}, PartyWipe={}, Transform={})",
+        acMessage.EpochId,
+        acMessage.IsPartyWipe,
+        acMessage.HasRestoreTransform);
 }
 
 void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMessage) noexcept
@@ -475,6 +741,15 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
     if (!acMessage.Message.empty())
         Utils::ShowHudMessage(acMessage.Message);
 
+    // 1. MMO / SkyMP Model: Party wipes & server-directed in-session rollbacks execute immediately without
+    // closing TransportService or reloading any .ess file on disk!
+    if (acMessage.UseInSessionRollback)
+    {
+        ApplyInSessionRollback(acMessage);
+        return;
+    }
+
+    // 2. Explicit manual checkpoint slot load (F9 / Load specific RFAB_MP_* slot):
     std::string targetSlot = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(
         std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()));
 
@@ -485,31 +760,36 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
         return BGSSaveLoadManager::VerifySavedSlotOnDisk(aCandidate.c_str());
     };
 
-    if (!isUsableSlot(targetSlot) && acMessage.AllowPreJoinFallback)
+    if (!isUsableSlot(targetSlot))
     {
-        if (isUsableSlot(m_lastCommittedSlot))
+        if (!m_lastCommittedSlot.empty() && isUsableSlot(m_lastCommittedSlot))
+        {
             targetSlot = m_lastCommittedSlot;
-        else if (isUsableSlot(m_preJoinBackupSlot))
+        }
+        else if (CoopCheckpoint::ShouldAllowPreJoinDiskFallback(
+                     acMessage.AllowPreJoinFallback,
+                     m_preJoinBackupWrittenThisSession,
+                     acMessage.HasRestoreTransform) &&
+                 isUsableSlot(m_preJoinBackupSlot))
+        {
             targetSlot = m_preJoinBackupSlot;
+        }
         else
+        {
             targetSlot.clear();
-    }
-    else if (!isUsableSlot(targetSlot))
-    {
-        targetSlot.clear();
+        }
     }
 
     if (targetSlot.empty())
     {
-        spdlog::warn("[RFAB SaveLoad] No valid .ess checkpoint found on disk for NotifyExecuteLoad (PartyWipe={})", acMessage.IsPartyWipe);
-        if (acMessage.IsPartyWipe)
-        {
-            m_world.GetDownedStateService().ApplyAuthoritativeRevive(0.30f, 5.0f, false);
-            Utils::ShowHudMessage(String("RFAB Online: Чекпоинт на диске отсутствует — выполнено аварийное восстановление"));
-        }
+        spdlog::info(
+            "[RFAB SaveLoad] Disk slot '{}' unavailable on this client — applying seamless in-session rollback (Epoch={})",
+            std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()),
+            acMessage.EpochId);
+        ApplyInSessionRollback(acMessage);
         return;
     }
 
-    // Queue for clean execution inside BGSSaveLoadManager::ProcessEvents on the next engine frame.
+    spdlog::info("[RFAB SaveLoad] Queueing coordinated .ess load for slot '{}' (Epoch={})", targetSlot, acMessage.EpochId);
     m_deferredLoadSlot = targetSlot;
 }

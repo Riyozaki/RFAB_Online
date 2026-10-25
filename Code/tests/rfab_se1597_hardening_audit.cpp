@@ -714,7 +714,7 @@ int main()
             {
                 assert(fs::exists("docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json"));
                 assert(fs::exists("docs/V1.1.0_RELEASE_BACKUP_MANIFEST.json"));
-                assert(std::string(RfabCompat::kRfabOnlineVersion) == "1.2.0");
+                assert(std::string(RfabCompat::kRfabOnlineVersion) == "2.0.0");
                 assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.2.0", "v1.2.1-3-gabcdef0"));
                 assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.1.0", "v1.2.0"));
                 assert(!RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0", "v1.2.0"));

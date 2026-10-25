@@ -258,6 +258,8 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
 GamePtr<Actor> Actor::Spawn(uint32_t aBaseFormId) noexcept
 {
     TESNPC* pNpc = Cast<TESNPC>(TESForm::GetById(aBaseFormId));
+    if (!pNpc)
+        return {};
     return Actor::Create(pNpc);
 }
 
@@ -342,8 +344,8 @@ void Actor::SetPlayerRespawnMode(bool aSet) noexcept
 
     if (formID != 0x14)
     {
-        auto pPlayerFaction = Cast<TESFaction>(TESForm::GetById(0xDB1));
-        SetFactionRank(pPlayerFaction, 1);
+        if (auto* pPlayerFaction = Cast<TESFaction>(TESForm::GetById(0xDB1)))
+            SetFactionRank(pPlayerFaction, 1);
     }
 }
 
@@ -936,7 +938,8 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
         ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, preHealth + 4096.0f);
     }
 
-    if (!this->GetExtension()->IsPlayer() && currentInventory.ContainsQuestItems())
+    const auto* pSelfExt = this->GetExtension();
+    if ((!pSelfExt || !pSelfExt->IsPlayer()) && currentInventory.ContainsQuestItems())
         SetInventoryRetainingQuestItems(currentInventory, acInventory);
     else
         SetInventory(acInventory);
@@ -957,27 +960,33 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
 {
     auto* pEquipManager = EquipManager::Get();
+    if (!pEquipManager)
+        return;
+
     auto& modSystem = World::Get().GetModSystem();
 
     if (acEquipment.LeftHandSpell)
     {
         uint32_t mainHandWeaponId = modSystem.GetGameId(acEquipment.LeftHandSpell);
         spdlog::debug("Setting left hand spell: {:X}", mainHandWeaponId);
-        pEquipManager->EquipSpell(this, TESForm::GetById(mainHandWeaponId), 0);
+        if (TESForm* pLeftSpell = TESForm::GetById(mainHandWeaponId))
+            pEquipManager->EquipSpell(this, pLeftSpell, 0);
     }
 
     if (acEquipment.RightHandSpell)
     {
         uint32_t secondaryHandWeaponId = modSystem.GetGameId(acEquipment.RightHandSpell);
         spdlog::debug("Setting right hand spell: {:X}", secondaryHandWeaponId);
-        pEquipManager->EquipSpell(this, TESForm::GetById(secondaryHandWeaponId), 1);
+        if (TESForm* pRightSpell = TESForm::GetById(secondaryHandWeaponId))
+            pEquipManager->EquipSpell(this, pRightSpell, 1);
     }
 
     if (acEquipment.Shout)
     {
         uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
         spdlog::debug("Setting shout: {:X}", shoutId);
-        pEquipManager->EquipShout(this, TESForm::GetById(shoutId));
+        if (TESForm* pShout = TESForm::GetById(shoutId))
+            pEquipManager->EquipShout(this, pShout);
     }
 }
 

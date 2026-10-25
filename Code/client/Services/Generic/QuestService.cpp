@@ -18,6 +18,7 @@
 #include <Messages/NotifyQuestUpdate.h>
 #include <Messages/NotifyQuestSceneUpdate.h>
 #include <common/RfabModpackCompat.h>
+#include <common/CoopTeleportGuard.h>
 
 namespace spdfmt = spdlog::fmt_lib;
 
@@ -34,6 +35,7 @@ struct ScopedRemoteQuestUpdateGuard
     }
     ~ScopedRemoteQuestUpdateGuard() noexcept { s_inRemoteQuestUpdate = m_prev; }
     bool m_prev{false};
+    CoopTeleportGuard::ScopedRemoteQuestMoveToSuppression m_moveToSuppression{};
 };
 
 const char* ResolveQuestEditorId(TESQuest* apQuest) noexcept

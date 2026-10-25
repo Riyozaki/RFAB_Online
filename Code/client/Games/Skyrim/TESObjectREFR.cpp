@@ -39,6 +39,8 @@
 
 #include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/AnimationVariables.h>
+#include <common/CoopTeleportGuard.h>
+#include <PlayerCharacter.h>
 
 extern const AnimationGraphDescriptor* BehaviorVarPatch(BSAnimationGraphManager* pManager, Actor* pActor);
 
@@ -50,6 +52,7 @@ TP_THIS_FUNCTION(TPlayAnimationAndWait, bool, void, uint32_t auiStackID, TESObje
 TP_THIS_FUNCTION(TPlayAnimation, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apEventName);
 TP_THIS_FUNCTION(TRotate, void, TESObjectREFR, float aAngle);
 TP_THIS_FUNCTION(TLockChange, void, TESObjectREFR);
+TP_THIS_FUNCTION(TInternalMoveTo, bool, TESObjectREFR, uint32_t*& arTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation);
 
 static TActivate* RealActivate = nullptr;
 static TAddInventoryItem* RealAddInventoryItem = nullptr;
@@ -60,6 +63,7 @@ static TRotate* RealRotateX = nullptr;
 static TRotate* RealRotateY = nullptr;
 static TRotate* RealRotateZ = nullptr;
 static TLockChange* RealLockChange = nullptr;
+static TInternalMoveTo* RealInternalMoveTo = nullptr;
 
 #ifdef SAVE_STUFF
 
@@ -383,11 +387,15 @@ void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) co
     if (pSelfActor)
         pSelfActor->ResetTeleportPhysics(acPosition.z);
 
-    TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);
-
-    POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
-
-    TiltedPhoques::ThisCall(s_internalMoveTo, this, GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    if (RealInternalMoveTo)
+    {
+        TiltedPhoques::ThisCall(RealInternalMoveTo, const_cast<TESObjectREFR*>(this), GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    }
+    else
+    {
+        POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
+        TiltedPhoques::ThisCall(s_internalMoveTo, const_cast<TESObjectREFR*>(this), GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    }
 
     if (pSelfActor)
         pSelfActor->ResetTeleportPhysics(acPosition.z);
@@ -1378,11 +1386,14 @@ TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObje
 
 void TP_MAKE_THISCALL(HookRotateX, TESObjectREFR, float aAngle)
 {
+    if (!apThis)
+        return;
+
     if (apThis->formType == Actor::Type)
     {
         const auto pActor = static_cast<Actor*>(apThis);
         // We don't allow remotes to move
-        if (pActor->GetExtension()->IsRemote())
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote())
             return;
     }
 
@@ -1391,11 +1402,14 @@ void TP_MAKE_THISCALL(HookRotateX, TESObjectREFR, float aAngle)
 
 void TP_MAKE_THISCALL(HookRotateY, TESObjectREFR, float aAngle)
 {
+    if (!apThis)
+        return;
+
     if (apThis->formType == Actor::Type)
     {
         const auto pActor = static_cast<Actor*>(apThis);
         // We don't allow remotes to move
-        if (pActor->GetExtension()->IsRemote())
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote())
             return;
     }
 
@@ -1404,19 +1418,61 @@ void TP_MAKE_THISCALL(HookRotateY, TESObjectREFR, float aAngle)
 
 void TP_MAKE_THISCALL(HookRotateZ, TESObjectREFR, float aAngle)
 {
+    if (!apThis)
+        return;
+
     if (apThis->formType == Actor::Type)
     {
         const auto pActor = static_cast<Actor*>(apThis);
         // We don't allow remotes to move
-        if (pActor->GetExtension()->IsRemote())
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote())
             return;
     }
 
     return TiltedPhoques::ThisCall(RealRotateZ, apThis, aAngle);
 }
 
+bool TP_MAKE_THISCALL(HookInternalMoveTo, TESObjectREFR, uint32_t*& arTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation)
+{
+    if (!apThis)
+        return false;
+
+    if (!ScopedReferencesOverride::IsOverriden())
+    {
+        if (apThis->formID == 0x14 &&
+            CoopTeleportGuard::RemoteQuestMoveToGuard::ShouldBlockUnauthorizedPlayerMoveTo())
+        {
+            spdlog::warn(
+                "[RFAB TeleportGuard] Blocked unauthorized remote-quest PlayerCharacter::MoveTo (targetCell={:X}, worldSpace={:X}, pos=({:.1f}, {:.1f}, {:.1f}))",
+                apTargetCell ? apTargetCell->formID : 0u,
+                apTargetWorldSpace ? apTargetWorldSpace->formID : 0u,
+                acPosition.x,
+                acPosition.y,
+                acPosition.z);
+            return false;
+        }
+
+        if (apThis->formType == Actor::Type)
+        {
+            auto* pActor = static_cast<Actor*>(apThis);
+            if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemotePlayer())
+            {
+                spdlog::debug(
+                    "[RFAB TeleportGuard] Blocked unauthorized engine/script MoveTo on remote player {:X}",
+                    apThis->formID);
+                return false;
+            }
+        }
+    }
+
+    return TiltedPhoques::ThisCall(RealInternalMoveTo, apThis, arTargetHandle, apTargetCell, apTargetWorldSpace, acPosition, acRotation);
+}
+
 void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
 {
+    if (!apThis)
+        return;
+
     TiltedPhoques::ThisCall(RealLockChange, apThis);
     const auto* pLock = apThis->GetLock();
     if(pLock)
@@ -1437,6 +1493,7 @@ static TiltedPhoques::Initializer s_objectReferencesHooks(
         POINTER_SKYRIMSE(TRemoveInventoryItem, s_removeInventoryItem, 19263);
         POINTER_SKYRIMSE(TPlayAnimationAndWait, s_playAnimationAndWait, 55675);
         POINTER_SKYRIMSE(TPlayAnimation, s_playAnimation, 55674);
+        POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
 
         RealLockChange = s_lockChange.Get();
         RealRotateX = s_rotateX.Get();
@@ -1447,6 +1504,7 @@ static TiltedPhoques::Initializer s_objectReferencesHooks(
         RealRemoveInventoryItem = s_removeInventoryItem.Get();
         RealPlayAnimationAndWait = s_playAnimationAndWait.Get();
         RealPlayAnimation = s_playAnimation.Get();
+        RealInternalMoveTo = s_internalMoveTo.Get();
 
         TP_HOOK(&RealLockChange, HookLockChange);
         TP_HOOK(&RealRotateX, HookRotateX);
@@ -1457,4 +1515,5 @@ static TiltedPhoques::Initializer s_objectReferencesHooks(
         TP_HOOK(&RealRemoveInventoryItem, HookRemoveInventoryItem);
         TP_HOOK(&RealPlayAnimationAndWait, HookPlayAnimationAndWait);
         TP_HOOK(&RealPlayAnimation, HookPlayAnimation);
+        TP_HOOK(&RealInternalMoveTo, HookInternalMoveTo);
     });

@@ -700,6 +700,19 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
     m_savePurgeActive = true;
     m_pendingPostSaveRemoteRestore = false;
 
+    // Ensure every pooled 0xFFxxxxxx remote player TESNPC base form is excluded from BGSSaveLoadGame!
+    for (const auto& [playerId, npcFormId] : m_playerBaseNpcPool)
+    {
+        (void)playerId;
+        if ((npcFormId & 0xFF000000u) != 0xFF000000u)
+            continue;
+        if (TESForm* pBaseForm = TESForm::GetById(npcFormId))
+        {
+            pBaseForm->SetSkipSaveFlag(true);
+            pBaseForm->UnsetChanged(0xFFFFFFFF);
+        }
+    }
+
     // Non-destructively mark all dynamic 0xFFxxxxxx multiplayer actors/references so Skyrim SE's
     // TESObjectREFR::CheckSaveGame (unk10 = 0xFFFF) and BGSSaveLoadGame::saveLoadChanges
     // (UnsetChanged(0xFFFFFFFF)) completely omit them from .ess WITHOUT deleting live remote players

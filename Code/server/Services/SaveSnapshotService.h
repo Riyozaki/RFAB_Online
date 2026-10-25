@@ -7,10 +7,13 @@
 #include <Structs/Inventory.h>
 #include <Structs/LockData.h>
 #include <Structs/QuestLog.h>
+#include <CoopCheckpointStore.h>
 #include <CoopFlightDigest.h>
 
 #include <cstdint>
 #include <deque>
+#include <filesystem>
+#include <glm/vec3.hpp>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -60,12 +63,38 @@ public:
     {
     }
 
+    [[nodiscard]] const std::string& GetSessionTag() const noexcept { return m_sessionTag; }
+    [[nodiscard]] uint64_t GetNextEpochId() const noexcept { return m_nextEpochId; }
+    [[nodiscard]] size_t GetManualRingCursor() const noexcept { return m_manualRingCursor; }
+    [[nodiscard]] size_t GetAutoRingCursor() const noexcept { return m_autoRingCursor; }
     [[nodiscard]] bool HasPendingBarrier() const noexcept { return m_pending.has_value(); }
     [[nodiscard]] const std::optional<PendingBarrier>& GetPendingBarrier() const noexcept { return m_pending; }
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_lastCommittedEpoch; }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_lastCommittedSlot; }
     [[nodiscard]] uint64_t GetCurrentWorldEpoch() const noexcept { return m_worldGeneration; }
     [[nodiscard]] const CoopFlight::FlightRingBuffer<512>& GetFlightRing() const noexcept { return m_flightRing; }
+
+    void RestorePersistedState(
+        std::string aSessionTag,
+        uint64_t aNextEpochId,
+        uint64_t aWorldGeneration,
+        size_t aManualRingCursor,
+        size_t aAutoRingCursor,
+        uint64_t aLastCommittedEpoch,
+        std::string aLastCommittedSlot) noexcept
+    {
+        if (!aSessionTag.empty())
+            m_sessionTag = std::move(aSessionTag);
+        m_nextEpochId = aNextEpochId;
+        m_worldGeneration = aWorldGeneration > 0 ? aWorldGeneration : 1;
+        if (m_nextEpochId < m_lastCommittedEpoch)
+            m_nextEpochId = m_lastCommittedEpoch;
+        m_manualRingCursor = aManualRingCursor;
+        m_autoRingCursor = aAutoRingCursor;
+        m_lastCommittedEpoch = aLastCommittedEpoch;
+        m_lastCommittedSlot = std::move(aLastCommittedSlot);
+        m_pending.reset();
+    }
 
     void RecordFlightEvent(uint64_t aNowMs, CoopFlight::FlightEventKind aKind, uint32_t aSubjectId = 0, uint64_t aAuxValue = 0) noexcept
     {
@@ -231,6 +260,18 @@ public:
         bool IsDead{false};
     };
 
+    struct PlayerStateRecord
+    {
+        bool HasValidTransform{false};
+        GameId CellId{};
+        GameId WorldSpaceId{};
+        GridCellCoords CenterCoords{};
+        glm::vec3 Position{0.0f, 0.0f, 0.0f};
+        glm::vec3 Rotation{0.0f, 0.0f, 0.0f};
+        bool HasInventory{false};
+        Inventory CurrentInventory{};
+    };
+
     struct CalendarStateRecord
     {
         int Hour{8};
@@ -260,6 +301,7 @@ public:
 
         std::unordered_map<uint32_t, QuestLog> QuestLogsByPlayerId{};
         QuestLog SharedPartyQuestLog{};
+        std::unordered_map<uint32_t, PlayerStateRecord> PlayersById{};
         std::unordered_map<uint32_t, ActorStateRecord> TrackedActors{};
         std::vector<ObjectStateRecord> TrackedObjects{};
         RfabProgressionLedger::Snapshot Progression{};
@@ -274,6 +316,10 @@ public:
     bool TriggerRollbackToSlot(const std::string& acSlotName, bool aIsPartyWipe) noexcept;
 
     void NotifyEncounterVictory(bool aBossDefeated) noexcept;
+
+    bool SaveCheckpointsToDisk(const std::filesystem::path& acPath) const noexcept;
+    bool LoadCheckpointsFromDisk(const std::filesystem::path& acPath) noexcept;
+    [[nodiscard]] static std::filesystem::path GetDefaultCheckpointStorePath();
 
     [[nodiscard]] SaveSnapshotCoordinator& GetCoordinator() noexcept { return m_coordinator; }
     [[nodiscard]] const SaveSnapshotCoordinator& GetCoordinator() const noexcept { return m_coordinator; }
@@ -292,12 +338,16 @@ private:
 
     void FinalizeCommit() noexcept;
     void AbortBarrier(const std::string& acReason) noexcept;
+    [[nodiscard]] std::optional<PlayerStateRecord> CapturePlayerState(Player* apPlayer) const noexcept;
+    void RefreshPlayerJoinBaselines() noexcept;
     [[nodiscard]] WorldSnapshot CaptureWorldSnapshot(uint64_t aEpochId, const std::string& acSlotName, bool aIsAuto, uint64_t aNowMs) const;
     void ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bool aIsPartyWipe) noexcept;
 
     World& m_world;
     SaveSnapshotCoordinator m_coordinator;
     std::deque<WorldSnapshot> m_snapshots{};
+    std::unordered_map<uint32_t, PlayerStateRecord> m_playerJoinBaselines{};
+    bool m_deferredManualSaveAfterCombat{false};
 
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_playerLeaveConnection;

@@ -473,7 +473,7 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept
 {
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
-    if (!pActor)
+    if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
     {
         spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.Id);
         return;
@@ -481,7 +481,10 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
 
     {
         ScopedActorValueOverride avOverride;
-        const float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+        const float maxHealth = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
+        float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
+        if (acMessage.DeltaHealth > 0.f && maxHealth > 0.f)
+            newHealth = std::min(newHealth, maxHealth);
         pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
     }
 
@@ -489,7 +492,7 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
     if (!pActor->IsDead() && health <= 0.f)
     {
         ActorExtension* pExtension = pActor->GetExtension();
-        if (!pExtension->IsPlayer())
+        if (pExtension && !pExtension->IsPlayer())
         {
             if (pExtension->IsRemote())
             {
@@ -593,26 +596,29 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
 
 void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessage) const noexcept
 {
-    auto view = m_world.view<FormIdComponent, RemoteComponent>();
-
-    const auto it = std::find_if(std::begin(view), std::end(view), [id = acMessage.Id, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == id; });
-
-    if (it == std::end(view))
-        return;
-
-    auto& formIdComponent = view.get<FormIdComponent>(*it);
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-
-    if (!pActor)
+    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
+    if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
 
     ActorExtension* pExtension = pActor->GetExtension();
     // Players should never be killed
-    if (pExtension->IsPlayer())
+    if (!pExtension || pExtension->IsPlayer())
         return;
 
-    if (pActor->IsDead() != acMessage.IsDead)
+    // Only apply remote death kills to non-owned actors unless resurrecting an owned actor during checkpoint rollback!
+    if (acMessage.IsDead && pExtension->IsLocal())
+        return;
+
+    const bool localDead = pActor->IsDead();
+    if (localDead != acMessage.IsDead)
     {
+        spdlog::info(
+            "[RFAB DeathSync] Reconciling actor {:X} (serverId={:X}, localDead={} -> serverDead={})",
+            pActor->formID,
+            acMessage.Id,
+            localDead,
+            acMessage.IsDead);
+
         if (acMessage.IsDead)
         {
             ScopedActorValueOverride avOverride;
@@ -622,6 +628,12 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
         else
         {
             pActor->Respawn();
+            auto localView = m_world.view<FormIdComponent, LocalComponent>();
+            for (auto entity : localView)
+            {
+                if (localView.get<FormIdComponent>(entity).Id == pActor->formID)
+                    localView.get<LocalComponent>(entity).IsDead = false;
+            }
         }
     }
 }

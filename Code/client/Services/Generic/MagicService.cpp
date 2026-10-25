@@ -664,8 +664,8 @@ void MagicService::ApplyQueuedEffects() noexcept
         AddTargetEvent target = m_queuedEffects.front().Target();
         Actor* pCaster = Cast<Actor>(TESForm::GetById(target.CasterID));
         Actor* pTarget = Cast<Actor>(TESForm::GetById(target.TargetID));
-        auto pTargetName = !pTarget ? "" : pTarget->baseForm->GetName();
-        auto pCasterName = !pCaster ? "" : pCaster->baseForm->GetName();
+        auto pTargetName = (!pTarget || !pTarget->baseForm) ? "" : pTarget->baseForm->GetName();
+        auto pCasterName = (!pCaster || !pCaster->baseForm) ? "" : pCaster->baseForm->GetName();
 
         // Check for and skip expired (timed out) events, that Actor isn't likely to exist anymore.
         if (m_queuedEffects.front().Expired())
@@ -728,8 +728,8 @@ void MagicService::ApplyQueuedEffects() noexcept
         NotifyAddTarget target = m_queuedRemoteEffects.front().Target();
         Actor* pTarget = Utils::GetByServerId<Actor>(target.TargetId); 
         Actor* pCaster = Utils::GetByServerId<Actor>(target.CasterId); 
-        auto pTargetName = !pTarget ? "" : pTarget->baseForm->GetName();
-        auto pCasterName = !pCaster ? "" : pCaster->baseForm->GetName(); 
+        auto pTargetName = (!pTarget || !pTarget->baseForm) ? "" : pTarget->baseForm->GetName();
+        auto pCasterName = (!pCaster || !pCaster->baseForm) ? "" : pCaster->baseForm->GetName(); 
 
         if (m_queuedRemoteEffects.front().Expired())
             MagicQueue::Spdlog("{}: removing expired NotifyAddTarget event from queue: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
