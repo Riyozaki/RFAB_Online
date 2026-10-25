@@ -29,6 +29,7 @@
 #include <Structs/Tints.h>
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -148,7 +149,8 @@ TEST_CASE("v2.0.0 wire packet bounds and hostile/truncated payload resilience", 
         // Write an astronomical VarInt (> INT32_MAX and > UINT32_MAX) with zero trailing payload bytes
         Serialization::WriteVarInt(writer, 0x90000000ULL);
         Serialization::WriteVarInt(writer, 0x90000000ULL);
-        ViewBuffer truncatedPacket(buf.GetWriteData(), writer.Size());
+        Buffer truncatedPacket(writer.Size());
+        std::memcpy(truncatedPacket.GetWriteData(), buf.GetData(), writer.Size());
 
         {
             Buffer::Reader reader(&truncatedPacket);
