@@ -186,7 +186,7 @@ private:
         bool m_isFirstPass = true;
     };
 
-    Map<uint32_t, WeaponDrawData> m_weaponDrawUpdates{};
+    mutable Map<uint32_t, WeaponDrawData> m_weaponDrawUpdates{};
 
     entt::scoped_connection m_referenceAddedConnection;
     entt::scoped_connection m_referenceRemovedConnection;
