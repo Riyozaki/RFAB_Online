@@ -1,9 +1,11 @@
 #include <common/RfabModpackCompat.h>
 #include <common/CoopOwnership.h>
 #include <common/CoopFlightDigest.h>
+#ifndef RFAB_STANDALONE_NO_ESLOADER
 #include <es_loader/stdafx.h>
 #include <es_loader/ESLoader.h>
 #include <es_loader/TESFile.h>
+#endif
 
 #ifdef RFAB_STANDALONE_AUDIT_MAIN
 #include <atomic>
@@ -13,12 +15,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
 #include <BSCore/BSIntrusiveRefCounted.h>
 #include <BSCore/BSTSmartPointer.h>
 #include <Havok/hkStepInfo.h>
@@ -53,6 +57,7 @@ struct TestGraphObj : BSIntrusiveRefCounted
     }
 };
 } // namespace
+#endif
 
 int main()
 {
@@ -156,6 +161,7 @@ int main()
         fs::remove_all(tempRoot);
     }
 
+#ifdef _WIN32
     // 4. BSTSmartPointer + BSIntrusiveRefCounted RAII zero-leak verification
     {
         assert(TestGraphObj::s_aliveCount == 0);
@@ -238,10 +244,13 @@ int main()
         assert(lists.spells[1] == reinterpret_cast<SpellItem*>(0x2000));
         assert(lists.spells[2] == nullptr);
 
+#ifndef RFAB_STANDALONE_NO_ESLOADER
         TiltedPhoques::Map<TiltedPhoques::String, uint8_t> masters;
         ESLoader::TESFile missingPlugin(masters);
         assert(!missingPlugin.LoadFile("/tmp/definitely_missing_rfab_plugin_99999.esp"));
+#endif
     }
+#endif
 
     // 7. v1.1.0 Playtest Regressions: TESV_SAVEGAME validator, stem normalizer, quarantine,
     //    RFAB_XP_Amount/Multiplier wallet isolation, [RFAB] Autosave.ini full suppression,
@@ -308,6 +317,7 @@ int main()
             appendU16(hdr, compType);
 
             std::vector<uint8_t> out;
+            out.reserve(4096 + actualBodyBytes);
             out.insert(out.end(), {'T','E','S','V','_','S','A','V','E','G','A','M','E'});
             appendU32(out, static_cast<uint32_t>(hdr.size()));
             out.insert(out.end(), hdr.begin(), hdr.end());
@@ -457,6 +467,149 @@ int main()
             assert(cellCpp.find("if (!pRef || !pRef->baseForm)") != std::string::npos);
             assert(actorCpp.find("BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);") != std::string::npos);
 
+            // (6) Stage 1 (v1.2.0): Boss & Arena Encounter Sync
+            const std::string extraDataH = readTextFile("Code/client/Games/Skyrim/ExtraData/ExtraData.h");
+            const std::string actorBaseDataH = readTextFile("Code/client/Games/Skyrim/Components/TESActorBaseData.h");
+            const std::string magicTargetCpp = readTextFile("Code/client/Games/Skyrim/Magic/MagicTarget.cpp");
+            const std::string serverAvCpp = readTextFile("Code/server/Services/ActorValueService.cpp");
+            const std::string serverObjCpp = readTextFile("Code/server/Services/ObjectService.cpp");
+            const std::string clientObjCpp = readTextFile("Code/client/Services/Generic/ObjectService.cpp");
+            const std::string serverProgH = readTextFile("Code/server/Services/RfabProgressionService.h");
+            const std::string serverProgCpp = readTextFile("Code/server/Services/RfabProgressionService.cpp");
+
+            assert(extraDataH.find("Ghost = 0x7A") != std::string::npos);
+            assert(extraDataH.find("struct ExtraGhost : BSExtraData") != std::string::npos);
+            assert(actorBaseDataH.find("IS_GHOST = 1u << 29") != std::string::npos);
+            assert(actorBaseDataH.find("IS_INVULNERABLE = 1u << 31") != std::string::npos);
+            assert(actorCpp.find("bool Actor::IsGhost() const noexcept") != std::string::npos);
+            assert(actorCpp.find("void Actor::SetGhost(bool aIsGhost) noexcept") != std::string::npos);
+            assert(actorCpp.find("if (apThis && !apThis->GetExtension()->IsPlayer() && apThis->IsGhost())") != std::string::npos);
+            assert(magicTargetCpp.find("if (!isFriendlySupport && pTargetActor->IsGhost() && arData.pCaster != pTargetActor)") != std::string::npos);
+            assert(rfabSvcCpp.find("bool RfabAdapterService::IsBossActor(Actor* apActor) const noexcept") != std::string::npos);
+            assert(rfabSvcCpp.find("void RfabAdapterService::PollBossEncounterState() noexcept") != std::string::npos);
+            assert(rfabSvcCpp.find("void RfabAdapterService::BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept") != std::string::npos);
+            assert(charSvcCpp.find("void CharacterService::ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlayerId) noexcept") != std::string::npos);
+            assert(downedCpp.find("m_world.GetCharacterService().ClaimCombatActorsFromDownedPeer(acMessage.PlayerId);") != std::string::npos);
+            assert(serverAvCpp.find("RfabCompat::ShouldBlockFalseBossResetHeal(") != std::string::npos);
+            assert(serverProgH.find("bool UpdateBossGhostState(uint32_t aServerEntityId, bool aIsGhost)") != std::string::npos);
+            assert(serverProgCpp.find("case SyncRfabProgressionEvent::EventKind::BossEncounterSync:") != std::string::npos);
+            assert(refrCpp.find("#define OBJECT_ANIM_SYNC 1") != std::string::npos);
+            assert(refrCpp.find("ShouldAutoUnlockCoopArenaBarrier(apThis, pActivator)") != std::string::npos);
+            assert(clientObjCpp.find("RfabCompat::AreDoorStatesCompatibleForSync(remotePreActivationState, localState)") != std::string::npos);
+            assert(serverObjCpp.find("if (!pPlayer || pPlayer == acMessage.pPlayer)") != std::string::npos);
+
+            // Unit tests for Stage 1 helpers in RfabModpackCompat.h:
+            {
+                RfabCompat::RfabLiveXpTable bossTable{};
+                RfabCompat::ParseBossListJson(
+                    R"({"formList":{"bosses":["__formData|Skyrim.esm|0x000F8A48","RFAB_Boss_CustomLich"]}})",
+                    bossTable);
+                assert(bossTable.ContainsBossBaseFormId(0x040F8A48u));
+                assert(!bossTable.ContainsBossBaseFormId(0x00012345u));
+                assert(RfabCompat::IsRfabBossEditorId("RFAB_Boss_CustomLich", &bossTable));
+                assert(RfabCompat::IsRfabBossEditorId("DLC1LD_ForgemasterBoss", &bossTable));
+                assert(RfabCompat::IsRfabBossEditorId("EncDragonPriest09Morokei", &bossTable));
+                assert(!RfabCompat::IsRfabBossEditorId("EncBandit01Melee", &bossTable));
+
+                // False boss out-of-combat reset heal blocked while living allies are fighting:
+                assert(RfabCompat::ShouldBlockFalseBossResetHeal(
+                    /*aEncounterActiveWithLivingAllies=*/true,
+                    /*aIsBossOrHighHpActor=*/true,
+                    /*aServerCurrentHp=*/1200.0f,
+                    /*aServerMaxHp=*/5000.0f,
+                    /*aProposedHp=*/5000.0f));
+
+                // Normal RFAB in-combat regeneration ticks (+150 HP per tick) are NOT blocked:
+                assert(!RfabCompat::ShouldBlockFalseBossResetHeal(
+                    /*aEncounterActiveWithLivingAllies=*/true,
+                    /*aIsBossOrHighHpActor=*/true,
+                    /*aServerCurrentHp=*/1200.0f,
+                    /*aServerMaxHp=*/5000.0f,
+                    /*aProposedHp=*/1350.0f));
+
+                // Legitimate out-of-combat reset when encounter has ended (team wiped / left leash) is NOT blocked:
+                assert(!RfabCompat::ShouldBlockFalseBossResetHeal(
+                    /*aEncounterActiveWithLivingAllies=*/false,
+                    /*aIsBossOrHighHpActor=*/true,
+                    /*aServerCurrentHp=*/1200.0f,
+                    /*aServerMaxHp=*/5000.0f,
+                    /*aProposedHp=*/5000.0f));
+
+                // Transitional door open states normalize cleanly so doors never permanently desync:
+                assert(RfabCompat::AreDoorStatesCompatibleForSync(1u, 1u)); // kOpen == kOpen
+                assert(RfabCompat::AreDoorStatesCompatibleForSync(2u, 1u)); // kOpening ~ kOpen
+                assert(RfabCompat::AreDoorStatesCompatibleForSync(3u, 4u)); // kClosed ~ kClosing
+                assert(!RfabCompat::AreDoorStatesCompatibleForSync(1u, 3u)); // kOpen != kClosed
+            }
+
+            // (7) Stage 2 (v1.2.0): Quest, Puzzle & Dungeon Trigger Sync
+            const std::string clientQuestCpp = readTextFile("Code/client/Services/Generic/QuestService.cpp");
+            const std::string serverQuestH = readTextFile("Code/server/Services/QuestService.h");
+            const std::string serverQuestCpp = readTextFile("Code/server/Services/QuestService.cpp");
+            const std::string serverPartyCpp = readTextFile("Code/server/Services/PartyService.cpp");
+
+            assert(clientQuestCpp.find("ScopedRemoteQuestUpdateGuard remoteQuestGuard;") != std::string::npos);
+            assert(clientQuestCpp.find("RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId(edid, apQuest->formID)") != std::string::npos);
+            assert(clientQuestCpp.find("RfabCompat::IsDungeonOrStoryQuestEditorId(edid)") != std::string::npos);
+            assert(clientQuestCpp.find("std::strcmp(pQuest->idName.AsAscii(), name.c_str()) == 0") != std::string::npos);
+            assert(clientQuestCpp.find("pQuest->EnsureQuestStarted(started, false);") != std::string::npos);
+            assert(serverQuestH.find("void SyncPartyQuestsForPlayer(Player* apPlayer) noexcept;") != std::string::npos);
+            assert(serverQuestCpp.find("Console::Setting bEnableMiscQuestSync{\"Gameplay:bEnableMiscQuestSync\", \"Syncs dungeon, bounty, and miscellaneous quests across the party\", true};") != std::string::npos);
+            assert(serverQuestCpp.find("void QuestService::SyncLeaderQuestLogToMember(Player* apLeader, Player* apMember) noexcept") != std::string::npos);
+            assert(serverQuestCpp.find("dedupHistory.ResetSceneMaster();") != std::string::npos);
+            assert(serverPartyCpp.find("m_world.GetQuestService().SyncPartyQuestsForPlayer(aPlayer);") != std::string::npos);
+            assert(refrCpp.find("WasObjectDirectlyActivatedRecently(apSelf->formID)") != std::string::npos);
+            assert(refrCpp.find("RecordDirectObjectActivation(apThis->formID);") != std::string::npos);
+
+            // Unit tests for Stage 2 quest classification helpers in RfabModpackCompat.h:
+            {
+                // System / MCM / UI / transformation quests are always blocked across any load order:
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("SKI_ConfigManagerInstance", 0x05000800u));
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("REQ_Atmosphere", 0x09123456u));
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("RFAB_MCM_Quest", 0x07001234u));
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("RFAB_XP_MainQuest", 0x07005678u));
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("", 0x020071D0u)); // DLC1PlayerVampireQuest at slot 02
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("", 0x0A0071D0u)); // DLC1PlayerVampireQuest at slot 0A
+                assert(RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("", 0x0002BA16u)); // PlayerWerewolfQuest
+
+                // Real dungeon, puzzle, claw, Dragon Priest, bounty, and story quests are recognized and synced:
+                assert(!RfabCompat::IsQuestNonSyncableByEditorIdOrBaseId("dunBleakFallsBarrowQST", 0x00035354u));
+                assert(RfabCompat::IsDungeonOrStoryQuestEditorId("dunBleakFallsBarrowQST"));
+                assert(RfabCompat::IsDungeonOrStoryQuestEditorId("dunForelhostQST"));
+                assert(RfabCompat::IsDungeonOrStoryQuestEditorId("dunValthumeQST"));
+                assert(RfabCompat::IsDungeonOrStoryQuestEditorId("dunLabyrinthianMazeControl"));
+                assert(RfabCompat::IsDungeonOrStoryQuestEditorId("BQ01"));
+                assert(RfabCompat::IsDungeonOrStoryQuestEditorId("RFAB_Quest_BossTrial"));
+                assert(!RfabCompat::IsDungeonOrStoryQuestEditorId("SKI_WidgetManager"));
+                assert(!RfabCompat::IsDungeonOrStoryQuestEditorId("RFAB_MCM"));
+            }
+
+            // (8) Stage 3 (v1.2.0): RFAB Combat Stances, Custom Buffs & Aura Sync
+            const std::string magicItemCpp = readTextFile("Code/client/Games/Skyrim/Forms/MagicItem.cpp");
+            const std::string magicSvcH = readTextFile("Code/client/Services/MagicService.h");
+            const std::string magicSvcCpp = readTextFile("Code/client/Services/Generic/MagicService.cpp");
+
+            assert(magicItemCpp.find("RfabCompat::IsFriendlyScriptBuffEffectEditorId(") != std::string::npos);
+            assert(magicItemCpp.find("case EffectArchetypes::ArchetypeID::kCureParalysis:") != std::string::npos);
+            assert(magicTargetCpp.find("struct ScopedCoopPartyTeammateFlags") != std::string::npos);
+            assert(magicTargetCpp.find("ScopedCoopPartyTeammateFlags teammateGuard(enablePartyTeammateAuras);") != std::string::npos);
+            assert(magicTargetCpp.find("ScopedCoopPartyTeammateFlags teammateGuard(isFriendlySupport);") != std::string::npos);
+            assert(actorCpp.find("PAPYRUS_FUNCTION(bool, Actor, DispelSpell, MagicItem*);") != std::string::npos);
+            assert(actorCpp.find("pEffect->uiFlags |= kActiveEffectDispelledFlag;") != std::string::npos);
+            assert(magicSvcH.find("void PollLocalPlayerActiveBuffs(double aDeltaSec) noexcept;") != std::string::npos);
+            assert(magicSvcH.find("void ResyncLocalPlayerActiveBuffs() noexcept;") != std::string::npos);
+            assert(magicSvcCpp.find("bool TryRefreshOrDeduplicateActiveEffect(Actor* apActor, MagicItem* apSpell, EffectItem* apEffect, float aMagnitude) noexcept") != std::string::npos);
+
+            {
+                assert(RfabCompat::IsFriendlyScriptBuffEffectEditorId("RFAB_Aura_Priesthood_Buff"));
+                assert(RfabCompat::IsFriendlyScriptBuffEffectEditorId("REQ_Illusion_LionheartProc"));
+                assert(RfabCompat::IsFriendlyScriptBuffEffectEditorId("RFAB_Stance_TwoHanded_Empower"));
+                assert(RfabCompat::IsFriendlyScriptBuffEffectEditorId("AuraSummoning_UndeadFortify"));
+                assert(!RfabCompat::IsFriendlyScriptBuffEffectEditorId("RFAB_Script_SummonSpirit"));
+                assert(!RfabCompat::IsFriendlyScriptBuffEffectEditorId("REQ_KnockdownStaggerPush"));
+                assert(!RfabCompat::IsFriendlyScriptBuffEffectEditorId("RFAB_PoisonDecayCurse"));
+            }
+
             // (5) OverlayClient marshals all CEF UI actions onto World::Get().GetRunner().Queue(...) + PartyService null-guards GetOverlayApp()
             const std::string overlayCpp = readTextFile("Code/client/Services/Generic/OverlayClient.cpp");
             const std::string partyCpp = readTextFile("Code/client/Services/Generic/PartyService.cpp");
@@ -555,6 +708,54 @@ int main()
                 assert(findBody.find("GetPartyService()") == std::string::npos);
                 assert(findBody.find("std::lock_guard<std::mutex> lock(m_coopSnapshotMutex)") != std::string::npos);
             }
+
+            // Regression audit for v1.2.0 deep codebase review & cross-version RFAB resilience fixes:
+            {
+                assert(fs::exists("docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json"));
+                assert(fs::exists("docs/V1.1.0_RELEASE_BACKUP_MANIFEST.json"));
+                assert(std::string(RfabCompat::kRfabOnlineVersion) == "1.2.0");
+                assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.2.0", "v1.2.1-3-gabcdef0"));
+                assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.1.0", "v1.2.0"));
+                assert(!RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0", "v1.2.0"));
+
+                const std::string actorExtH = readTextFile("Code/client/Games/ActorExtension.h");
+                const std::string avSvcCpp = readTextFile("Code/client/Services/Generic/ActorValueService.cpp");
+                const std::string srvAvSvcCpp = readTextFile("Code/server/Services/ActorValueService.cpp");
+                const std::string srvPlayerSvcCpp = readTextFile("Code/server/Services/PlayerService.cpp");
+                const std::string srvCharCpp = readTextFile("Code/server/Services/CharacterService.cpp");
+                const std::string srvProgCpp = readTextFile("Code/server/Services/RfabProgressionService.cpp");
+                const std::string magicTargetCpp = readTextFile("Code/client/Games/Skyrim/Magic/MagicTarget.cpp");
+                const std::string interpCpp = readTextFile("Code/client/Systems/InterpolationSystem.cpp");
+                const std::string discCpp = readTextFile("Code/client/Services/Generic/DiscoveryService.cpp");
+
+                // (a) kInfamy (AV 37) XP-suppression marker is never leaked across the network or left on surviving NPCs
+                assert(actorCpp.find("aAvId == ActorValueInfo::kInfamy") != std::string::npos);
+                assert(actorCpp.find("apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, std::max(0.0f, prevInfamy));") != std::string::npos);
+                assert(avSvcCpp.find("i == ActorValueInfo::kInfamy") != std::string::npos);
+                assert(avSvcCpp.find("key == ActorValueInfo::kInfamy") != std::string::npos);
+                assert(avSvcCpp.find("pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);") != std::string::npos);
+                assert(srvAvSvcCpp.find("kInfamyActorValueIndex = 37") != std::string::npos);
+
+                // (b) Recursive TESLevItem traversal in ShouldWearBodyPiece for Requiem/RFAB nested outfits
+                assert(actorCpp.find("CollectArmorFromOutfitForm(") != std::string::npos);
+
+                // (c) RFAB Spirit Summon & remote summon authority (kPlayerSummon flag + IsPlayerSummon across Actor/MagicTarget/CharacterService)
+                assert(actorExtH.find("kPlayerSummon = 1u << 4") != std::string::npos);
+                assert(actorExtH.find("IsPlayerSummonFlag()") != std::string::npos);
+                assert(magicTargetCpp.find("arData.pCaster->IsPlayerSummon()") != std::string::npos);
+                assert(magicTargetCpp.find("isFromRemotePlayerOrSummon") != std::string::npos);
+
+                // (d) Server grid shift wilderness/Dragon range check, cell update ordering, ownership claim reconciliation, and host promotion
+                assert(srvPlayerSvcCpp.find("newlyEnteredWorldRange") != std::string::npos);
+                assert(srvCharCpp.find("reconcileNotify.NewActorData = sanitizedData;") != std::string::npos);
+                assert(srvProgCpp.find("BroadcastAllyProtectionState(false);") != std::string::npos);
+
+                // (e) Cross-version RFAB dynamic form resolution & null/teleport safety
+                assert(rfabSvcH.find("ResolveRfabPluginMod()") != std::string::npos);
+                assert(rfabSvcH.find("ResolveFormByEditorIdOrBaseId(") != std::string::npos);
+                assert(interpCpp.find("kTeleportSnapThresholdSq") != std::string::npos);
+                assert(discCpp.find("if (!pCell || !m_world.GetModSystem().GetServerModId(pCell->formID") != std::string::npos);
+            }
         }
 
         // Multi-threaded pointer-stability stress test mirroring AnimationGraphDescriptorManager (shared_mutex + unordered_map):
@@ -586,6 +787,7 @@ int main()
                         // Node pointer and vector payload MUST stay valid even while writers force bucket rehashes!
                         assert(lookedUp == pinnedPtr);
                         assert(lookedUp->Hash == 1001ull && lookedUp->Vars.size() == 4 && lookedUp->Vars[3] == 4u);
+                        std::this_thread::yield();
                     }
                 });
             }
@@ -610,6 +812,178 @@ int main()
                 t.join();
             assert(registry.size() == 3001);
             assert(&registry.at(1001ull) == pinnedPtr);
+        }
+
+        // Stage 4 (v1.2.0): Co-Op Party Tactical HUD & 3D Ping System audit
+        {
+            RfabCompat::TacticalPingPayload src{};
+            src.Kind = RfabCompat::TacticalPingKind::EnemyBoss;
+            src.SenderPlayerId = 7u;
+            src.TargetServerId = 4201u;
+            src.WorldSpaceBaseId = 0x3Cu;
+            src.CellBaseId = 0x1042u;
+            src.PosX = -14250.5f;
+            src.PosY = 8920.25f;
+            src.PosZ = 1340.75f;
+            src.SenderName = "Dragonborn|Injected\nName";
+            src.TargetLabel = "Драконий жрец|Морваскар";
+
+            const std::string encoded = RfabCompat::SerializeTacticalPingPayload(src);
+            RfabCompat::TacticalPingPayload decoded{};
+            assert(RfabCompat::DeserializeTacticalPingPayload(encoded, decoded));
+            assert(decoded.Kind == RfabCompat::TacticalPingKind::EnemyBoss);
+            assert(decoded.SenderPlayerId == 7u);
+            assert(decoded.TargetServerId == 4201u);
+            assert(decoded.WorldSpaceBaseId == 0x3Cu);
+            assert(decoded.CellBaseId == 0x1042u);
+            assert(std::fabs(decoded.PosX - src.PosX) < 0.05f);
+            assert(std::fabs(decoded.PosY - src.PosY) < 0.05f);
+            assert(std::fabs(decoded.PosZ - src.PosZ) < 0.05f);
+            assert(decoded.SenderName == "Dragonborn Injected Name");
+            assert(decoded.TargetLabel == "Драконий жрец Морваскар");
+
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(true, false, false, true, true, false, 62) ==
+                   RfabCompat::TacticalPingKind::Danger);
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(false, true, true, false, false, false, 62) ==
+                   RfabCompat::TacticalPingKind::AssistAlly);
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, true, true, false, 62) ==
+                   RfabCompat::TacticalPingKind::EnemyBoss);
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, true, false, 62) ==
+                   RfabCompat::TacticalPingKind::Enemy);
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, false, true, 62) ==
+                   RfabCompat::TacticalPingKind::Loot);
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, false, false, 28) ==
+                   RfabCompat::TacticalPingKind::Loot);
+            assert(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, false, false, 24) ==
+                   RfabCompat::TacticalPingKind::Objective);
+
+            const auto onScreen = RfabCompat::ComputeTacticalMarkerScreenPlacement(0.5f, 0.5f, 0.85f, 1920.0f, 1080.0f, 48.0f);
+            assert(onScreen.IsOnScreen && !onScreen.IsClampedToEdge);
+            assert(std::fabs(onScreen.ScreenX - 960.0f) < 0.5f);
+            assert(std::fabs(onScreen.ScreenY - 540.0f) < 0.5f);
+
+            const auto behindRight = RfabCompat::ComputeTacticalMarkerScreenPlacement(0.2f, 0.5f, -0.5f, 1920.0f, 1080.0f, 48.0f);
+            assert(!behindRight.IsOnScreen && behindRight.IsClampedToEdge);
+            assert(behindRight.DirX > 0.9f);
+            assert(std::fabs(behindRight.ScreenX - (1920.0f - 48.0f)) < 1.0f);
+
+            RfabCompat::TacticalChatCommand cmd{};
+            assert(RfabCompat::ParseTacticalChatCommand("/ping boss Драконий жрец", cmd));
+            assert(cmd.Kind == RfabCompat::TacticalChatCommand::Action::TriggerExplicitPing);
+            assert(cmd.PingKind == RfabCompat::TacticalPingKind::EnemyBoss);
+            assert(cmd.CustomLabel == "Драконий жрец");
+
+            assert(RfabCompat::ParseTacticalChatCommand("/ping clear", cmd));
+            assert(cmd.Kind == RfabCompat::TacticalChatCommand::Action::ClearPings);
+
+            assert(RfabCompat::ParseTacticalChatCommand("/hud compact", cmd));
+            assert(cmd.Kind == RfabCompat::TacticalChatCommand::Action::SetHudMode);
+            assert(cmd.HudMode == RfabCompat::TacticalHudMode::Compact);
+
+            std::string rfabAdapterCpp;
+            std::string rfabProgServerCpp;
+            std::string overlayClientCpp;
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/RfabAdapterService.cpp", rfabAdapterCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/server/Services/RfabProgressionService.cpp", rfabProgServerCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/OverlayClient.cpp", overlayClientCpp));
+            assert(rfabAdapterCpp.find("OnDrawTacticalHud") != std::string::npos);
+            assert(rfabAdapterCpp.find("TacticalPingSync") != std::string::npos);
+            assert(rfabAdapterCpp.find("ComputeTacticalMarkerScreenPlacement") != std::string::npos);
+            assert(rfabProgServerCpp.find("TacticalPingSync") != std::string::npos);
+            assert(overlayClientCpp.find("ParseTacticalChatCommand") != std::string::npos);
+        }
+
+        // Stage 5: World Containers, Locks, Shared Keys/Claws, Projectiles/Aggro & Snapshot Rollback
+        {
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("BleakFallsBarrowKey", 45, 0x000A9636, false));
+            assert(!RfabCompat::IsSharedCoopKeyOrClaw("WhiterunBreezehomeKey", 45, 0x00093B08, false));
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("WhiterunBreezehomeKey", 45, 0x00093B08, true));
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("MS13GoldenClaw", 32, 0x000399E7, false));
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("dunFolgunthurIvoryDragonClaw", 32, 0x000AB7BB, false));
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("MQ103Dragonstone", 32, 0x000DF202, false));
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("DA04AttunementSphere", 32, 0x0003532C, false));
+            assert(RfabCompat::IsSharedCoopKeyOrClaw("MQ205ElderScrollDragon", 27, 0x0002D513, false));
+            assert(RfabCompat::IsExcludedFromQuestItemReplication("Gold001", 32, 0x0000000F));
+            assert(RfabCompat::IsExcludedFromQuestItemReplication("Lockpick", 32, 0x0000000A));
+            assert(RfabCompat::IsExcludedFromQuestItemReplication("RFAB_XPBook_Small", 27, 0x07123456));
+            assert(!RfabCompat::IsSharedCoopKeyOrClaw("RFAB_XPBook_Small", 27, 0x07123456, false));
+
+            RfabCompat::CoopAggroDecisionInput aggro{};
+            aggro.IsHitteeValidNpc = true;
+            aggro.IsHitteeRemote = false;
+            aggro.IsHitteeDead = false;
+            aggro.IsHitterPlayer = true;
+            aggro.IsHitterDowned = false;
+            aggro.HasActiveTargetLock = false;
+            aggro.IsHitteeInCombat = true;
+            aggro.HasValidCurrentTarget = true;
+            aggro.IsCurrentTargetDeadOrDowned = false;
+            aggro.DistToCurrentTarget = 950.0f;
+            aggro.DistToAttacker = 180.0f;
+            assert(RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+            aggro.HasActiveTargetLock = true;
+            assert(!RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+            aggro.IsCurrentTargetDeadOrDowned = true;
+            assert(RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+            aggro.IsHitterDowned = true;
+            assert(!RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+
+            assert(RfabCompat::AreProjectileLaunchParamsSafe(1024.0f, -2048.0f, 512.0f, 0.1f, 0.0f, 1.57f, 1.0f, 1.0f));
+            assert(!RfabCompat::AreProjectileLaunchParamsSafe(
+                std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f));
+        }
+
+        // Stage 6: World Systems, Teleportation, Calendar/Weather, Beast Forms & Reconnect Polish
+        {
+            for (int h = 0; h < 24; ++h)
+            {
+                for (int m = 0; m < 60; ++m)
+                {
+                    const float gameHour = RfabCompat::EncodeSkyrimGameHour(h, m);
+                    assert(gameHour >= 0.0f && gameHour < 24.0f);
+                    int decH = -1, decM = -1;
+                    RfabCompat::DecodeSkyrimGameHour(gameHour, decH, decM);
+                    assert(decH == h && decM == m);
+                }
+            }
+
+            assert(RfabCompat::IsBeastFormRace("WerewolfBeastRace", 0x000CDD84u));
+            assert(RfabCompat::IsBeastFormRace("DLC1VampireBeastRace", 0x0400283Au));
+            assert(RfabCompat::IsBeastFormRace("DLC2WerebearBeastRace", 0x03023FE9u));
+            assert(!RfabCompat::IsBeastFormRace("NordRace", 0x00013746u));
+
+            assert(RfabCompat::CanResolveTeleportDestination(true, false, false, 100.0f, 200.0f, 50.0f, false, false));
+            assert(RfabCompat::CanResolveTeleportDestination(true, true, true, 12000.0f, -8000.0f, 350.0f, false, false));
+            assert(!RfabCompat::CanResolveTeleportDestination(true, true, false, 12000.0f, -8000.0f, 350.0f, false, false));
+            assert(!RfabCompat::CanResolveTeleportDestination(true, false, true, 100.0f, 200.0f, 50.0f, true, false));
+            assert(!RfabCompat::CanResolveTeleportDestination(true, false, true, 100.0f, 200.0f, 50.0f, false, true));
+
+            std::string serverCalendarCpp;
+            std::string serverCommandCpp;
+            std::string clientOverlayCpp;
+            std::string clientCommandCpp;
+            std::string clientPlayerCpp;
+            std::string clientWeatherCpp;
+            std::string clientMapCpp;
+            std::string coordSaveCpp;
+            assert(RfabCompat::Detail::ReadTextFile("Code/server/Services/CalendarService.cpp", serverCalendarCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/server/Services/CommandService.cpp", serverCommandCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/OverlayService.cpp", clientOverlayCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CommandService.cpp", clientCommandCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/PlayerService.cpp", clientPlayerCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/WeatherService.cpp", clientWeatherCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/MapService.cpp", clientMapCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/CoordinatedSaveService.cpp", coordSaveCpp));
+
+            assert(serverCalendarCpp.find("EncodeSkyrimGameHour") != std::string::npos);
+            assert(serverCalendarCpp.find("DecodeSkyrimGameHour") != std::string::npos);
+            assert(serverCommandCpp.find("IsPlayerAuthorizedHost") != std::string::npos);
+            assert(clientOverlayCpp.find("CanResolveTeleportDestination") != std::string::npos);
+            assert(clientCommandCpp.find("CanResolveTeleportDestination") != std::string::npos);
+            assert(clientPlayerCpp.find("IsBeastFormRace") != std::string::npos);
+            assert(clientWeatherCpp.find("if (Sky* pSky = Sky::Get())") != std::string::npos);
+            assert(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
+            assert(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
         }
     }
 
@@ -938,6 +1312,241 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
             /*aOwnerDowned=*/false,
             /*aChallengerDowned=*/true);
         REQUIRE(rejectDownedChallenger == CoopOwnership::ClaimDecision::kRejectChallengerDowned);
+    }
+
+    // 3. Stage 4 (v1.2.0): Co-Op Party Tactical HUD & 3D Ping System audit
+    {
+        // Round-trip serialization and delimiter injection sanitization
+        RfabCompat::TacticalPingPayload src{};
+        src.Kind = RfabCompat::TacticalPingKind::EnemyBoss;
+        src.SenderPlayerId = 7u;
+        src.TargetServerId = 4201u;
+        src.WorldSpaceBaseId = 0x3Cu;
+        src.CellBaseId = 0x1042u;
+        src.PosX = -14250.5f;
+        src.PosY = 8920.25f;
+        src.PosZ = 1340.75f;
+        src.SenderName = "Dragonborn|Injected\nName";
+        src.TargetLabel = "Драконий жрец|Морваскар";
+
+        const std::string encoded = RfabCompat::SerializeTacticalPingPayload(src);
+        RfabCompat::TacticalPingPayload decoded{};
+        REQUIRE(RfabCompat::DeserializeTacticalPingPayload(encoded, decoded));
+        REQUIRE(decoded.Kind == RfabCompat::TacticalPingKind::EnemyBoss);
+        REQUIRE(decoded.SenderPlayerId == 7u);
+        REQUIRE(decoded.TargetServerId == 4201u);
+        REQUIRE(decoded.WorldSpaceBaseId == 0x3Cu);
+        REQUIRE(decoded.CellBaseId == 0x1042u);
+        REQUIRE(std::fabs(decoded.PosX - src.PosX) < 0.05f);
+        REQUIRE(std::fabs(decoded.PosY - src.PosY) < 0.05f);
+        REQUIRE(std::fabs(decoded.PosZ - src.PosZ) < 0.05f);
+        REQUIRE(decoded.SenderName == "Dragonborn Injected Name");
+        REQUIRE(decoded.TargetLabel == "Драконий жрец Морваскар");
+
+        // Contextual crosshair ping classification
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(true, false, false, true, true, false, 62) ==
+                RfabCompat::TacticalPingKind::Danger);
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(false, true, true, false, false, false, 62) ==
+                RfabCompat::TacticalPingKind::AssistAlly);
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, true, true, false, 62) ==
+                RfabCompat::TacticalPingKind::EnemyBoss);
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, true, false, 62) ==
+                RfabCompat::TacticalPingKind::Enemy);
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, false, true, 62) ==
+                RfabCompat::TacticalPingKind::Loot);
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, false, false, 28) ==
+                RfabCompat::TacticalPingKind::Loot); // Container
+        REQUIRE(RfabCompat::ClassifyCrosshairTacticalPingKind(false, false, false, false, false, false, 24) ==
+                RfabCompat::TacticalPingKind::Objective); // Activator / Lever
+
+        // 3D-to-2D screen placement & behind-camera (aDepthZ < 0) inversion guard
+        const auto onScreen = RfabCompat::ComputeTacticalMarkerScreenPlacement(0.5f, 0.5f, 0.85f, 1920.0f, 1080.0f, 48.0f);
+        REQUIRE(onScreen.IsOnScreen);
+        REQUIRE_FALSE(onScreen.IsClampedToEdge);
+        REQUIRE(std::fabs(onScreen.ScreenX - 960.0f) < 0.5f);
+        REQUIRE(std::fabs(onScreen.ScreenY - 540.0f) < 0.5f);
+
+        // Target behind camera on the right (perspective divide by -W mirrored normX to < 0.5; ComputeTacticalMarkerScreenPlacement must flip back to right edge!)
+        const auto behindRight = RfabCompat::ComputeTacticalMarkerScreenPlacement(0.2f, 0.5f, -0.5f, 1920.0f, 1080.0f, 48.0f);
+        REQUIRE_FALSE(behindRight.IsOnScreen);
+        REQUIRE(behindRight.IsClampedToEdge);
+        REQUIRE(behindRight.DirX > 0.9f);
+        REQUIRE(std::fabs(behindRight.ScreenX - (1920.0f - 48.0f)) < 1.0f);
+
+        // Chat command parser & HUD mode cycling
+        RfabCompat::TacticalChatCommand cmd{};
+        REQUIRE(RfabCompat::ParseTacticalChatCommand("/ping boss Драконий жрец", cmd));
+        REQUIRE(cmd.Kind == RfabCompat::TacticalChatCommand::Action::TriggerExplicitPing);
+        REQUIRE(cmd.PingKind == RfabCompat::TacticalPingKind::EnemyBoss);
+        REQUIRE(cmd.CustomLabel == "Драконий жрец");
+
+        REQUIRE(RfabCompat::ParseTacticalChatCommand("/ping clear", cmd));
+        REQUIRE(cmd.Kind == RfabCompat::TacticalChatCommand::Action::ClearPings);
+
+        REQUIRE(RfabCompat::ParseTacticalChatCommand("/hud compact", cmd));
+        REQUIRE(cmd.Kind == RfabCompat::TacticalChatCommand::Action::SetHudMode);
+        REQUIRE(cmd.HudMode == RfabCompat::TacticalHudMode::Compact);
+
+        REQUIRE(RfabCompat::CycleTacticalHudMode(RfabCompat::TacticalHudMode::Full) == RfabCompat::TacticalHudMode::Compact);
+        REQUIRE(RfabCompat::CycleTacticalHudMode(RfabCompat::TacticalHudMode::Compact) == RfabCompat::TacticalHudMode::MarkersOnly);
+        REQUIRE(RfabCompat::CycleTacticalHudMode(RfabCompat::TacticalHudMode::MarkersOnly) == RfabCompat::TacticalHudMode::Hidden);
+        REQUIRE(RfabCompat::CycleTacticalHudMode(RfabCompat::TacticalHudMode::Hidden) == RfabCompat::TacticalHudMode::Full);
+
+        std::string rfabAdapterCpp;
+        std::string rfabProgServerCpp;
+        std::string overlayClientCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/RfabAdapterService.cpp", rfabAdapterCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/RfabProgressionService.cpp", rfabProgServerCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/OverlayClient.cpp", overlayClientCpp));
+        REQUIRE(rfabAdapterCpp.find("OnDrawTacticalHud") != std::string::npos);
+        REQUIRE(rfabAdapterCpp.find("TacticalPingSync") != std::string::npos);
+        REQUIRE(rfabAdapterCpp.find("ComputeTacticalMarkerScreenPlacement") != std::string::npos);
+        REQUIRE(rfabProgServerCpp.find("TacticalPingSync") != std::string::npos);
+        REQUIRE(overlayClientCpp.find("ParseTacticalChatCommand") != std::string::npos);
+    }
+
+    // 19. Stage 5: World Containers, Locks, Shared Keys/Claws, Projectiles/Aggro & Snapshot Rollback
+    {
+        // Shared dungeon keys & Dragon Claws vs excluded items
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("BleakFallsBarrowKey", 45, 0x000A9636, false));
+        REQUIRE_FALSE(RfabCompat::IsSharedCoopKeyOrClaw("WhiterunBreezehomeKey", 45, 0x00093B08, false));
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("WhiterunBreezehomeKey", 45, 0x00093B08, true));
+
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("MS13GoldenClaw", 32, 0x000399E7, false));
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("dunFolgunthurIvoryDragonClaw", 32, 0x000AB7BB, false));
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("MQ103Dragonstone", 32, 0x000DF202, false));
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("DA04AttunementSphere", 32, 0x0003532C, false));
+        REQUIRE(RfabCompat::IsSharedCoopKeyOrClaw("MQ205ElderScrollDragon", 27, 0x0002D513, false));
+
+        REQUIRE(RfabCompat::IsExcludedFromQuestItemReplication("Gold001", 32, 0x0000000F));
+        REQUIRE(RfabCompat::IsExcludedFromQuestItemReplication("Lockpick", 32, 0x0000000A));
+        REQUIRE(RfabCompat::IsExcludedFromQuestItemReplication("RFAB_XPBook_Small", 27, 0x07123456));
+        REQUIRE(RfabCompat::IsExcludedFromQuestItemReplication("PotionRestoreHealth01", 46, 0x0003EADD));
+        REQUIRE_FALSE(RfabCompat::IsSharedCoopKeyOrClaw("RFAB_XPBook_Small", 27, 0x07123456, false));
+
+        // Co-Op Smart Threat / Aggro Switching policy
+        RfabCompat::CoopAggroDecisionInput aggro{};
+        aggro.IsHitteeValidNpc = true;
+        aggro.IsHitteeRemote = false;
+        aggro.IsHitteeDead = false;
+        aggro.IsHitterPlayer = true;
+        aggro.IsHitterDowned = false;
+        aggro.HasActiveTargetLock = false;
+        aggro.IsHitteeInCombat = true;
+        aggro.HasValidCurrentTarget = true;
+        aggro.IsCurrentTargetDeadOrDowned = false;
+        aggro.DistToCurrentTarget = 950.0f; // Host Archer/Mage at range
+        aggro.DistToAttacker = 180.0f;      // Co-Op Tank in melee range
+        REQUIRE(RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+
+        // Respect active target lock when current target is alive and standing
+        aggro.HasActiveTargetLock = true;
+        REQUIRE_FALSE(RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+
+        // Break target lock immediately if current target goes downed
+        aggro.IsCurrentTargetDeadOrDowned = true;
+        REQUIRE(RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+
+        // Never switch aggro onto a downed attacker
+        aggro.IsHitterDowned = true;
+        REQUIRE_FALSE(RfabCompat::ShouldSwitchCoopCombatTarget(aggro));
+
+        // Projectile parameter safety
+        REQUIRE(RfabCompat::AreProjectileLaunchParamsSafe(1024.0f, -2048.0f, 512.0f, 0.1f, 0.0f, 1.57f, 1.0f, 1.0f));
+        REQUIRE_FALSE(RfabCompat::AreProjectileLaunchParamsSafe(
+            std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f));
+        REQUIRE_FALSE(RfabCompat::AreProjectileLaunchParamsSafe(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, -1.0f, 1.0f));
+
+        // Static source audit for Stage 5 fixes
+        std::string invStructCpp;
+        std::string refrCpp;
+        std::string clientObjCpp;
+        std::string serverObjCpp;
+        std::string clientCombatCpp;
+        std::string saveSnapCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/encoding/Structs/Inventory.cpp", invStructCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/TESObjectREFR.cpp", refrCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/ObjectService.cpp", clientObjCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/ObjectService.cpp", serverObjCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CombatService.cpp", clientCombatCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/SaveSnapshotService.cpp", saveSnapCpp));
+
+        REQUIRE(invStructCpp.find("remainingToRemove") != std::string::npos);
+        REQUIRE(refrCpp.find("RemoveItem(pObject, -arEntry.Count, ITEM_REMOVE_REASON::kRemove, nullptr, nullptr)") != std::string::npos);
+        REQUIRE(refrCpp.find("IsSharedCoopKeyOrClaw") != std::string::npos);
+        REQUIRE(refrCpp.find("wasLockedBefore") != std::string::npos);
+        REQUIRE(clientObjCpp.find("if (pLock->IsLocked())") != std::string::npos);
+        REQUIRE(clientObjCpp.find("if (pLock->flags & 0xFF)") == std::string::npos);
+        REQUIRE(serverObjCpp.find("IsInRange(acMessage.pPlayer->GetCellComponent(), false)") != std::string::npos);
+        REQUIRE(clientCombatCpp.find("ShouldSwitchCoopCombatTarget") != std::string::npos);
+        REQUIRE(saveSnapCpp.find("TrackedObjects") != std::string::npos);
+    }
+
+    // 20. Stage 6: World Systems, Teleportation, Calendar/Weather, Beast Forms & Reconnect Polish
+    {
+        // Lossless Skyrim GameHour encode/decode across all 24 * 60 minute combinations (including 23:59!)
+        for (int h = 0; h < 24; ++h)
+        {
+            for (int m = 0; m < 60; ++m)
+            {
+                const float gameHour = RfabCompat::EncodeSkyrimGameHour(h, m);
+                REQUIRE(gameHour >= 0.0f);
+                REQUIRE(gameHour < 24.0f);
+
+                int decH = -1;
+                int decM = -1;
+                RfabCompat::DecodeSkyrimGameHour(gameHour, decH, decM);
+                REQUIRE(decH == h);
+                REQUIRE(decM == m);
+            }
+        }
+
+        // Load-order independent Beast Form race recognition
+        REQUIRE(RfabCompat::IsBeastFormRace("WerewolfBeastRace", 0x000CDD84u));
+        REQUIRE(RfabCompat::IsBeastFormRace("DLC1VampireBeastRace", 0x0200283Au));
+        REQUIRE(RfabCompat::IsBeastFormRace("DLC1VampireBeastRace", 0x0400283Au)); // Dawnguard at load index 04
+        REQUIRE(RfabCompat::IsBeastFormRace("DLC2WerebearBeastRace", 0x03023FE9u));
+        REQUIRE(RfabCompat::IsBeastFormRace("RFAB_CustomLichRace", 0x07123456u));
+        REQUIRE_FALSE(RfabCompat::IsBeastFormRace("NordRace", 0x00013746u));
+        REQUIRE_FALSE(RfabCompat::IsBeastFormRace("NordRaceVampire", 0x00088794u));
+
+        // Safe Teleport Destination validation (blocks downed/loading, NaN/Inf, and temp 0xFFxxxxxx cells without WorldSpace)
+        REQUIRE(RfabCompat::CanResolveTeleportDestination(true, false, false, 100.0f, 200.0f, 50.0f, false, false));
+        REQUIRE(RfabCompat::CanResolveTeleportDestination(true, true, true, 12000.0f, -8000.0f, 350.0f, false, false));
+        REQUIRE_FALSE(RfabCompat::CanResolveTeleportDestination(true, true, false, 12000.0f, -8000.0f, 350.0f, false, false));
+        REQUIRE_FALSE(RfabCompat::CanResolveTeleportDestination(false, false, false, 0.0f, 0.0f, 0.0f, false, false));
+        REQUIRE_FALSE(RfabCompat::CanResolveTeleportDestination(true, false, true, 100.0f, 200.0f, 50.0f, true, false));
+        REQUIRE_FALSE(RfabCompat::CanResolveTeleportDestination(true, false, true, 100.0f, 200.0f, 50.0f, false, true));
+        REQUIRE_FALSE(RfabCompat::CanResolveTeleportDestination(
+            true, false, true, std::numeric_limits<float>::quiet_NaN(), 200.0f, 50.0f, false, false));
+
+        // Static source audit for Stage 6 fixes
+        std::string serverCalendarCpp;
+        std::string serverCommandCpp;
+        std::string clientOverlayCpp;
+        std::string clientCommandCpp;
+        std::string clientPlayerCpp;
+        std::string clientWeatherCpp;
+        std::string clientMapCpp;
+        std::string coordSaveCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/CalendarService.cpp", serverCalendarCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/CommandService.cpp", serverCommandCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/OverlayService.cpp", clientOverlayCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CommandService.cpp", clientCommandCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/PlayerService.cpp", clientPlayerCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/WeatherService.cpp", clientWeatherCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/MapService.cpp", clientMapCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/CoordinatedSaveService.cpp", coordSaveCpp));
+
+        REQUIRE(serverCalendarCpp.find("EncodeSkyrimGameHour") != std::string::npos);
+        REQUIRE(serverCalendarCpp.find("DecodeSkyrimGameHour") != std::string::npos);
+        REQUIRE(serverCommandCpp.find("IsPlayerAuthorizedHost") != std::string::npos);
+        REQUIRE(clientOverlayCpp.find("CanResolveTeleportDestination") != std::string::npos);
+        REQUIRE(clientCommandCpp.find("CanResolveTeleportDestination") != std::string::npos);
+        REQUIRE(clientPlayerCpp.find("IsBeastFormRace") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("if (Sky* pSky = Sky::Get())") != std::string::npos);
+        REQUIRE(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
     }
 }
 #endif

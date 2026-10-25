@@ -13,6 +13,8 @@ struct SyncRfabProgressionEvent final : ClientMessage
         BookRead = 1,
         GlobalValueSync = 2,
         AllyProtectionSync = 3,
+        BossEncounterSync = 4,
+        TacticalPingSync = 5,
     };
 
     SyncRfabProgressionEvent()

@@ -86,9 +86,9 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
         if (!pCell)
             pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
 
-        if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
+        if (!pCell || !m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
         {
-            spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
+            spdlog::error("Failed to find cell id for form id {:X}", pCell ? pCell->formID : 0u);
             return;
         }
 
@@ -165,9 +165,9 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
     if (!pCell)
         pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
 
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
+    if (!pCell || !m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
     {
-        spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
+        spdlog::error("Failed to find cell id for form id {:X}", pCell ? pCell->formID : 0u);
         return;
     }
 

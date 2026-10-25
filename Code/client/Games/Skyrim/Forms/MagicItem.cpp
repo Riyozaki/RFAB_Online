@@ -2,6 +2,7 @@
 #include <Forms/ActorValueInfo.h>
 #include <Forms/BGSListForm.h>
 #include <Games/TES.h>
+#include <RfabModpackCompat.h>
 #include <Services/RfabAdapterService.h>
 #include <World.h>
 
@@ -136,18 +137,28 @@ bool MagicItem::IsBuffSpell() const noexcept
         if (pEffect->IsSummonEffect())
             continue;
 
-        // Exclude self-only toggles/abilities; player-to-player buffs have AIMED / TARGET_ACTOR / TARGET_LOCATION / CONTACT delivery.
-        if (pSetting->deliveryType == static_cast<uint32_t>(MagicSystem::Delivery::SELF))
+        // Exclude self-only non-AoE non-cloak toggles/abilities; player-to-player buffs have AIMED / TARGET_ACTOR /
+        // TARGET_LOCATION / CONTACT delivery, OR SELF delivery with AoE radius (iArea > 0) or kCloak aura archetype.
+        if (pSetting->deliveryType == static_cast<uint32_t>(MagicSystem::Delivery::SELF) &&
+            pEffect->data.iArea <= 0 &&
+            pSetting->eArchetype != EffectArchetypes::ArchetypeID::kCloak)
+        {
             continue;
+        }
 
         switch (pSetting->eArchetype)
         {
         case EffectArchetypes::ArchetypeID::kValueModifier:
         case EffectArchetypes::ArchetypeID::kPeakValueModifier:
         case EffectArchetypes::ArchetypeID::kDualValueModifier:
+        case EffectArchetypes::ArchetypeID::kAccumulateMagnitude:
+        case EffectArchetypes::ArchetypeID::kValueAndParts:
         case EffectArchetypes::ArchetypeID::kRally:
         case EffectArchetypes::ArchetypeID::kCureDisease:
         case EffectArchetypes::ArchetypeID::kCurePoison:
+        case EffectArchetypes::ArchetypeID::kCureParalysis:
+        case EffectArchetypes::ArchetypeID::kDispel:
+        case EffectArchetypes::ArchetypeID::kInvisibility:
         case EffectArchetypes::ArchetypeID::kCloak:
         case EffectArchetypes::ArchetypeID::kEnhanceWeapon:
         case EffectArchetypes::ArchetypeID::kLight:
@@ -155,7 +166,19 @@ bool MagicItem::IsBuffSpell() const noexcept
             break;
         case EffectArchetypes::ArchetypeID::kScript:
             if ((pSetting->flags & EffectSetting::kRecover) != 0)
+            {
                 hasFriendlyTargetedBuff = true;
+            }
+            else
+            {
+                const char* effEdid = pSetting->GetFormEditorID();
+                const char* spellEdid = GetFormEditorID();
+                if ((effEdid && RfabCompat::IsFriendlyScriptBuffEffectEditorId(effEdid)) ||
+                    (spellEdid && RfabCompat::IsFriendlyScriptBuffEffectEditorId(spellEdid)))
+                {
+                    hasFriendlyTargetedBuff = true;
+                }
+            }
             break;
         default:
             break;

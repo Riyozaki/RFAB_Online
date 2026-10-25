@@ -609,7 +609,9 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
     }
 
     auto claimedHpIt = sanitizedData.InitialActorValues.ActorValuesList.find(kHealthActorValueIndex);
-    float claimedHealth = (claimedHpIt != sanitizedData.InitialActorValues.ActorValuesList.end()) ? claimedHpIt->second : serverHealth;
+    const float rawClaimedHealth = (claimedHpIt != sanitizedData.InitialActorValues.ActorValuesList.end()) ? claimedHpIt->second : serverHealth;
+    float claimedHealth = rawClaimedHealth;
+    const bool rawClaimedDead = sanitizedData.IsDead;
     CoopOwnership::ReconcileClaimedState(
         pCharComp->IsDead(),
         serverHealth,
@@ -620,6 +622,16 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
         sanitizedData.InitialActorValues.ActorValuesList[kHealthActorValueIndex] = claimedHealth;
 
     TransferOwnership(acMessage.pPlayer, acMessage.Packet.ServerId, sanitizedData);
+
+    // If server reconciliation clamped claimed HP down to battle-damaged server HP or enforced dead state,
+    // send the authoritative state back to the claiming owner (since BroadcastActorData excludes apPlayer).
+    if (sanitizedData.IsDead != rawClaimedDead || std::fabs(claimedHealth - rawClaimedHealth) > 0.01f)
+    {
+        NotifySpawnData reconcileNotify{};
+        reconcileNotify.Id = acMessage.Packet.ServerId;
+        reconcileNotify.NewActorData = sanitizedData;
+        acMessage.pPlayer->Send(reconcileNotify);
+    }
 }
 
 void CharacterService::OnCharacterSpawned(const CharacterSpawnedEvent& acEvent) const noexcept

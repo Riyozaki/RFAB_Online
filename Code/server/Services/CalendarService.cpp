@@ -2,6 +2,7 @@
 
 #include <GameServer.h>
 #include <World.h>
+#include <common/RfabModpackCompat.h>
 
 #include <Events/PlayerJoinEvent.h>
 #include <Events/UpdateEvent.h>
@@ -36,30 +37,28 @@ void CalendarService::OnUpdate(const UpdateEvent&) noexcept
 void CalendarService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 {
     ServerTimeSettings timeMsg;
-    // the player with the furthest date is used
-    bool playerHasFurthestTime = acEvent.PlayerTime.GetTimeInDays() > m_dateTime.GetTimeInDays();
+    const bool initializedFromHost = !m_timeSetFromFirstPlayer;
 
-    if (playerHasFurthestTime)
+    // Seed the authoritative server calendar from the first player (Host), or keep the
+    // authoritative checkpoint calendar restored by SaveSnapshotService::ApplyWorldSnapshot.
+    if (initializedFromHost)
     {
-        // Note that this doesn't set timescale because the server config should set that.
-        if (!m_timeSetFromFirstPlayer)
-        {
-            m_dateTime.m_timeModel.Time = acEvent.PlayerTime.m_timeModel.Time;
-            m_timeSetFromFirstPlayer = true;
-        }
+        m_dateTime.m_timeModel.Time = acEvent.PlayerTime.m_timeModel.Time;
         m_dateTime.m_timeModel.Day = acEvent.PlayerTime.m_timeModel.Day;
         m_dateTime.m_timeModel.Month = acEvent.PlayerTime.m_timeModel.Month;
         m_dateTime.m_timeModel.Year = acEvent.PlayerTime.m_timeModel.Year;
+        m_timeSetFromFirstPlayer = true;
     }
+
     timeMsg.timeModel.TimeScale = m_dateTime.m_timeModel.TimeScale;
     timeMsg.timeModel.Time = m_dateTime.m_timeModel.Time;
     timeMsg.timeModel.Day = m_dateTime.m_timeModel.Day;
     timeMsg.timeModel.Month = m_dateTime.m_timeModel.Month;
     timeMsg.timeModel.Year = m_dateTime.m_timeModel.Year;
 
-    if (playerHasFurthestTime)
+    if (initializedFromHost)
         GameServer::Get()->SendToPlayers(timeMsg);
-    else
+    else if (acEvent.pPlayer)
         acEvent.pPlayer->Send(timeMsg);
 }
 
@@ -69,10 +68,8 @@ bool CalendarService::SetTime(int aHours, int aMinutes, float aScale) noexcept
 
     if (aHours >= 0 && aHours <= 23 && aMinutes >= 0 && aMinutes <= 59)
     {
-        // encode time as skyrim time
-        auto minutes = static_cast<float>(aMinutes) * 0.17f;
-        minutes = floor(minutes * 100) / 1000;
-        m_dateTime.m_timeModel.Time = static_cast<float>(aHours) + minutes;
+        m_dateTime.m_timeModel.Time = RfabCompat::EncodeSkyrimGameHour(aHours, aMinutes);
+        m_timeSetFromFirstPlayer = true;
 
         SendTimeResync();
 
@@ -92,6 +89,7 @@ bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
             m_dateTime.m_timeModel.Day = aDay;
             m_dateTime.m_timeModel.Month = aMonth;
             m_dateTime.m_timeModel.Year = aYear;
+            m_timeSetFromFirstPlayer = true;
             SendTimeResync();
             return true;
         }
@@ -112,11 +110,10 @@ void CalendarService::SendTimeResync() noexcept
 
 CalendarService::TTime CalendarService::GetTime() const noexcept
 {
-    const auto hour = floor(m_dateTime.m_timeModel.Time);
-    const auto minutes = (m_dateTime.m_timeModel.Time - hour) / 17.f;
-
-    const auto flatMinutes = static_cast<int>(ceil((minutes * 100.f) * 10.f));
-    return {static_cast<int>(hour), flatMinutes};
+    int hours = 8;
+    int minutes = 0;
+    RfabCompat::DecodeSkyrimGameHour(m_dateTime.m_timeModel.Time, hours, minutes);
+    return {hours, minutes};
 }
 
 CalendarService::TTime CalendarService::GetRealTime() noexcept

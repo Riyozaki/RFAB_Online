@@ -1,4 +1,5 @@
 #include <Services/PartyService.h>
+#include <Services/QuestService.h>
 #include <Services/RfabProgressionService.h>
 #include <Components.h>
 #include <GameServer.h>
@@ -464,4 +465,6 @@ void PartyService::SendPartyJoinedEvent(Party& aParty, Player* aPlayer) noexcept
     }
     spdlog::debug("[PartyService]: Sending party join event to player");
     aPlayer->Send(joinedMessage);
+
+    m_world.GetQuestService().SyncPartyQuestsForPlayer(aPlayer);
 }

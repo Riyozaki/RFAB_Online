@@ -4,8 +4,11 @@
 #include <Events/PacketEvent.h>
 #include <GameServer.h>
 #include <Services/ActorValueService.h>
+#include <Services/EncounterService.h>
+#include <Services/RfabProgressionService.h>
 #include <World.h>
 #include <Components.h>
+#include <common/RfabModpackCompat.h>
 
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/NotifyActorValueChanges.h>
@@ -19,6 +22,7 @@
 namespace
 {
 constexpr uint32_t kHealthActorValueIndex = 24;
+constexpr uint32_t kInfamyActorValueIndex = 37;
 constexpr float kMaxSanitizedActorValue = 100000.0f;
 }
 
@@ -48,13 +52,43 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
     NotifyActorValueChanges notify;
     notify.Id = acMessage.Packet.Id;
 
+    const auto* pCharComp = m_world.try_get<CharacterComponent>(*it);
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
     for (const auto& [id, value] : message.Values)
     {
-        if (!std::isfinite(value))
+        if (id == kInfamyActorValueIndex || !std::isfinite(value))
             continue;
 
         const float sanitized = std::clamp(value, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
+
+        if (id == kHealthActorValueIndex && pCharComp && !pCharComp->IsPlayer() && !pCharComp->IsDead())
+        {
+            const auto curIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
+            const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
+            const float currentHp = (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end()) ? curIt->second : 0.f;
+            const float maxHp = (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end()) ? maxIt->second : 0.f;
+            const bool isBossOrHighHp = pCharComp->IsDragon() || (maxHp >= 800.0f);
+            const auto& encounterCoord = m_world.GetEncounterService().GetCoordinator();
+            const bool encounterActiveWithLivingAllies =
+                encounterCoord.IsEncounterActiveWithLivingParticipants() ||
+                (acMessage.pPlayer && encounterCoord.IsPlayerDowned(acMessage.pPlayer->GetId()));
+
+            if (RfabCompat::ShouldBlockFalseBossResetHeal(
+                    encounterActiveWithLivingAllies,
+                    isBossOrHighHp,
+                    currentHp,
+                    maxHp,
+                    sanitized))
+            {
+                NotifyActorValueChanges rollbackOwnerHp{};
+                rollbackOwnerHp.Id = message.Id;
+                rollbackOwnerHp.Values[kHealthActorValueIndex] = currentHp;
+                if (acMessage.pPlayer)
+                    acMessage.pPlayer->Send(rollbackOwnerHp);
+                continue;
+            }
+        }
+
         actorValuesComponent.CurrentActorValues.ActorValuesList[id] = sanitized;
         notify.Values[id] = sanitized;
     }
@@ -87,7 +121,7 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
     for (const auto& [id, value] : message.Values)
     {
-        if (!std::isfinite(value))
+        if (id == kInfamyActorValueIndex || !std::isfinite(value))
             continue;
 
         const float sanitized = std::clamp(value, 0.0f, kMaxSanitizedActorValue);
@@ -116,7 +150,8 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     if (it == actorValuesView.end())
         return;
 
-    if (const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it))
+    const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it);
+    if (pCharacterComponent)
     {
         // Never allow late in-flight regen/heal packets to add health above 0 on an already-dead non-player NPC.
         if (!pCharacterComponent->IsPlayer() && pCharacterComponent->IsDead() && sanitizedDelta > 0.f)
@@ -128,10 +163,36 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     float updatedHealth = std::max(0.f, (std::isfinite(currentHealth) ? currentHealth : 0.f) + sanitizedDelta);
 
     const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
-    if (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() &&
-        std::isfinite(maxIt->second) && maxIt->second > 0.f)
+    const float maxHealth = (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() && std::isfinite(maxIt->second))
+        ? maxIt->second
+        : 0.f;
+    if (maxHealth > 0.f)
     {
-        updatedHealth = std::min(updatedHealth, maxIt->second);
+        updatedHealth = std::min(updatedHealth, maxHealth);
+    }
+
+    if (sanitizedDelta > 0.f && pCharacterComponent && !pCharacterComponent->IsPlayer() && !pCharacterComponent->IsDead())
+    {
+        const bool isBossOrHighHp = pCharacterComponent->IsDragon() || (maxHealth >= 800.0f);
+        const auto& encounterCoord = m_world.GetEncounterService().GetCoordinator();
+        const bool encounterActiveWithLivingAllies =
+            encounterCoord.IsEncounterActiveWithLivingParticipants() ||
+            (acMessage.pPlayer && encounterCoord.IsPlayerDowned(acMessage.pPlayer->GetId()));
+
+        if (RfabCompat::ShouldBlockFalseBossResetHeal(
+                encounterActiveWithLivingAllies,
+                isBossOrHighHp,
+                currentHealth,
+                maxHealth,
+                updatedHealth))
+        {
+            NotifyActorValueChanges rollbackOwnerHp{};
+            rollbackOwnerHp.Id = message.Id;
+            rollbackOwnerHp.Values[kHealthActorValueIndex] = currentHealth;
+            if (acMessage.pPlayer)
+                acMessage.pPlayer->Send(rollbackOwnerHp);
+            return;
+        }
     }
 
     actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = updatedHealth;
@@ -171,6 +232,7 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     {
         if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
             pActorValues->CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = 0.f;
+        m_world.GetRfabProgressionService().GetLedger().ClearBossGhostState(message.Id);
     }
 
     spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);

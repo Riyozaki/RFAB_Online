@@ -4,6 +4,8 @@
 #include <World.h>
 
 #include <Events/UpdateEvent.h>
+#include <Events/CellChangeEvent.h>
+#include <Events/PartyJoinedEvent.h>
 #include <Events/SpellCastEvent.h>
 #include <Events/InterruptCastEvent.h>
 #include <Events/AddTargetEvent.h>
@@ -18,6 +20,9 @@
 #include <Messages/NotifyInterruptCast.h>
 
 #include <Actor.h>
+#include <AI/AIProcess.h>
+#include <Misc/MiddleProcess.h>
+#include <Effects/ActiveEffect.h>
 #include <Magic/ActorMagicCaster.h>
 #include <Games/ActorExtension.h>
 #include <Games/References.h>
@@ -34,12 +39,81 @@
 
 #include <Games/TES.h>
 
+namespace
+{
+constexpr uint32_t kActiveEffectDispelledFlag = (1u << 18);
+
+bool HasActiveSpellOnActor(Actor* apActor, uint32_t aSpellFormId) noexcept
+{
+    if (!apActor || aSpellFormId == 0 || !apActor->currentProcess || !apActor->currentProcess->middleProcess ||
+        !apActor->currentProcess->middleProcess->ActiveEffects)
+    {
+        return false;
+    }
+
+    for (ActiveEffect* pEffect : *apActor->currentProcess->middleProcess->ActiveEffects)
+    {
+        if (!pEffect || !pEffect->pSpell || pEffect->pSpell->formID != aSpellFormId)
+            continue;
+        if ((pEffect->uiFlags & kActiveEffectDispelledFlag) != 0)
+            continue;
+        if (pEffect->fDuration > 0.0f && pEffect->fElapsedSeconds >= pEffect->fDuration)
+            continue;
+        return true;
+    }
+
+    return false;
+}
+
+// Prevents duplicate CONSTANT_EFFECT stances/auras from stacking on remote actors and refreshes timed buffs/cloaks cleanly.
+bool TryRefreshOrDeduplicateActiveEffect(Actor* apActor, MagicItem* apSpell, EffectItem* apEffect, float aMagnitude) noexcept
+{
+    if (!apActor || !apSpell || !apEffect || !apActor->currentProcess || !apActor->currentProcess->middleProcess ||
+        !apActor->currentProcess->middleProcess->ActiveEffects)
+    {
+        return false;
+    }
+
+    const SpellItem* pSpellItem = Cast<SpellItem>(apSpell);
+    const bool isConstantEffect = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT;
+    const bool isNonHostileBuffOrCloak =
+        apSpell->iHostileCount <= 0 &&
+        apEffect->pEffectSetting &&
+        (apEffect->pEffectSetting->flags & (EffectSetting::kHostile | EffectSetting::kDetrimental)) == 0 &&
+        (isConstantEffect ||
+         apEffect->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kCloak ||
+         apEffect->data.iDuration >= 10);
+
+    if (!isConstantEffect && !isNonHostileBuffOrCloak)
+        return false;
+
+    for (ActiveEffect* pActive : *apActor->currentProcess->middleProcess->ActiveEffects)
+    {
+        if (!pActive || pActive->pSpell != apSpell || pActive->pEffect != apEffect)
+            continue;
+        if ((pActive->uiFlags & kActiveEffectDispelledFlag) != 0)
+            continue;
+        if (pActive->fDuration > 0.0f && pActive->fElapsedSeconds >= pActive->fDuration)
+            continue;
+
+        pActive->fElapsedSeconds = 0.0f;
+        if (std::isfinite(aMagnitude) && aMagnitude > 0.0f && isConstantEffect)
+            pActive->fMagnitude = aMagnitude;
+        return true;
+    }
+
+    return false;
+}
+} // namespace
+
 MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
     , m_transport(aTransport)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&MagicService::OnUpdate>(this);
+    m_cellChangeConnection = m_dispatcher.sink<CellChangeEvent>().connect<&MagicService::OnCellChangeEvent>(this);
+    m_partyJoinedConnection = m_dispatcher.sink<PartyJoinedEvent>().connect<&MagicService::OnPartyJoinedEvent>(this);
     m_spellCastEventConnection = m_dispatcher.sink<SpellCastEvent>().connect<&MagicService::OnSpellCastEvent>(this);
     m_notifySpellCastConnection = m_dispatcher.sink<NotifySpellCast>().connect<&MagicService::OnNotifySpellCast>(this);
     m_interruptCastEventConnection = m_dispatcher.sink<InterruptCastEvent>().connect<&MagicService::OnInterruptCastEvent>(this);
@@ -53,11 +127,16 @@ MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
 void MagicService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     if (!m_transport.IsConnected())
+    {
+        m_activeLocalPlayerSpells.clear();
         return;
+    }
 
     ApplyQueuedEffects();
 
     UpdateRevealOtherPlayersEffect();
+
+    PollLocalPlayerActiveBuffs(acEvent.Delta);
 }
 
 void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcept
@@ -390,6 +469,9 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
     request.ApplyHealPerkBonus = acEvent.ApplyHealPerkBonus;
     request.ApplyStaminaPerkBonus = acEvent.ApplyStaminaPerkBonus;
 
+    if (acEvent.TargetID == 0x14 && acEvent.SpellID != 0)
+        m_activeLocalPlayerSpells.insert(acEvent.SpellID);
+
     m_transport.Send(request);
 
     spdlog::debug("Sending effect sync request");
@@ -481,12 +563,18 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     if (!pActor)
         return;
 
+    if (TryRefreshOrDeduplicateActiveEffect(pActor, pSpell, pEffect, acMessage.Magnitude))
+        return;
+
     pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
     spdlog::debug("Applied remote magic effect");
 }
 
 void MagicService::OnRemoveSpellEvent(const RemoveSpellEvent& acEvent) noexcept
 {
+    if (acEvent.TargetId == 0x14)
+        m_activeLocalPlayerSpells.erase(acEvent.SpellId);
+
     if (!m_transport.IsConnected() || ScopedSpellCastOverride::IsOverriden())
         return;
 
@@ -715,14 +803,14 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
     if (!pSkyrimTogether)
         return;
 
-    MagicItem* pSpell = Cast<MagicItem>(TESForm::GetById((pSkyrimTogether->standardId << 24) | 0x1825));
+    MagicItem* pSpell = Cast<MagicItem>(TESForm::GetById(pSkyrimTogether->GetFormId(0x1825)));
 
     if (!pSpell)
         return;
 
     MagicTarget::AddTargetData data{};
     data.pSpell = pSpell;
-    data.pEffectItem = pSpell->GetEffect((pSkyrimTogether->standardId << 24) | 0x1824);
+    data.pEffectItem = pSpell->GetEffect(pSkyrimTogether->GetFormId(0x1824));
     if (!data.pEffectItem)
         return;
     data.fMagnitude = 1.f;
@@ -743,3 +831,91 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
         pRemotePlayer->magicTarget.AddTarget(data, false, false);
     }
 }
+
+void MagicService::PollLocalPlayerActiveBuffs(double aDeltaSec) noexcept
+{
+    m_buffPollAccumulatorSec += aDeltaSec;
+    if (m_buffPollAccumulatorSec < 0.5)
+        return;
+    m_buffPollAccumulatorSec = 0.0;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || !pPlayer->currentProcess || !pPlayer->currentProcess->middleProcess ||
+        !pPlayer->currentProcess->middleProcess->ActiveEffects)
+    {
+        return;
+    }
+
+    TiltedPhoques::Vector<uint32_t> endedSpells{};
+    for (uint32_t spellFormId : m_activeLocalPlayerSpells)
+    {
+        if (!HasActiveSpellOnActor(pPlayer, spellFormId))
+            endedSpells.push_back(spellFormId);
+    }
+
+    for (uint32_t spellFormId : endedSpells)
+    {
+        m_activeLocalPlayerSpells.erase(spellFormId);
+        RemoveSpellEvent removalEvent{};
+        removalEvent.TargetId = 0x14;
+        removalEvent.SpellId = spellFormId;
+        OnRemoveSpellEvent(removalEvent);
+    }
+}
+
+void MagicService::ResyncLocalPlayerActiveBuffs() noexcept
+{
+    if (!m_transport.IsConnected())
+        return;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || !pPlayer->currentProcess || !pPlayer->currentProcess->middleProcess ||
+        !pPlayer->currentProcess->middleProcess->ActiveEffects)
+    {
+        return;
+    }
+
+    for (ActiveEffect* pActive : *pPlayer->currentProcess->middleProcess->ActiveEffects)
+    {
+        if (!pActive || !pActive->pSpell || !pActive->pEffect)
+            continue;
+        if ((pActive->uiFlags & kActiveEffectDispelledFlag) != 0)
+            continue;
+        if (pActive->fDuration > 0.0f && (pActive->fDuration - pActive->fElapsedSeconds) < 3.0f)
+            continue;
+
+        auto* pEffectItem = static_cast<EffectItem*>(pActive->pEffect);
+        if (!pEffectItem->pEffectSetting)
+            continue;
+
+        if (!m_activeLocalPlayerSpells.contains(pActive->pSpell->formID))
+            continue;
+
+        MagicTarget::AddTargetData checkData{};
+        checkData.pCaster = pPlayer;
+        checkData.pSpell = pActive->pSpell;
+        checkData.pEffectItem = pEffectItem;
+        if (!checkData.ShouldSync())
+            continue;
+
+        AddTargetEvent resyncEvt{};
+        resyncEvt.TargetID = 0x14;
+        resyncEvt.CasterID = 0x14;
+        resyncEvt.SpellID = pActive->pSpell->formID;
+        resyncEvt.EffectID = pEffectItem->pEffectSetting->formID;
+        resyncEvt.Magnitude = pActive->fMagnitude;
+        resyncEvt.IsDualCasting = false;
+        OnAddTargetEvent(resyncEvt);
+    }
+}
+
+void MagicService::OnCellChangeEvent(const CellChangeEvent&) noexcept
+{
+    ResyncLocalPlayerActiveBuffs();
+}
+
+void MagicService::OnPartyJoinedEvent(const PartyJoinedEvent&) noexcept
+{
+    ResyncLocalPlayerActiveBuffs();
+}
+

@@ -18,9 +18,17 @@ struct DisconnectedEvent;
 struct PartyJoinedEvent;
 struct PartyLeftEvent;
 struct NotifyRfabProgressionEvent;
+struct NotifyPlayerJoined;
+struct NotifyPlayerLeft;
+struct NotifyPlayerLevel;
+struct NotifyPlayerCellChanged;
+struct NotifyPlayerHealthUpdate;
+struct NotifyPlayerList;
 struct Actor;
+struct TESForm;
 struct TESGlobal;
 struct BGSListForm;
+struct Mod;
 
 /**
  * Runtime adapter between RFAB_Online and the Requiem for a Balance (drake1ch/RFAB) modpack:
@@ -41,6 +49,8 @@ public:
 
     [[nodiscard]] TESGlobal* GetRfabXpGlobal() noexcept;
     [[nodiscard]] float GetLocalXpMultiplier() noexcept;
+    [[nodiscard]] Mod* ResolveRfabPluginMod() const noexcept;
+    [[nodiscard]] TESForm* ResolveFormByEditorIdOrBaseId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) const noexcept;
     [[nodiscard]] TESGlobal* ResolveGlobalByEditorId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) noexcept;
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
     [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
@@ -52,6 +62,14 @@ public:
     void NotifyPartyLeadershipChanged() noexcept;
     void RefreshCoopCombatSnapshot() noexcept;
     [[nodiscard]] Actor* FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
+    [[nodiscard]] bool IsBossActor(Actor* apActor) const noexcept;
+    void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;
+    void TriggerContextualTacticalPing(bool aForceDanger, const std::string& acCustomLabel = "") noexcept;
+    void TriggerExplicitTacticalPing(RfabCompat::TacticalPingKind aKind, const std::string& acCustomLabel = "") noexcept;
+    void ClearLocalTacticalPings() noexcept;
+    void ExecuteTacticalChatCommand(const RfabCompat::TacticalChatCommand& acCmd) noexcept;
+    void SetTacticalHudMode(RfabCompat::TacticalHudMode aMode, bool aShowNotice = true) noexcept;
+    [[nodiscard]] RfabCompat::TacticalHudMode GetTacticalHudMode() const noexcept { return m_tacticalHudMode; }
     [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
         Actor* apAttacker,
         Actor* apTarget,
@@ -74,9 +92,19 @@ private:
     void OnPartyLeft(const PartyLeftEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnNotifyProgressionEvent(const NotifyRfabProgressionEvent& acMessage) noexcept;
+    void OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcept;
+    void OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept;
+    void OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept;
+    void OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessage) noexcept;
+    void OnPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept;
+    void OnPlayerList(const NotifyPlayerList& acMessage) noexcept;
+    void OnDrawTacticalHud() noexcept;
 
     void PollReadXpBooks() noexcept;
     void PollSyncedGlobals() noexcept;
+    void PollBossEncounterState() noexcept;
+    void UpdateTacticalPingsAndInput(double aDeltaSec) noexcept;
+    void UpsertActiveTacticalPing(const RfabCompat::TacticalPingPayload& acPayload) noexcept;
     void SelfHealFreeRoamMenuControls() noexcept;
     void SuppressSoloRfabAutosave() noexcept;
     void RestoreSoloRfabAutosave() noexcept;
@@ -141,6 +169,30 @@ private:
     std::unordered_set<uint32_t> m_knownReadBookFormIds{};
     std::unordered_map<std::string, TESGlobal*> m_watchedGlobals{};
     std::unordered_map<std::string, float> m_lastGlobalValues{};
+    std::unordered_map<uint32_t, bool> m_lastBossGhostByServerId{};
+
+    struct RemotePeerHudState
+    {
+        uint32_t PlayerId{0};
+        std::string Username{};
+        uint16_t Level{1};
+        float HealthPercent{100.0f};
+        std::string CellName{};
+    };
+
+    struct ActiveTacticalPing
+    {
+        RfabCompat::TacticalPingPayload Payload{};
+        double RemainingSec{12.0};
+        double TotalDurationSec{12.0};
+    };
+
+    std::unordered_map<uint32_t, RemotePeerHudState> m_partyHudPeers{};
+    std::vector<ActiveTacticalPing> m_activeTacticalPings{};
+    RfabCompat::TacticalHudMode m_tacticalHudMode{RfabCompat::TacticalHudMode::Full};
+    double m_pingCooldownRemainingSec{0.0};
+    bool m_pingKeyWasDown{false};
+    bool m_hudKeyWasDown{false};
 
     entt::scoped_connection m_connectedConnection;
     entt::scoped_connection m_disconnectedConnection;
@@ -148,4 +200,11 @@ private:
     entt::scoped_connection m_partyLeftConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_progressionConnection;
+    entt::scoped_connection m_playerJoinedConnection;
+    entt::scoped_connection m_playerLeftConnection;
+    entt::scoped_connection m_playerLevelConnection;
+    entt::scoped_connection m_playerCellChangedConnection;
+    entt::scoped_connection m_playerHealthUpdateConnection;
+    entt::scoped_connection m_playerListConnection;
+    entt::scoped_connection m_drawImGuiConnection;
 };

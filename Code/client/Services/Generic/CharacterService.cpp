@@ -4,10 +4,12 @@
 #include <Services/PartyService.h>
 
 #include <Services/CharacterService.h>
+#include <Services/DownedStateService.h>
 #include <Services/QuestService.h>
 #include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
+#include <Games/Overrides.h>
 #include <Games/References.h>
 #include <Games/Misc/SubtitleManager.h>
 
@@ -153,6 +155,15 @@ void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
         }
     }
 
+    // Ensure living NPCs that become locally owned never retain a negative kInfamy (-1.0f) marker
+    // from an earlier non-owner hit, so RFAB_XP_Alias::OnActorKilled always awards full kill XP.
+    if (apActor->GetActorValue(ActorValueInfo::kInfamy) < 0.0f)
+    {
+        ScopedActorValueOverride avOverride;
+        apActor->SetActorValue(ActorValueInfo::kInfamy, 0.0f);
+        apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, 0.0f);
+    }
+
     if (apActor->animationGraphHolder.IsReady())
     {
         const bool prevForce = g_forceAnimation;
@@ -204,6 +215,8 @@ void AssignRemoteSummonOwner(World& aWorld, Actor* apSummon, uint32_t aOwnerPlay
         return;
 
     apSummon->SetIgnoreFriendlyHit(true);
+    if (auto* pExt = apSummon->GetExtension())
+        pExt->SetPlayerSummonFlag(true);
 
     if (aOwnerPlayerId != 0)
     {
@@ -857,7 +870,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
     else
     {
         m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch);
-        spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm->GetName());
+        spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm ? pActor->baseForm->GetName() : "<null>");
 
         m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id);
 
@@ -1327,9 +1340,14 @@ void CharacterService::OnNotifyRespawn(const NotifyRespawn& acMessage) const noe
 
 void CharacterService::OnBeastFormChange(const BeastFormChangeEvent& acEvent) const noexcept
 {
+    if (!m_transport.IsConnected())
+        return;
+
     auto view = m_world.view<FormIdComponent>();
 
     const auto it = std::find_if(view.begin(), view.end(), [view](auto entity) { return view.get<FormIdComponent>(entity).Id == 0x14; });
+    if (it == view.end())
+        return;
 
     std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
     if (!serverIdRes.has_value())
@@ -1456,7 +1474,8 @@ void CharacterService::OnNotifyMount(const NotifyMount& acMessage) const noexcep
 
             TESForm* pMountForm = TESForm::GetById(mountFormIdComponent.Id);
             pMount = Cast<Actor>(pMountForm);
-            pMount->GetExtension()->SetRemote(true);
+            if (pMount && pMount->GetExtension())
+                pMount->GetExtension()->SetRemote(true);
 
             InterpolationSystem::Setup(m_world, entity);
             AnimationSystem::Setup(m_world, entity);
@@ -1465,7 +1484,8 @@ void CharacterService::OnNotifyMount(const NotifyMount& acMessage) const noexcep
         }
     }
 
-    pRider->InitiateMountPackage(pMount);
+    if (pRider && pMount)
+        pRider->InitiateMountPackage(pMount);
 }
 
 void CharacterService::OnInitPackageEvent(const InitPackageEvent& acEvent) const noexcept
@@ -1522,6 +1542,8 @@ void CharacterService::OnNotifyNewPackage(const NotifyNewPackage& acMessage) con
     }
 
     TESPackage* pPackage = Cast<TESPackage>(pPackageForm);
+    if (!pActor || !pPackage)
+        return;
 
     pActor->SetPackage(pPackage);
 }
@@ -1657,7 +1679,7 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
 
     bool isLocal = pActor->GetExtension()->IsLocal();
     bool isInScene = pActor->IsInScene();
-    auto sceneId = isInScene ? pActor->GetCurrentScene()->formID : 0;
+    auto sceneId = (isInScene && pActor->GetCurrentScene()) ? pActor->GetCurrentScene()->formID : 0;
     bool isTaskDialogue = pActor->IsTalking() && pActor->IsInDialogueWithPlayer();
     bool isSpeakingInScene = pActor->IsSpeakingInScene();
 
@@ -1666,7 +1688,7 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
     spdlog::debug(
         __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
                      "{:X}, serverId {:X}, isLeader {}, name {}, soundFile {}",
-        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader, pActor->baseForm->GetName(),
+        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<null>",
         acEvent.VoiceFile);
 
     if (willSync)
@@ -1702,7 +1724,7 @@ void CharacterService::OnNotifyDialogue(const NotifyDialogue& acMessage) noexcep
         return;
 
     spdlog::debug(
-        __FUNCTION__ ": playing dialogue Actor {:X}, serverId {:X}, isLeader {}, name {}, soundFile {}", pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm->GetName(),
+        __FUNCTION__ ": playing dialogue Actor {:X}, serverId {:X}, isLeader {}, name {}, soundFile {}", pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<null>",
         acMessage.SoundFilename);
 
     pActor->StopCurrentDialogue(true);
@@ -1738,7 +1760,7 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
     bool isLocal = pActor->GetExtension()->IsLocal();
     bool isInScene = pActor->IsInScene();
     auto isSpeakingInScene = pActor->IsSpeakingInScene();
-    auto sceneId = isInScene ? pActor->GetCurrentScene()->formID : 0;
+    auto sceneId = (isInScene && pActor->GetCurrentScene()) ? pActor->GetCurrentScene()->formID : 0;
     bool isTaskDialogue = pActor->IsTalking() && pActor->IsInDialogueWithPlayer();
 
     const bool willSync = isTaskDialogue || isLocal && !isInScene;
@@ -1746,7 +1768,7 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
     spdlog::debug(
         __FUNCTION__ ": isLocal {}, isInScene {}, isSpeakingInScene {}, isTaskDialogue {}, willSync {}, scene {:X}, Actor "
                      "{:X}, serverId {:X}, isLeader {}, name {}, subtitle {}",
-        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader, pActor->baseForm->GetName(),
+        isLocal, isInScene, isSpeakingInScene, isTaskDialogue, willSync, sceneId, pActor->formID, serverIdRes.value(), isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<null>",
         acEvent.Text);
 
     if (willSync)
@@ -1786,7 +1808,7 @@ void CharacterService::OnNotifySubtitle(const NotifySubtitle& acMessage) noexcep
     pInfo = Cast<TESTopicInfo>(TESForm::GetById(acMessage.TopicFormId));
 
     spdlog::debug(__FUNCTION__ ": showing subtitle Actor {:X}, serverId {:X}, isLeader {}, name {}, message: {}",
-                     pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm->GetName(), acMessage.Text);
+                     pActor->formID, acMessage.ServerId, isLeader, pActor->baseForm ? pActor->baseForm->GetName() : "<null>", acMessage.Text);
 
     SubtitleManager::Get()->HideSubtitle(pActor);   // Subtitle conflicts can hang, this makes it beter at least.
     SubtitleManager::Get()->ShowSubtitle(pActor, acMessage.Text.c_str(), pInfo);
@@ -1877,6 +1899,65 @@ void CharacterService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexc
     }
 }
 
+void CharacterService::ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlayerId) noexcept
+{
+    if (!m_transport.IsOnline())
+        return;
+
+    if (m_world.GetDownedStateService().IsLocalPlayerDowned())
+        return;
+
+    const auto& partyService = m_world.GetPartyService();
+    if (!partyService.IsInParty() || !partyService.IsPlayerInParty(aDownedPeerPlayerId))
+        return;
+
+    PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+    if (!pLocalPlayer || !pLocalPlayer->parentCell || pLocalPlayer->VirtIsDead(false))
+        return;
+
+    auto view = m_world.view<RemoteComponent, FormIdComponent>(entt::exclude<ObjectComponent, PlayerComponent>);
+    Vector<entt::entity> entities(view.begin(), view.end());
+
+    for (auto entity : entities)
+    {
+        if (!m_world.valid(entity))
+            continue;
+
+        const auto* pRemoteComp = m_world.try_get<RemoteComponent>(entity);
+        const auto* pFormIdComp = m_world.try_get<FormIdComponent>(entity);
+        if (!pRemoteComp || !pFormIdComp || pFormIdComp->Id == 0x14)
+            continue;
+
+        Actor* pActor = Cast<Actor>(TESForm::GetById(pFormIdComp->Id));
+        if (!pActor || pActor->IsDead() || pActor->IsTemporary() || pActor->IsMount() || pActor->IsPlayerSummon())
+            continue;
+
+        const bool sameCellOrWorld =
+            (pActor->parentCell == pLocalPlayer->parentCell) ||
+            (pActor->GetWorldSpace() != nullptr && pActor->GetWorldSpace() == pLocalPlayer->GetWorldSpace());
+        if (!sameCellOrWorld)
+            continue;
+
+        const float dx = pActor->position.x - pLocalPlayer->position.x;
+        const float dy = pActor->position.y - pLocalPlayer->position.y;
+        const float dz = pActor->position.z - pLocalPlayer->position.z;
+        const float distSq = dx * dx + dy * dy + dz * dz;
+
+        const bool isBoss = m_world.GetRfabAdapterService().IsBossActor(pActor);
+        if (!isBoss && !pActor->IsInCombat() && distSq > (4096.0f * 4096.0f))
+            continue;
+
+        spdlog::info(
+            "Standing teammate claiming actor {:X} (serverId {:X}, isBoss={}) after peer {} entered downed state",
+            pActor->formID,
+            pRemoteComp->Id,
+            isBoss,
+            aDownedPeerPlayerId);
+
+        TakeOwnership(pActor->formID, pRemoteComp->Id, entity);
+    }
+}
+
 void CharacterService::MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept
 {
     TESObjectCELL* pCell = nullptr;
@@ -1922,11 +2003,12 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 
     if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity); pRemoteComponent)
     {
-        // Never steal actor ownership onto a downed party leader!
+        // Never steal actor ownership onto a downed party leader or from a remote player summon!
         if (m_world.GetPartyService().IsLeader() &&
             !m_world.GetDownedStateService().IsLocalPlayerDowned() &&
             !pActor->IsTemporary() &&
-            !pActor->IsMount())
+            !pActor->IsMount() &&
+            !pActor->IsPlayerSummon())
         {
             spdlog::info("Sending ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
 
@@ -1973,9 +2055,9 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
         return;
     }
 
-    if (!m_world.GetModSystem().GetServerModId(pActor->parentCell->formID, message.CellId))
+    if (!pActor->parentCell || !m_world.GetModSystem().GetServerModId(pActor->parentCell->formID, message.CellId))
     {
-        spdlog::error("Server cell id not found for cell id {:X}", pActor->parentCell->formID);
+        spdlog::error("Server cell id not found for cell id {:X}", pActor->parentCell ? pActor->parentCell->formID : 0u);
         return;
     }
 
@@ -2029,29 +2111,42 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
     {
         auto& questLog = message.QuestContent.Entries;
         auto& modSystem = m_world.GetModSystem();
+        std::unordered_set<uint32_t> seenQuestFormIds{};
+
+        auto tryAppendQuestEntry = [&](TESQuest* apQuest)
+        {
+            if (!apQuest || apQuest->currentStage == 0)
+                return;
+            if (!seenQuestFormIds.insert(apQuest->formID).second)
+                return;
+            if (QuestService::IsNonSyncableQuest(apQuest))
+                return;
+
+            GameId id{};
+            if (modSystem.GetServerModId(apQuest->formID, id))
+            {
+                auto& entry = questLog.emplace_back();
+                entry.Stage = apQuest->currentStage;
+                entry.Id = id;
+            }
+        };
 
         for (const auto& objective : PlayerCharacter::Get()->objectives)
         {
-            auto* pQuest = objective.instance->quest;
-            if (!pQuest)
+            if (!objective.instance)
                 continue;
-
-            if (!QuestService::IsNonSyncableQuest(pQuest))
-            {
-                GameId id{};
-
-                if (modSystem.GetServerModId(pQuest->formID, id))
-                {
-                    auto& entry = questLog.emplace_back();
-                    entry.Stage = pQuest->currentStage;
-                    entry.Id = id;
-                }
-            }
+            tryAppendQuestEntry(objective.instance->quest);
         }
 
-        // remove duplicates
-        const auto ip = std::unique(questLog.begin(), questLog.end());
-        questLog.resize(std::distance(questLog.begin(), ip));
+        if (auto* pModManager = ModManager::Get())
+        {
+            for (TESQuest* pQuest : pModManager->quests)
+            {
+                if (!pQuest || !pQuest->IsEnabled() || pQuest->IsStopped())
+                    continue;
+                tryAppendQuestEntry(pQuest);
+            }
+        }
     }
 
     message.CurrentActorData = BuildActorData(pActor);
@@ -2063,6 +2158,8 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
     message.IsPlayerSummon =
         (pCommandingActor && pCommandingActor->formID == 0x14) ||
         (!pActor->GetExtension()->IsRemote() && isTemporary && pActor->IsPlayerTeammate());
+    if (message.IsPlayerSummon && pActor->GetExtension())
+        pActor->GetExtension()->SetPlayerSummonFlag(true);
 
     if (pNpc->IsTemporary())
         pNpc = pNpc->GetTemplateBase();
@@ -2096,7 +2193,7 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 void CharacterService::CancelServerAssignment(const entt::entity aEntity, const uint32_t aFormId) const noexcept
 {
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    const char* pName = !pActor ? "" : pActor->baseForm->GetName();
+    const char* pName = (!pActor || !pActor->baseForm) ? "" : pActor->baseForm->GetName();
 
     if (m_world.all_of<RemoteComponent>(aEntity))
     {
@@ -2477,12 +2574,17 @@ void CharacterService::RunRemoteUpdates() noexcept
             m_world.GetDownedStateService().ApplyRemoteActorDownedPosture(pActor, true);
         }
 
+        if (waitingFor3D.SpawnRequest.IsPlayerSummon)
+        {
+            AssignRemoteSummonOwner(m_world, pActor, waitingFor3D.SpawnRequest.PlayerId);
+        }
+
         // (Re)start naked NPC deadline. Actor MUST be fully constructed before check clock starts.
         pActor->GetExtension()->SetNakedDeadline();
 
         toRemove.push_back(entity);
 
-        spdlog::info(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm->GetName());
+        spdlog::info(__FUNCTION__ ": applied 3D for actor, form id: {:X}, name {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<null>");
     }
 
     for (auto entity : toRemove)

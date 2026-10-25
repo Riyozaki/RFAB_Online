@@ -188,6 +188,23 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
     snap.Calendar.Month = static_cast<int>(month);
     snap.Calendar.Year = static_cast<float>(year);
 
+    // 5. Capture all world containers & lock states (ObjectComponent + InventoryComponent)
+    auto objectView = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
+    for (auto entity : objectView)
+    {
+        ObjectStateRecord objRec{};
+        objRec.Id = objectView.get<FormIdComponent>(entity).Id;
+        objRec.CurrentLockData = objectView.get<ObjectComponent>(entity).CurrentLockData;
+        objRec.CurrentInventory = objectView.get<InventoryComponent>(entity).Content;
+        if (const auto* pCellComp = m_world.try_get<CellIdComponent>(entity))
+        {
+            objRec.CellId = pCellComp->Cell;
+            objRec.WorldSpaceId = pCellComp->WorldSpaceId;
+            objRec.CenterCoords = pCellComp->CenterCoords;
+        }
+        snap.TrackedObjects.push_back(std::move(objRec));
+    }
+
     return snap;
 }
 
@@ -275,6 +292,36 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         }
     }
 
+    // 3b. Restore world containers & lock states (ObjectComponent + InventoryComponent),
+    // removing any objects first registered AFTER this checkpoint and restoring pre-checkpoint loot/locks!
+    {
+        auto objectView = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
+        std::vector<entt::entity> postCheckpointObjects;
+        for (auto entity : objectView)
+        {
+            const GameId& objId = objectView.get<FormIdComponent>(entity).Id;
+            auto it = std::find_if(
+                acSnapshot.TrackedObjects.begin(),
+                acSnapshot.TrackedObjects.end(),
+                [&objId](const ObjectStateRecord& rec) { return rec.Id == objId; });
+
+            if (it == acSnapshot.TrackedObjects.end())
+            {
+                postCheckpointObjects.push_back(entity);
+            }
+            else
+            {
+                objectView.get<ObjectComponent>(entity).CurrentLockData = it->CurrentLockData;
+                objectView.get<InventoryComponent>(entity).Content = it->CurrentInventory;
+            }
+        }
+        for (entt::entity entity : postCheckpointObjects)
+        {
+            if (m_world.valid(entity))
+                m_world.destroy(entity);
+        }
+    }
+
     // 4. Restore server calendar date & time
     auto& calendar = m_world.GetCalendarService();
     calendar.SetDate(acSnapshot.Calendar.Day, acSnapshot.Calendar.Month, acSnapshot.Calendar.Year);
@@ -352,6 +399,15 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         }
     }
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
+    {
+        auto objectView = m_world.view<ObjectComponent>();
+        std::vector<entt::entity> toDestroy(objectView.begin(), objectView.end());
+        for (entt::entity entity : toDestroy)
+        {
+            if (m_world.valid(entity))
+                m_world.destroy(entity);
+        }
+    }
 
     NotifyExecuteLoad fallbackLoad{};
     fallbackLoad.EpochId = 0;

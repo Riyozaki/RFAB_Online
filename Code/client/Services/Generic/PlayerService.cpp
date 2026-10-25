@@ -31,6 +31,8 @@
 #include <AI/AIProcess.h>
 #include <EquipManager.h>
 #include <Forms/TESRace.h>
+#include <Games/ActorExtension.h>
+#include <ModCompat/BehaviorVar.h>
 #include <RfabModpackCompat.h>
 
 PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
@@ -226,6 +228,16 @@ void PlayerService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
         if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
             pWorldEncountersEnabled->f = 1.f;
     }
+
+    if (m_transport.IsConnected())
+    {
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        {
+            PlayerLevelRequest request{};
+            request.NewLevel = pPlayer->GetLevel();
+            m_transport.Send(request);
+        }
+    }
 }
 
 void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
@@ -392,6 +404,7 @@ void PlayerService::RunLevelUpdates() const noexcept
 void PlayerService::RunBeastFormDetection() const noexcept
 {
     static uint32_t lastRaceFormID = 0;
+    static bool lastWasBeastForm = false;
     static std::chrono::steady_clock::time_point lastSendTimePoint;
     constexpr auto cDelayBetweenUpdates = 250ms;
 
@@ -404,14 +417,26 @@ void PlayerService::RunBeastFormDetection() const noexcept
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
     if (!pPlayer || !pPlayer->race)
         return;
-    
-    if (pPlayer->race->formID == lastRaceFormID)
+
+    const uint32_t currentRaceFormID = pPlayer->race->formID;
+    if (currentRaceFormID == lastRaceFormID)
         return;
 
-    if (pPlayer->race->formID == 0x200283A || pPlayer->race->formID == 0xCDD84)
-        m_world.GetDispatcher().trigger(BeastFormChangeEvent());
+    const char* pRaceEditorId = pPlayer->race->GetFormEditorID();
+    const bool isBeastForm = RfabCompat::IsBeastFormRace(pRaceEditorId ? pRaceEditorId : "", currentRaceFormID);
 
-    lastRaceFormID = pPlayer->race->formID;
+    if (lastRaceFormID != 0 && (isBeastForm || lastWasBeastForm))
+    {
+        if (!isBeastForm)
+        {
+            if (auto* pExt = pPlayer->GetExtension())
+                pExt->GraphDescriptorHash = BehaviorVar::GetHumanoidHash();
+        }
+        m_world.GetDispatcher().trigger(BeastFormChangeEvent());
+    }
+
+    lastRaceFormID = currentRaceFormID;
+    lastWasBeastForm = isBeastForm;
 }
 
 void PlayerService::ToggleDeathSystem(bool aSet) noexcept

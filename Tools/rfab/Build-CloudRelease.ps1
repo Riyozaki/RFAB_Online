@@ -1,21 +1,43 @@
 ﻿param(
-    [string]$VersionTag = "v1.1.0",
+    [string]$VersionTag = "v1.2.0",
     [string]$BuildMode = "releasedbg"
 )
 
-if ($VersionTag -ne "v1.1.0") {
-    Write-Host "[RELEASE POLICY] Remapping -VersionTag '$VersionTag' -> 'v1.1.0' (only v1.0.0 backup and v1.1.0 current release are maintained; v1.0.0 is never overwritten)." -ForegroundColor Yellow
-    $VersionTag = "v1.1.0"
+if ($VersionTag -ne "v1.2.0") {
+    Write-Host "[RELEASE POLICY] Remapping -VersionTag '$VersionTag' -> 'v1.2.0' (v1.0.0 and v1.1.0 backups are preserved untouched; active release target is v1.2.0)." -ForegroundColor Yellow
+    $VersionTag = "v1.2.0"
 }
-if ($VersionTag -eq "v1.0.0") {
-    throw "Hard guard: v1.0.0 must never be overwritten!"
+if ($VersionTag -eq "v1.0.0" -or $VersionTag -eq "v1.1.0") {
+    throw "Hard guard: v1.0.0 and v1.1.0 must never be overwritten!"
 }
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
 
 $script:PackagesReady = $false
+$script:LastDiagMatches = ""
+$script:LastDiagTail = ""
+$script:ProgressLog = New-Object System.Collections.Generic.List[string]
 $CacheMarker = Join-Path $env:LOCALAPPDATA ".xmake\packages\.rfab_cached_ok"
+
+function Update-ReleaseTelemetry([string]$StateTitle, [string]$BodyText) {
+    try {
+        if ($StateTitle.Length -gt 200) { $StateTitle = $StateTitle.Substring(0, 200) }
+        if ($BodyText.Length -gt 60000) {
+            $BodyText = $BodyText.Substring($BodyText.Length - 60000)
+        }
+        $tmpNotes = Join-Path $env:TEMP ("rfab_telemetry_" + [Guid]::NewGuid().ToString("N") + ".md")
+        [System.IO.File]::WriteAllText($tmpNotes, $BodyText, (New-Object System.Text.UTF8Encoding($false)))
+        $sha = (& git rev-parse HEAD).Trim()
+        & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            & cmd.exe /d /s /c "gh release create $VersionTag --target $sha --title `"$StateTitle`" --notes-file `"$tmpNotes`" --prerelease >nul 2>&1"
+        } else {
+            & cmd.exe /d /s /c "gh release edit $VersionTag --title `"$StateTitle`" --notes-file `"$tmpNotes`" >nul 2>&1"
+        }
+        Remove-Item -LiteralPath $tmpNotes -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
 
 function Emit-Annotation([string]$Level, [string]$Title, [string]$Msg) {
     $clean = $Msg -replace "\r", "" -replace "\n", " | " -replace "%", "%25"
@@ -25,6 +47,8 @@ function Emit-Annotation([string]$Level, [string]$Title, [string]$Msg) {
 
 function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
     Write-Host "`n==> $StepName" -ForegroundColor Cyan
+    $script:ProgressLog.Add("- ⏳ Running: ``$StepName`` ($([DateTime]::UtcNow.ToString('HH:mm:ss')) UTC)")
+
     $uid = [Guid]::NewGuid().ToString("N")
     $stepBat = Join-Path $env:TEMP ("rfab_cmd_" + $uid + ".cmd")
     $stepLog = Join-Path $env:TEMP ("rfab_step_" + $uid + ".log")
@@ -43,11 +67,17 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
         $tailShow = if ($allLines.Length -gt 80) { $allLines[($allLines.Length - 80)..($allLines.Length - 1)] } else { $allLines }
         foreach ($ln in $tailShow) { Write-Host $ln }
         if ($code -ne 0) {
-            $errMatches = @($allLines | Where-Object { $_ -match '(?i)(error\s+[A-Z]*\d+|fatal error|unresolved external|error:|Traceback|Assertion|Exception)' })
+            $errMatches = @($allLines | Where-Object { $_ -match '(?i)(error\s+[A-Z]*\d+|fatal error|unresolved external|error:|Traceback|Assertion|Exception)' } | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             if ($errMatches.Count -gt 0) {
+                $script:LastDiagMatches = ($errMatches -join "`r`n")
                 Emit-Annotation "warning" "DIAG_MATCHES" ($errMatches -join "`n")
             }
-            Emit-Annotation "warning" "DIAG_TAIL" ($tailShow -join "`n")
+            $compactTail = @($tailShow | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
+            $script:LastDiagTail = ($compactTail -join "`r`n")
+            Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n")
+            $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
+            Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
+            & cmd.exe /d /s /c "gh release upload $VersionTag `"$failLogAsset`" --clobber >nul 2>&1"
             Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
             throw "$StepName exited with code $code"
         }
@@ -55,6 +85,7 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
     } elseif ($code -ne 0) {
         throw "$StepName exited with code $code (no log file)"
     }
+    $script:ProgressLog[$script:ProgressLog.Count - 1] = "- ✅ Completed: ``$StepName`` ($([DateTime]::UtcNow.ToString('HH:mm:ss')) UTC)"
     Emit-Annotation "notice" "RFAB_BUILD" "OK: $StepName"
 }
 
@@ -94,22 +125,13 @@ try {
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
 
-    if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF -ne "refs/heads/main") {
-        if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
-            [System.IO.File]::WriteAllText($CacheMarker, "ok")
-        }
-        Emit-Annotation "notice" "CI_VERIFIED_HOLD_RELEASE" "All xmake build, TPTests, clean-upgrade installer, and bundle verification gates PASSED on $($env:GITHUB_REF). Skipping GitHub Release $VersionTag publish until merged into main."
-        $global:LASTEXITCODE = 0
-        exit 0
-    }
-
     & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
     if ($LASTEXITCODE -ne 0) {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
             "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
     } else {
         Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
-            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --prerelease=false --latest"
     }
 
     foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {
@@ -141,11 +163,15 @@ try {
     if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
         [System.IO.File]::WriteAllText($CacheMarker, "ok")
     }
+    & cmd.exe /d /s /c "gh release delete-asset $VersionTag build_step_log.txt --yes >nul 2>&1"
+    & cmd.exe /d /s /c "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --prerelease=false --latest"
     Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/Riyozaki/RFAB_Online/releases/tag/$VersionTag"
     $global:LASTEXITCODE = 0
     exit 0
 } catch {
     $errMsg = $_.Exception.Message
+    $failBody = "## ❌ Build Failure: $errMsg`r`n`r`n### Progress`r`n$($script:ProgressLog -join "`r`n")`r`n`r`n### Diagnostic Matches`r`n``````text`r`n$($script:LastDiagMatches)`r`n```````r`n`r`n### Log Tail`r`n``````text`r`n$($script:LastDiagTail)`r`n``````"
+    Update-ReleaseTelemetry "RFAB Online $VersionTag (FAILED: $errMsg)" $failBody
     Emit-Annotation "error" "CI_EXCEPTION" $errMsg
     exit 1
 }

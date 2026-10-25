@@ -143,20 +143,62 @@ int32_t Inventory::GetEntryCountById(GameId& aItemId) const noexcept
     return entry->Count;
 }
 
-// TODO: unit testing
 void Inventory::AddOrRemoveEntry(const Entry& acEntry) noexcept
 {
-    auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
+    if (acEntry.Count == 0)
+        return;
 
+    if (acEntry.Count > 0)
+    {
+        auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
+        if (duplicate != Entries.end())
+        {
+            duplicate->Count += acEntry.Count;
+        }
+        else
+        {
+            Entries.push_back(acEntry);
+        }
+        return;
+    }
+
+    // acEntry.Count < 0: remove items without ever pushing phantom negative-count entries into Entries.
+    int32_t remainingToRemove = -acEntry.Count;
+
+    // 1. Prefer exact extra-data match first
+    auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
     if (duplicate != Entries.end())
     {
-        duplicate->Count += acEntry.Count;
-        if (duplicate->Count <= 0)
-            Entries.erase(duplicate);
+        if (duplicate->Count > remainingToRemove)
+        {
+            duplicate->Count -= remainingToRemove;
+            return;
+        }
+
+        remainingToRemove -= std::max(0, duplicate->Count);
+        Entries.erase(duplicate);
     }
-    else
+
+    // 2. Fallback: match by BaseId (handles looting worn corpse gear where ExtraWorn became false at removal time,
+    // or items whose ExtraCharge/ExtraHealth changed slightly).
+    while (remainingToRemove > 0)
     {
-        Entries.push_back(acEntry);
+        auto fallback = std::find_if(
+            Entries.begin(),
+            Entries.end(),
+            [&acEntry](const Entry& entry) { return entry.BaseId == acEntry.BaseId && entry.Count > 0; });
+
+        if (fallback == Entries.end())
+            break;
+
+        if (fallback->Count > remainingToRemove)
+        {
+            fallback->Count -= remainingToRemove;
+            break;
+        }
+
+        remainingToRemove -= fallback->Count;
+        Entries.erase(fallback);
     }
 }
 

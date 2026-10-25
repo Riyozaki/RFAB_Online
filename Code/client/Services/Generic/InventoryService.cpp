@@ -28,6 +28,7 @@
 #include <Forms/BGSOutfit.h>
 #include <Forms/TESObjectARMO.h>
 #include <DefaultObjectManager.h>
+#include <Services/RfabAdapterService.h>
 
 InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -246,12 +247,15 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
     // (RFAB.dll's 2-ring patch applies strictly to 0x14!).
     if (pActor->GetExtension()->IsRemotePlayer())
     {
-        if (auto* pModManager = ModManager::Get())
+        const auto& rfabAdapter = m_world.GetRfabAdapterService();
+        const auto& bindings = rfabAdapter.GetBindings();
+        if (TESForm* pAdvRing = rfabAdapter.ResolveFormByEditorIdOrBaseId(
+                bindings.AdventurerRingEditorId, bindings.FallbackAdventurerRingBaseFormId);
+            pAdvRing && itemId == pAdvRing->formID)
         {
-            if (auto* pRfabMod = pModManager->GetByName("RFAB.esp"); pRfabMod && itemId == pRfabMod->GetFormId(0x00112812u))
-                return;
+            return;
         }
-        else if ((itemId & 0x00FFFFFFu) == 0x00112812u)
+        if ((itemId & 0x00FFFFFFu) == bindings.FallbackAdventurerRingBaseFormId)
         {
             return;
         }

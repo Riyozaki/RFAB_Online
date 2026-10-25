@@ -26,6 +26,7 @@
 
 #include <Services/PapyrusService.h>
 #include <Services/DebugService.h>
+#include <Services/RfabAdapterService.h>
 #include <World.h>
 
 #include <AI/AITimer.h>
@@ -48,8 +49,17 @@ float* GetGreetDistance() noexcept
 
 bool IsRfabModpackActive() noexcept
 {
-    auto* pModManager = ModManager::Get();
-    return pModManager && pModManager->GetByName("RFAB.esp") != nullptr;
+    if (auto* pModManager = ModManager::Get())
+    {
+        if (pModManager->GetByName("RFAB.esp") != nullptr ||
+            pModManager->GetByName("Requiem for a Balance.esp") != nullptr ||
+            pModManager->GetByName("Requiem.esp") != nullptr)
+        {
+            return true;
+        }
+    }
+
+    return World::Get().GetRfabAdapterService().ResolveRfabPluginMod() != nullptr;
 }
 
 float GetRfabOutgoingDamageMult() noexcept

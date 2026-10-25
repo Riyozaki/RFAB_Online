@@ -30,29 +30,14 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher)
 // Clients need a message saying the entity was destroyed.
 void ObjectService::OnPlayerLeaveCellEvent(const PlayerLeaveCellEvent& acEvent) noexcept
 {
-    for (Player* pPlayer : m_world.GetPlayerManager())
-    {
-        if (pPlayer->GetCellComponent().Cell == acEvent.OldCell)
-            return;
-    }
-
-    auto objectView = m_world.view<ObjectComponent, CellIdComponent>();
-    Vector<entt::entity> toDestroy;
-
-    for (auto entity : objectView)
-    {
-        const auto& cellIdComponent = objectView.get<CellIdComponent>(entity);
-
-        if (cellIdComponent.Cell != acEvent.OldCell)
-            continue;
-
-        toDestroy.push_back(entity);
-    }
-
-    for (auto& entity : toDestroy)
-    {
-        m_world.destroy(entity);
-    }
+    // IMPORTANT: Keep assigned container & door ObjectComponent/InventoryComponent entities persistent
+    // across cell transitions for the co-op session!
+    // Destroying ObjectComponent entities when stepping across exterior grid boundaries (~58m) or between
+    // dungeon sub-cells caused:
+    //   1. Infinite chest/boss-chest loot respawning & duplication when re-entering a cell;
+    //   2. Unlocked doors & chests re-locking for teammates;
+    //   3. Stale ServerId references breaking subsequent container take/put packets.
+    (void)acEvent;
 }
 
 // NOTE: this whole system kinda relies on all objects in a cell being static.
@@ -65,6 +50,9 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
 
     for (const ObjectData& object : acMessage.Packet.Objects)
     {
+        if (!object.Id || object.Id.ModId == 0xFFFFFFFF)
+            continue;
+
         const auto iter = std::find_if(
             std::begin(view), std::end(view),
             [view, id = object.Id](auto entity)
@@ -75,6 +63,23 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
 
         if (iter != std::end(view))
         {
+            if (auto* pCellComp = m_world.try_get<CellIdComponent>(*iter))
+            {
+                if (!pCellComp->WorldSpaceId)
+                {
+                    if (object.WorldSpaceId)
+                    {
+                        pCellComp->WorldSpaceId = object.WorldSpaceId;
+                        pCellComp->CenterCoords = object.CurrentCoords;
+                    }
+                    else if (acMessage.pPlayer && acMessage.pPlayer->GetCellComponent().WorldSpaceId)
+                    {
+                        pCellComp->WorldSpaceId = acMessage.pPlayer->GetCellComponent().WorldSpaceId;
+                        pCellComp->CenterCoords = acMessage.pPlayer->GetCellComponent().CenterCoords;
+                    }
+                }
+            }
+
             ObjectData objectData;
             objectData.ServerId = World::ToInteger(*iter);
 
@@ -100,7 +105,15 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
             auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity, acMessage.pPlayer);
             objectComponent.CurrentLockData = object.CurrentLockData;
 
-            m_world.emplace<CellIdComponent>(cEntity, object.CellId, object.WorldSpaceId, object.CurrentCoords);
+            GameId worldSpaceId = object.WorldSpaceId;
+            GridCellCoords coords = object.CurrentCoords;
+            if (!worldSpaceId && acMessage.pPlayer && acMessage.pPlayer->GetCellComponent().WorldSpaceId)
+            {
+                worldSpaceId = acMessage.pPlayer->GetCellComponent().WorldSpaceId;
+                coords = acMessage.pPlayer->GetCellComponent().CenterCoords;
+            }
+
+            m_world.emplace<CellIdComponent>(cEntity, object.CellId, worldSpaceId, coords);
             auto& inventoryComp = m_world.emplace<InventoryComponent>(cEntity);
             inventoryComp.Content = object.CurrentInventory;
 
@@ -126,10 +139,16 @@ void ObjectService::OnActivate(const PacketEvent<ActivateRequest>& acMessage) co
 
     for (auto pPlayer : m_world.GetPlayerManager())
     {
-        if (pPlayer != acMessage.pPlayer && pPlayer->GetCellComponent().Cell == acMessage.Packet.CellId)
-        {
+        if (!pPlayer || pPlayer == acMessage.pPlayer)
+            continue;
+
+        const bool inRange = acMessage.pPlayer
+            ? (pPlayer->GetCellComponent().IsInRange(acMessage.pPlayer->GetCellComponent(), false) ||
+               (acMessage.Packet.CellId && pPlayer->GetCellComponent().Cell == acMessage.Packet.CellId))
+            : (pPlayer->GetCellComponent().Cell == acMessage.Packet.CellId);
+
+        if (inRange)
             pPlayer->Send(notifyActivate);
-        }
     }
 }
 
@@ -159,10 +178,15 @@ void ObjectService::OnLockChange(const PacketEvent<LockChangeRequest>& acMessage
 
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
-        if (pPlayer == acMessage.pPlayer)
+        if (!pPlayer || pPlayer == acMessage.pPlayer)
             continue;
 
-        if (pPlayer->GetCellComponent().Cell == acMessage.Packet.CellId)
+        const bool inRange = acMessage.pPlayer
+            ? (pPlayer->GetCellComponent().IsInRange(acMessage.pPlayer->GetCellComponent(), false) ||
+               (acMessage.Packet.CellId && pPlayer->GetCellComponent().Cell == acMessage.Packet.CellId))
+            : (pPlayer->GetCellComponent().Cell == acMessage.Packet.CellId);
+
+        if (inRange)
             pPlayer->Send(notifyLockChange);
     }
 }
@@ -170,6 +194,8 @@ void ObjectService::OnLockChange(const PacketEvent<LockChangeRequest>& acMessage
 void ObjectService::OnScriptAnimationRequest(const PacketEvent<ScriptAnimationRequest>& acMessage) noexcept
 {
     auto& packet = acMessage.Packet;
+    if (packet.FormID == 0 || (packet.Animation.empty() && packet.EventName.empty()))
+        return;
 
     NotifyScriptAnimation message{};
     message.FormID = packet.FormID;
@@ -178,6 +204,12 @@ void ObjectService::OnScriptAnimationRequest(const PacketEvent<ScriptAnimationRe
 
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
+        if (!pPlayer || pPlayer == acMessage.pPlayer)
+            continue;
+
+        if (acMessage.pPlayer && !pPlayer->GetCellComponent().IsInRange(acMessage.pPlayer->GetCellComponent(), false))
+            continue;
+
         pPlayer->Send(message);
     }
 }

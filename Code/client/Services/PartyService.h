@@ -6,6 +6,8 @@ struct TransportService;
 struct UpdateEvent;
 struct DisconnectedEvent;
 struct NotifyPlayerList;
+struct NotifyPlayerJoined;
+struct NotifyPlayerLeft;
 struct NotifyPartyInfo;
 struct NotifyPartyInvite;
 struct NotifyPartyJoined;
@@ -24,6 +26,17 @@ struct PartyService
     [[nodiscard]] bool IsInParty() const noexcept { return m_inParty; }
     [[nodiscard]] bool IsLeader() const noexcept { return m_isLeader; }
     [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId; }
+    [[nodiscard]] bool IsPlayerInParty(const uint32_t aPlayerId) const noexcept
+    {
+        if (!m_inParty || aPlayerId == 0)
+            return false;
+        for (const uint32_t memberId : m_partyMembers)
+        {
+            if (memberId == aPlayerId)
+                return true;
+        }
+        return false;
+    }
 
     const Vector<uint32_t>& GetPartyMembers() const noexcept { return m_partyMembers; }
     const Map<uint32_t, String>& GetPlayers() const noexcept { return m_players; }
@@ -40,6 +53,8 @@ protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept;
+    void OnPlayerJoined(const NotifyPlayerJoined& acPlayerJoined) noexcept;
+    void OnPlayerLeft(const NotifyPlayerLeft& acPlayerLeft) noexcept;
     void OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept;
     void OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcept;
     void OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept;
@@ -63,6 +78,8 @@ private:
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_playerListConnection;
+    entt::scoped_connection m_playerJoinedConnection;
+    entt::scoped_connection m_playerLeftConnection;
     entt::scoped_connection m_partyInfoConnection;
     entt::scoped_connection m_partyInviteConnection;
     entt::scoped_connection m_partyJoinedConnection;

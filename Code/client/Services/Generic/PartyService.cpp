@@ -8,6 +8,8 @@
 #include <Events/PartyLeftEvent.h>
 
 #include <Messages/NotifyPlayerList.h>
+#include <Messages/NotifyPlayerJoined.h>
+#include <Messages/NotifyPlayerLeft.h>
 #include <Messages/NotifyPartyInfo.h>
 #include <Messages/NotifyPartyInvite.h>
 #include <Messages/PartyInviteRequest.h>
@@ -31,6 +33,8 @@ PartyService::PartyService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
     m_disconnectConnection = aDispatcher.sink<DisconnectedEvent>().connect<&PartyService::OnDisconnected>(this);
 
     m_playerListConnection = aDispatcher.sink<NotifyPlayerList>().connect<&PartyService::OnPlayerList>(this);
+    m_playerJoinedConnection = aDispatcher.sink<NotifyPlayerJoined>().connect<&PartyService::OnPlayerJoined>(this);
+    m_playerLeftConnection = aDispatcher.sink<NotifyPlayerLeft>().connect<&PartyService::OnPlayerLeft>(this);
     m_partyInfoConnection = aDispatcher.sink<NotifyPartyInfo>().connect<&PartyService::OnPartyInfo>(this);
     m_partyInviteConnection = aDispatcher.sink<NotifyPartyInvite>().connect<&PartyService::OnPartyInvite>(this);
     m_partyJoinedConnection = aDispatcher.sink<NotifyPartyJoined>().connect<&PartyService::OnPartyJoined>(this);
@@ -109,6 +113,16 @@ void PartyService::OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept
     m_players = acPlayerList.Players;
 }
 
+void PartyService::OnPlayerJoined(const NotifyPlayerJoined& acPlayerJoined) noexcept
+{
+    m_players[acPlayerJoined.PlayerId] = acPlayerJoined.Username;
+}
+
+void PartyService::OnPlayerLeft(const NotifyPlayerLeft& acPlayerLeft) noexcept
+{
+    m_players.erase(acPlayerLeft.PlayerId);
+}
+
 void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
 {
     if (m_inParty)
@@ -163,7 +177,19 @@ void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcep
     m_leaderPlayerId = acPartyJoined.LeaderPlayerId;
     m_partyMembers = acPartyJoined.PlayerIds;
 
+    auto pArguments = CefListValue::Create();
+    auto pPlayerIds = CefListValue::Create();
+    for (int i = 0; i < m_partyMembers.size(); i++)
+        pPlayerIds->SetInt(i, m_partyMembers[i]);
+
+    pArguments->SetList(0, pPlayerIds);
+    pArguments->SetInt(1, acPartyJoined.LeaderPlayerId);
+
+    if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
+        pOverlayApp->ExecuteAsync("partyInfo", pArguments);
+
     m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader));
+    m_world.GetRfabAdapterService().NotifyPartyLeadershipChanged();
 }
 
 void PartyService::OnPartyLeft(const NotifyPartyLeft& acPartyLeft) noexcept

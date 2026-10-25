@@ -317,7 +317,7 @@ void ActorValueService::BroadcastActorValues() noexcept
 
         for (int i = 0; i < ActorValueInfo::kActorValueCount; i++)
         {
-            if (isPlayer && i == ActorValueInfo::kDragonSouls)
+            if ((isPlayer && i == ActorValueInfo::kDragonSouls) || i == ActorValueInfo::kInfamy)
                 continue;
             
             float newValue = pActor->GetActorValue(i);
@@ -524,16 +524,19 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
     if (!pActor)
         return;
 
+    ScopedActorValueOverride avOverride;
+
     for (const auto& [key, value] : acMessage.Values)
     {
         // Syncing dragon souls triggers "Dragon soul collected" event.
         // Never overwrite locally computed movement/attack speed multipliers (SpeedMult = 30, WeaponSpeedMult = 85,
-        // LeftWeaponSpeedMult = 132): SetActorValue mutates the base AV (Skyrim base WeaponSpeedMult is 0.0f while
-        // effective is 1.0f), compounding with RFAB.dll SpeedLimitHandler / AdjustmentHandler / StaminaSystemEventSink
-        // and poisoning swing speed on ownership handoff! Remote swing speeds sync via Havok behavior floats instead.
+        // LeftWeaponSpeedMult = 132) or kInfamy (37, used by RFAB_XP_Alias.psc as duplicate-XP suppression marker):
+        // SetActorValue mutates the base AV, compounding with RFAB.dll SpeedLimitHandler / AdjustmentHandler / StaminaSystemEventSink
+        // and poisoning swing speed or kill XP on ownership handoff!
         if (key == ActorValueInfo::kDragonSouls ||
             key == ActorValueInfo::kHealth ||
             key == ActorValueInfo::kSpeedMult ||
+            key == ActorValueInfo::kInfamy ||
             key == ActorValueInfo::kWeaponSpeedMult ||
             key == ActorValueInfo::kLeftWeaponSpeedMult)
         {
@@ -542,17 +545,12 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
 
         spdlog::debug("Actor value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
 
-        if (key == ActorValueInfo::kStamina || key == ActorValueInfo::kMagicka || key == ActorValueInfo::kHealth)
-        {
-            pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
-            continue;
-        }
         if (key >= ActorValueInfo::kDamageResist && key <= ActorValueInfo::kMagicResist)
         {
             pActor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, key, value);
             continue;
         }
-        pActor->SetActorValue(key, value);
+        pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, key, value);
     }
 }
 
@@ -571,10 +569,13 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
     if (!pActor)
         return;
 
+    ScopedActorValueOverride avOverride;
+
     for (const auto& [key, value] : acMessage.Values)
     {
         if (key == ActorValueInfo::kDragonSouls ||
             key == ActorValueInfo::kSpeedMult ||
+            key == ActorValueInfo::kInfamy ||
             key == ActorValueInfo::kWeaponSpeedMult ||
             key == ActorValueInfo::kLeftWeaponSpeedMult)
         {
@@ -614,6 +615,7 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
     {
         if (acMessage.IsDead)
         {
+            ScopedActorValueOverride avOverride;
             pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
             pActor->Kill();
         }

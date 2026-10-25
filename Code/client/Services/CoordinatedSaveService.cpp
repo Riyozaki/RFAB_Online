@@ -361,14 +361,14 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
     if (m_autoReconnectPendingAfterLoad && !m_transport.IsConnected())
     {
-        if (IsLoadingMenuOpen())
+        if (IsLoadingMenuOpen() || m_world.GetCharacterService().IsEngineWorldLoading())
         {
             m_sawLoadingScreenForReconnect = true;
             return;
         }
 
         PlayerCharacter* pPlayer = PlayerCharacter::Get();
-        if (pPlayer && (pPlayer->parentCell || pPlayer->GetWorldSpace()))
+        if (pPlayer && !pPlayer->IsStillLoading() && (pPlayer->parentCell || pPlayer->GetWorldSpace()))
         {
             m_autoReconnectDelaySec -= acEvent.Delta;
             if (m_autoReconnectDelaySec <= 0.0)

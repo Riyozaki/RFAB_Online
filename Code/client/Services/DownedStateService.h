@@ -51,8 +51,14 @@ public:
     [[nodiscard]] bool IsSystemActive() const noexcept;
     [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
     [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
+    [[nodiscard]] double GetGraceRemainingSec() const noexcept { return m_graceRemainingSec; }
+    [[nodiscard]] bool IsChannelingRevive() const noexcept { return m_isChannelingRevive; }
+    [[nodiscard]] uint32_t GetChannelTargetPlayerId() const noexcept { return m_channelTargetPlayerId; }
+    [[nodiscard]] float GetReviveChannelProgress() const noexcept;
+    [[nodiscard]] bool IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept;
     [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
     [[nodiscard]] bool IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept;
+    [[nodiscard]] bool IsActorDowned(uint32_t aActorFormId) const noexcept;
 
     // Invoked directly from HookDamageActor and HookRestoreActorValue when incoming damage would kill the player.
     // Returns true if fatal death was intercepted and converted into Downed-on-Knee state.
@@ -121,6 +127,7 @@ private:
     std::unordered_set<uint32_t> m_encounterHostileFormIds{};
     std::unordered_set<uint32_t> m_liveBossesSeenInCombat{};
     std::unordered_map<uint32_t, bool> m_remoteDownedByPlayerId{};
+    std::unordered_set<uint32_t> m_playersBeingRevived{};
 
     entt::scoped_connection m_connectedConnection;
     entt::scoped_connection m_disconnectedConnection;
