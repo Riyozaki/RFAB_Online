@@ -12,10 +12,13 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace RfabCompat
 {
+inline constexpr std::string_view kRfabOnlineVersion = "1.2.0";
+
 // Skyrim Creation Engine spatial unit ratio: 1 meter = 70.0 game units (64 units = 3 feet = 0.9144m; 70 units = 1.0m).
 inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
 
@@ -33,6 +36,11 @@ struct RfabBindingsConfig
 {
     uint32_t SchemaVersion{1};
     std::string PluginName{"RFAB.esp"};
+    std::vector<std::string> SecondaryPluginNames{
+        "RFAB_BizarreAdventure.esp",
+        "Requiem for a Balance.esp",
+        "Requiem.esp",
+    };
 
     std::string XpAmountGlobalEditorId{"RFAB_XP_Amount"};
     std::string XpBonusGlobalEditorId{"RFAB_XP_Multiplier"};
@@ -40,9 +48,17 @@ struct RfabBindingsConfig
     std::string NoDeathHandlingGlobalEditorId{"REQ_Combat_NoDeathHandling"};
     std::string KillCounterGlobalEditorId{"RFAB_TFOTG_Kill_Counter"};
     std::string XpHandlerQuestEditorId{"RFAB_XP_Handler"};
+    std::string AdventurerRingEditorId{"RFAB_ExperienceRing"};
+    std::string RestorationImprovedHealingPerkEditorId{"RFAB_Perk_Restoration_ImprovedHealing"};
+    std::string UniversalAltarEditorId{"RFAB_BA_UniversalAltar"};
+    std::string NoAllyDamageAllowedSpellsEditorId{"RFAB_List_NoAllyDamage_AllowedSpells"};
 
-    // Optional last-resort base FormID only used if PO3 EditorID tables are completely absent.
+    // Optional last-resort base FormIDs only used if PO3 EditorID tables are completely absent.
     uint32_t FallbackXpAmountBaseFormId{0x00AD45BB};
+    uint32_t FallbackAdventurerRingBaseFormId{0x00112812};
+    uint32_t FallbackImprovedHealingPerkBaseFormId{0x000581F8};
+    uint32_t FallbackAltarBaseFormId{0x00239FC5};
+    uint32_t FallbackNoAllyDamageAllowedSpellsBaseFormId{0x00005CAA};
 
     std::vector<std::string> SyncedGlobalPrefixes{
         "RFAB_Counter_",
@@ -84,6 +100,15 @@ struct RfabBindingsConfig
     uint32_t SaveRingBufferSize{3};
     float AmbushDedupRadiusMeters{12.0f};
     uint32_t AmbushDedupWindowMs{3000};
+
+    // Stage 4: Co-Op Party Tactical HUD & 3D Ping System settings
+    uint32_t TacticalPingVirtualKey{0x79};      // VK_F10 (121)
+    uint32_t TacticalHudToggleVirtualKey{0x7A}; // VK_F11 (122)
+    float TacticalPingDurationSec{12.0f};
+    float TacticalPingCooldownSec{0.6f};
+    uint32_t TacticalHudDefaultMode{1};         // 0=Hidden, 1=Full, 2=Compact, 3=MarkersOnly
+    bool ShowBossEncounterBar{true};
+    bool ShowDowned3dBeacons{true};
 };
 
 struct RfabLiveXpTable
@@ -91,12 +116,20 @@ struct RfabLiveXpTable
     std::unordered_map<uint32_t, int32_t> LevelThresholds{};
     std::unordered_map<std::string, int32_t> QuestRewards{};
     std::unordered_map<std::string, float> XpMultipliers{};
+    std::unordered_set<std::string> BossEditorIds{};
+    std::unordered_set<uint32_t> BossBaseFormIds{};
 
     [[nodiscard]] int32_t GetThresholdForLevel(uint32_t aLevel) const noexcept
     {
         if (const auto it = LevelThresholds.find(aLevel); it != LevelThresholds.end())
             return it->second;
         return 0;
+    }
+
+    [[nodiscard]] bool ContainsBossBaseFormId(uint32_t aFormId) const noexcept
+    {
+        const uint32_t baseId = aFormId & 0x00FFFFFFu;
+        return baseId != 0 && BossBaseFormIds.find(baseId) != BossBaseFormIds.end();
     }
 };
 
@@ -531,23 +564,32 @@ inline RfabBindingsConfig ParseBindingsJson(std::string_view aJson)
         cfg.SchemaVersion = static_cast<uint32_t>(numVal);
 
     Detail::ExtractJsonString(aJson, "plugin_name", cfg.PluginName);
+    Detail::ExtractJsonStringArray(aJson, "secondary_plugin_names", cfg.SecondaryPluginNames);
     Detail::ExtractJsonString(aJson, "xp_amount_global", cfg.XpAmountGlobalEditorId);
     Detail::ExtractJsonString(aJson, "xp_bonus_global", cfg.XpBonusGlobalEditorId);
     Detail::ExtractJsonString(aJson, "xp_books_formlist", cfg.XpBooksFormListEditorId);
     Detail::ExtractJsonString(aJson, "no_death_handling_global", cfg.NoDeathHandlingGlobalEditorId);
     Detail::ExtractJsonString(aJson, "kill_counter_global", cfg.KillCounterGlobalEditorId);
     Detail::ExtractJsonString(aJson, "xp_handler_quest", cfg.XpHandlerQuestEditorId);
+    Detail::ExtractJsonString(aJson, "adventurer_ring", cfg.AdventurerRingEditorId);
+    Detail::ExtractJsonString(aJson, "restoration_improved_healing_perk", cfg.RestorationImprovedHealingPerkEditorId);
+    Detail::ExtractJsonString(aJson, "universal_altar", cfg.UniversalAltarEditorId);
+    Detail::ExtractJsonString(aJson, "no_ally_damage_allowed_spells", cfg.NoAllyDamageAllowedSpellsEditorId);
 
-    std::string hexFallback;
-    if (Detail::ExtractJsonString(aJson, "xp_amount_global", hexFallback))
+    if (const size_t fbBlock = aJson.find("\"fallback_base_form_ids\""); fbBlock != std::string_view::npos)
     {
-        // Note: editor_ids appears before fallback_base_form_ids; search fallback block explicitly if present.
-        if (const size_t fbBlock = aJson.find("\"fallback_base_form_ids\""); fbBlock != std::string_view::npos)
-        {
-            std::string fbHex;
-            if (Detail::ExtractJsonString(aJson.substr(fbBlock), "xp_amount_global", fbHex))
-                cfg.FallbackXpAmountBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
-        }
+        const std::string_view fbSlice = aJson.substr(fbBlock);
+        std::string fbHex;
+        if (Detail::ExtractJsonString(fbSlice, "xp_amount_global", fbHex))
+            cfg.FallbackXpAmountBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
+        if (Detail::ExtractJsonString(fbSlice, "adventurer_ring", fbHex))
+            cfg.FallbackAdventurerRingBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
+        if (Detail::ExtractJsonString(fbSlice, "restoration_improved_healing_perk", fbHex))
+            cfg.FallbackImprovedHealingPerkBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
+        if (Detail::ExtractJsonString(fbSlice, "universal_altar", fbHex))
+            cfg.FallbackAltarBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
+        if (Detail::ExtractJsonString(fbSlice, "no_ally_damage_allowed_spells", fbHex))
+            cfg.FallbackNoAllyDamageAllowedSpellsBaseFormId = static_cast<uint32_t>(std::strtoul(fbHex.c_str(), nullptr, 0));
     }
 
     Detail::ExtractJsonStringArray(aJson, "synced_global_prefixes", cfg.SyncedGlobalPrefixes);
@@ -576,6 +618,19 @@ inline RfabBindingsConfig ParseBindingsJson(std::string_view aJson)
     Detail::ExtractJsonFloat(aJson, "ambush_dedup_radius_meters", cfg.AmbushDedupRadiusMeters);
     if (Detail::ExtractJsonFloat(aJson, "ambush_dedup_window_ms", numVal) && numVal >= 0.0f)
         cfg.AmbushDedupWindowMs = static_cast<uint32_t>(numVal);
+
+    if (Detail::ExtractJsonFloat(aJson, "tactical_ping_virtual_key", numVal) && numVal > 0.0f && numVal <= 255.0f)
+        cfg.TacticalPingVirtualKey = static_cast<uint32_t>(numVal);
+    if (Detail::ExtractJsonFloat(aJson, "tactical_hud_toggle_virtual_key", numVal) && numVal > 0.0f && numVal <= 255.0f)
+        cfg.TacticalHudToggleVirtualKey = static_cast<uint32_t>(numVal);
+    if (Detail::ExtractJsonFloat(aJson, "tactical_ping_duration_sec", numVal) && numVal >= 2.0f && numVal <= 120.0f)
+        cfg.TacticalPingDurationSec = numVal;
+    if (Detail::ExtractJsonFloat(aJson, "tactical_ping_cooldown_sec", numVal) && numVal >= 0.1f && numVal <= 30.0f)
+        cfg.TacticalPingCooldownSec = numVal;
+    if (Detail::ExtractJsonFloat(aJson, "tactical_hud_default_mode", numVal) && numVal >= 0.0f && numVal <= 3.0f)
+        cfg.TacticalHudDefaultMode = static_cast<uint32_t>(numVal);
+    Detail::ExtractJsonBool(aJson, "show_boss_encounter_bar", cfg.ShowBossEncounterBar);
+    Detail::ExtractJsonBool(aJson, "show_downed_3d_beacons", cfg.ShowDowned3dBeacons);
 
     return cfg;
 }
@@ -623,16 +678,24 @@ inline RfabBindingsConfig LoadBindingsFromDisk(const std::filesystem::path& acGa
     return false;
 }
 
-// Parses RFAB's Data/SKSE/Plugins/StorageUtilData/Experience.ini (e.g. "Level 2 = 2500" or "2 = 2500").
+// Parses RFAB's Data/SKSE/Plugins/StorageUtilData/Experience.ini (e.g. "Level 2 = 2500", "2 = 2500", or "[Bosses]" entries).
 inline void ParseExperienceIni(std::string_view aContent, RfabLiveXpTable& aTable)
 {
     std::istringstream iss{std::string(aContent)};
     std::string line;
+    std::string currentSection;
     while (std::getline(iss, line))
     {
         const size_t commentPos = line.find_first_of(";#");
         if (commentPos != std::string::npos)
             line.erase(commentPos);
+
+        const std::string trimmedLine = Detail::Trim(line);
+        if (trimmedLine.size() >= 2 && trimmedLine.front() == '[' && trimmedLine.back() == ']')
+        {
+            currentSection = Detail::ToLowerAscii(Detail::Trim(std::string_view(trimmedLine).substr(1, trimmedLine.size() - 2)));
+            continue;
+        }
 
         const size_t eqPos = line.find('=');
         if (eqPos == std::string::npos)
@@ -642,6 +705,21 @@ inline void ParseExperienceIni(std::string_view aContent, RfabLiveXpTable& aTabl
         std::string rhs = Detail::Trim(std::string_view(line).substr(eqPos + 1));
         if (lhs.empty() || rhs.empty())
             continue;
+
+        if (currentSection.find("boss") != std::string::npos)
+        {
+            if (const size_t hexPos = Detail::ToLowerAscii(lhs).find("0x"); hexPos != std::string::npos)
+            {
+                const uint32_t formId = static_cast<uint32_t>(std::strtoul(lhs.c_str() + hexPos, nullptr, 16)) & 0x00FFFFFFu;
+                if (formId != 0)
+                    aTable.BossBaseFormIds.insert(formId);
+            }
+            else
+            {
+                aTable.BossEditorIds.insert(Detail::ToLowerAscii(lhs));
+            }
+            continue;
+        }
 
         // Extract trailing digits from keys such as "2", "Level2", "Level 2", or "XP_2".
         size_t digitPos = lhs.size();
@@ -654,6 +732,54 @@ inline void ParseExperienceIni(std::string_view aContent, RfabLiveXpTable& aTabl
             const int32_t threshold = static_cast<int32_t>(std::strtol(rhs.c_str(), nullptr, 10));
             if (level > 0 && threshold >= 0)
                 aTable.LevelThresholds[level] = threshold;
+        }
+    }
+}
+
+// Parses RFAB's BossList.json / RFAB_BossList.json (StorageUtil JSON with __formData|Plugin|0xHEX or EditorID keys).
+inline void ParseBossListJson(std::string_view aJson, RfabLiveXpTable& aTable)
+{
+    static constexpr std::string_view kIgnoredJsonKeys[] = {
+        "int", "float", "string", "form", "intlist", "floatlist", "stringlist", "formlist"
+    };
+
+    size_t pos = 0;
+    while (pos < aJson.size())
+    {
+        const size_t q1 = aJson.find('"', pos);
+        if (q1 == std::string_view::npos)
+            break;
+        const size_t q2 = aJson.find('"', q1 + 1);
+        if (q2 == std::string_view::npos)
+            break;
+
+        const std::string token = Detail::Trim(aJson.substr(q1 + 1, q2 - q1 - 1));
+        pos = q2 + 1;
+        if (token.empty())
+            continue;
+
+        const std::string lower = Detail::ToLowerAscii(token);
+        bool isStructuralKey = false;
+        for (const auto& ignored : kIgnoredJsonKeys)
+        {
+            if (lower == ignored)
+            {
+                isStructuralKey = true;
+                break;
+            }
+        }
+        if (isStructuralKey)
+            continue;
+
+        if (const size_t hexPos = lower.find("0x"); hexPos != std::string::npos)
+        {
+            const uint32_t baseId = static_cast<uint32_t>(std::strtoul(lower.c_str() + hexPos, nullptr, 16)) & 0x00FFFFFFu;
+            if (baseId != 0)
+                aTable.BossBaseFormIds.insert(baseId);
+        }
+        else if (lower.find(".esp") == std::string::npos && lower.find(".esm") == std::string::npos)
+        {
+            aTable.BossEditorIds.insert(lower);
         }
     }
 }
@@ -1301,7 +1427,7 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
 }
 
 // Allows any vMAJOR.MINOR.* client and server to connect without forcing whole-pack re-downloads on hotfixes,
-// while still rejecting incompatible protocol families (e.g. v1.0.x vs v1.1.x or v2.0.x).
+// while still rejecting incompatible protocol families (e.g. v1.0.x vs v1.1.x+ or v2.0.x).
 [[nodiscard]] inline bool AreBuildVersionsProtocolCompatible(std::string_view aServerVer, std::string_view aClientVer) noexcept
 {
     if (aServerVer == aClientVer)
@@ -1312,7 +1438,13 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
     if (ExtractMajorMinorProtocolTag(aServerVer, sMaj, sMin) &&
         ExtractMajorMinorProtocolTag(aClientVer, cMaj, cMin))
     {
-        return (sMaj == cMaj) && (sMin == cMin);
+        if (sMaj != cMaj)
+            return false;
+        if (sMin == cMin)
+            return true;
+        // v1.1.x and v1.2.x share the exact same network packet schema (including AllyProtectionToggle).
+        if (sMaj == 1 && sMin >= 1 && cMin >= 1)
+            return true;
     }
 
     return false;
@@ -1476,6 +1608,1220 @@ struct CoopAllyActionPolicy
         return {true, false, false};
 
     return {false, true, false};
+}
+
+// Cross-version RFAB & Skyrim Boss EditorID recognizer (supplements BossList.json, Dragon check, and MaxHP threshold).
+[[nodiscard]] inline bool IsRfabBossEditorId(
+    std::string_view aEditorId,
+    const RfabLiveXpTable* apLiveTable = nullptr) noexcept
+{
+    const std::string lower = Detail::ToLowerAscii(Detail::Trim(aEditorId));
+    if (lower.empty())
+        return false;
+
+    if (apLiveTable && apLiveTable->BossEditorIds.find(lower) != apLiveTable->BossEditorIds.end())
+        return true;
+
+    static constexpr std::string_view kBossMarkers[] = {
+        "rfab_boss_",
+        "req_boss_",
+        "dragonpriest",
+        "miraak",
+        "harkon",
+        "alduin",
+        "vyrthur",
+        "malkoran",
+        "durnehviir",
+        "ebonywarrior",
+        "karstaag",
+        "forgemaster",
+        "centurion",
+        "soulcairnkeeper",
+        "dlc01boneyardkeeper",
+        "reaper",
+        "orchendor",
+        "movarth",
+        "potema",
+        "gauldur",
+        "jyrik",
+        "mikrul",
+        "sigdis",
+        "kvenel",
+        "redeagle",
+        "curalmil",
+        "krosis",
+        "morokei",
+        "nahkriin",
+        "otar",
+        "rahgot",
+        "vokun",
+        "volsung",
+        "hevnoraak",
+        "ahzidal",
+        "dukaan",
+        "zakhriisos",
+        "vahlok",
+    };
+
+    for (const auto& marker : kBossMarkers)
+    {
+        if (lower.find(marker) != std::string::npos)
+            return true;
+    }
+
+    return false;
+}
+
+// Prevents a wounded boss (< 85% MaxHP) from snapping straight back to >= 98% MaxHP (out-of-combat reset heal)
+// when one player goes Downed-on-Knee or aggro switches while at least one party member is still alive and fighting!
+// Normal RFAB in-combat regeneration (e.g. Dragon Priest / Troll / Vampire ticks) is 100% preserved.
+[[nodiscard]] inline bool ShouldBlockFalseBossResetHeal(
+    bool aEncounterActiveWithLivingAllies,
+    bool aIsBossOrHighHpActor,
+    float aServerCurrentHp,
+    float aServerMaxHp,
+    float aProposedHp) noexcept
+{
+    if (!aEncounterActiveWithLivingAllies || !aIsBossOrHighHpActor)
+        return false;
+
+    if (!std::isfinite(aServerCurrentHp) || !std::isfinite(aServerMaxHp) || !std::isfinite(aProposedHp))
+        return false;
+
+    if (aServerMaxHp < 500.0f || aServerCurrentHp <= 0.0f)
+        return false;
+
+    if (aServerCurrentHp <= (aServerMaxHp * 0.85f) &&
+        aProposedHp >= (aServerMaxHp * 0.98f) &&
+        (aProposedHp - aServerCurrentHp) >= (aServerMaxHp * 0.30f))
+    {
+        return true;
+    }
+
+    return false;
+}
+
+// Normalizes transitional TESObjectREFR::OpenState values (kOpening=2 -> kOpen=1, kClosing=4 -> kClosed=3)
+// so door activations never permanently desync when one client is 1 frame into a transition.
+[[nodiscard]] inline constexpr uint8_t NormalizeDoorOpenState(uint8_t aOpenState) noexcept
+{
+    if (aOpenState == 2u) // kOpening -> kOpen
+        return 1u;
+    if (aOpenState == 4u) // kClosing -> kClosed
+        return 3u;
+    return aOpenState;
+}
+
+[[nodiscard]] inline constexpr bool AreDoorStatesCompatibleForSync(uint8_t aRemotePreState, uint8_t aLocalCurrentState) noexcept
+{
+    if (aRemotePreState == 0u || aLocalCurrentState == 0u)
+        return true;
+    return NormalizeDoorOpenState(aRemotePreState) == NormalizeDoorOpenState(aLocalCurrentState);
+}
+
+// Cross-version RFAB & Skyrim quest filter: blocks personal transformation, MCM, UI, widget, and background
+// maintenance quests from being synced across the party, regardless of load order.
+[[nodiscard]] inline bool IsQuestNonSyncableByEditorIdOrBaseId(
+    std::string_view aEditorId,
+    uint32_t aFormId) noexcept
+{
+    const uint32_t baseId = aFormId & 0x00FFFFFFu;
+    switch (baseId)
+    {
+    case 0x02BA16u: // PlayerWerewolfQuest
+    case 0x0071D0u: // DLC1PlayerVampireQuest
+    case 0x03AC44u: // MS13BleakFallsBarrowLeverScene
+    case 0x0F2593u: // SkillExperienceQuest
+        return true;
+    default:
+        break;
+    }
+
+    const std::string lower = Detail::ToLowerAscii(Detail::Trim(aEditorId));
+    if (lower.empty())
+        return false;
+
+    static constexpr std::string_view kBlockedPrefixes[] = {
+        "ski_",
+        "req_",
+        "rfab_mcm",
+        "rfab_xp",
+        "rfab_init",
+        "rfab_setup",
+        "rfab_menu",
+        "rfab_settings",
+        "rfab_updater",
+        "rfab_smelter",
+        "rfab_system",
+        "rfab_keybind",
+        "rfab_hotkey",
+        "rfab_autocast",
+        "rfab_ui",
+        "rfab_widget",
+        "rfab_allyhit",
+        "xpmse",
+        "fnis",
+        "racemenu",
+        "hdtsmp",
+        "nemesis",
+        "morehud",
+        "ahzmorehud",
+        "ihud",
+        "truehud",
+        "wheeler",
+        "soulsre",
+        "skyrimsouls",
+        "customskills",
+        "dyndolod",
+        "uiextensions",
+        "dialoguefollower",
+        "relationshipmarriage",
+        "byohhouse",
+        "wicastmagic",
+        "wispell",
+        "wikill",
+        "wiassault",
+        "witheft",
+        "wicraftitem",
+        "wichange",
+        "tutorials",
+    };
+
+    for (const auto& prefix : kBlockedPrefixes)
+    {
+        if (lower.rfind(prefix, 0) == 0)
+            return true;
+    }
+
+    static constexpr std::string_view kBlockedSubstrings[] = {
+        "playerwerewolf",
+        "playervampire",
+        "vampiretracking",
+        "werewolftracking",
+        "_mcm",
+        "mcm_",
+        "configmanager",
+        "widgetmanager",
+        "favoritesmanager",
+    };
+
+    for (const auto& sub : kBlockedSubstrings)
+    {
+        if (lower.find(sub) != std::string::npos)
+            return true;
+    }
+
+    return false;
+}
+
+// Identifies real dungeon, puzzle, claw-door, Dragon Priest, bounty, and story quests that Skyrim/RFAB
+// tag with TESQuest::Type::None (0) or TESQuest::Type::Miscellaneous (6) so they sync in co-op.
+[[nodiscard]] inline bool IsDungeonOrStoryQuestEditorId(std::string_view aEditorId) noexcept
+{
+    const std::string lower = Detail::ToLowerAscii(Detail::Trim(aEditorId));
+    if (lower.empty())
+        return false;
+
+    if (IsQuestNonSyncableByEditorIdOrBaseId(lower, 0))
+        return false;
+
+    static constexpr std::string_view kStoryOrDungeonPrefixes[] = {
+        "dun",
+        "ms",
+        "mq",
+        "da",
+        "mg",
+        "tg",
+        "db",
+        "c0",
+        "cr",
+        "cw",
+        "dlc1",
+        "dlc2",
+        "bq",
+        "freeform",
+        "t01",
+        "t02",
+        "t03",
+        "bards",
+        "rfab_quest",
+        "rfab_qst",
+        "rfab_boss",
+        "rfab_arena",
+        "rfab_contract",
+        "rfab_bounty",
+        "rfab_dungeon",
+    };
+
+    for (const auto& prefix : kStoryOrDungeonPrefixes)
+    {
+        if (lower.rfind(prefix, 0) == 0)
+            return true;
+    }
+
+    static constexpr std::string_view kStoryOrDungeonSubstrings[] = {
+        "qst",
+        "quest",
+        "puzzle",
+        "claw",
+        "dragonpriest",
+        "bounty",
+        "arena",
+        "gauldur",
+        "forelhost",
+        "valthume",
+        "ragnvald",
+        "folgunthur",
+        "bleakfalls",
+        "labyrinthian",
+        "blackreach",
+        "arkngthamz",
+        "saarthal",
+        "midden",
+        "potema",
+        "wolfskull",
+        "frostflow",
+        "ansilvund",
+        "angarvunde",
+        "highgate",
+        "volunruud",
+        "shroudhearth",
+        "yngol",
+        "redeagle",
+        "kagrumez",
+        "kolbjorn",
+        "bloodskal",
+        "fahlbtharz",
+        "nchardak",
+        "gyldenhul",
+        "karstaag",
+    };
+
+    for (const auto& sub : kStoryOrDungeonSubstrings)
+    {
+        if (lower.find(sub) != std::string::npos)
+            return true;
+    }
+
+    return false;
+}
+
+// Cross-version RFAB / Requiem / Skyrim helper for non-hostile kScript MagicEffects:
+// distinguishes genuine party buffs, auras, heals, shields, and summon empowerments from
+// unflagged crowd-control / knockdown / token / internal maintenance script effects.
+[[nodiscard]] inline bool IsFriendlyScriptBuffEffectEditorId(std::string_view aEditorId) noexcept
+{
+    const std::string lower = Detail::ToLowerAscii(Detail::Trim(aEditorId));
+    if (lower.empty())
+        return false;
+
+    static constexpr std::string_view kHostileOrInternalMarkers[] = {
+        "damage",
+        "drain",
+        "push",
+        "stagger",
+        "knock",
+        "curse",
+        "debuff",
+        "poison",
+        "fear",
+        "disarm",
+        "paraly",
+        "slow",
+        "freeze",
+        "burn",
+        "shock",
+        "bleed",
+        "disease",
+        "rot",
+        "decay",
+        "hex",
+        "kill",
+        "summonspirit",
+        "token",
+        "mcm",
+        "smelter",
+    };
+
+    for (const auto& bad : kHostileOrInternalMarkers)
+    {
+        if (lower.find(bad) != std::string::npos)
+            return false;
+    }
+
+    static constexpr std::string_view kFriendlyBuffMarkers[] = {
+        "buff",
+        "heal",
+        "mend",
+        "restore",
+        "shield",
+        "ward",
+        "armor",
+        "flesh",
+        "protect",
+        "bless",
+        "rally",
+        "courage",
+        "lionheart",
+        "inspire",
+        "aura",
+        "valor",
+        "haste",
+        "speed",
+        "fortify",
+        "regen",
+        "empower",
+        "sanctuary",
+        "grace",
+        "aegis",
+        "barrier",
+        "resist",
+        "immun",
+        "cleanse",
+        "cure",
+        "totem",
+        "banner",
+        "voice",
+        "pact",
+        "bond",
+        "link",
+        "ally",
+        "party",
+        "companion",
+        "minion",
+        "undead",
+        "automaton",
+        "stance",
+    };
+
+    for (const auto& good : kFriendlyBuffMarkers)
+    {
+        if (lower.find(good) != std::string::npos)
+            return true;
+    }
+
+    return false;
+}
+
+// ============================================================================
+// Stage 4: Co-Op Party Tactical HUD & 3D Ping System
+// ============================================================================
+
+enum class TacticalPingKind : uint8_t
+{
+    Rally = 0,
+    Enemy = 1,
+    EnemyBoss = 2,
+    Danger = 3,
+    Loot = 4,
+    Objective = 5,
+    AssistAlly = 6,
+    ClearSenderPings = 7,
+};
+
+enum class TacticalHudMode : uint8_t
+{
+    Hidden = 0,
+    Full = 1,
+    Compact = 2,
+    MarkersOnly = 3,
+};
+
+[[nodiscard]] inline TacticalHudMode CycleTacticalHudMode(TacticalHudMode aCurrent) noexcept
+{
+    switch (aCurrent)
+    {
+    case TacticalHudMode::Full: return TacticalHudMode::Compact;
+    case TacticalHudMode::Compact: return TacticalHudMode::MarkersOnly;
+    case TacticalHudMode::MarkersOnly: return TacticalHudMode::Hidden;
+    case TacticalHudMode::Hidden:
+    default: return TacticalHudMode::Full;
+    }
+}
+
+[[nodiscard]] inline const char* GetTacticalHudModeNameRu(TacticalHudMode aMode) noexcept
+{
+    switch (aMode)
+    {
+    case TacticalHudMode::Full: return "Полный (Отряд + Босс + 3D-метки)";
+    case TacticalHudMode::Compact: return "Компактный (Здоровье + 3D-метки)";
+    case TacticalHudMode::MarkersOnly: return "Только 3D-метки и реанимация";
+    case TacticalHudMode::Hidden:
+    default: return "Скрыт";
+    }
+}
+
+[[nodiscard]] inline const char* GetTacticalPingTitleRu(TacticalPingKind aKind) noexcept
+{
+    switch (aKind)
+    {
+    case TacticalPingKind::Enemy: return "АТАКОВАТЬ ЦЕЛЬ";
+    case TacticalPingKind::EnemyBoss: return "БОСС / ГЛАВНАЯ ЦЕЛЬ";
+    case TacticalPingKind::Danger: return "ОПАСНОСТЬ!";
+    case TacticalPingKind::Loot: return "ДОБЫЧА / СУНДУК";
+    case TacticalPingKind::Objective: return "МЕХАНИЗМ / ОБЪЕКТ";
+    case TacticalPingKind::AssistAlly: return "ИДУ НА ПОМОЩЬ!";
+    case TacticalPingKind::ClearSenderPings: return "МЕТКИ СНЯТЫ";
+    case TacticalPingKind::Rally:
+    default: return "ТОЧКА СБОРА";
+    }
+}
+
+[[nodiscard]] inline const char* GetTacticalPingBadgeAscii(TacticalPingKind aKind) noexcept
+{
+    switch (aKind)
+    {
+    case TacticalPingKind::Enemy: return "[!]";
+    case TacticalPingKind::EnemyBoss: return "[БОСС]";
+    case TacticalPingKind::Danger: return "[!!]";
+    case TacticalPingKind::Loot: return "[*]";
+    case TacticalPingKind::Objective: return "[?]";
+    case TacticalPingKind::AssistAlly: return "[+]";
+    case TacticalPingKind::ClearSenderPings: return "[-]";
+    case TacticalPingKind::Rally:
+    default: return "[^]";
+    }
+}
+
+struct TacticalPingPayload
+{
+    TacticalPingKind Kind{TacticalPingKind::Rally};
+    uint32_t SenderPlayerId{0};
+    uint32_t TargetServerId{0};
+    uint32_t WorldSpaceBaseId{0};
+    uint32_t CellBaseId{0};
+    float PosX{0.0f};
+    float PosY{0.0f};
+    float PosZ{0.0f};
+    std::string SenderName{};
+    std::string TargetLabel{};
+};
+
+namespace Detail
+{
+inline std::string SanitizeTacticalField(std::string_view aInput, size_t aMaxBytes = 64)
+{
+    std::string out;
+    out.reserve(std::min(aInput.size(), aMaxBytes));
+    for (char ch : aInput)
+    {
+        if (out.size() >= aMaxBytes)
+            break;
+        if (ch == '|' || ch == '\r' || ch == '\n' || ch == '\t' || static_cast<unsigned char>(ch) < 0x20)
+            out.push_back(' ');
+        else
+            out.push_back(ch);
+    }
+    return Trim(out);
+}
+} // namespace Detail
+
+[[nodiscard]] inline std::string SerializeTacticalPingPayload(const TacticalPingPayload& acPayload)
+{
+    char buf[256]{};
+    const float safeX = std::isfinite(acPayload.PosX) ? acPayload.PosX : 0.0f;
+    const float safeY = std::isfinite(acPayload.PosY) ? acPayload.PosY : 0.0f;
+    const float safeZ = std::isfinite(acPayload.PosZ) ? acPayload.PosZ : 0.0f;
+
+    std::snprintf(
+        buf,
+        sizeof(buf),
+        "tp1|%u|%u|%u|%u|%u|%.2f|%.2f|%.2f|",
+        static_cast<unsigned>(acPayload.Kind),
+        static_cast<unsigned>(acPayload.SenderPlayerId),
+        static_cast<unsigned>(acPayload.TargetServerId),
+        static_cast<unsigned>(acPayload.WorldSpaceBaseId),
+        static_cast<unsigned>(acPayload.CellBaseId),
+        safeX,
+        safeY,
+        safeZ);
+
+    std::string encoded(buf);
+    encoded += Detail::SanitizeTacticalField(acPayload.SenderName, 48);
+    encoded.push_back('|');
+    encoded += Detail::SanitizeTacticalField(acPayload.TargetLabel, 64);
+    return encoded;
+}
+
+[[nodiscard]] inline bool DeserializeTacticalPingPayload(std::string_view aEncoded, TacticalPingPayload& aOut) noexcept
+{
+    aOut = {};
+    if (aEncoded.size() < 16 || aEncoded.substr(0, 4) != "tp1|")
+        return false;
+
+    std::vector<std::string_view> parts;
+    parts.reserve(11);
+    size_t start = 0;
+    while (start <= aEncoded.size())
+    {
+        const size_t sep = aEncoded.find('|', start);
+        if (sep == std::string_view::npos)
+        {
+            parts.push_back(aEncoded.substr(start));
+            break;
+        }
+        parts.push_back(aEncoded.substr(start, sep - start));
+        start = sep + 1;
+    }
+
+    if (parts.size() < 11)
+        return false;
+
+    const auto parseU32 = [](std::string_view sv, uint32_t& outVal) noexcept -> bool
+    {
+        if (sv.empty())
+            return false;
+        char tmp[32]{};
+        const size_t n = std::min(sv.size(), sizeof(tmp) - 1);
+        std::memcpy(tmp, sv.data(), n);
+        char* endPtr = nullptr;
+        const unsigned long val = std::strtoul(tmp, &endPtr, 10);
+        if (!endPtr || endPtr == tmp)
+            return false;
+        outVal = static_cast<uint32_t>(val);
+        return true;
+    };
+
+    const auto parseFloat = [](std::string_view sv, float& outVal) noexcept -> bool
+    {
+        if (sv.empty())
+            return false;
+        char tmp[48]{};
+        const size_t n = std::min(sv.size(), sizeof(tmp) - 1);
+        std::memcpy(tmp, sv.data(), n);
+        char* endPtr = nullptr;
+        const float val = std::strtof(tmp, &endPtr);
+        if (!endPtr || endPtr == tmp || !std::isfinite(val))
+            return false;
+        outVal = val;
+        return true;
+    };
+
+    uint32_t rawKind = 0;
+    if (!parseU32(parts[1], rawKind) || rawKind > static_cast<uint32_t>(TacticalPingKind::ClearSenderPings))
+        return false;
+    aOut.Kind = static_cast<TacticalPingKind>(rawKind);
+
+    if (!parseU32(parts[2], aOut.SenderPlayerId))
+        return false;
+    if (!parseU32(parts[3], aOut.TargetServerId))
+        return false;
+    if (!parseU32(parts[4], aOut.WorldSpaceBaseId))
+        return false;
+    if (!parseU32(parts[5], aOut.CellBaseId))
+        return false;
+    if (!parseFloat(parts[6], aOut.PosX))
+        return false;
+    if (!parseFloat(parts[7], aOut.PosY))
+        return false;
+    if (!parseFloat(parts[8], aOut.PosZ))
+        return false;
+
+    aOut.SenderName = Detail::SanitizeTacticalField(parts[9], 48);
+    aOut.TargetLabel = Detail::SanitizeTacticalField(parts[10], 64);
+    return true;
+}
+
+[[nodiscard]] inline TacticalPingKind ClassifyCrosshairTacticalPingKind(
+    bool aShiftHeld,
+    bool aIsTargetPlayer,
+    bool aIsTargetDownedPlayer,
+    bool aIsTargetBossActor,
+    bool aIsTargetHostileActor,
+    bool aIsTargetDeadActor,
+    uint8_t aFormType) noexcept
+{
+    if (aShiftHeld)
+        return TacticalPingKind::Danger;
+
+    if (aIsTargetDownedPlayer)
+        return TacticalPingKind::AssistAlly;
+
+    if (aIsTargetPlayer)
+        return TacticalPingKind::Rally;
+
+    if (aIsTargetDeadActor)
+        return TacticalPingKind::Loot;
+
+    if (aIsTargetBossActor)
+        return TacticalPingKind::EnemyBoss;
+
+    if (aIsTargetHostileActor)
+        return TacticalPingKind::Enemy;
+
+    // Skyrim FormType values:
+    // Activator = 24, TalkingActivator = 25, Book = 27, Container = 28, Door = 29,
+    // Ingredient = 30, Misc = 32, Apparatus = 33, Ammo = 42, Key = 45, Potion = 46, Scroll = 23, Armor = 26, Weapon = 41
+    switch (aFormType)
+    {
+    case 23: // Scroll
+    case 26: // Armor
+    case 27: // Book
+    case 28: // Container (Chest / Safe / Urn)
+    case 30: // Ingredient
+    case 32: // Misc
+    case 41: // Weapon
+    case 42: // Ammo
+    case 45: // Key
+    case 46: // Potion
+    case 52: // SoulGem
+        return TacticalPingKind::Loot;
+
+    case 24: // Activator (Lever / Button / Puzzle / Shrine / Altar)
+    case 25: // TalkingActivator
+    case 29: // Door / Gate
+    case 40: // Furniture
+        return TacticalPingKind::Objective;
+
+    default:
+        return TacticalPingKind::Rally;
+    }
+}
+
+struct ScreenMarkerProjection
+{
+    float ScreenX{0.0f};
+    float ScreenY{0.0f};
+    float DirX{0.0f};
+    float DirY{-1.0f};
+    bool IsOnScreen{false};
+    bool IsClampedToEdge{false};
+};
+
+// Projects normalized WorldPtToScreenPt3 coordinates (aNormX in [0..1], aNormY in [0..1] bottom-up, aDepthZ)
+// onto viewport pixels (aViewportW x aViewportH), clamping off-screen and behind-camera (aDepthZ < 0)
+// targets onto the screen border with an accurate directional unit vector (DirX, DirY).
+[[nodiscard]] inline ScreenMarkerProjection ComputeTacticalMarkerScreenPlacement(
+    float aNormX,
+    float aNormY,
+    float aDepthZ,
+    float aViewportW,
+    float aViewportH,
+    float aMarginPx = 48.0f) noexcept
+{
+    ScreenMarkerProjection out{};
+    const float w = std::max(aViewportW, 320.0f);
+    const float h = std::max(aViewportH, 200.0f);
+    const float margin = std::clamp(aMarginPx, 16.0f, std::min(w, h) * 0.35f);
+
+    const float centerX = w * 0.5f;
+    const float centerY = h * 0.5f;
+
+    // Skyrim's WorldPtToScreenPt3 outputs Y in [0..1] bottom-to-top, so top-down screen Y is (1.0f - aNormY).
+    const float rawX = aNormX * w;
+    const float rawY = (1.0f - aNormY) * h;
+
+    const bool inFront = (aDepthZ >= 0.0f);
+    if (inFront && rawX >= margin && rawX <= (w - margin) && rawY >= margin && rawY <= (h - margin))
+    {
+        out.ScreenX = rawX;
+        out.ScreenY = rawY;
+        out.DirX = 0.0f;
+        out.DirY = 1.0f;
+        out.IsOnScreen = true;
+        out.IsClampedToEdge = false;
+        return out;
+    }
+
+    // When behind the camera (aDepthZ < 0), perspective division by negative W mirrors rawX/rawY across center.
+    // Invert the center-relative offset so the edge arrow always points toward the true 3D location!
+    float relX = rawX - centerX;
+    float relY = rawY - centerY;
+    if (!inFront)
+    {
+        relX = -relX;
+        relY = -relY;
+        // If directly behind camera center, bias slightly upward so direction is well-defined
+        if (std::fabs(relX) < 1.0f && std::fabs(relY) < 1.0f)
+            relY = -1.0f;
+    }
+
+    const float len = std::sqrt(relX * relX + relY * relY);
+    if (len > 1e-4f)
+    {
+        out.DirX = relX / len;
+        out.DirY = relY / len;
+    }
+    else
+    {
+        out.DirX = 0.0f;
+        out.DirY = -1.0f;
+    }
+
+    const float halfW = std::max(centerX - margin, 16.0f);
+    const float halfH = std::max(centerY - margin, 16.0f);
+
+    const float scaleX = (std::fabs(out.DirX) > 1e-5f) ? (halfW / std::fabs(out.DirX)) : 1e9f;
+    const float scaleY = (std::fabs(out.DirY) > 1e-5f) ? (halfH / std::fabs(out.DirY)) : 1e9f;
+    const float edgeScale = std::min(scaleX, scaleY);
+
+    out.ScreenX = std::clamp(centerX + out.DirX * edgeScale, margin, w - margin);
+    out.ScreenY = std::clamp(centerY + out.DirY * edgeScale, margin, h - margin);
+    out.IsOnScreen = false;
+    out.IsClampedToEdge = true;
+    return out;
+}
+
+struct TacticalChatCommand
+{
+    enum class Action : uint8_t
+    {
+        None = 0,
+        TriggerContextualPing = 1,
+        TriggerExplicitPing = 2,
+        ClearPings = 3,
+        CycleHudMode = 4,
+        SetHudMode = 5,
+    };
+
+    Action Kind{Action::None};
+    TacticalPingKind PingKind{TacticalPingKind::Rally};
+    TacticalHudMode HudMode{TacticalHudMode::Full};
+    std::string CustomLabel{};
+};
+
+[[nodiscard]] inline bool ParseTacticalChatCommand(std::string_view aRawChatText, TacticalChatCommand& aOut)
+{
+    aOut = {};
+    const std::string trimmed = Detail::Trim(aRawChatText);
+    if (trimmed.empty() || trimmed.front() != '/')
+        return false;
+
+    std::string cmdToken;
+    std::string argRest;
+    if (const size_t sp = trimmed.find_first_of(" \t"); sp != std::string::npos)
+    {
+        cmdToken = Detail::ToLowerAscii(trimmed.substr(0, sp));
+        argRest = Detail::Trim(trimmed.substr(sp + 1));
+    }
+    else
+    {
+        cmdToken = Detail::ToLowerAscii(trimmed);
+    }
+
+    if (cmdToken == "/hud" || cmdToken == "/tacticalhud")
+    {
+        const std::string argLower = Detail::ToLowerAscii(argRest);
+        if (argLower.empty() || argLower == "toggle" || argLower == "cycle")
+        {
+            aOut.Kind = TacticalChatCommand::Action::CycleHudMode;
+            return true;
+        }
+        if (argLower == "full" || argLower == "on" || argLower == "1")
+        {
+            aOut.Kind = TacticalChatCommand::Action::SetHudMode;
+            aOut.HudMode = TacticalHudMode::Full;
+            return true;
+        }
+        if (argLower == "compact" || argLower == "mini" || argLower == "2")
+        {
+            aOut.Kind = TacticalChatCommand::Action::SetHudMode;
+            aOut.HudMode = TacticalHudMode::Compact;
+            return true;
+        }
+        if (argLower == "markers" || argLower == "pings" || argLower == "3")
+        {
+            aOut.Kind = TacticalChatCommand::Action::SetHudMode;
+            aOut.HudMode = TacticalHudMode::MarkersOnly;
+            return true;
+        }
+        if (argLower == "off" || argLower == "hide" || argLower == "hidden" || argLower == "0")
+        {
+            aOut.Kind = TacticalChatCommand::Action::SetHudMode;
+            aOut.HudMode = TacticalHudMode::Hidden;
+            return true;
+        }
+        aOut.Kind = TacticalChatCommand::Action::CycleHudMode;
+        return true;
+    }
+
+    if (cmdToken == "/ping" || cmdToken == "/mark" || cmdToken == "/метка")
+    {
+        if (argRest.empty())
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerContextualPing;
+            return true;
+        }
+
+        std::string subToken;
+        std::string customNote;
+        if (const size_t sp2 = argRest.find_first_of(" \t"); sp2 != std::string::npos)
+        {
+            subToken = Detail::ToLowerAscii(argRest.substr(0, sp2));
+            customNote = Detail::Trim(argRest.substr(sp2 + 1));
+        }
+        else
+        {
+            subToken = Detail::ToLowerAscii(argRest);
+        }
+
+        if (subToken == "clear" || subToken == "off" || subToken == "none" || subToken == "снять")
+        {
+            aOut.Kind = TacticalChatCommand::Action::ClearPings;
+            return true;
+        }
+        if (subToken == "danger" || subToken == "warn" || subToken == "опасность")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::Danger;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+        if (subToken == "enemy" || subToken == "attack" || subToken == "враг" || subToken == "атака")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::Enemy;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+        if (subToken == "boss" || subToken == "босс")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::EnemyBoss;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+        if (subToken == "loot" || subToken == "chest" || subToken == "лут" || subToken == "сундук")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::Loot;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+        if (subToken == "obj" || subToken == "objective" || subToken == "puzzle" || subToken == "рычаг")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::Objective;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+        if (subToken == "help" || subToken == "assist" || subToken == "revive" || subToken == "помощь")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::AssistAlly;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+        if (subToken == "rally" || subToken == "here" || subToken == "сбор")
+        {
+            aOut.Kind = TacticalChatCommand::Action::TriggerExplicitPing;
+            aOut.PingKind = TacticalPingKind::Rally;
+            aOut.CustomLabel = customNote;
+            return true;
+        }
+
+        // Custom text note on contextual ping: "/ping Осторожно ловушка!"
+        aOut.Kind = TacticalChatCommand::Action::TriggerContextualPing;
+        aOut.CustomLabel = argRest;
+        return true;
+    }
+
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 5: World Containers, Locks, Shared Keys/Claws, Projectiles & Aggro Sync
+// ---------------------------------------------------------------------------
+
+/**
+ * Excludes items that must NEVER be duplicated across party members via quest-item replication
+ * (Gold 0xF, Lockpick 0xA, RFAB XP Books, potions/poisons/food, alchemy ingredients, ammo, and internal tokens).
+ */
+[[nodiscard]] inline bool IsExcludedFromQuestItemReplication(
+    std::string_view aEditorId,
+    uint8_t aFormType,
+    uint32_t aFormId) noexcept
+{
+    const uint32_t baseId = aFormId & 0x00FFFFFFu;
+    if (aFormId == 0xFu || aFormId == 0xAu || baseId == 0xFu || baseId == 0xAu)
+        return true;
+
+    // Ingredient (30), Ammo (42), Alchemy/Potion/Poison/Food (46), LeveledItem (53)
+    if (aFormType == 30u || aFormType == 42u || aFormType == 46u || aFormType == 53u)
+        return true;
+
+    const std::string lower = Detail::ToLowerAscii(aEditorId);
+    if (lower.empty())
+        return false;
+
+    if (lower.find("xpbook") != std::string::npos ||
+        lower.find("rfab_book") != std::string::npos ||
+        lower.find("rfab_xp") != std::string::npos ||
+        lower.find("gold001") != std::string::npos ||
+        lower.find("lockpick") != std::string::npos ||
+        lower.find("soulgem") != std::string::npos ||
+        lower.find("dummy") != std::string::npos ||
+        lower.find("token") != std::string::npos)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * Identifies dungeon keys (FormType::Key == 45), Dragon Claws, Dwemer puzzle mechanisms,
+ * and quest-critical dungeon progression artifacts that lack ExtraAliasInstanceArray in base containers
+ * so that any co-op party member can unlock dungeon doors, solve claw doors, and activate pedestals.
+ */
+[[nodiscard]] inline bool IsSharedCoopKeyOrClaw(
+    std::string_view aEditorId,
+    uint8_t aFormType,
+    uint32_t aFormId,
+    bool aSyncPlayerHomes = false) noexcept
+{
+    if (IsExcludedFromQuestItemReplication(aEditorId, aFormType, aFormId))
+        return false;
+
+    const std::string lower = Detail::ToLowerAscii(aEditorId);
+
+    // FormType::Key (45)
+    if (aFormType == 45u)
+    {
+        if (!aSyncPlayerHomes && !lower.empty())
+        {
+            if (lower.find("breezehome") != std::string::npos ||
+                lower.find("honeyside") != std::string::npos ||
+                lower.find("proudspire") != std::string::npos ||
+                lower.find("vindrel") != std::string::npos ||
+                lower.find("hjerim") != std::string::npos ||
+                lower.find("lakeview") != std::string::npos ||
+                lower.find("windstad") != std::string::npos ||
+                lower.find("heljarchen") != std::string::npos ||
+                lower.find("playerhouse") != std::string::npos)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (lower.empty())
+        return false;
+
+    // Dragon Claws (Golden, Emerald, Sapphire, Ruby, Ebony, Diamond, Ivory, Coral, Glass, Iron)
+    if (lower.find("dragonclaw") != std::string::npos)
+        return true;
+
+    if (lower.find("claw") != std::string::npos)
+    {
+        if (lower.find("dun") != std::string::npos ||
+            lower.find("ms13") != std::string::npos ||
+            lower.find("mq") != std::string::npos ||
+            lower.find("dlc") != std::string::npos ||
+            lower.find("golden") != std::string::npos ||
+            lower.find("emerald") != std::string::npos ||
+            lower.find("sapphire") != std::string::npos ||
+            lower.find("ruby") != std::string::npos ||
+            lower.find("ebony") != std::string::npos ||
+            lower.find("diamond") != std::string::npos ||
+            lower.find("ivory") != std::string::npos ||
+            lower.find("coral") != std::string::npos ||
+            lower.find("glass") != std::string::npos ||
+            lower.find("iron") != std::string::npos)
+        {
+            return true;
+        }
+    }
+
+    // Core dungeon & main-quest puzzle artifacts
+    if (lower.find("dragonstone") != std::string::npos ||
+        lower.find("lexicon") != std::string::npos ||
+        lower.find("attunementsphere") != std::string::npos ||
+        lower.find("dweattunement") != std::string::npos ||
+        lower.find("dwemercube") != std::string::npos ||
+        lower.find("controlcube") != std::string::npos ||
+        lower.find("paragon") != std::string::npos ||
+        lower.find("hornofjurgen") != std::string::npos ||
+        lower.find("elderscroll") != std::string::npos ||
+        lower.find("gauldur") != std::string::npos ||
+        lower.find("da09gem") != std::string::npos ||
+        lower.find("meridiabeacon") != std::string::npos)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+struct CoopAggroDecisionInput
+{
+    bool IsHitteeValidNpc{false};
+    bool IsHitteeRemote{false};
+    bool IsHitteeDead{false};
+    bool IsHitterPlayer{false};
+    bool IsHitterDowned{false};
+    bool HasActiveTargetLock{false};
+    bool IsHitteeInCombat{false};
+    bool HasValidCurrentTarget{false};
+    bool IsCurrentTargetDeadOrDowned{false};
+    float DistToCurrentTarget{0.0f};
+    float DistToAttacker{0.0f};
+};
+
+/**
+ * Pure decision policy for Co-Op Smart Threat / Aggro Switching:
+ * Allows a melee Tank or active co-op attacker to pull aggro on local enemies/bosses
+ * without causing target ping-ponging or retargeting onto downed players.
+ */
+[[nodiscard]] inline bool ShouldSwitchCoopCombatTarget(const CoopAggroDecisionInput& acIn) noexcept
+{
+    if (!acIn.IsHitteeValidNpc || acIn.IsHitteeRemote || acIn.IsHitteeDead)
+        return false;
+
+    if (!acIn.IsHitterPlayer || acIn.IsHitterDowned)
+        return false;
+
+    // Always acquire target immediately if the enemy is not yet in combat, has no valid target,
+    // or its current target is dead or downed (even if a previous target lock timer has not expired).
+    if (!acIn.IsHitteeInCombat || !acIn.HasValidCurrentTarget || acIn.IsCurrentTargetDeadOrDowned)
+        return true;
+
+    // Respect the anti-ping-pong target lock window when the current target is still alive & standing.
+    if (acIn.HasActiveTargetLock)
+        return false;
+
+    if (!std::isfinite(acIn.DistToAttacker) || !std::isfinite(acIn.DistToCurrentTarget))
+        return false;
+
+    // Switch aggro onto the attacking player if they are significantly closer (e.g., Tank engaging in melee
+    // while the previous target is kiting or casting from range).
+    constexpr float kMeleeAggroPullMarginUnits = 220.0f;
+    return (acIn.DistToAttacker + kMeleeAggroPullMarginUnits) < acIn.DistToCurrentTarget;
+}
+
+/**
+ * Validates projectile launch parameters before passing to SkyrimSE.exe Havok Projectile::Launch.
+ */
+[[nodiscard]] inline bool AreProjectileLaunchParamsSafe(
+    float aOriginX,
+    float aOriginY,
+    float aOriginZ,
+    float aXAngle,
+    float aYAngle,
+    float aZAngle,
+    float aPower,
+    float aScale) noexcept
+{
+    if (!std::isfinite(aOriginX) || !std::isfinite(aOriginY) || !std::isfinite(aOriginZ) ||
+        !std::isfinite(aXAngle) || !std::isfinite(aYAngle) || !std::isfinite(aZAngle) ||
+        !std::isfinite(aPower) || !std::isfinite(aScale))
+    {
+        return false;
+    }
+
+    constexpr float kMaxWorldCoord = 2000000.0f;
+    if (std::fabs(aOriginX) > kMaxWorldCoord ||
+        std::fabs(aOriginY) > kMaxWorldCoord ||
+        std::fabs(aOriginZ) > kMaxWorldCoord)
+    {
+        return false;
+    }
+
+    return aPower >= 0.0f && aScale >= 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 6: World Systems, Teleportation, Calendar/Weather, Beast Forms & Reconnect Polish
+// ---------------------------------------------------------------------------
+
+/**
+ * Losslessly encodes (hours, minutes) into Skyrim's GameHour float [0.0f, 24.0f).
+ * Fixes the legacy * 0.17f / 10 bug where 23:59 produced 24.003f (>= 24.0f overflow).
+ */
+[[nodiscard]] inline float EncodeSkyrimGameHour(int aHours, int aMinutes) noexcept
+{
+    const int clampedHours = std::clamp(aHours, 0, 23);
+    const int clampedMinutes = std::clamp(aMinutes, 0, 59);
+    return static_cast<float>(clampedHours) + (static_cast<float>(clampedMinutes) / 60.0f);
+}
+
+/**
+ * Losslessly decodes Skyrim's GameHour float into (hours [0..23], minutes [0..59]).
+ */
+inline void DecodeSkyrimGameHour(float aGameHour, int& aOutHours, int& aOutMinutes) noexcept
+{
+    if (!std::isfinite(aGameHour))
+    {
+        aOutHours = 8;
+        aOutMinutes = 0;
+        return;
+    }
+
+    float normalized = std::fmod(aGameHour, 24.0f);
+    if (normalized < 0.0f)
+        normalized += 24.0f;
+
+    int hours = static_cast<int>(std::floor(normalized));
+    int minutes = static_cast<int>(std::lround((normalized - static_cast<float>(hours)) * 60.0f));
+    if (minutes >= 60)
+    {
+        minutes = 0;
+        hours = (hours + 1) % 24;
+    }
+
+    aOutHours = std::clamp(hours, 0, 23);
+    aOutMinutes = std::clamp(minutes, 0, 59);
+}
+
+/**
+ * Cross-version detector for Werewolf, Vampire Lord, Werebear, and RFAB transformation races,
+ * independent of Dawnguard.esm / Dragonborn.esm load-order index.
+ */
+[[nodiscard]] inline bool IsBeastFormRace(std::string_view aEditorId, uint32_t aFormId) noexcept
+{
+    const uint32_t baseId = aFormId & 0x00FFFFFFu;
+    // 0x000CDD84 = WerewolfBeastRace (Skyrim.esm)
+    // 0x0000283A = DLC1VampireBeastRace (Dawnguard.esm)
+    // 0x00023FE9 = DLC2WerebearBeastRace (Dragonborn.esm)
+    if (baseId == 0x000CDD84u || baseId == 0x0000283Au || baseId == 0x00023FE9u)
+        return true;
+
+    const std::string lower = Detail::ToLowerAscii(aEditorId);
+    if (lower.empty())
+        return false;
+
+    return lower.find("vampirebeast") != std::string::npos ||
+           lower.find("werewolfbeast") != std::string::npos ||
+           lower.find("werebearbeast") != std::string::npos ||
+           lower.find("lichrace") != std::string::npos;
+}
+
+/**
+ * Validates whether a co-op teleport destination can be safely executed on the client.
+ * Blocks teleportation while downed/loading, rejects NaN/Inf coordinates, and ensures
+ * temporary 0xFFxxxxxx wilderness cells have a valid WorldSpaceId to load by grid coordinates.
+ */
+[[nodiscard]] inline bool CanResolveTeleportDestination(
+    bool aHasCellId,
+    bool aIsTempCellId,
+    bool aHasWorldSpaceId,
+    float aPosX,
+    float aPosY,
+    float aPosZ,
+    bool aIsLocalPlayerDowned,
+    bool aIsLoadingMenuOpen) noexcept
+{
+    if (aIsLocalPlayerDowned || aIsLoadingMenuOpen)
+        return false;
+
+    if (!std::isfinite(aPosX) || !std::isfinite(aPosY) || !std::isfinite(aPosZ))
+        return false;
+
+    constexpr float kMaxWorldCoord = 2000000.0f;
+    if (std::fabs(aPosX) > kMaxWorldCoord ||
+        std::fabs(aPosY) > kMaxWorldCoord ||
+        std::fabs(aPosZ) > kMaxWorldCoord)
+    {
+        return false;
+    }
+
+    // If the cell is an unnamed 0xFFxxxxxx wilderness cell, we MUST have a valid WorldSpaceId
+    // to resolve the cell via TESWorldSpace::LoadCell(gridX, gridY) rather than TESForm::GetById(0xFFxxxxxx).
+    if (aIsTempCellId)
+        return aHasWorldSpaceId;
+
+    return aHasCellId || aHasWorldSpaceId;
 }
 
 } // namespace RfabCompat

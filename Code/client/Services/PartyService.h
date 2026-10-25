@@ -6,6 +6,8 @@ struct TransportService;
 struct UpdateEvent;
 struct DisconnectedEvent;
 struct NotifyPlayerList;
+struct NotifyPlayerJoined;
+struct NotifyPlayerLeft;
 struct NotifyPartyInfo;
 struct NotifyPartyInvite;
 struct NotifyPartyJoined;
@@ -40,6 +42,8 @@ protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept;
+    void OnPlayerJoined(const NotifyPlayerJoined& acPlayerJoined) noexcept;
+    void OnPlayerLeft(const NotifyPlayerLeft& acPlayerLeft) noexcept;
     void OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept;
     void OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcept;
     void OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept;
@@ -63,6 +67,8 @@ private:
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_playerListConnection;
+    entt::scoped_connection m_playerJoinedConnection;
+    entt::scoped_connection m_playerLeftConnection;
     entt::scoped_connection m_partyInfoConnection;
     entt::scoped_connection m_partyInviteConnection;
     entt::scoped_connection m_partyJoinedConnection;

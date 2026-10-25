@@ -5,6 +5,7 @@
 
 #include <Messages/ProjectileLaunchRequest.h>
 #include <Messages/NotifyProjectileLaunch.h>
+#include <common/RfabModpackCompat.h>
 
 CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -15,6 +16,18 @@ CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexc
 void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunchRequest>& acMessage) const noexcept
 {
     auto& packet = acMessage.Packet;
+    if (!RfabCompat::AreProjectileLaunchParamsSafe(
+            packet.OriginX,
+            packet.OriginY,
+            packet.OriginZ,
+            packet.XAngle,
+            packet.YAngle,
+            packet.ZAngle,
+            packet.Power,
+            packet.Scale))
+    {
+        return;
+    }
 
     NotifyProjectileLaunch notify{};
 

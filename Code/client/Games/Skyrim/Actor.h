@@ -204,8 +204,10 @@ struct Actor : TESObjectREFR
     ActorValues GetEssentialActorValues() const noexcept;
     [[nodiscard]] bool IsDead() const noexcept;
     [[nodiscard]] bool IsDragon() const noexcept;
+    [[nodiscard]] bool IsGhost() const noexcept;
     [[nodiscard]] bool IsPlayerSummon() const noexcept;
     [[nodiscard]] bool IsInCombat() const noexcept;
+    void SetGhost(bool aIsGhost) noexcept;
     [[nodiscard]] Actor* GetCombatTarget() const noexcept;
     [[nodiscard]] bool HasPerk(uint32_t aPerkFormId) const noexcept;
     [[nodiscard]] uint8_t GetPerkRank(uint32_t aPerkFormId) const noexcept;

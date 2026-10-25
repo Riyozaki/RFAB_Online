@@ -96,6 +96,7 @@ struct CharacterService
 
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
+    void ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlayerId) noexcept;
     void NotifySaveLoadReset() noexcept;
     void PreSavePurgeDynamicActors() noexcept;
     void SchedulePostSaveRemoteRestore() noexcept;

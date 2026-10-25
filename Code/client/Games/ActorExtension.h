@@ -11,6 +11,7 @@ struct ActorExtension
         kPlayer = 1u << 1,
         kCreatedByNetwork = 1u << 2,
         kDownedPlayer = 1u << 3,
+        kPlayerSummon = 1u << 4,
     };
 
     ActorExtension() noexcept = default;
@@ -42,10 +43,12 @@ struct ActorExtension
     bool IsLocalPlayer() const noexcept;
     bool IsCreatedByNetwork() const noexcept;
     bool IsDownedPlayer() const noexcept;
+    bool IsPlayerSummonFlag() const noexcept;
     void SetRemote(bool aSet) noexcept;
     void SetPlayer(bool aSet) noexcept;
     void SetCreatedByNetwork(bool aSet) noexcept;
     void SetDownedPlayer(bool aSet) noexcept;
+    void SetPlayerSummonFlag(bool aSet) noexcept;
     void SetNakedDeadline() noexcept { nakedDeadline = std::chrono::steady_clock::now();  }
 
     ActionEvent LatestAnimation{};

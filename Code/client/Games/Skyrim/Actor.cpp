@@ -391,8 +391,32 @@ bool Actor::RemoveSpell(MagicItem* apSpell) noexcept
         spdlog::error(__FUNCTION__ ": apSpell is null");
         return false;
     }
-    // spdlog::info(__FUNCTION__ ": removing: {} from actor: {}", apSpell->formID, formID);
-    return TiltedPhoques::ThisCall(RealRemoveSpell, this, apSpell);
+
+    bool removed = TiltedPhoques::ThisCall(RealRemoveSpell, this, apSpell);
+
+    PAPYRUS_FUNCTION(bool, Actor, DispelSpell, MagicItem*);
+    if (s_pDispelSpell)
+        removed = s_pDispelSpell(this, apSpell) || removed;
+
+    // Also mark any matching ActiveEffects in MiddleProcess::ActiveEffects as dispelled (kDispelled = 1 << 18)
+    // so CONSTANT_EFFECT stances, toggle auras, and buffs added via MagicTarget::AddTarget on remote player clones
+    // are guaranteed to terminate immediately when toggled off!
+    if (currentProcess && currentProcess->middleProcess && currentProcess->middleProcess->ActiveEffects)
+    {
+        constexpr uint32_t kActiveEffectDispelledFlag = (1u << 18);
+        for (ActiveEffect* pEffect : *currentProcess->middleProcess->ActiveEffects)
+        {
+            if (pEffect && pEffect->pSpell == apSpell)
+            {
+                pEffect->uiFlags |= kActiveEffectDispelledFlag;
+                if (pEffect->fDuration > 0.0f)
+                    pEffect->fElapsedSeconds = pEffect->fDuration + 1.0f;
+                removed = true;
+            }
+        }
+    }
+
+    return removed;
 }
 
 bool Actor::HasPerk(uint32_t aPerkFormId) const noexcept
@@ -512,49 +536,6 @@ bool Actor::IsWearingBodyPiece() const noexcept
     return GetContainerChanges()->GetArmor(32) != nullptr;
 }
 
-bool Actor::ShouldWearBodyPiece() const noexcept
-{
-    TESNPC* pBase = Cast<TESNPC>(baseForm);
-    if (!pBase)
-        return false;
-
-    BGSOutfit* pDefaultOutfit = pBase->outfits[0];
-    if (!pDefaultOutfit)
-        return false;
-
-    for (auto* pItem : pDefaultOutfit->outfitItems)
-    {
-        TESObjectARMO* pArmor = nullptr;
-
-        if (pItem->formType == FormType::Armor)
-            pArmor = Cast<TESObjectARMO>(pItem);
-        else if (pItem->formType == FormType::LeveledItem)
-        {
-            TESLevItem* pLevItem = Cast<TESLevItem>(pItem);
-            if (!pLevItem || !pLevItem->pLeveledListA || !pLevItem->pLeveledListA->pForm)
-                continue;
-
-            pArmor = Cast<TESObjectARMO>(pLevItem->pLeveledListA->pForm);
-        }
-        else
-            continue;
-
-        if (!pArmor)
-            continue;
-
-        if (pArmor->IsBodyPiece()) 
-            return true;
-    }
-
-    return false;
-}
-
-void Actor::SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit) 
-{
-    PAPYRUS_FUNCTION(void, Actor, SetOutfit, const BGSOutfit*, bool);
-    s_pSetOutfit(this, apOutfit, aIsSleepOutfit);
-}
-
 namespace
 {
 void CollectArmorFromOutfitForm(
@@ -619,6 +600,38 @@ void CollectArmorFromOutfitForm(
     }
 }
 } // namespace
+
+bool Actor::ShouldWearBodyPiece() const noexcept
+{
+    TESNPC* pBase = Cast<TESNPC>(baseForm);
+    if (!pBase)
+        return false;
+
+    BGSOutfit* pDefaultOutfit = pBase->outfits[0];
+    if (!pDefaultOutfit)
+        return false;
+
+    const uint32_t deterministicSeed = pBase->formID != 0 ? pBase->formID : formID;
+    TiltedPhoques::Vector<TESObjectARMO*> resolvedArmors;
+    for (auto* pItem : pDefaultOutfit->outfitItems)
+    {
+        CollectArmorFromOutfitForm(pItem, deterministicSeed, 0, resolvedArmors);
+    }
+
+    for (TESObjectARMO* pArmor : resolvedArmors)
+    {
+        if (pArmor && pArmor->IsBodyPiece())
+            return true;
+    }
+
+    return false;
+}
+
+void Actor::SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit) 
+{
+    PAPYRUS_FUNCTION(void, Actor, SetOutfit, const BGSOutfit*, bool);
+    s_pSetOutfit(this, apOutfit, aIsSleepOutfit);
+}
 
 void Actor::EquipOutfit(bool aIsSleepOutfit) noexcept
 {
@@ -686,6 +699,17 @@ void Actor::SetCommandingActor(BSPointerHandle<TESObjectREFR> aCommandingActor) 
 
 bool Actor::IsPlayerSummon() const noexcept
 {
+    if (const auto* pExt = GetExtension())
+    {
+        if (pExt->IsPlayerSummonFlag())
+            return true;
+
+        // RFAB spirit/toggle summons (RFAB_Script_SummonSpirit) spawn as temporary 0xFFxxxxxx PlayerTeammates
+        // with GetCommandingActor() == nullptr on the summoner's client.
+        if (!pExt->IsRemote() && !pExt->IsPlayer() && (formID & 0xFF000000u) == 0xFF000000u && IsPlayerTeammate())
+            return true;
+    }
+
     const Actor* pCommandingActor = GetCommandingActor();
     if (!pCommandingActor)
         return false;
@@ -891,7 +915,8 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
     {
         return aAvId == ActorValueInfo::kSpeedMult ||
                aAvId == ActorValueInfo::kWeaponSpeedMult ||
-               aAvId == ActorValueInfo::kLeftWeaponSpeedMult;
+               aAvId == ActorValueInfo::kLeftWeaponSpeedMult ||
+               aAvId == ActorValueInfo::kInfamy;
     };
 
     for (auto& value : acActorValues.ActorMaxValuesList)
@@ -1003,6 +1028,30 @@ bool Actor::IsDragon() const noexcept
 {
     const ActorExtension* pExtension = const_cast<Actor*>(this)->GetExtension();
     return BehaviorVar::IsDragon(pExtension->GraphDescriptorHash);
+}
+
+bool Actor::IsGhost() const noexcept
+{
+    if (const auto* pExtraGhost = static_cast<const ExtraGhost*>(extraData.GetByType(ExtraDataType::Ghost)))
+        return pExtraGhost->ghost;
+
+    if (const auto* pActorBase = Cast<TESActorBase>(baseForm))
+    {
+        if (pActorBase->IsGhostBase() || pActorBase->IsInvulnerableBase())
+            return true;
+    }
+
+    return false;
+}
+
+void Actor::SetGhost(bool aIsGhost) noexcept
+{
+    if (auto* pExtraGhost = static_cast<ExtraGhost*>(extraData.GetByType(ExtraDataType::Ghost)))
+        pExtraGhost->ghost = aIsGhost;
+
+    PAPYRUS_FUNCTION(void, Actor, SetGhost, bool);
+    if (s_pSetGhost)
+        s_pSetGhost(this, aIsGhost);
 }
 
 void Actor::Kill(Actor* apKiller) noexcept
@@ -1156,6 +1205,11 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     if (coopPolicy.BlockHarmfulAction)
         return false;
 
+    // Respect synchronized boss/actor invulnerability phases (SetGhost / ExtraGhost / IS_INVULNERABLE):
+    // neither owner nor non-owner peers may deal damage through an active boss shield/ethereal phase.
+    if (apThis && !apThis->GetExtension()->IsPlayer() && apThis->IsGhost())
+        return false;
+
     if (apHitter)
         World::Get().GetRunner().Trigger(HitEvent(apHitter->formID, apThis->formID));
 
@@ -1169,7 +1223,9 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
         // Enforce single-owner RFAB kill XP authority: if a non-owner player or local summon lands a killing blow
         // on a remotely-owned NPC, mark kInfamy = -1 locally so RFAB_XP_Alias::OnActorKilled fires ONLY on the
         // NPC's authoritative owner client (via OnHealthChangeBroadcast) and distributes exact 1x XP to the party!
-        if (apThis->GetExtension()->IsRemote() && !apThis->GetExtension()->IsPlayer())
+        const bool isRemoteNonPlayer = apThis->GetExtension()->IsRemote() && !apThis->GetExtension()->IsPlayer();
+        const float prevInfamy = isRemoteNonPlayer ? apThis->GetActorValue(ActorValueInfo::kInfamy) : 0.0f;
+        if (isRemoteNonPlayer)
         {
             ScopedActorValueOverride avOverride;
             apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
@@ -1179,6 +1235,14 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
         const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
         const float healthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
         const float actualDelta = healthAfter - healthBefore;
+
+        // If the remote NPC survived this hit, immediately restore kInfamy >= 0 so if ownership later transfers
+        // to this client (TakeOwnership), RFAB_XP_Alias::OnActorKilled will still award full kill XP!
+        if (isRemoteNonPlayer && !apThis->IsDead() && healthAfter > 0.0f)
+        {
+            ScopedActorValueOverride avOverride;
+            apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, std::max(0.0f, prevInfamy));
+        }
 
         // Broadcast the exact delta produced by SkyrimSE.exe + RFAB.dll so invulnerable/ethereal
         // boss phases, Requiem armor/expertise/silver modifiers, damage caps, and ScriptDamage stay 100% synced.
@@ -1199,7 +1263,8 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
                 const Actor* pHitterCmd = apHitter->GetCommandingActor();
                 const auto* pHitterCmdExt = pHitterCmd ? pHitterCmd->GetExtension() : nullptr;
                 if ((pHitterExt && pHitterExt->IsRemotePlayer()) ||
-                    (pHitterCmdExt && pHitterCmdExt->IsRemotePlayer()))
+                    (pHitterCmdExt && pHitterCmdExt->IsRemotePlayer()) ||
+                    (pHitterExt && pHitterExt->IsRemote() && apHitter->IsPlayerSummon()))
                 {
                     return false;
                 }
@@ -1250,7 +1315,9 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
         const auto* pExHitter = apHitter->GetExtension();
         const Actor* pHitterCmd = apHitter->GetCommandingActor();
         const auto* pHitterCmdExt = pHitterCmd ? pHitterCmd->GetExtension() : nullptr;
-        const bool isLocalPlayerSummon = pHitterCmd && pHitterCmd->formID == 0x14;
+        const bool isLocalPlayerSummon =
+            (pHitterCmd && pHitterCmd->formID == 0x14) ||
+            (pExHitter && !pExHitter->IsRemote() && apHitter->IsPlayerSummon());
         const bool isRemotePlayerSummon =
             (pHitterCmdExt && pHitterCmdExt->IsRemotePlayer()) ||
             (pExHitter && pExHitter->IsRemote() && apHitter->IsPlayerSummon());
@@ -1370,10 +1437,13 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
 void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
 {
     const auto* pExt = apThis ? apThis->GetExtension() : nullptr;
+    const bool isInteractivePlayerTransfer =
+        (apOldOwner && apOldOwner == PlayerCharacter::Get()) ||
+        (UI::Get() && UI::Get()->GetMenuOpen(BSFixedString("ContainerMenu")));
     const bool blockRemote =
         pExt &&
         (pExt->IsRemotePlayer() ||
-         (pExt->IsRemote() && !apThis->IsDead() && (!UI::Get() || !UI::Get()->GetMenuOpen(BSFixedString("ContainerMenu")))));
+         (pExt->IsRemote() && !isInteractivePlayerTransfer));
 
     if (!ScopedInventoryOverride::IsOverriden() && apItem && !blockRemote)
     {
@@ -1385,6 +1455,15 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
 
         if (apExtraData)
             apThis->GetItemFromExtraData(item, apExtraData);
+
+        if (!item.IsQuestItem && item.Count > 0 && apThis == PlayerCharacter::Get())
+        {
+            const char* pEditorId = apItem->GetFormEditorID();
+            const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
+            const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+            if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apItem->formType), apItem->formID, syncHomes))
+                item.IsQuestItem = true;
+        }
 
         World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item)));
     }
@@ -1404,6 +1483,15 @@ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t
 
         if (apObject->GetExtraDataList())
             apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
+
+        if (!item.IsQuestItem && item.Count > 0 && apThis == PlayerCharacter::Get())
+        {
+            const char* pEditorId = apObject->baseForm->GetFormEditorID();
+            const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
+            const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+            if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apObject->baseForm->formType), apObject->baseForm->formID, syncHomes))
+                item.IsQuestItem = true;
+        }
 
         const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
 
@@ -1664,7 +1752,7 @@ bool Actor::IsSpeakingInScene()
     const bool isTalking = IsTalking(); 
     const bool isLeader = World::Get().GetPartyService().IsLeader(); // Helps distinguish logs in 2-party
 
-    spdlog::debug(__FUNCTION__ ": isSpeakingInScene {}, isTalking {}, voiceRecoveryTime {}, isLeader {}, formId {:X}, name {}", isSpeakingInScene, isTalking, GetVoiceRecoveryTime(), isLeader, formID, baseForm->GetName());
+    spdlog::debug(__FUNCTION__ ": isSpeakingInScene {}, isTalking {}, voiceRecoveryTime {}, isLeader {}, formId {:X}, name {}", isSpeakingInScene, isTalking, GetVoiceRecoveryTime(), isLeader, formID, baseForm ? baseForm->GetName() : "<null>");
 
     return isSpeakingInScene;
 }

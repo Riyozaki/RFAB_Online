@@ -3,6 +3,9 @@
 #include <Events/PacketEvent.h>
 #include <Services/RfabProgressionService.h>
 #include <Structs/GameId.h>
+#include <Structs/GridCellCoords.h>
+#include <Structs/Inventory.h>
+#include <Structs/LockData.h>
 #include <Structs/QuestLog.h>
 #include <CoopFlightDigest.h>
 
@@ -238,6 +241,16 @@ public:
         float Year{201.0f};
     };
 
+    struct ObjectStateRecord
+    {
+        GameId Id{};
+        GameId CellId{};
+        GameId WorldSpaceId{};
+        GridCellCoords CenterCoords{};
+        LockData CurrentLockData{};
+        Inventory CurrentInventory{};
+    };
+
     struct WorldSnapshot
     {
         uint64_t EpochId{};
@@ -248,6 +261,7 @@ public:
         std::unordered_map<uint32_t, QuestLog> QuestLogsByPlayerId{};
         QuestLog SharedPartyQuestLog{};
         std::unordered_map<uint32_t, ActorStateRecord> TrackedActors{};
+        std::vector<ObjectStateRecord> TrackedObjects{};
         RfabProgressionLedger::Snapshot Progression{};
         CalendarStateRecord Calendar{};
     };

@@ -358,6 +358,11 @@ public:
         return it != m_players.end() && it->second.IsDowned;
     }
 
+    [[nodiscard]] bool IsEncounterActiveWithLivingParticipants() const noexcept
+    {
+        return m_encounterActive && AreAnyEncounterParticipantsAlive();
+    }
+
 private:
     [[nodiscard]] static float DistanceMeters(const PlayerCombatRecord& aA, const PlayerCombatRecord& aB) noexcept
     {

@@ -18,25 +18,39 @@ CommandService::CommandService(World& aWorld, entt::dispatcher& aDispatcher) noe
 
 void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     NotifySetTimeResult response{};
 
-    const auto cPlayerId = static_cast<uint32_t>(acMessage.Packet.PlayerId);
+    const auto cPlayerId = acMessage.pPlayer->GetId();
+    bool isAuthorized = m_world.GetSaveSnapshotService().IsPlayerAuthorizedHost(acMessage.pPlayer);
 
-    // Only set time if player is an admin
-    for (const auto session : GameServer::Get()->GetAdminSessions())
+    if (!isAuthorized)
     {
-        if (PlayerManager::Get()->GetByConnectionId(session)->GetId() == cPlayerId)
+        for (const auto session : GameServer::Get()->GetAdminSessions())
         {
-            const auto cHours = static_cast<int>(acMessage.Packet.Hours);
-            const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
-
-            m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
-
-            response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
-            acMessage.pPlayer->Send(response);
-
-            return;
+            if (const auto* pAdminPlayer = PlayerManager::Get()->GetByConnectionId(session))
+            {
+                if (pAdminPlayer->GetId() == cPlayerId)
+                {
+                    isAuthorized = true;
+                    break;
+                }
+            }
         }
+    }
+
+    if (isAuthorized)
+    {
+        const auto cHours = static_cast<int>(acMessage.Packet.Hours);
+        const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
+
+        m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
+
+        response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
+        acMessage.pPlayer->Send(response);
+        return;
     }
 
     response.Result = NotifySetTimeResult::SetTimeResult::kNoPermission;
@@ -45,10 +59,13 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
 
 void CommandService::OnTeleportCommandRequest(const PacketEvent<TeleportCommandRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     Player* pTargetPlayer = nullptr;
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
-        if (pPlayer->GetUsername() == acMessage.Packet.TargetPlayer)
+        if (pPlayer && pPlayer->GetUsername() == acMessage.Packet.TargetPlayer)
             pTargetPlayer = pPlayer;
     }
 
@@ -59,9 +76,9 @@ void CommandService::OnTeleportCommandRequest(const PacketEvent<TeleportCommandR
         if (character)
         {
             const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
-            if (pMovementComponent)
+            const auto& cellComponent = pTargetPlayer->GetCellComponent();
+            if (pMovementComponent && (cellComponent.Cell || cellComponent.WorldSpaceId))
             {
-                const auto& cellComponent = pTargetPlayer->GetCellComponent();
                 response.CellId = cellComponent.Cell;
                 response.Position = pMovementComponent->Position;
                 response.WorldSpaceId = cellComponent.WorldSpaceId;

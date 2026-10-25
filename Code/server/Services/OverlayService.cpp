@@ -61,38 +61,49 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
 
 void OverlayService::HandleChatMessage(const PacketEvent<SendChatMessageRequest>& acMessage) const noexcept
 {
-    auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(*acMessage.pPlayer->GetCharacter(), acMessage.Packet.ChatMessage);
-    if (canceled)
+    if (!acMessage.pPlayer)
         return;
+
+    if (const auto character = acMessage.pPlayer->GetCharacter())
+    {
+        auto [canceled, reason] = m_world.GetScriptService().HandleChatMessage(*character, acMessage.Packet.ChatMessage);
+        if (canceled)
+            return;
+    }
 
     sendPlayerMessage(acMessage.Packet.MessageType, acMessage.Packet.ChatMessage, acMessage.pPlayer);
 }
 
 void OverlayService::OnPlayerDialogue(const PacketEvent<PlayerDialogueRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     sendPlayerMessage(kPlayerDialogue, acMessage.Packet.Text, acMessage.pPlayer);
 }
 
 void OverlayService::OnTeleport(const PacketEvent<TeleportRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     Player* pTargetPlayer = m_world.GetPlayerManager().GetById(acMessage.Packet.PlayerId);
     if (!pTargetPlayer)
         return;
 
-    NotifyTeleport response{};
-
     auto character = pTargetPlayer->GetCharacter();
-    if (character)
-    {
-        const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
-        if (pMovementComponent)
-        {
-            const auto& cellComponent = pTargetPlayer->GetCellComponent();
-            response.CellId = cellComponent.Cell;
-            response.Position = pMovementComponent->Position;
-            response.WorldSpaceId = cellComponent.WorldSpaceId;
-        }
-    }
+    if (!character)
+        return;
+
+    const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
+    const auto& cellComponent = pTargetPlayer->GetCellComponent();
+    if (!pMovementComponent || (!cellComponent.Cell && !cellComponent.WorldSpaceId))
+        return;
+
+    NotifyTeleport response{};
+    response.CellId = cellComponent.Cell;
+    response.Position = pMovementComponent->Position;
+    response.WorldSpaceId = cellComponent.WorldSpaceId;
 
     acMessage.pPlayer->Send(response);
 }

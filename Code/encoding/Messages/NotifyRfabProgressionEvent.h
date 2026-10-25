@@ -15,6 +15,8 @@ struct NotifyRfabProgressionEvent final : ServerMessage
         LedgerXpRebate = 3,
         FullLedgerResync = 4,
         AllyProtectionSync = 5,
+        BossEncounterSync = 6,
+        TacticalPingSync = 7,
     };
 
     NotifyRfabProgressionEvent()

@@ -43,6 +43,7 @@ public:
         std::vector<GameId> ReadBooks{};
         std::unordered_map<std::string, float> SyncedGlobals{};
         std::vector<AmbushRecord> RecentAmbushes{};
+        std::unordered_map<uint32_t, bool> BossGhostStates{};
     };
 
     struct XpGrantOutcome
@@ -177,6 +178,29 @@ public:
         });
     }
 
+    bool UpdateBossGhostState(uint32_t aServerEntityId, bool aIsGhost)
+    {
+        if (aServerEntityId == 0)
+            return false;
+
+        const auto it = m_bossGhostStates.find(aServerEntityId);
+        const bool current = (it != m_bossGhostStates.end()) ? it->second : false;
+        if (current == aIsGhost)
+            return false;
+
+        if (aIsGhost)
+            m_bossGhostStates[aServerEntityId] = true;
+        else if (it != m_bossGhostStates.end())
+            m_bossGhostStates.erase(it);
+
+        return true;
+    }
+
+    void ClearBossGhostState(uint32_t aServerEntityId) noexcept
+    {
+        m_bossGhostStates.erase(aServerEntityId);
+    }
+
     [[nodiscard]] Snapshot CaptureSnapshot() const
     {
         return Snapshot{
@@ -185,6 +209,7 @@ public:
             m_readBooks,
             m_syncedGlobals,
             m_recentAmbushes,
+            m_bossGhostStates,
         };
     }
 
@@ -195,11 +220,13 @@ public:
         m_readBooks = acSnapshot.ReadBooks;
         m_syncedGlobals = acSnapshot.SyncedGlobals;
         m_recentAmbushes = acSnapshot.RecentAmbushes;
+        m_bossGhostStates = acSnapshot.BossGhostStates;
     }
 
     [[nodiscard]] int64_t GetTotalSharedXp() const noexcept { return m_totalSharedXp; }
     [[nodiscard]] const std::vector<GameId>& GetReadBooks() const noexcept { return m_readBooks; }
     [[nodiscard]] const std::unordered_map<std::string, float>& GetSyncedGlobals() const noexcept { return m_syncedGlobals; }
+    [[nodiscard]] const std::unordered_map<uint32_t, bool>& GetBossGhostStates() const noexcept { return m_bossGhostStates; }
 
 private:
     void PruneExpiredAmbushes(uint64_t aNowMs, uint64_t aWindowMs) noexcept
@@ -217,6 +244,7 @@ private:
     std::vector<GameId> m_readBooks{};
     std::unordered_map<std::string, float> m_syncedGlobals{};
     std::vector<AmbushRecord> m_recentAmbushes{};
+    std::unordered_map<uint32_t, bool> m_bossGhostStates{};
 };
 
 class RfabProgressionService
@@ -240,6 +268,13 @@ private:
     World& m_world;
     RfabProgressionLedger m_ledger;
     bool m_allyProtectionEnabled{true};
+
+    struct PingRateBucket
+    {
+        uint64_t WindowStartMs{0};
+        uint32_t CountInWindow{0};
+    };
+    std::unordered_map<uint32_t, PingRateBucket> m_pingRateByPlayerId{};
 
     entt::scoped_connection m_progressionConnection;
     entt::scoped_connection m_playerJoinConnection;

@@ -15,6 +15,10 @@
 #include <Forms/TESObjectWEAP.h>
 #include <Forms/TESAmmo.h>
 #include <Games/ActorExtension.h>
+#include <PlayerCharacter.h>
+#include <Combat/CombatController.h>
+#include <Services/DownedStateService.h>
+#include <common/RfabModpackCompat.h>
 
 CombatService::CombatService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher)
     : m_world(aWorld)
@@ -39,6 +43,19 @@ void CombatService::OnLocalComponentRemoved(entt::registry& aRegistry, entt::ent
 
 void CombatService::OnProjectileLaunchedEvent(const ProjectileLaunchedEvent& acEvent) const noexcept
 {
+    if (!RfabCompat::AreProjectileLaunchParamsSafe(
+            acEvent.Origin.x,
+            acEvent.Origin.y,
+            acEvent.Origin.z,
+            acEvent.XAngle,
+            acEvent.YAngle,
+            acEvent.ZAngle,
+            acEvent.Power,
+            acEvent.Scale))
+    {
+        return;
+    }
+
     ModSystem& modSystem = m_world.Get().GetModSystem();
 
     uint32_t shooterFormId = acEvent.ShooterID;
@@ -89,6 +106,20 @@ void CombatService::OnProjectileLaunchedEvent(const ProjectileLaunchedEvent& acE
 
 void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMessage) const noexcept
 {
+    if (!RfabCompat::AreProjectileLaunchParamsSafe(
+            acMessage.OriginX,
+            acMessage.OriginY,
+            acMessage.OriginZ,
+            acMessage.XAngle,
+            acMessage.YAngle,
+            acMessage.ZAngle,
+            acMessage.Power,
+            acMessage.Scale))
+    {
+        spdlog::warn("Rejected projectile launch with non-finite/out-of-range coordinates or angles.");
+        return;
+    }
+
     ModSystem& modSystem = World::Get().GetModSystem();
 
     auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
@@ -113,23 +144,33 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
 
     // Projectile::Launch relies on pParentCell being valid.
     // Exterior wilderness cells have dynamic 0xFFxxxxxx FormIDs that differ across clients;
-    // fall back to the remote shooter's active local parentCell when lookup returns null.
-    const uint32_t cParentCellId = modSystem.GetGameId(acMessage.ParentCellID);
-    launchData.pParentCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
+    // fall back to the remote shooter's active local parentCell (or local player's parentCell) when lookup returns null.
+    if (acMessage.ParentCellID && acMessage.ParentCellID.ModId != 0xFFFFFFFF)
+    {
+        const uint32_t cParentCellId = modSystem.GetGameId(acMessage.ParentCellID);
+        launchData.pParentCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
+    }
     if (!launchData.pParentCell)
     {
         launchData.pParentCell = launchData.pShooter->parentCell;
     }
+    if (!launchData.pParentCell && PlayerCharacter::Get())
+    {
+        launchData.pParentCell = PlayerCharacter::Get()->parentCell;
+    }
 
     if (!launchData.pParentCell)
     {
-        spdlog::warn("Cannot launch projectile, invalid parent cell: {:X}", cParentCellId);
+        spdlog::warn("Cannot launch projectile, invalid parent cell for shooter {:X}", formIdComponent.Id);
         return;
     }
 
     launchData.Origin.x = acMessage.OriginX;
     launchData.Origin.y = acMessage.OriginY;
     launchData.Origin.z = acMessage.OriginZ;
+
+    if (!acMessage.ProjectileBaseID || acMessage.ProjectileBaseID.ModId == 0xFFFFFFFF)
+        return;
 
     const uint32_t cProjectileBaseId = modSystem.GetGameId(acMessage.ProjectileBaseID);
     launchData.pProjectileBase = TESForm::GetById(cProjectileBaseId);
@@ -139,18 +180,28 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
         return;
     }
 
-    const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
-    launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));
+    if (acMessage.WeaponID && acMessage.WeaponID.ModId != 0xFFFFFFFF)
+    {
+        const uint32_t cFromWeaponId = modSystem.GetGameId(acMessage.WeaponID);
+        launchData.pFromWeapon = Cast<TESObjectWEAP>(TESForm::GetById(cFromWeaponId));
+    }
 
-    const uint32_t cFromAmmoId = modSystem.GetGameId(acMessage.AmmoID);
-    launchData.pFromAmmo = Cast<TESAmmo>(TESForm::GetById(cFromAmmoId));
+    if (acMessage.AmmoID && acMessage.AmmoID.ModId != 0xFFFFFFFF)
+    {
+        const uint32_t cFromAmmoId = modSystem.GetGameId(acMessage.AmmoID);
+        launchData.pFromAmmo = Cast<TESAmmo>(TESForm::GetById(cFromAmmoId));
+    }
 
     launchData.fZAngle = acMessage.ZAngle;
     launchData.fXAngle = acMessage.XAngle;
     launchData.fYAngle = acMessage.YAngle;
 
-    const uint32_t cSpellId = modSystem.GetGameId(acMessage.SpellID);
-    launchData.pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
+    // Never resolve runtime 0xFFxxxxxx custom player enchantments on remote clients (their magic effects sync via MagicService).
+    if (acMessage.SpellID && acMessage.SpellID.ModId != 0xFFFFFFFF)
+    {
+        const uint32_t cSpellId = modSystem.GetGameId(acMessage.SpellID);
+        launchData.pSpell = Cast<MagicItem>(TESForm::GetById(cSpellId));
+    }
 
     launchData.eCastingSource = (MagicSystem::CastingSource)acMessage.CastingSource;
 
@@ -177,63 +228,84 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
 
 void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept
 {
-#if 0
     if (!m_transport.IsConnected())
         return;
 
-    // The targeting system does not apply to players, and only local actors should be considered.
     auto* pHittee = Cast<Actor>(TESForm::GetById(acEvent.HitteeId));
-    if (!pHittee || pHittee->GetExtension()->IsPlayer() || pHittee->GetExtension()->IsRemote())
+    if (!pHittee || !pHittee->GetExtension())
         return;
 
-    // NPCs should not affect targeting.
     auto* pHitter = Cast<Actor>(TESForm::GetById(acEvent.HitterId));
-    if (!pHitter || !pHitter->GetExtension()->IsPlayer())
-        return;
-
-    // If the target is not in combat, don't start combat, let the game take care of that first.
-    if (!pHittee->IsInCombat())
+    if (!pHitter || !pHitter->GetExtension())
         return;
 
     auto view = m_world.view<FormIdComponent, LocalComponent>(entt::exclude<ObjectComponent>);
-
-    const auto hitteeIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+    const auto hitteeIt = std::find_if(
+        std::begin(view),
+        std::end(view),
+        [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
 
     if (hitteeIt == std::end(view))
+        return;
+
+    const auto& downedService = m_world.GetDownedStateService();
+
+    Actor* pCurrentTarget = pHittee->GetCombatTarget();
+    if (!pCurrentTarget && pHittee->pCombatController && pHittee->pCombatController->targetHandle != 0)
+        pCurrentTarget = Cast<Actor>(TESObjectREFR::GetByHandle(pHittee->pCombatController->targetHandle));
+
+    if (pCurrentTarget == pHitter && pHittee->IsInCombat())
+        return;
+
+    auto calcDist = [](const Actor* a, const Actor* b) noexcept -> float
     {
-        spdlog::warn(__FUNCTION__ ": hittee form id component not found, form id: {:X}", acEvent.HitterId);
-        return;
-    }
+        if (!a || !b)
+            return 0.0f;
+        const float dx = a->position.x - b->position.x;
+        const float dy = a->position.y - b->position.y;
+        const float dz = a->position.z - b->position.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    };
 
-    if (m_world.any_of<CombatComponent>(*hitteeIt))
+    RfabCompat::CoopAggroDecisionInput decision{};
+    decision.IsHitteeValidNpc = !pHittee->GetExtension()->IsPlayer();
+    decision.IsHitteeRemote = pHittee->GetExtension()->IsRemote();
+    decision.IsHitteeDead = pHittee->IsDead();
+    decision.IsHitterPlayer = pHitter->GetExtension()->IsPlayer();
+    decision.IsHitterDowned = pHitter->IsDead() || downedService.IsActorDowned(pHitter->formID);
+    decision.HasActiveTargetLock = m_world.any_of<CombatComponent>(*hitteeIt);
+    decision.IsHitteeInCombat = pHittee->IsInCombat();
+    decision.HasValidCurrentTarget = (pCurrentTarget != nullptr);
+    decision.IsCurrentTargetDeadOrDowned =
+        !pCurrentTarget || pCurrentTarget->IsDead() || downedService.IsActorDowned(pCurrentTarget->formID);
+    decision.DistToCurrentTarget = calcDist(pHittee, pCurrentTarget);
+    decision.DistToAttacker = calcDist(pHittee, pHitter);
+
+    if (!RfabCompat::ShouldSwitchCoopCombatTarget(decision))
         return;
 
-    m_world.emplace_or_replace<CombatComponent>(*hitteeIt, acEvent.HitterId);
+    auto& combatComp = m_world.emplace_or_replace<CombatComponent>(*hitteeIt, acEvent.HitterId);
+    combatComp.Timer = 4.0f;
 
     pHittee->SetCombatTargetEx(pHitter);
-#endif
+    if (!pHittee->IsInCombat())
+        pHittee->StartCombat(pHitter);
 }
 
 void CombatService::RunTargetUpdates(const float acDelta) const noexcept
 {
-#if 0
-    static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenUpdates = 200ms;
-
-    const auto now = std::chrono::steady_clock::now();
-    if (now - lastSendTimePoint < cDelayBetweenUpdates)
+    if (!m_transport.IsConnected() || acDelta <= 0.0f)
         return;
 
-    lastSendTimePoint = now;
-
     const auto view = m_world.view<FormIdComponent, CombatComponent>();
+    const auto& downedService = m_world.GetDownedStateService();
 
     Vector<entt::entity> toRemove{};
 
     for (const auto entity : view)
     {
         auto& combatComponent = view.get<CombatComponent>(entity);
-        combatComponent.Timer = combatComponent.Timer - acDelta;
+        combatComponent.Timer -= acDelta;
 
         if (combatComponent.Timer <= 0.f)
         {
@@ -242,18 +314,16 @@ void CombatService::RunTargetUpdates(const float acDelta) const noexcept
         }
 
         auto* pTarget = Cast<Actor>(TESForm::GetById(combatComponent.TargetFormId));
-        if (!pTarget)
+        if (!pTarget || pTarget->IsDead() || downedService.IsActorDowned(combatComponent.TargetFormId))
         {
-            spdlog::warn(__FUNCTION__ ": combat target not found, form id {:X}", combatComponent.TargetFormId);
             toRemove.push_back(entity);
             continue;
         }
 
         const auto& formIdComponent = view.get<FormIdComponent>(entity);
         auto* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-        if (!pActor)
+        if (!pActor || pActor->IsDead() || !pActor->IsInCombat())
         {
-            spdlog::error(__FUNCTION__ ": actor not found, form id {:X}", formIdComponent.Id);
             toRemove.push_back(entity);
             continue;
         }
@@ -261,5 +331,4 @@ void CombatService::RunTargetUpdates(const float acDelta) const noexcept
 
     for (const auto entity : toRemove)
         m_world.remove<CombatComponent>(entity);
-#endif
 }

@@ -12,10 +12,12 @@ enum class FormType : uint8_t
     Container = 28,
     Door = 29,
     Ingredient = 30,
+    Misc = 32,
     Weapon = 41,
     Ammo = 42,
     Npc = 43,
     LeveledCharacter = 44,
+    Key = 45,
     Alchemy = 46,
     LeveledItem = 53,
     Character = 62,
@@ -92,7 +94,7 @@ struct TESForm : BaseFormComponent
     virtual void CopyFrom(TESForm* apForm);
     virtual void sub_30();
     virtual void sub_31();
-    virtual const char* GetFormEditorID();
+    virtual const char* GetFormEditorID() const noexcept;
     virtual void sub_33();
     virtual void sub_34();
     virtual void sub_35();

@@ -38,6 +38,9 @@
 #include <Forms/TESWorldSpace.h>
 #include <Forms/TESObjectCELL.h>
 #include <Games/ActorExtension.h>
+#include <Skyrim/Interface/UI.h>
+#include <Services/DownedStateService.h>
+#include <common/RfabModpackCompat.h>
 
 using TiltedPhoques::OverlayRenderHandler;
 using TiltedPhoques::OverlayRenderHandlerD3D11;
@@ -93,18 +96,22 @@ String GetCellName(const GameId& aWorldSpaceId, const GameId& aCellId) noexcept
 
 float CalculateHealthPercentage(Actor* apActor) noexcept
 {
+    if (!apActor)
+        return 0.f;
+
     const float maxHealth = apActor->GetActorPermanentValue(ActorValueInfo::kHealth);
     const float tempModHealth = apActor->healthModifiers.temporaryModifier;
+    const float effectiveMaxHealth = maxHealth + tempModHealth;
 
-    if (maxHealth == 0.f)
+    if (!std::isfinite(effectiveMaxHealth) || effectiveMaxHealth <= 0.001f)
         return 0.f;
+
     const float health = apActor->GetActorValue(ActorValueInfo::kHealth);
+    if (!std::isfinite(health))
+        return 0.f;
 
-    float percentage = health / (maxHealth + tempModHealth) * 100.f;
-    if (percentage < 0.f)
-        percentage = 0.f;
-
-    return percentage;
+    const float percentage = (health / effectiveMaxHealth) * 100.f;
+    return std::clamp(percentage, 0.f, 100.f);
 }
 
 OverlayService::OverlayService(World& aWorld, TransportService& transport, entt::dispatcher& aDispatcher)
@@ -406,11 +413,56 @@ void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessag
 
 void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
 {
-    auto& modSystem = m_world.GetModSystem();
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
 
-    const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
-    TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
-    if (!pCell)
+    const bool isDowned = m_world.GetDownedStateService().IsLocalPlayerDowned();
+    if (isDowned)
+    {
+        SendSystemMessage("Нельзя телепортироваться в состоянии ранения на колене.");
+        return;
+    }
+
+    bool isLoading = pPlayer->IsStillLoading();
+    if (auto* pUi = UI::Get())
+    {
+        isLoading = isLoading ||
+                    pUi->GetMenuOpen(BSFixedString("Loading Menu")) ||
+                    pUi->GetMenuOpen(BSFixedString("Main Menu"));
+    }
+
+    const bool hasCellId = static_cast<bool>(acMessage.CellId);
+    const bool isTempCellId = acMessage.CellId.ModId == 0xFFFFFFFF;
+    const bool hasWorldSpaceId = static_cast<bool>(acMessage.WorldSpaceId);
+
+    if (!RfabCompat::CanResolveTeleportDestination(
+            hasCellId,
+            isTempCellId,
+            hasWorldSpaceId,
+            acMessage.Position.x,
+            acMessage.Position.y,
+            acMessage.Position.z,
+            isDowned,
+            isLoading))
+    {
+        spdlog::warn("OverlayService::OnNotifyTeleport rejected invalid or unsafe teleport destination.");
+        SendSystemMessage("Teleporting to player failed.");
+        return;
+    }
+
+    auto& modSystem = m_world.GetModSystem();
+    TESObjectCELL* pCell = nullptr;
+
+    // Never resolve unnamed 0xFFxxxxxx wilderness cells via TESForm::GetById, because runtime 0xFFxxxxxx IDs
+    // are client-local and can collide with a completely different loaded exterior cell on this client.
+    if (hasCellId && !isTempCellId)
+    {
+        const uint32_t cellId = modSystem.GetGameId(acMessage.CellId);
+        pCell = Cast<TESObjectCELL>(TESForm::GetById(cellId));
+    }
+
+    if (!pCell && hasWorldSpaceId)
     {
         const uint32_t worldSpaceId = modSystem.GetGameId(acMessage.WorldSpaceId);
         TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(worldSpaceId));
@@ -419,16 +471,16 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
             GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acMessage.Position);
             pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
         }
-
-        if (!pCell)
-        {
-            spdlog::error("Failed to fetch cell to teleport to.");
-            m_world.GetOverlayService().SendSystemMessage("Teleporting to player failed.");
-            return;
-        }
     }
 
-    PlayerCharacter::Get()->MoveTo(pCell, acMessage.Position);
+    if (!pCell)
+    {
+        spdlog::error("Failed to fetch cell to teleport to.");
+        SendSystemMessage("Teleporting to player failed.");
+        return;
+    }
+
+    pPlayer->MoveTo(pCell, acMessage.Position);
 }
 
 void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
@@ -445,6 +497,16 @@ void OverlayService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcep
 {
     if (acEvent.IsLeader)
         m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyCreated");
+
+    if (m_transport.IsConnected())
+    {
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        {
+            RequestPlayerHealthUpdate request{};
+            request.Percentage = CalculateHealthPercentage(pPlayer);
+            m_transport.Send(request);
+        }
+    }
 }
 
 void OverlayService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept

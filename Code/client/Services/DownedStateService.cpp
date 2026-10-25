@@ -104,6 +104,22 @@ bool DownedStateService::IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept
     return it != m_remoteDownedByPlayerId.end() && it->second;
 }
 
+float DownedStateService::GetReviveChannelProgress() const noexcept
+{
+    if (!m_isChannelingRevive || m_channelDurationSec <= 0.05)
+        return 0.0f;
+    return static_cast<float>(std::clamp(m_channelElapsedSec / m_channelDurationSec, 0.0, 1.0));
+}
+
+bool DownedStateService::IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept
+{
+    if (aPlayerId == 0)
+        return false;
+    if (m_isChannelingRevive && m_channelTargetPlayerId == aPlayerId)
+        return true;
+    return m_playersBeingRevived.contains(aPlayerId);
+}
+
 bool DownedStateService::InterceptPotentialFatalPlayerDamage(
     Actor* apPlayer,
     float aCurrentHealth,
@@ -436,6 +452,7 @@ void DownedStateService::ResetAllStates() noexcept
     m_encounterHostileFormIds.clear();
     m_liveBossesSeenInCombat.clear();
     m_remoteDownedByPlayerId.clear();
+    m_playersBeingRevived.clear();
 
     auto remotePlayerView = m_world.view<FormIdComponent, PlayerComponent>();
     for (auto entity : remotePlayerView)
@@ -703,7 +720,8 @@ void DownedStateService::SendCombatEncounterReport() noexcept
         if (auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
             continue;
 
-        const bool isBossTier = pNpc->IsDragon() ||
+        const bool isBossTier = m_world.GetRfabAdapterService().IsBossActor(pNpc) ||
+            pNpc->IsDragon() ||
             (pNpc->GetActorPermanentValue(ActorValueInfo::kHealth) >= kRfabBossMaxHealthThreshold);
 
         if (pNpc->IsDead())
@@ -842,7 +860,10 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
 void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState& acMessage) noexcept
 {
     m_remoteDownedByPlayerId[acMessage.PlayerId] = acMessage.IsDowned;
+    if (!acMessage.IsDowned)
+        m_playersBeingRevived.erase(acMessage.PlayerId);
 
+    Actor* pDownedRemoteActor = nullptr;
     auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
     for (auto entity : playerView)
     {
@@ -850,12 +871,26 @@ void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState
             continue;
 
         if (Actor* pRemoteActor = Cast<Actor>(TESForm::GetById(playerView.get<FormIdComponent>(entity).Id)))
+        {
+            pDownedRemoteActor = pRemoteActor;
             ApplyRemoteActorDownedPosture(pRemoteActor, acMessage.IsDowned);
+        }
         break;
     }
 
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+
     if (acMessage.IsDowned)
+    {
+        if (pDownedRemoteActor)
+            RetargetHostilesAwayFromDownedActor(pDownedRemoteActor);
+
+        // Immediately claim AI ownership of active bosses/combatants in the room if the downed peer was their owner,
+        // so boss combat packages, phase transitions, and animations never stall while a standing teammate is fighting!
+        m_world.GetCharacterService().ClaimCombatActorsFromDownedPeer(acMessage.PlayerId);
+
         Utils::ShowHudMessage(String("Союзник тяжело ранен! Удерживайте [E] рядом, чтобы поднять"));
+    }
 }
 
 void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage) noexcept
@@ -866,11 +901,15 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
     switch (acMessage.Status)
     {
     case NotifyReviveState::ReviveStatus::ChannelStarted:
+        if (acMessage.TargetPlayerId != 0)
+            m_playersBeingRevived.insert(acMessage.TargetPlayerId);
         if (m_isLocalDowned && targetsLocalPlayer)
             Utils::ShowHudMessage(String("Союзник поднимает вас..."));
         break;
 
     case NotifyReviveState::ReviveStatus::ChannelCancelled:
+        if (acMessage.TargetPlayerId != 0)
+            m_playersBeingRevived.erase(acMessage.TargetPlayerId);
         if (m_isChannelingRevive && m_channelTargetPlayerId == acMessage.TargetPlayerId)
         {
             m_isChannelingRevive = false;
@@ -880,6 +919,7 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
 
     case NotifyReviveState::ReviveStatus::RevivedByAlly:
         m_remoteDownedByPlayerId[acMessage.TargetPlayerId] = false;
+        m_playersBeingRevived.erase(acMessage.TargetPlayerId);
         {
             auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
             for (auto entity : playerView)
@@ -907,6 +947,7 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
 
     case NotifyReviveState::ReviveStatus::RevivedPostCombat:
         m_remoteDownedByPlayerId[acMessage.TargetPlayerId] = false;
+        m_playersBeingRevived.erase(acMessage.TargetPlayerId);
         {
             auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
             for (auto entity : playerView)

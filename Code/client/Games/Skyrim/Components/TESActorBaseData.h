@@ -7,9 +7,11 @@ struct TESFaction;
 
 struct TESActorBaseData : BaseFormComponent
 {
-    enum BaseFlags
+    enum BaseFlags : uint32_t
     {
-        IS_ESSENTIAL = 1 << 1,
+        IS_ESSENTIAL = 1u << 1,
+        IS_GHOST = 1u << 29,
+        IS_INVULNERABLE = 1u << 31,
     };
 
     uint32_t flags;
@@ -34,7 +36,9 @@ struct TESActorBaseData : BaseFormComponent
         int8_t rank;
     };
 
-    bool IsEssential() const noexcept { return flags & BaseFlags::IS_ESSENTIAL; }
+    bool IsEssential() const noexcept { return (flags & BaseFlags::IS_ESSENTIAL) != 0; }
+    bool IsGhostBase() const noexcept { return (flags & BaseFlags::IS_GHOST) != 0; }
+    bool IsInvulnerableBase() const noexcept { return (flags & BaseFlags::IS_INVULNERABLE) != 0; }
     void SetEssential(bool aSet) noexcept
     {
         if (aSet)

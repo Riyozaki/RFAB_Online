@@ -52,10 +52,16 @@ void PlayerService::HandleGridCellShift(const PacketEvent<ShiftGridCellRequest>&
 
     auto& message = acMessage.Packet;
 
-    const GameId oldCell = pPlayer->GetCellComponent().Cell;
+    const CellIdComponent oldCellComponent = pPlayer->GetCellComponent();
+    const GameId oldCell = oldCellComponent.Cell;
 
     CellIdComponent cell = CellIdComponent{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
     pPlayer->SetCellComponent(cell);
+    if (pPlayer->GetCharacter())
+    {
+        if (auto* pCharCell = m_world.try_get<CellIdComponent>(*pPlayer->GetCharacter()))
+            *pCharCell = cell;
+    }
 
     m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
 
@@ -64,13 +70,21 @@ void PlayerService::HandleGridCellShift(const PacketEvent<ShiftGridCellRequest>&
     {
         const auto& ownedComponent = characterView.get<OwnerComponent>(character);
         const auto& characterCellComponent = characterView.get<CellIdComponent>(character);
+        const auto& characterComponent = characterView.get<CharacterComponent>(character);
 
         if (ownedComponent.GetOwner() == pPlayer)
             continue;
 
-        const auto cellIt = std::find_if(std::begin(message.Cells), std::end(message.Cells), [Cells = message.Cells, CharacterCell = characterCellComponent.Cell](auto playerCell) { return playerCell == CharacterCell; });
+        const auto cellIt = std::find_if(std::begin(message.Cells), std::end(message.Cells), [CharacterCell = characterCellComponent.Cell](auto playerCell) { return playerCell == CharacterCell; });
 
-        if (cellIt == std::end(message.Cells))
+        const bool matchedEnteringCell = (cellIt != std::end(message.Cells));
+        const bool newlyEnteredWorldRange =
+            !matchedEnteringCell &&
+            cell.WorldSpaceId != GameId{} &&
+            characterCellComponent.IsInRange(cell, characterComponent.IsDragon()) &&
+            (!oldCellComponent || !characterCellComponent.IsInRange(oldCellComponent, characterComponent.IsDragon()));
+
+        if (!matchedEnteringCell && !newlyEnteredWorldRange)
         {
             continue;
         }
@@ -87,21 +101,23 @@ void PlayerService::HandleExteriorCellEnter(const PacketEvent<EnterExteriorCellR
     auto& message = acMessage.Packet;
     auto* pPlayer = acMessage.pPlayer;
 
+    const bool hadCellComponent = static_cast<bool>(pPlayer->GetCellComponent());
+    auto cell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
+    pPlayer->SetCellComponent(cell);
+
     if (pPlayer->GetCharacter())
     {
         auto entity = *pPlayer->GetCharacter();
+        if (auto* pCharCell = m_world.try_get<CellIdComponent>(entity))
+            *pCharCell = cell;
 
-        auto cell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
-
-        if (pPlayer->GetCellComponent())
+        if (hadCellComponent)
         {
             m_world.GetDispatcher().trigger(CharacterExteriorCellChangeEvent{pPlayer, entity, message.WorldSpaceId, message.CurrentCoords});
         }
-
-        pPlayer->SetCellComponent(cell);
-
-        SendPlayerCellChanged(pPlayer);
     }
+
+    SendPlayerCellChanged(pPlayer);
 }
 
 void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellRequest>& acMessage) const noexcept
@@ -123,6 +139,7 @@ void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellR
 
         if (auto pCellIdComponent = m_world.try_get<CellIdComponent>(entity); pCellIdComponent)
         {
+            *pCellIdComponent = cell;
             m_world.GetDispatcher().trigger(CharacterInteriorCellChangeEvent{pPlayer, entity, message.CellId});
         }
     }

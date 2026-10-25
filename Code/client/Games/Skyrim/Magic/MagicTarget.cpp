@@ -20,6 +20,59 @@
 #include <Effects/ActiveEffect.h>
 #include <Forms/EffectSetting.h>
 #include <Forms/SpellItem.h>
+#include <Magic/ActorMagicCaster.h>
+#include <Services/PartyService.h>
+
+namespace
+{
+// Temporarily marks allied RemotePlayer clones in the party with ActorBoolBits::kPlayerTeammate (1 << 26)
+// during MagicCaster::FindTargets and MagicTarget::AddTarget when the local player casts a friendly support/buff/aura spell.
+// This allows Skyrim/Requiem/RFAB party auras, Leadership perks, Lionheart Cloak, Priesthood Auras, Warhorns, and
+// Totem of Brotherhood (whose Creation Kit TESConditions check IsPlayerTeammate == 1) to naturally target co-op teammates.
+struct ScopedCoopPartyTeammateFlags
+{
+    explicit ScopedCoopPartyTeammateFlags(bool aEnable) noexcept
+    {
+        if (!aEnable)
+            return;
+
+        auto& world = World::Get();
+        if (!world.GetPartyService().IsInParty())
+            return;
+
+        auto playerView = world.view<FormIdComponent, PlayerComponent>();
+        for (auto entity : playerView)
+        {
+            const uint32_t formId = playerView.get<FormIdComponent>(entity).Id;
+            if (formId == 0 || formId == 0x14)
+                continue;
+
+            const uint32_t peerPlayerId = playerView.get<PlayerComponent>(entity).Id;
+            if (!world.GetPartyService().IsPlayerInParty(peerPlayerId))
+                continue;
+
+            Actor* pPeerActor = Cast<Actor>(TESForm::GetById(formId));
+            if (!pPeerActor || (pPeerActor->flags1 & Actor::ActorBoolBits::kPlayerTeammate) != 0)
+                continue;
+
+            pPeerActor->flags1 |= Actor::ActorBoolBits::kPlayerTeammate;
+            m_modifiedActors.push_back(pPeerActor);
+        }
+    }
+
+    ~ScopedCoopPartyTeammateFlags() noexcept
+    {
+        for (Actor* pActor : m_modifiedActors)
+        {
+            if (pActor)
+                pActor->flags1 &= ~Actor::ActorBoolBits::kPlayerTeammate;
+        }
+    }
+
+private:
+    TiltedPhoques::Vector<Actor*> m_modifiedActors{};
+};
+} // namespace
 
 TP_THIS_FUNCTION(TAddTarget, bool, MagicTarget, MagicTarget::AddTargetData& arData);
 TP_THIS_FUNCTION(TCheckAddEffectTargetData, bool, MagicTarget::AddTargetData, void* arArgs, float afResistance);
@@ -138,7 +191,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
     if (arData.pEffectItem->IsVampireLordEffect())
         pTargetActorEx->GraphDescriptorHash = AnimationGraphDescriptor_VampireLordBehavior::m_key;
 
-    if (ScopedSpellCastOverride::IsOverriden())
+    if (ScopedSpellCastOverride::IsOverriden() || s_autoSucceedEffectCheck)
         return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
 
     AddTargetEvent addTargetEvent{};
@@ -179,16 +232,19 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
         const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
         const bool isLocalCaster =
-            (pCasterExtension && pCasterExtension->IsLocalPlayer()) || (pCasterCmd && pCasterCmd->formID == 0x14);
+            (pCasterExtension && pCasterExtension->IsLocalPlayer()) ||
+            (pCasterCmd && pCasterCmd->formID == 0x14) ||
+            (pCasterExtension && !pCasterExtension->IsRemote() && arData.pCaster->IsPlayerSummon());
         if (!isLocalCaster)
             return false;
 
-        if (arData.pSpell->IsHealingSpell())
+        if (arData.pSpell && arData.pSpell->IsHealingSpell())
         {
             addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
             addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
         }
 
+        ScopedCoopPartyTeammateFlags teammateGuard(isFriendlySupport);
         bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
         // Concentration spells (e.g. Healing Hands / Sparks) are channeled continuously via SpellCastRequest/InterruptCastRequest;
         // Fire-and-Forget heals/buffs/spells sync deterministically via AddTargetEvent.
@@ -206,7 +262,8 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
             const auto* pCasterCmdExt = pCasterCmd ? pCasterCmd->GetExtension() : nullptr;
             const bool isFromRemotePlayerOrSummon =
                 (pCasterExtension && pCasterExtension->IsRemotePlayer()) ||
-                (pCasterCmdExt && pCasterCmdExt->IsRemotePlayer());
+                (pCasterCmdExt && pCasterCmdExt->IsRemotePlayer()) ||
+                (pCasterExtension && pCasterExtension->IsRemote() && arData.pCaster->IsPlayerSummon());
 
             if (isFromRemotePlayerOrSummon)
             {
@@ -221,6 +278,9 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
 
                 if (!World::Get().GetServerSettings().PvpEnabled && !coopPolicy.AllowPartySparring)
                     return false;
+
+                if (!isConcentration)
+                    return false; // Non-concentration PvP/sparring spells & cloak ticks are synced authoritatively via NotifyAddTarget
             }
         }
 
@@ -230,12 +290,24 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         return result;
     }
 
+    // Block external hostile/detrimental magic from bypassing a synchronized boss invulnerability/ethereal phase (SetGhost),
+    // while allowing the boss's own self-cast phase spells/auras (arData.pCaster == pTargetActor).
+    if (!isFriendlySupport && pTargetActor->IsGhost() && arData.pCaster != pTargetActor)
+        return false;
+
     if (arData.pCaster)
     {
         ActorExtension* pCasterExtension = arData.pCaster->GetExtension();
         const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
+        const auto* pCasterCmdExt = pCasterCmd ? pCasterCmd->GetExtension() : nullptr;
         const bool isLocalPlayerOrSummon =
-            (pCasterExtension && pCasterExtension->IsLocalPlayer()) || (pCasterCmd && pCasterCmd->formID == 0x14);
+            (pCasterExtension && pCasterExtension->IsLocalPlayer()) ||
+            (pCasterCmd && pCasterCmd->formID == 0x14) ||
+            (pCasterExtension && !pCasterExtension->IsRemote() && arData.pCaster->IsPlayerSummon());
+        const bool isRemotePlayerOrSummon =
+            (pCasterExtension && pCasterExtension->IsRemotePlayer()) ||
+            (pCasterCmdExt && pCasterCmdExt->IsRemotePlayer()) ||
+            (pCasterExtension && pCasterExtension->IsRemote() && arData.pCaster->IsPlayerSummon());
         if (isLocalPlayerOrSummon)
         {
             if (arData.pSpell && arData.pSpell->IsHealingSpell())
@@ -249,7 +321,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 World::Get().GetRunner().Trigger(addTargetEvent);
             return result;
         }
-        else if (pCasterExtension && pCasterExtension->IsRemotePlayer())
+        else if (isRemotePlayerOrSummon)
         {
             if (isFriendlySupport)
             {
@@ -287,6 +359,15 @@ bool TP_MAKE_THISCALL(HookCheckAddEffectTargetData, MagicTarget::AddTargetData, 
 
 bool TP_MAKE_THISCALL(HookFindTargets, MagicCaster, float afEffectivenessMult, int32_t* aruiTargetCount, TESBoundObject* apSource, char abLoadCast, char abAdjust)
 {
+    bool enablePartyTeammateAuras = false;
+    if (apThis && apThis->pCurrentSpell && (apThis->pCurrentSpell->IsHealingSpell() || apThis->pCurrentSpell->IsBuffSpell()))
+    {
+        const auto* pActorCaster = static_cast<const ActorMagicCaster*>(apThis);
+        if (pActorCaster->pCasterActor && pActorCaster->pCasterActor->formID == 0x14)
+            enablePartyTeammateAuras = true;
+    }
+
+    ScopedCoopPartyTeammateFlags teammateGuard(enablePartyTeammateAuras);
     return TiltedPhoques::ThisCall(RealFindTargets, apThis, afEffectivenessMult, aruiTargetCount, apSource, abLoadCast, abAdjust);
 }
 

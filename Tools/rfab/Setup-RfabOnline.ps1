@@ -176,7 +176,7 @@ if ($HasValidSe -and $HasValidSt) {
 } elseif ($HasValidSt) {
     Copy-Item -LiteralPath $SrcStExe -Destination $SrcSeExe -Force
 } else {
-    throw "В папке '$SrcStrDir' не найден скомпилированный SkyrimSE.exe! Скачайте полный архив RFAB_Online_v1.1.0_Full_Installer.zip со страницы Releases."
+    throw "В папке '$SrcStrDir' не найден скомпилированный SkyrimSE.exe! Скачайте полный архив RFAB_Online_v1.2.0_Full_Installer.zip со страницы Releases."
 }
 
 $RequiredModFiles = @(
@@ -196,7 +196,7 @@ foreach ($rel in $RequiredModFiles) {
     }
     $len = (Get-Item -LiteralPath $full).Length
     if ($len -lt 200 -and ($rel.EndsWith(".exe") -or $rel.EndsWith(".dll") -or $rel.EndsWith(".esp"))) {
-        throw "Файл $full повреждён ($len байт). Скачайте полный архив RFAB_Online_v1.1.0_Full_Installer.zip со страницы Releases!"
+        throw "Файл $full повреждён ($len байт). Скачайте полный архив RFAB_Online_v1.2.0_Full_Installer.zip со страницы Releases!"
     }
 }
 Write-Ok "Дистрибутив проверен: все бинарники, плагины, CEF и UI целые."
@@ -1217,6 +1217,11 @@ if (-not [string]::IsNullOrWhiteSpace($ServerSourceDir) -and (Test-Path -Literal
         }
         if ($migratedIni -notmatch '(?mi)^\s*bEnableItemDrops\s*=') {
             $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*uDifficulty\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableItemDrops = true`r`n")
+        }
+        if ($migratedIni -match '(?mi)^\s*bEnableMiscQuestSync\s*=\s*false') {
+            $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*bEnableMiscQuestSync\s*=\s*)false(\s*)$', '${1}true${2}')
+        } elseif ($migratedIni -notmatch '(?mi)^\s*bEnableMiscQuestSync\s*=') {
+            $migratedIni = [regex]::Replace($migratedIni, '(?mi)^(\s*bEnableItemDrops\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableMiscQuestSync = true`r`n")
         }
         if ($migratedIni -ne $rawSavedIni) {
             [System.IO.File]::WriteAllText($TargetIniFile, $migratedIni, (New-Object System.Text.UTF8Encoding($false)))
