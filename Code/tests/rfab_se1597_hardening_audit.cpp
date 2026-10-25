@@ -1722,7 +1722,8 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(coordSaveCpp.find("pPlayer->parentCell != nullptr") != std::string::npos);
         REQUIRE(coordSaveCpp.find("m_autoReconnectAttemptsLeft") != std::string::npos);
         REQUIRE(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
-        REQUIRE(serverCharCpp.find("otherCell.IsInRange(cellIdComponent, false)") != std::string::npos);
+        REQUIRE(serverCharCpp.find("ReconcileAllEntitiesForObserver(acMessage.pPlayer)") != std::string::npos);
+        REQUIRE(serverCharCpp.find("m_interestRegistry.IsMarkedInRange(acMessage.pPlayer->GetId(), otherServerId)") != std::string::npos);
         REQUIRE(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
 
         // 2) SkyrimSE.exe+0x23D000 (SE_ID 17859) Teleport CTD guard: MoveActor never invokes TESWorldSpace::LoadCell
