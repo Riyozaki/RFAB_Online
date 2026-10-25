@@ -408,7 +408,8 @@ int main()
             assert(faceGenCpp.find("Memory::Free(pClonedMaterial)") == std::string::npos);
 
             const std::string charSvcCpp = readTextFile("Code/client/Services/Generic/CharacterService.cpp");
-            assert(charSvcCpp.find("m_world.remove<FormIdComponent, EarlyAnimationBufferComponent, PlayerComponent>(aEntity)") != std::string::npos);
+            assert(charSvcCpp.find("m_world.remove<PlayerComponent>(aEntity);") != std::string::npos);
+            assert(charSvcCpp.find("m_world.remove<WaitingFor3D, FormIdComponent") != std::string::npos);
             assert(charSvcCpp.find("apActor->Disable();") == std::string::npos);
 
             // Regression audit for all 6 thread-safety / UAF / re-entrancy / null-safety hardening fixes:
@@ -746,7 +747,7 @@ int main()
                 assert(magicTargetCpp.find("isFromRemotePlayerOrSummon") != std::string::npos);
 
                 // (d) Server grid shift wilderness/Dragon range check, cell update ordering, ownership claim reconciliation, and host promotion
-                assert(srvPlayerSvcCpp.find("newlyEnteredWorldRange") != std::string::npos);
+                assert(srvPlayerSvcCpp.find("ReconcileAllEntitiesForObserver(pPlayer)") != std::string::npos);
                 assert(srvCharCpp.find("reconcileNotify.NewActorData = sanitizedData;") != std::string::npos);
                 assert(srvProgCpp.find("BroadcastAllyProtectionState(false);") != std::string::npos);
 

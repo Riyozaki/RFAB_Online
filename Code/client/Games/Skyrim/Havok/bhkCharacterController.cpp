@@ -14,3 +14,17 @@ bool bhkCharacterController::UpdateStepTiming(float aMovementDeltaTime) noexcept
     const float frameDt = (dtMain > 0.0001f) ? dtMain : dtReal;
     return stepInfo.UpdateDeltaTime(frameDt, aMovementDeltaTime);
 }
+
+void bhkCharacterController::ResetTeleportPhysicsState(float aNewZ) noexcept
+{
+    UpdateStepTiming();
+    for (int i = 0; i < 4; ++i)
+    {
+        outVelocity[i] = 0.0f;
+        initialVelocity[i] = 0.0f;
+        velocityMod[i] = 0.0f;
+    }
+    if (std::isfinite(aNewZ))
+        fallStartHeight = aNewZ;
+    fallTime = 0.0f;
+}

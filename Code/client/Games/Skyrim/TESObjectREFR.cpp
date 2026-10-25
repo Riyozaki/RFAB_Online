@@ -379,11 +379,18 @@ void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) co
 
     ScopedReferencesOverride recursionGuard;
 
+    Actor* pSelfActor = Cast<Actor>(const_cast<TESObjectREFR*>(this));
+    if (pSelfActor)
+        pSelfActor->ResetTeleportPhysics(acPosition.z);
+
     TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);
 
     POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
 
     TiltedPhoques::ThisCall(s_internalMoveTo, this, GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+
+    if (pSelfActor)
+        pSelfActor->ResetTeleportPhysics(acPosition.z);
 }
 
 void TESObjectREFR::PayGold(int32_t aAmount) noexcept

@@ -2,6 +2,8 @@
 #include <Games/Skyrim/EquipManager.h>
 #include <AI/AIProcess.h>
 #include <Misc/MiddleProcess.h>
+#include <Havok/bhkCharacterController.h>
+#include <CoopOwnership.h>
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
 #include <Forms/TESNPC.h>
@@ -170,6 +172,15 @@ void Actor::ForcePosition(const NiPoint3& acPosition) noexcept
     }
 
     SetPosition(acPosition, updateController);
+}
+
+void Actor::ResetTeleportPhysics(float aNewZ) noexcept
+{
+    if (!currentProcess)
+        return;
+
+    if (auto* pController = currentProcess->GetCharController())
+        pController->ResetTeleportPhysicsState(aNewZ);
 }
 
 void Actor::QueueUpdate() noexcept
@@ -700,6 +711,29 @@ Actor* Actor::GetCommandingActor() const noexcept
     return nullptr;
 }
 
+TESObjectREFR* Actor::GetOccupiedFurniture() const noexcept
+{
+    if (currentProcess && currentProcess->middleProcess && currentProcess->middleProcess->occupiedFurniture)
+    {
+        auto handle = currentProcess->middleProcess->occupiedFurniture.handle;
+        return TESObjectREFR::GetByHandle(handle.iBits);
+    }
+
+    return nullptr;
+}
+
+bool Actor::HasValidNearbyFurniture(float aMaxDistance) const noexcept
+{
+    const TESObjectREFR* pFurniture = GetOccupiedFurniture();
+    if (!pFurniture || pFurniture->IsDisabled() || pFurniture->IsDeleted())
+        return false;
+
+    const float dx = pFurniture->position.x - position.x;
+    const float dy = pFurniture->position.y - position.y;
+    const float dz = pFurniture->position.z - position.z;
+    return (dx * dx + dy * dy + dz * dz) <= (aMaxDistance * aMaxDistance);
+}
+
 // Get owner of a summon or raised corpse
 void Actor::SetCommandingActor(BSPointerHandle<TESObjectREFR> aCommandingActor) noexcept
 {
@@ -878,13 +912,29 @@ int32_t Actor::GetGoldAmount() const noexcept
 
 void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 {
+    Inventory currentInventory = GetActorInventory();
+    if (currentInventory == acInventory)
+    {
+        spdlog::debug("Skipping redundant SetActorInventory for actor {:X} (inventory already matches)", formID);
+        return;
+    }
+
     spdlog::info("Setting inventory for actor {:X}", formID);
 
-    // The UnEquipAll() that used to be here is redundant,
-    // as RemoveAllItems() unequips every item if needed.
-    // Placing this UnEquipAll() here seems to trigger a Skyrim bug/race.
+    // Protect living NPCs wearing Requiem/RFAB Fortify-Health armor from transient <= 0 HP instant-kill
+    // during RemoveAllItems() before the replacement armor enchantments are re-equipped.
+    const bool wasAlive = !IsDead();
+    const float preHealth = wasAlive ? GetActorValue(ActorValueInfo::kHealth) : 0.0f;
+    const float preMaxHealth = wasAlive ? GetActorPermanentValue(ActorValueInfo::kHealth) : 0.0f;
+    const float preRatio = (wasAlive && preMaxHealth > 0.0f)
+        ? std::clamp(preHealth / preMaxHealth, 0.05f, 1.0f)
+        : 1.0f;
 
-    Inventory currentInventory = GetActorInventory();
+    if (wasAlive && preHealth > 0.0f)
+    {
+        ScopedActorValueOverride avOverride;
+        ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, preHealth + 4096.0f);
+    }
 
     if (!this->GetExtension()->IsPlayer() && currentInventory.ContainsQuestItems())
         SetInventoryRetainingQuestItems(currentInventory, acInventory);
@@ -892,6 +942,16 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
         SetInventory(acInventory);
 
     SetMagicEquipment(acInventory.CurrentMagicEquipment);
+
+    if (wasAlive && preHealth > 0.0f)
+    {
+        ScopedActorValueOverride avOverride;
+        const float postMaxHealth = GetActorPermanentValue(ActorValueInfo::kHealth);
+        const float restoredHealth = (postMaxHealth > 0.0f)
+            ? std::max(1.0f, postMaxHealth * preRatio)
+            : std::max(1.0f, preHealth);
+        ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, restoredHealth);
+    }
 }
 
 void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
@@ -932,9 +992,41 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
                aAvId == ActorValueInfo::kInfamy;
     };
 
+    const bool keepAlive = !IsDead();
+    const auto maxHpIt = acActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+    const auto curHpIt = acActorValues.ActorValuesList.find(ActorValueInfo::kHealth);
+    const bool hasHealthPair = (maxHpIt != acActorValues.ActorMaxValuesList.end() || curHpIt != acActorValues.ActorValuesList.end());
+
+    if (hasHealthPair)
+    {
+        const float currentPermMax = GetActorPermanentValue(ActorValueInfo::kHealth);
+        const float desiredPermMax = (maxHpIt != acActorValues.ActorMaxValuesList.end()) ? maxHpIt->second : currentPermMax;
+        const float desiredCurHp = (curHpIt != acActorValues.ActorValuesList.end()) ? curHpIt->second : GetActorValue(ActorValueInfo::kHealth);
+        const auto hpPlan = CoopOwnership::ComputeSafeHealthStepPlan(
+            currentPermMax,
+            desiredPermMax,
+            desiredCurHp,
+            keepAlive && desiredCurHp > 0.0f);
+
+        if (hpPlan.AdjustDamageBeforePermanent)
+        {
+            if (curHpIt != acActorValues.ActorValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, hpPlan.DamageModeTarget);
+            if (maxHpIt != acActorValues.ActorMaxValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, hpPlan.PermanentModeTarget);
+        }
+        else
+        {
+            if (maxHpIt != acActorValues.ActorMaxValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, hpPlan.PermanentModeTarget);
+            if (curHpIt != acActorValues.ActorValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, hpPlan.DamageModeTarget);
+        }
+    }
+
     for (auto& value : acActorValues.ActorMaxValuesList)
     {
-        if (isLocallyDerivedSpeedAv(value.first))
+        if (isLocallyDerivedSpeedAv(value.first) || value.first == ActorValueInfo::kHealth)
             continue;
 
         ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
@@ -942,7 +1034,7 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
 
     for (auto& value : acActorValues.ActorValuesList)
     {
-        if (isLocallyDerivedSpeedAv(value.first))
+        if (isLocallyDerivedSpeedAv(value.first) || value.first == ActorValueInfo::kHealth)
             continue;
 
         ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, value.first, value.second);

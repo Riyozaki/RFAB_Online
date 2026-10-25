@@ -198,6 +198,8 @@ struct Actor : TESObjectREFR
     TESForm* GetEquippedWeapon(uint32_t aSlotId) const noexcept;
     TESForm* GetEquippedAmmo() const noexcept;
     Actor* GetCommandingActor() const noexcept;
+    TESObjectREFR* GetOccupiedFurniture() const noexcept;
+    [[nodiscard]] bool HasValidNearbyFurniture(float aMaxDistance = 256.0f) const noexcept;
     // in reality this is a BGSLocation
     TESForm* GetCurrentLocation();
     float GetActorValue(uint32_t aId) const noexcept;
@@ -238,6 +240,7 @@ struct Actor : TESObjectREFR
     void SetFactions(const Factions& acFactions) noexcept;
     void SetFactionRank(const TESFaction* apFaction, int8_t aRank) noexcept;
     void ForcePosition(const NiPoint3& acPosition) noexcept;
+    void ResetTeleportPhysics(float aNewZ) noexcept;
     void SetWeaponDrawnEx(bool aDraw) noexcept;
     void SetPackage(TESPackage* apPackage) noexcept;
     void SetActorInventory(const Inventory& aInventory) noexcept;

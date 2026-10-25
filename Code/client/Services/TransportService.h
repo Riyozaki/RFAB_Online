@@ -26,7 +26,7 @@ struct TransportService : Client
 
     TP_NOCOPYMOVE(TransportService);
 
-    bool Send(const ClientMessage& acMessage) const noexcept;
+    bool Send(const ClientMessage& acMessage, TiltedPhoques::EPacketFlags aPacketFlags = TiltedPhoques::kReliable) const noexcept;
 
     void OnConsume(const void* apData, uint32_t aSize) override;
     void OnConnected() override;
@@ -62,6 +62,9 @@ struct TransportService : Client
     }
     const uint32_t& GetLocalPlayerId() const noexcept { return m_localPlayerId; }
 
+    [[nodiscard]] double GetMessageReceiveTime() const noexcept;
+    [[nodiscard]] double GetLastPollTime() const noexcept { return m_lastPollTime; }
+
 protected:
     // Event handlers
     void HandleUpdate(const UpdateEvent& acEvent) noexcept;
@@ -80,6 +83,7 @@ private:
     std::string m_lastServerEndpoint{};
     std::string m_lastServerPassword{};
     uint32_t m_localPlayerId;
+    double m_lastPollTime{};
 
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_sendServerMessageConnection;

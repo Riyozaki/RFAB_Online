@@ -4,6 +4,7 @@
 #error Include Components.h instead
 #endif
 
+#include <PlaybackClock.h>
 #include <Structs/AnimationVariables.h>
 
 struct InterpolationComponent
@@ -22,5 +23,7 @@ struct InterpolationComponent
     };
 
     List<TimePoint> TimePoints;
-    glm::vec3 Position;
+    glm::vec3 Position{};
+    PlaybackClock Clock{};
+    float LastHorizontalSpeed{0.0f};
 };

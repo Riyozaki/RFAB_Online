@@ -14,12 +14,19 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     auto& movements = aInterpolationComponent.TimePoints;
 
     if (movements.size() < 2)
+    {
+        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
         return;
+    }
+
+    const double renderTick = aInterpolationComponent.Clock.IsRunning()
+        ? aInterpolationComponent.Clock.GetRenderTick()
+        : static_cast<double>(aTick);
 
     while (movements.size() > 2)
     {
         const auto second = *(++movements.begin());
-        if (aTick > second.Tick)
+        if (renderTick > static_cast<double>(second.Tick))
             movements.pop_front();
         else
             break;
@@ -30,10 +37,10 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
 
     // Calculate delta movement since last update
     auto delta = 0.0001f;
-    const auto tickDelta = static_cast<float>(second.Tick - first.Tick);
+    const auto tickDelta = static_cast<float>(second.Tick > first.Tick ? (second.Tick - first.Tick) : 0u);
     if (tickDelta > 0.f)
     {
-        delta = 1.f / tickDelta * static_cast<float>(aTick - first.Tick);
+        delta = static_cast<float>((renderTick - static_cast<double>(first.Tick)) / static_cast<double>(tickDelta));
     }
 
     delta = std::clamp(delta, 0.0f, 1.0f);
@@ -43,6 +50,16 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     const float stepDz = second.Position.z - first.Position.z;
     const float stepDistSq = stepDx * stepDx + stepDy * stepDy + stepDz * stepDz;
     constexpr float kTeleportSnapThresholdSq = 2048.0f * 2048.0f;
+
+    if (tickDelta > 0.f && stepDistSq <= kTeleportSnapThresholdSq)
+    {
+        const float horizDist = std::sqrt(stepDx * stepDx + stepDy * stepDy);
+        aInterpolationComponent.LastHorizontalSpeed = horizDist * (1000.0f / tickDelta);
+    }
+    else
+    {
+        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
+    }
 
     const NiPoint3 position = (stepDistSq > kTeleportSnapThresholdSq)
         ? second.Position

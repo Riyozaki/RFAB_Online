@@ -526,20 +526,43 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
         }
     }
 
-    if (message.WorldSpaceId || message.CellId)
+    auto* pPriorMovement = m_world.try_get<MovementComponent>(cEntity);
+    const bool hasPriorPos = (pPriorMovement != nullptr);
+    const glm::vec3 priorPos = hasPriorPos ? pPriorMovement->Position : glm::vec3{};
+    const bool hasValidHandoffCoords = CoopOwnership::IsValidHandoffCoordinates(
+        static_cast<bool>(message.WorldSpaceId || message.CellId),
+        static_cast<bool>(message.WorldSpaceId),
+        message.Position.x,
+        message.Position.y,
+        message.Position.z,
+        hasPriorPos,
+        priorPos.x,
+        priorPos.y,
+        priorPos.z);
+
+    if (hasValidHandoffCoords)
     {
+        bool cellChanged = false;
         if (auto* pCellIdComponent = m_world.try_get<CellIdComponent>(cEntity))
         {
+            const CellIdComponent prevCell = *pCellIdComponent;
             pCellIdComponent->WorldSpaceId = message.WorldSpaceId;
             pCellIdComponent->Cell = message.CellId;
-            pCellIdComponent->CenterCoords = GridCellCoords::CalculateGridCellCoords(message.Position);
+            if (message.WorldSpaceId)
+                pCellIdComponent->CenterCoords = GridCellCoords::CalculateGridCellCoords(message.Position);
+            else
+                pCellIdComponent->CenterCoords.Reset();
+            cellChanged = (*pCellIdComponent != prevCell);
         }
 
-        if (auto* pMovementComponent = m_world.try_get<MovementComponent>(cEntity))
+        if (pPriorMovement)
         {
-            pMovementComponent->Position = message.Position;
-            pMovementComponent->Sent = true;
+            pPriorMovement->Position = message.Position;
+            pPriorMovement->Sent = true;
         }
+
+        if (cellChanged)
+            ReconcileEntityForAllObservers(cEntity);
 
         // Dynamic temporary spawns (0xFFxxxxxx) do not carry FormIdComponent on the server.
         // Only notify peers whose active cell/grid is actually in range of the NPC's new location!
@@ -703,6 +726,7 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
     ActorData sanitizedData = acMessage.Packet.NewActorData;
     bool hasServerHealth = false;
     float serverHealth = 0.0f;
+    float serverMaxHealth = 0.0f;
     if (const auto* pAvComp = m_world.try_get<ActorValuesComponent>(cEntity))
     {
         const auto hpIt = pAvComp->CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
@@ -711,20 +735,30 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
             hasServerHealth = true;
             serverHealth = hpIt->second;
         }
+        const auto maxHpIt = pAvComp->CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
+        if (maxHpIt != pAvComp->CurrentActorValues.ActorMaxValuesList.end())
+            serverMaxHealth = maxHpIt->second;
     }
 
     auto claimedHpIt = sanitizedData.InitialActorValues.ActorValuesList.find(kHealthActorValueIndex);
+    auto claimedMaxHpIt = sanitizedData.InitialActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
     const float rawClaimedHealth = (claimedHpIt != sanitizedData.InitialActorValues.ActorValuesList.end()) ? claimedHpIt->second : serverHealth;
+    const float rawClaimedMaxHealth = (claimedMaxHpIt != sanitizedData.InitialActorValues.ActorMaxValuesList.end()) ? claimedMaxHpIt->second : serverMaxHealth;
     float claimedHealth = rawClaimedHealth;
+    float claimedMaxHealth = rawClaimedMaxHealth;
     const bool rawClaimedDead = sanitizedData.IsDead;
-    CoopOwnership::ReconcileClaimedState(
+    CoopOwnership::ReconcileClaimedStateWithMax(
         pCharComp->IsDead(),
         serverHealth,
+        serverMaxHealth,
         hasServerHealth,
         sanitizedData.IsDead,
-        claimedHealth);
+        claimedHealth,
+        claimedMaxHealth);
     if (claimedHpIt != sanitizedData.InitialActorValues.ActorValuesList.end() || hasServerHealth)
         sanitizedData.InitialActorValues.ActorValuesList[kHealthActorValueIndex] = claimedHealth;
+    if (claimedMaxHealth > 0.0f && (claimedMaxHpIt != sanitizedData.InitialActorValues.ActorMaxValuesList.end() || serverMaxHealth > 0.0f))
+        sanitizedData.InitialActorValues.ActorMaxValuesList[kHealthActorValueIndex] = claimedMaxHealth;
 
     TransferOwnership(acMessage.pPlayer, acMessage.Packet.ServerId, sanitizedData);
 
@@ -769,9 +803,11 @@ void CharacterService::OnCharacterSpawned(const CharacterSpawnedEvent& acEvent) 
 
 void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReferencesMoveRequest>& acMessage) const noexcept
 {
-    OwnerView<AnimationComponent, MovementComponent, CellIdComponent> view(m_world, acMessage.GetSender());
+    OwnerView<AnimationComponent, MovementComponent, CellIdComponent, CharacterComponent> view(m_world, acMessage.GetSender());
 
     auto& message = acMessage.Packet;
+    TiltedPhoques::Map<Player*, ServerReferencesMoveRequest> immediateRelays;
+    TiltedPhoques::Map<Player*, bool> relayHasActions;
 
     for (auto& entry : message.Updates)
     {
@@ -787,6 +823,7 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         auto& movementComponent = view.get<MovementComponent>(*itor);
         auto& cellIdComponent = view.get<CellIdComponent>(*itor);
         auto& animationComponent = view.get<AnimationComponent>(*itor);
+        const auto& characterComponent = view.get<CharacterComponent>(*itor);
 
         movementComponent.Tick = message.Tick;
 
@@ -817,6 +854,8 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         if (cellIdComponent != previousCellComp)
             ReconcileEntityForAllObservers(entity);
 
+        Vector<ActionEvent> acceptedActions;
+        acceptedActions.reserve(update.ActionEvents.size());
         for (auto& action : update.ActionEvents)
         {
             auto [canceled, reason] = GameServer::Get()->GetWorld().GetScriptService().HandleCharacterMove(entity);
@@ -824,13 +863,46 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
                 continue;
 
             animationComponent.CurrentAction = action;
-
-            animationComponent.Actions.push_back(animationComponent.CurrentAction);
+            acceptedActions.push_back(animationComponent.CurrentAction);
         }
 
-        animationComponent.ActionsReplayCache.AppendAll(update.ActionEvents);
+        animationComponent.ActionsReplayCache.AppendAll(acceptedActions);
 
-        movementComponent.Sent = false;
+        // Relay immediately with the owner's exact capture tick so PlaybackClock sees true network transit
+        // without 20ms server polling jitter or 5ms Nagle delay (keeping action-bearing packets reliable).
+        for (Player* pObserver : m_world.GetPlayerManager())
+        {
+            if (!pObserver || pObserver == acMessage.pPlayer)
+                continue;
+
+            if (!cellIdComponent.IsInRange(pObserver->GetCellComponent(), characterComponent.IsDragon()))
+                continue;
+
+            auto& relay = immediateRelays[pObserver];
+            relay.Tick = message.Tick;
+            auto& outUpdate = relay.Updates[World::ToInteger(entity)];
+            outUpdate.UpdatedMovement.CellId = cellIdComponent.Cell;
+            outUpdate.UpdatedMovement.WorldSpaceId = cellIdComponent.WorldSpaceId;
+            outUpdate.UpdatedMovement.Position = movementComponent.Position;
+            outUpdate.UpdatedMovement.Rotation.x = movementComponent.Rotation.x;
+            outUpdate.UpdatedMovement.Rotation.y = movementComponent.Rotation.z;
+            outUpdate.UpdatedMovement.Direction = movementComponent.Direction;
+            outUpdate.UpdatedMovement.Variables = movementComponent.Variables;
+            outUpdate.ActionEvents = acceptedActions;
+
+            if (!acceptedActions.empty())
+                relayHasActions[pObserver] = true;
+        }
+
+        movementComponent.Sent = true;
+    }
+
+    for (auto& [pObserver, relay] : immediateRelays)
+    {
+        if (relay.Updates.empty())
+            continue;
+        const bool hasActions = relayHasActions.contains(pObserver) && relayHasActions[pObserver];
+        pObserver->Send(relay, hasActions ? TiltedPhoques::kReliable : TiltedPhoques::kUnreliableNoNagle);
     }
 }
 

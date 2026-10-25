@@ -78,6 +78,7 @@
 #include <World.h>
 #include <Games/TES.h>
 #include <Games/Skyrim/Interface/UI.h>
+#include <CoopAnimationState.h>
 
 #include <cmath>
 
@@ -134,18 +135,13 @@ void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
         return;
 
     // Clear stuck transient ActorState bits copied mid-action while the NPC was Remote:
-    // - flags1 bits 28..31 (meleeAttackState) & bits 25..27 (knockState)
-    // - flags2 bits 10..11 (recoil) & bit 13 (staggered)
-    apActor->actorState.flags1 &= ~(0xF0000000u | 0x0E000000u);
-    apActor->actorState.flags2 &= ~(0x00000C00u | 0x00002000u);
-
-    // Normalize stuck intermediate weapon draw/sheathe transition states (1/2 -> 3 Drawn, 4/5 -> 0 Sheathed)
-    // so CombatBehaviorMelee/Ranged never waits forever for a WeapEquip_Out event from the prior owner.
-    const uint32_t weaponState = (apActor->actorState.flags2 >> 5) & 0x7u;
-    if (weaponState == 1u || weaponState == 2u)
-        apActor->actorState.flags2 = (apActor->actorState.flags2 & ~(0x7u << 5)) | (3u << 5);
-    else if (weaponState == 4u || weaponState == 5u)
-        apActor->actorState.flags2 &= ~(0x7u << 5);
+    // - flags1 bits 28..31 (meleeAttackState), bits 25..27 (knockState), & stale SitSleepState (bits 14..17)
+    //   when no valid nearby furniture is occupied or weapons are already drawn
+    // - flags2 bits 10..11 (recoil), bit 13 (staggered), & intermediate weapon draw/sheathe transition states
+    const bool forceDefaultFurnitureExit = CoopAnimationState::NormalizeLocalOwnershipActorState(
+        apActor->actorState.flags1,
+        apActor->actorState.flags2,
+        apActor->HasValidNearbyFurniture());
 
     // Repair poisoned near-zero or negative WeaponSpeedMult left over from prior modifier drift.
     for (uint32_t avId : {static_cast<uint32_t>(ActorValueInfo::kWeaponSpeedMult),
@@ -174,6 +170,12 @@ void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
     {
         const bool prevForce = g_forceAnimation;
         g_forceAnimation = true;
+
+        if (forceDefaultFurnitureExit)
+        {
+            BSFixedString defaultStateEvt("IdleForceDefaultState");
+            apActor->SendAnimationEvent(&defaultStateEvt);
+        }
 
         bool flagVal = false;
         BSFixedString isAttackingVar("IsAttacking");
@@ -974,8 +976,15 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         // heal or resurrect wounded/dead enemies!
         if (acMessage.PlayerId == 0 && !acMessage.AllActorValues.ActorValuesList.empty())
         {
-            pActor->SetActorValues(acMessage.AllActorValues);
+            if (const auto maxHealthIt = acMessage.AllActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+                maxHealthIt != acMessage.AllActorValues.ActorMaxValuesList.end())
+            {
+                m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+            }
+
+            // Equip inventory FIRST so Requiem/RFAB Fortify-Health armor enchantments settle before SetActorValues.
             pActor->SetActorInventory(acMessage.CurrentInventory);
+            pActor->SetActorValues(acMessage.AllActorValues);
 
             if (pActor->IsDead() != acMessage.IsDead)
             {
@@ -987,6 +996,10 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
             m_weaponDrawUpdates[pActor->formID] = {acMessage.IsWeaponDrawn};
             MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
+        }
+        else
+        {
+            m_weaponDrawUpdates.erase(pActor->formID);
         }
 
         m_world.emplace_or_replace<LocalComponent>(cEntity, acMessage.ServerId, acMessage.OwnershipEpoch);
@@ -1014,7 +1027,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         pActor->GetExtension()->SetRemote(true);
 
         m_world.remove<EarlyAnimationBufferComponent>(cEntity);
-        InterpolationSystem::Setup(m_world, cEntity);
+        InterpolationSystem::Setup(m_world, cEntity).Position = pActor->position;
         AnimationSystem::Setup(m_world, cEntity);
         AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(cEntity), acMessage.ActionsToReplay);
 
@@ -1028,8 +1041,9 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
         }
 
-        pActor->SetActorValues(acMessage.AllActorValues);
+        // Equip inventory FIRST so Requiem/RFAB Fortify-Health armor enchantments settle before SetActorValues.
         pActor->SetActorInventory(acMessage.CurrentInventory);
+        pActor->SetActorValues(acMessage.AllActorValues);
 
         if (pActor->IsDead() != acMessage.IsDead)
             acMessage.IsDead ? KillActorSuppressingDuplicateXp(pActor) : pActor->Respawn();
@@ -1285,18 +1299,44 @@ void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessag
     if (!pActor)
         return;
 
-    pActor->SetActorValues(acMessage.NewActorData.InitialActorValues);
+    if (const auto maxHealthIt = acMessage.NewActorData.InitialActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+        maxHealthIt != acMessage.NewActorData.InitialActorValues.ActorMaxValuesList.end())
+    {
+        m_world.GetActorValueService().SeedUnscaledMaxHealthFromRemote(pActor->formID, maxHealthIt->second);
+    }
+
+    // Equip inventory FIRST so Requiem/RFAB Fortify-Health armor enchantments never strip health AFTER SetActorValues!
     pActor->SetActorInventory(acMessage.NewActorData.InitialInventory);
+    pActor->SetActorValues(acMessage.NewActorData.InitialActorValues);
     m_weaponDrawUpdates[pActor->formID] = {acMessage.NewActorData.IsWeaponDrawn};
 
+    const bool isLocalOwner = m_world.all_of<LocalComponent>(*itor);
+    if (!isLocalOwner)
+    {
+        if (auto* pInterp = m_world.try_get<InterpolationComponent>(*itor))
+        {
+            pInterp->TimePoints.clear();
+            pInterp->Position = pActor->position;
+            pInterp->Clock.Reset();
+        }
+    }
+
     if (pActor->IsDead() != acMessage.NewActorData.IsDead)
-        acMessage.NewActorData.IsDead ? KillActorSuppressingDuplicateXp(pActor) : pActor->Respawn();
+    {
+        if (acMessage.NewActorData.IsDead)
+            KillActorSuppressingDuplicateXp(pActor);
+        else if (isLocalOwner)
+            spdlog::warn("Keeping local actor {:X} dead although server spawn data has it alive (#906)", pActor->formID);
+        else
+            pActor->Respawn();
+    }
 
     spdlog::info("Applied remote spawn data, actor form id: {:X}", pActor->formID);
 }
 
 void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest& acMessage) const noexcept
 {
+    const double cArrivalTime = m_transport.GetMessageReceiveTime();
     const CoopWorldView::ObserverState obs = BuildLocalObserverState();
     auto view = m_world.view<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>();
 
@@ -1349,6 +1389,7 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
             {
                 interpolationComponent.TimePoints.clear();
                 interpolationComponent.Position = movement.Position;
+                interpolationComponent.Clock.Reset();
             }
 
             if (!transition.CompatibleWithObserver && m_world.all_of<FormIdComponent>(*itor))
@@ -1356,6 +1397,9 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
                 DematerializeRemoteView(*itor, &model);
             }
         }
+
+        if (cArrivalTime > 0.0)
+            interpolationComponent.Clock.AddSample(cArrivalTime, acMessage.Tick);
 
         InterpolationComponent::TimePoint point;
         point.Tick = acMessage.Tick;
@@ -3047,17 +3091,23 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
 
 void CharacterService::RunLocalUpdates() const noexcept
 {
-    static std::chrono::steady_clock::time_point lastSendTimePoint;
-    constexpr auto cDelayBetweenSnapshots = 100ms;
+    static std::chrono::steady_clock::time_point s_lastFastSendTimePoint;
+    static std::chrono::steady_clock::time_point s_lastSlowSendTimePoint;
+    constexpr auto cFastSnapshotInterval = 33ms;
+    constexpr auto cSlowSnapshotInterval = 100ms;
 
     const auto now = std::chrono::steady_clock::now();
-    if (now - lastSendTimePoint < cDelayBetweenSnapshots)
+    if (now - s_lastFastSendTimePoint < cFastSnapshotInterval)
         return;
 
-    lastSendTimePoint = now;
+    s_lastFastSendTimePoint = now;
+    const bool includeSlowActors = (now - s_lastSlowSendTimePoint >= cSlowSnapshotInterval);
+    if (includeSlowActors)
+        s_lastSlowSendTimePoint = now;
 
     ClientReferencesMoveRequest message;
     message.Tick = m_transport.GetClock().GetCurrentTick();
+    bool hasAnyActions = false;
 
     auto animatedLocalView = m_world.view<LocalComponent, LocalAnimationComponent, FormIdComponent>();
 
@@ -3067,16 +3117,29 @@ void CharacterService::RunLocalUpdates() const noexcept
         auto& animationComponent = animatedLocalView.get<LocalAnimationComponent>(entity);
         auto& formIdComponent = animatedLocalView.get<FormIdComponent>(entity);
 
+        if (!includeSlowActors && animationComponent.Actions.empty() && formIdComponent.Id != 0x14)
+        {
+            Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+            const bool isFastPriority = pActor && (pActor->IsInCombat() || pActor->IsMount() || pActor->IsDragon() || pActor->IsPlayerSummon());
+            if (!isFastPriority)
+                continue;
+        }
+
+        const bool actorHadActions = !animationComponent.Actions.empty();
         AnimationSystem::Serialize(m_world, message, localComponent, animationComponent, formIdComponent);
+        if (actorHadActions)
+            hasAnyActions = true;
     }
 
-    m_transport.Send(message);
+    if (!message.Updates.empty())
+        m_transport.Send(message, hasAnyActions ? TiltedPhoques::kReliable : TiltedPhoques::kUnreliableNoNagle);
 }
 
 void CharacterService::RunRemoteUpdates() noexcept
 {
-    // Delay by 300ms to let the interpolation system accumulate interpolation points
-    const auto tick = m_transport.GetClock().GetCurrentTick() - 300;
+    const uint64_t currentClockTick = m_transport.GetClock().GetCurrentTick();
+    const uint64_t fallbackTick = currentClockTick > 300 ? (currentClockTick - 300) : 0;
+    const double lastPollTime = m_transport.GetLastPollTime();
 
     // Interpolation has to keep running even if the actor is not in view, otherwise we will never know if we need to spawn it
     auto interpolatedEntities = m_world.view<RemoteComponent, InterpolationComponent>();
@@ -3086,6 +3149,13 @@ void CharacterService::RunRemoteUpdates() noexcept
         auto* pFormIdComponent = m_world.try_get<FormIdComponent>(entity);
         auto& interpolationComponent = interpolatedEntities.get<InterpolationComponent>(entity);
 
+        if (lastPollTime > 0.0 && interpolationComponent.Clock.IsRunning())
+            interpolationComponent.Clock.Advance(lastPollTime);
+
+        const uint64_t entityTick = interpolationComponent.Clock.IsRunning()
+            ? static_cast<uint64_t>(std::max(0.0, interpolationComponent.Clock.GetRenderTick()))
+            : fallbackTick;
+
         Actor* pActor = nullptr;
         if (pFormIdComponent)
         {
@@ -3093,7 +3163,7 @@ void CharacterService::RunRemoteUpdates() noexcept
             pActor = Cast<Actor>(pForm);
         }
 
-        InterpolationSystem::Update(pActor, interpolationComponent, tick, m_world.try_get<RemoteAnimationComponent>(entity));
+        InterpolationSystem::Update(pActor, interpolationComponent, entityTick, m_world.try_get<RemoteAnimationComponent>(entity));
     }
 
     auto animatedView = m_world.view<RemoteComponent, RemoteAnimationComponent, FormIdComponent>();
@@ -3108,7 +3178,11 @@ void CharacterService::RunRemoteUpdates() noexcept
         if (!pActor)
             continue;
 
-        AnimationSystem::Update(m_world, pActor, animationComponent, tick);
+        uint64_t animTick = fallbackTick;
+        if (const auto* pInterp = m_world.try_get<InterpolationComponent>(entity); pInterp && pInterp->Clock.IsRunning())
+            animTick = static_cast<uint64_t>(std::max(0.0, pInterp->Clock.GetRenderTick()));
+
+        AnimationSystem::Update(m_world, pActor, animationComponent, animTick);
     }
 
     auto facegenView = m_world.view<FormIdComponent, FaceGenComponent>();
@@ -3141,6 +3215,7 @@ void CharacterService::RunRemoteUpdates() noexcept
         // By now, the actor has materialized in the world and is ready for further setup
 
         pActor->SetActorInventory(waitingFor3D.SpawnRequest.InventoryContent);
+        pActor->SetActorValues(waitingFor3D.SpawnRequest.InitialActorValues);
         pActor->SetFactions(waitingFor3D.SpawnRequest.FactionsContent);
 
         if (!waitingFor3D.SpawnRequest.ActionsToReplay.Actions.empty())

@@ -9,6 +9,9 @@ struct RemoteAnimationComponent
     List<ActionEvent> TimePoints;
     ActionEvent LastRanAction;
     ActionEvent LastProcessedAction;
-    uint32_t ReplayCount;
+    uint32_t ReplayCount{0};
     bool ResetAnimationGraphForReplay{false};
+    bool PendingFurnitureGraphExit{false};
+    bool InRemoteFurnitureIdle{false};
+    uint64_t LastSitSleepNormalizeTick{0};
 };
