@@ -1,5 +1,5 @@
 #include <Messages/RequestActorValueChanges.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <algorithm>
 
 void RequestActorValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept

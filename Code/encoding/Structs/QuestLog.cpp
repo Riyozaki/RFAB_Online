@@ -3,7 +3,7 @@
 
 #include <TiltedCore/Serialization.hpp>
 #include <Structs/Mods.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <algorithm>
 
 using TiltedPhoques::Serialization;

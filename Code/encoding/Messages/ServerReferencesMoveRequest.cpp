@@ -1,6 +1,6 @@
 #include <Messages/ServerReferencesMoveRequest.h>
 #include <TiltedCore/Serialization.hpp>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <algorithm>
 
 void ServerReferencesMoveRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept

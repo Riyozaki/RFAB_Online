@@ -3,7 +3,7 @@
 #include <Components.h>
 #include <World.h>
 #include <GameServer.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 
 #include <Messages/NotifyObjectInventoryChanges.h>
 #include <Messages/RequestInventoryChanges.h>

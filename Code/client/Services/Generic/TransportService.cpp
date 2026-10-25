@@ -25,7 +25,7 @@
 
 #include <ScriptExtender.h>
 #include <Services/DiscordService.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <Utils.h>
 
 // #include <imgui_internal.h>

@@ -1,5 +1,5 @@
 #include <Messages/NotifyActorValueChanges.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <algorithm>
 
 void NotifyActorValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept

@@ -3,7 +3,7 @@
 #include <Components.h>
 #include <GameServer.h>
 #include <World.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <algorithm>
 #include <cmath>
 

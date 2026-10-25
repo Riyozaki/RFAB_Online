@@ -1,6 +1,6 @@
 #include <Structs/AnimationVariables.h>
 #include <TiltedCore/Serialization.hpp>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <iostream>
 
 bool AnimationVariables::operator==(const AnimationVariables& acRhs) const noexcept

@@ -1,6 +1,6 @@
 #include <TiltedOnlinePCH.h>
 
-#include <CoopInventoryDiff.h>
+#include <common/CoopInventoryDiff.h>
 #include <Games/References.h>
 #include <Games/Overrides.h>
 #include <Games/Skyrim/Interface/UI.h>

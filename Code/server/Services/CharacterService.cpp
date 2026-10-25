@@ -1,6 +1,6 @@
 #include <Services/CharacterService.h>
 #include <Components.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <GameServer.h>
 #include <World.h>
 

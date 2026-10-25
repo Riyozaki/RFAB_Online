@@ -1,6 +1,6 @@
 #include <Structs/Factions.h>
 #include <TiltedCore/Serialization.hpp>
-#include <CoopPacketSafety.h>
+#include <common/CoopPacketSafety.h>
 #include <algorithm>
 
 using TiltedPhoques::Serialization;

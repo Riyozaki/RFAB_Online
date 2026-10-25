@@ -3,8 +3,8 @@
 #include <TiltedCore/Buffer.hpp>
 #include <TiltedCore/Serialization.hpp>
 
-#include <CoopInventoryDiff.h>
-#include <CoopPacketSafety.h>
+#include <common/CoopInventoryDiff.h>
+#include <common/CoopPacketSafety.h>
 
 #include <Messages/AssignObjectsRequest.h>
 #include <Messages/AssignObjectsResponse.h>
