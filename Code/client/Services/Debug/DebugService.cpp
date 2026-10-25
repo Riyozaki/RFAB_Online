@@ -296,7 +296,13 @@ void DebugService::OnDraw() noexcept
         {
             if (TES* pTes = TES::Get())
             {
-                const auto activeModifiers = pTes->activeImageSpaceModifiers;
+                TiltedPhoques::Vector<NiPointer<ImageSpaceModifierInstance>> activeModifiers;
+                for (const auto& modifier : pTes->activeImageSpaceModifiers)
+                {
+                    if (modifier.object)
+                        activeModifiers.push_back(modifier);
+                }
+
                 for (const auto& modifier : activeModifiers)
                 {
                     if (modifier.object)
