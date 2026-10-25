@@ -21,7 +21,7 @@ TEST_CASE("Stage 3: Atomic RFABCKP2 checkpoint persistence & corruption detectio
     using namespace CoopCheckpoint;
 
     const std::filesystem::path tempRoot =
-        std::filesystem::temp_directory_path() / std::filesystem::u8path("rfab_stage3_Лисица_ckpt_test");
+        std::filesystem::temp_directory_path() / std::filesystem::path(u8"rfab_stage3_Лисица_ckpt_test");
     std::error_code ec;
     std::filesystem::remove_all(tempRoot, ec);
     const std::filesystem::path ckptPath = tempRoot / "Data" / "rfab_checkpoints.bin";
@@ -103,9 +103,10 @@ TEST_CASE("Stage 3: NotifyExecuteLoad serializes seamless in-session transform, 
 {
     NotifyExecuteLoad outgoing{};
     outgoing.EpochId = 17ULL;
-    outgoing.SlotName = "RFAB_MP_Epoch_0017";
-    outgoing.IsPartyWipeRollback = true;
-    outgoing.Reason = "Группа пала в бою — возврат к чекпоинту";
+    outgoing.SlotName = "RFAB_MP_S0001_Manual_1";
+    outgoing.IsPartyWipe = true;
+    outgoing.AllowPreJoinFallback = false;
+    outgoing.Message = "Группа пала в бою — возврат к чекпоинту";
     outgoing.UseInSessionRollback = true;
     outgoing.HasRestoreTransform = true;
     outgoing.TargetCellId = GameId(0x00, 0x000165A8);
@@ -133,8 +134,9 @@ TEST_CASE("Stage 3: NotifyExecuteLoad serializes seamless in-session transform, 
 
     CHECK(incoming == outgoing);
     CHECK(incoming.EpochId == 17ULL);
-    CHECK(incoming.SlotName == "RFAB_MP_Epoch_0017");
-    CHECK(incoming.IsPartyWipeRollback);
+    CHECK(incoming.SlotName == "RFAB_MP_S0001_Manual_1");
+    CHECK(incoming.IsPartyWipe);
+    CHECK_FALSE(incoming.AllowPreJoinFallback);
     CHECK(incoming.UseInSessionRollback);
     CHECK(incoming.HasRestoreTransform);
     CHECK(incoming.TargetCellId == GameId(0x00, 0x000165A8));
@@ -153,13 +155,15 @@ TEST_CASE("Stage 3: NotifyExecuteLoad serializes seamless in-session transform, 
 TEST_CASE("Stage 3: SaveSnapshotCoordinator restores persisted epoch counter monotonically", "[rfab][stage3][coordinator]")
 {
     SaveSnapshotCoordinator coordinator{};
-    coordinator.RestorePersistedState(25ULL, "RFAB_MP_Epoch_0024", 24ULL);
+    coordinator.RestorePersistedState("S7777", 24ULL, 5ULL, 1U, 2U, 24ULL, "RFAB_MP_S7777_Manual_0");
 
-    CHECK(coordinator.GetCommittedEpoch() == 24ULL);
-    CHECK(coordinator.GetLatestCommittedSlot() == "RFAB_MP_Epoch_0024");
+    CHECK(coordinator.GetSessionTag() == "S7777");
+    CHECK(coordinator.GetLastCommittedEpoch() == 24ULL);
+    CHECK(coordinator.GetLastCommittedSlot() == "RFAB_MP_S7777_Manual_0");
+    CHECK(coordinator.GetCurrentWorldEpoch() == 5ULL);
 
     const auto barrier = coordinator.BeginBarrier({1U, 2U}, false, 10'000ULL);
     REQUIRE(barrier.has_value());
     CHECK(barrier->EpochId == 25ULL);
-    CHECK(barrier->SlotName == "RFAB_MP_Epoch_0025");
+    CHECK(barrier->SlotName == "RFAB_MP_S7777_Manual_1");
 }

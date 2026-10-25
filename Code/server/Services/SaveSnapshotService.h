@@ -85,13 +85,11 @@ public:
     {
         if (!aSessionTag.empty())
             m_sessionTag = std::move(aSessionTag);
-        m_nextEpochId = aNextEpochId;
+        m_lastCommittedEpoch = aLastCommittedEpoch;
+        m_nextEpochId = aNextEpochId < m_lastCommittedEpoch ? m_lastCommittedEpoch : aNextEpochId;
         m_worldGeneration = aWorldGeneration > 0 ? aWorldGeneration : 1;
-        if (m_nextEpochId < m_lastCommittedEpoch)
-            m_nextEpochId = m_lastCommittedEpoch;
         m_manualRingCursor = aManualRingCursor;
         m_autoRingCursor = aAutoRingCursor;
-        m_lastCommittedEpoch = aLastCommittedEpoch;
         m_lastCommittedSlot = std::move(aLastCommittedSlot);
         m_pending.reset();
     }
