@@ -8,11 +8,14 @@
 #include <Messages/NotifyRemoveSpell.h>
 #include <spdlog/spdlog.h>
 #include <chrono>
+#include <unordered_set>
 
 struct World;
 struct TransportService;
 
 struct UpdateEvent;
+struct CellChangeEvent;
+struct PartyJoinedEvent;
 struct SpellCastEvent;
 struct InterruptCastEvent;
 struct AddTargetEvent;
@@ -81,6 +84,8 @@ struct MagicService
      * @brief Handles removal of a spell
      */
     void OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexcept;
+    void OnCellChangeEvent(const CellChangeEvent& acEvent) noexcept;
+    void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
 
   private:
     /**
@@ -96,12 +101,19 @@ struct MagicService
      */
     void UpdateRevealOtherPlayersEffect(bool aForceTrigger = false) noexcept;
 
+    void PollLocalPlayerActiveBuffs(double aDeltaSec) noexcept;
+    void ResyncLocalPlayerActiveBuffs() noexcept;
+
     World& m_world;
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
     bool m_revealingOtherPlayers = false;
+    double m_buffPollAccumulatorSec = 0.0;
+    std::unordered_set<uint32_t> m_activeLocalPlayerSpells{};
 
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_cellChangeConnection;
+    entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_spellCastEventConnection;
     entt::scoped_connection m_notifySpellCastConnection;
     entt::scoped_connection m_interruptCastEventConnection;

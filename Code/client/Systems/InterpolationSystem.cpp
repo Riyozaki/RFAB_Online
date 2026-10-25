@@ -38,7 +38,15 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
 
     delta = std::clamp(delta, 0.0f, 1.0f);
 
-    const NiPoint3 position{TiltedPhoques::Lerp(first.Position, second.Position, delta)};
+    const float stepDx = second.Position.x - first.Position.x;
+    const float stepDy = second.Position.y - first.Position.y;
+    const float stepDz = second.Position.z - first.Position.z;
+    const float stepDistSq = stepDx * stepDx + stepDy * stepDy + stepDz * stepDz;
+    constexpr float kTeleportSnapThresholdSq = 2048.0f * 2048.0f;
+
+    const NiPoint3 position = (stepDistSq > kTeleportSnapThresholdSq)
+        ? second.Position
+        : NiPoint3{TiltedPhoques::Lerp(first.Position, second.Position, delta)};
 
     aInterpolationComponent.Position = position;
 

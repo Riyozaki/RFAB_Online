@@ -1,6 +1,7 @@
 #include <Services/ObjectService.h>
 
 #include <common/RfabModpackCompat.h>
+#include <Services/RfabAdapterService.h>
 #include <World.h>
 #include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
@@ -82,7 +83,13 @@ bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
 
 void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
-    // TODO(cosideci): clear object components
+    auto view = m_world.view<ObjectComponent>();
+    Vector<entt::entity> toDestroy(view.begin(), view.end());
+    for (entt::entity entity : toDestroy)
+    {
+        if (m_world.valid(entity))
+            m_world.destroy(entity);
+    }
 }
 
 void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
@@ -101,21 +108,15 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
     if (!World::Get().GetServerSettings().SyncPlayerHomes && IsPlayerHome(pCell))
         return;
 
-    GameId cellId{};
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellId))
-    {
-        spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
-        return;
-    }
+    GameId cellId = acEvent.CellId;
+    if (!cellId)
+        m_world.GetModSystem().GetServerModId(pCell->formID, cellId);
 
-    GameId worldSpaceId{};
-    if (TESWorldSpace* pWorldSpace = pPlayer->GetWorldSpace())
+    GameId worldSpaceId = acEvent.WorldSpaceId;
+    if (!worldSpaceId)
     {
-        if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, worldSpaceId))
-        {
-            spdlog::error("Server world space id not found for world space form id {:X}", pWorldSpace->formID);
-            return;
-        }
+        if (TESWorldSpace* pWorldSpace = pPlayer->GetWorldSpace())
+            m_world.GetModSystem().GetServerModId(pWorldSpace->formID, worldSpaceId);
     }
 
     Vector<FormType> formTypes = {FormType::Container, FormType::Door};
@@ -137,9 +138,9 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
         objectData.WorldSpaceId = worldSpaceId;
         objectData.CurrentCoords = GridCellCoords::CalculateGridCellCoords(pObject->position.x, pObject->position.y);
 
-        if (!m_world.GetModSystem().GetServerModId(pObject->formID, objectData.Id))
+        if (!m_world.GetModSystem().GetServerModId(pObject->formID, objectData.Id) || objectData.Id.ModId == 0xFFFFFFFF)
         {
-            spdlog::error("Server form id not found for object with form id {:X}", pObject->formID);
+            spdlog::debug("Skipping runtime/unmapped object with form id {:X}", pObject->formID);
             continue;
         }
 
@@ -155,7 +156,8 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
         request.Objects.push_back(objectData);
     }
 
-    m_transport.Send(request);
+    if (!request.Objects.empty())
+        m_transport.Send(request);
 }
 
 void ObjectService::OnAssignObjectsResponse(const AssignObjectsResponse& acMessage) noexcept
@@ -175,19 +177,28 @@ void ObjectService::OnAssignObjectsResponse(const AssignObjectsResponse& acMessa
         if (objectData.IsSenderFirst)
             continue;
 
-        if (objectData.CurrentLockData != LockData{})
+        if (objectData.CurrentLockData.IsLocked)
         {
             Lock* pLock = pObject->GetLock();
 
             if (!pLock)
             {
                 pLock = pObject->CreateLock();
-                if (!pLock)
-                    continue;
             }
 
+            if (pLock)
+            {
+                pLock->lockLevel = objectData.CurrentLockData.LockLevel;
+                pLock->SetLock(true);
+                pObject->LockChange();
+            }
+        }
+        else if (Lock* pLock = pObject->GetLock(); pLock && pLock->IsLocked())
+        {
+            // Unlock locally locked doors/chests when a co-op peer already unlocked them,
+            // even when CurrentLockData == LockData{} ({IsLocked = false, LockLevel = 0})!
             pLock->lockLevel = objectData.CurrentLockData.LockLevel;
-            pLock->SetLock(objectData.CurrentLockData.IsLocked);
+            pLock->SetLock(false);
             pObject->LockChange();
         }
 
@@ -207,10 +218,37 @@ entt::entity ObjectService::CreateObjectEntity(const uint32_t acFormId, const ui
 {
     const auto view = m_world.view<FormIdComponent, ObjectComponent>();
 
-    auto it = std::find_if(view.begin(), view.end(), [acServerId, view](entt::entity entity) { return view.get<ObjectComponent>(entity).Id == acServerId; });
+    // Deduplicate by BOTH FormId and ServerId so cell transitions / reconnects never leave
+    // stale ServerId entities at the front of FormIdComponent view!
+    entt::entity matchedEntity = entt::null;
+    Vector<entt::entity> staleDuplicates;
 
-    if (it != view.end())
-        return *it;
+    for (entt::entity entity : view)
+    {
+        const uint32_t existingFormId = view.get<FormIdComponent>(entity).Id;
+        const uint32_t existingServerId = view.get<ObjectComponent>(entity).Id;
+
+        if (existingFormId == acFormId || existingServerId == acServerId)
+        {
+            if (matchedEntity == entt::null)
+                matchedEntity = entity;
+            else
+                staleDuplicates.push_back(entity);
+        }
+    }
+
+    for (entt::entity duplicate : staleDuplicates)
+    {
+        if (m_world.valid(duplicate))
+            m_world.destroy(duplicate);
+    }
+
+    if (matchedEntity != entt::null)
+    {
+        m_world.get<FormIdComponent>(matchedEntity).Id = acFormId;
+        m_world.get<ObjectComponent>(matchedEntity).Id = acServerId;
+        return matchedEntity;
+    }
 
     entt::entity entity = m_world.create();
     spdlog::info("Created object entity, server id: {:X}, form id {:X}", acServerId, acFormId);
@@ -257,29 +295,36 @@ bool IsPersonalBlessingActivator(const TESObjectREFR* apObject) noexcept
     if (modIdx == 0x04u && (baseLocalId >= 0x01EDA5u && baseLocalId <= 0x01EDB1u)) // Dragonborn All-Maker Stones
         return true;
 
-    // RFAB.esp personal shrines (dynamically resolved for RFAB Respect Edition 0x07, classic 0x06, or any load-order slot)
-    if (auto* pModManager = ModManager::Get())
+    // RFAB personal shrines (dynamically resolved via RfabAdapterService across any RFAB plugin name or load-order slot)
+    const auto& rfabAdapter = World::Get().GetRfabAdapterService();
+    const auto& bindings = rfabAdapter.GetBindings();
+    if (TESForm* pAltar = rfabAdapter.ResolveFormByEditorIdOrBaseId(
+            bindings.UniversalAltarEditorId, bindings.FallbackAltarBaseFormId);
+        pAltar && pAltar->formID == fullFormId)
     {
-        if (auto* pRfabMod = pModManager->GetByName("RFAB.esp"); pRfabMod && pRfabMod->GetFormId(baseLocalId) == fullFormId)
+        return true;
+    }
+
+    if (Mod* pRfabMod = rfabAdapter.ResolveRfabPluginMod();
+        pRfabMod && pRfabMod->GetFormId(baseLocalId) == fullFormId)
+    {
+        switch (baseLocalId)
         {
-            switch (baseLocalId)
-            {
-            case 0x071854u: // RFAB_Shrine_Arkay
-            case 0x100780u: // RFAB_Shrine_Talos
-            case 0x10E8B0u: // RFAB_Shrine_Nocturnal
-            case 0x00C86Bu: // RFAB_Shrine_Auriel
-            case 0x039E34u: // RFAB_Shrine_Boethiah
-            case 0x03A481u: // RFAB_Shrine_Mephala
-            case 0x03A484u: // RFAB_Shrine_Azura
-            case 0x0031EDu: // RFAB_Shrine_Malacath
-            case 0x0031EEu: // RFAB_Shrine_Peryite
-            case 0x0031EFu: // RFAB_Shrine_Sanguine
-            case 0x0CE38Fu: // RFAB_Shrine_Dagon
-            case 0x239FC5u: // RFAB_BA_UniversalAltar
-                return true;
-            default:
-                break;
-            }
+        case 0x071854u: // RFAB_Shrine_Arkay
+        case 0x100780u: // RFAB_Shrine_Talos
+        case 0x10E8B0u: // RFAB_Shrine_Nocturnal
+        case 0x00C86Bu: // RFAB_Shrine_Auriel
+        case 0x039E34u: // RFAB_Shrine_Boethiah
+        case 0x03A481u: // RFAB_Shrine_Mephala
+        case 0x03A484u: // RFAB_Shrine_Azura
+        case 0x0031EDu: // RFAB_Shrine_Malacath
+        case 0x0031EEu: // RFAB_Shrine_Peryite
+        case 0x0031EFu: // RFAB_Shrine_Sanguine
+        case 0x0CE38Fu: // RFAB_Shrine_Dagon
+        case 0x239FC5u: // RFAB_BA_UniversalAltar
+            return true;
+        default:
+            break;
         }
     }
 
@@ -303,9 +348,55 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
     if (IsPersonalBlessingActivator(acEvent.pObject))
         return;
 
+    // On-demand registration for containers/doors activated across exterior cell boundaries or before OnCellChange.
+    if (acEvent.pObject && acEvent.pObject->baseForm &&
+        (acEvent.pObject->baseForm->formType == FormType::Container ||
+         acEvent.pObject->baseForm->formType == FormType::Door) &&
+        ShouldSyncObject(acEvent.pObject))
+    {
+        const auto objView = m_world.view<FormIdComponent, ObjectComponent>();
+        const bool alreadyAssigned = std::any_of(
+            objView.begin(),
+            objView.end(),
+            [objView, formId = acEvent.pObject->formID](entt::entity e)
+            { return objView.get<FormIdComponent>(e).Id == formId; });
+
+        if (!alreadyAssigned)
+        {
+            ObjectData objectData{};
+            if (m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, objectData.Id) &&
+                objectData.Id.ModId != 0xFFFFFFFF)
+            {
+                if (TESObjectCELL* pObjCell = acEvent.pObject->GetParentCellEx())
+                    m_world.GetModSystem().GetServerModId(pObjCell->formID, objectData.CellId);
+                if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+                {
+                    if (TESWorldSpace* pWs = pPlayer->GetWorldSpace())
+                        m_world.GetModSystem().GetServerModId(pWs->formID, objectData.WorldSpaceId);
+                }
+                objectData.CurrentCoords = GridCellCoords::CalculateGridCellCoords(
+                    acEvent.pObject->position.x, acEvent.pObject->position.y);
+                if (Lock* pObjLock = acEvent.pObject->GetLock())
+                {
+                    objectData.CurrentLockData.IsLocked = pObjLock->IsLocked();
+                    objectData.CurrentLockData.LockLevel = pObjLock->lockLevel;
+                }
+                if (acEvent.pObject->baseForm->formType == FormType::Container)
+                    objectData.CurrentInventory = acEvent.pObject->GetInventory();
+
+                AssignObjectsRequest assignReq{};
+                assignReq.Objects.push_back(std::move(objectData));
+                m_transport.Send(assignReq);
+            }
+        }
+    }
+
     if (Lock* pLock = acEvent.pObject->GetLock())
     {
-        if (pLock->flags & 0xFF)
+        // IMPORTANT: Check pLock->IsLocked() (Flag::kLocked = 1 << 0), NOT (pLock->flags & 0xFF)!
+        // Leveled locks keep Flag::kLeveled (1 << 2 = 0x04) set in pLock->flags even after being unlocked,
+        // so (pLock->flags & 0xFF) permanently blocked door/chest activation sync after lockpicking or key unlock!
+        if (pLock->IsLocked())
             return;
     }
 
@@ -317,17 +408,9 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
         return;
     }
 
-    TESObjectCELL* pCell = acEvent.pObject->GetParentCellEx();
-    if (!pCell)
+    if (TESObjectCELL* pCell = acEvent.pObject->GetParentCellEx())
     {
-        spdlog::error("Activated object has no parent cell: {:X}", acEvent.pObject->formID);
-        return;
-    }
-
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
-    {
-        spdlog::error("Server cell id not found for cell form id {:X}", pCell->formID);
-        return;
+        m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId);
     }
 
     auto view = m_world.view<FormIdComponent>();
@@ -351,13 +434,6 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
 
 void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
 {
-    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ActivatorId);
-    if (!pActor)
-    {
-        spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ActivatorId);
-        return;
-    }
-
     const uint32_t cObjectId = World::Get().GetModSystem().GetGameId(acMessage.Id);
     TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(cObjectId));
     if (!pObject || !pObject->baseForm)
@@ -369,12 +445,32 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
     if (IsPersonalBlessingActivator(pObject))
         return;
 
+    Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ActivatorId);
+    if (!pActor)
+    {
+        if (pObject->baseForm->formType == FormType::Door)
+            pActor = PlayerCharacter::Get();
+
+        if (!pActor)
+        {
+            spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ActivatorId);
+            return;
+        }
+    }
+
     if (pObject->baseForm->formType == FormType::Door)
     {
-        auto remotePreActivationState = static_cast<TESObjectREFR::OpenState>(acMessage.PreActivationOpenState);
-        TESObjectREFR::OpenState localState = pObject->GetOpenState();
+        // Ensure locally locked doors are unlocked when a peer opens them (e.g. via dungeon key).
+        if (Lock* pLock = pObject->GetLock(); pLock && pLock->IsLocked())
+        {
+            pLock->SetLock(false);
+            pObject->LockChange();
+        }
 
-        if (remotePreActivationState != localState)
+        const auto remotePreActivationState = static_cast<uint8_t>(acMessage.PreActivationOpenState);
+        const auto localState = static_cast<uint8_t>(pObject->GetOpenState());
+
+        if (!RfabCompat::AreDoorStatesCompatibleForSync(remotePreActivationState, localState))
         {
             // The doors are unsynced at this point. If we'll Activate the one on our side
             // it'll just continue to be unsynced (open remotely, closed locally and vice versa)
@@ -400,24 +496,10 @@ void ObjectService::OnLockChange(const LockChangeEvent& acEvent) noexcept
         return;
     }
 
-    const auto* const pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId));
-    if (!pObject)
+    if (const auto* const pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.FormId)))
     {
-        spdlog::error("Lock object reference not found, form id: {:X}", acEvent.FormId);
-        return;
-    }
-
-    TESObjectCELL* pCell = pObject->GetParentCellEx();
-    if (!pCell)
-    {
-        spdlog::error("Activated object has no parent cell: {:X}", pObject->formID);
-        return;
-    }
-
-    if (!m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId))
-    {
-        spdlog::error("Server cell id for cell not found, cell form id: {:X}", pCell->formID);
-        return;
+        if (TESObjectCELL* pCell = pObject->GetParentCellEx())
+            m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId);
     }
 
     request.IsLocked = acEvent.IsLocked;
@@ -467,8 +549,16 @@ void ObjectService::OnLockChangeNotify(const NotifyLockChange& acMessage) noexce
 
 void ObjectService::OnScriptAnimationEvent(const ScriptAnimationEvent& acEvent) noexcept
 {
+    if (!m_transport.IsConnected() || (acEvent.Animation.empty() && acEvent.EventName.empty()))
+        return;
+
     ScriptAnimationRequest request{};
-    request.FormID = acEvent.FormID;
+    GameId netFormId{};
+    if (m_world.GetModSystem().GetServerModId(acEvent.FormID, netFormId))
+        request.FormID = ((netFormId.ModId & 0xFFu) << 24) | (netFormId.BaseId & 0x00FFFFFFu);
+    else
+        request.FormID = acEvent.FormID;
+
     request.Animation = acEvent.Animation;
     request.EventName = acEvent.EventName;
 
@@ -477,28 +567,33 @@ void ObjectService::OnScriptAnimationEvent(const ScriptAnimationEvent& acEvent) 
 
 void ObjectService::OnNotifyScriptAnimation(const NotifyScriptAnimation& acMessage) noexcept
 {
-    if (acMessage.FormID == 0)
+    if (acMessage.FormID == 0 || (acMessage.Animation.empty() && acMessage.EventName.empty()))
         return;
 
-    auto* pForm = TESForm::GetById(acMessage.FormID);
-    auto* pObject = Cast<TESObjectREFR>(pForm);
+    uint32_t localFormId = acMessage.FormID;
+    const GameId netFormId(
+        (acMessage.FormID >> 24) & 0xFFu,
+        acMessage.FormID & 0x00FFFFFFu);
+    if (const uint32_t resolvedId = m_world.GetModSystem().GetGameId(netFormId); resolvedId != 0)
+        localFormId = resolvedId;
 
+    auto* pObject = Cast<TESObjectREFR>(TESForm::GetById(localFormId));
     if (!pObject)
     {
-        spdlog::error("Failed to fetch notify script animation object, form id: {:X}", acMessage.FormID);
-        return;
+        pObject = Cast<TESObjectREFR>(TESForm::GetById(acMessage.FormID));
+        if (!pObject)
+        {
+            spdlog::debug("Failed to fetch notify script animation object, form id: {:X}", acMessage.FormID);
+            return;
+        }
     }
 
-    BSFixedString eventName(acMessage.EventName.c_str());
-    if (acMessage.Animation == String{})
-    {
-        pObject->PlayAnimation(&eventName);
-    }
-    else
-    {
-        BSFixedString animation(acMessage.Animation.c_str());
-        pObject->PlayAnimationAndWait(&animation, &eventName);
-    }
+    const char* animName = !acMessage.Animation.empty() ? acMessage.Animation.c_str() : acMessage.EventName.c_str();
+    if (!animName || animName[0] == '\0')
+        return;
+
+    BSFixedString animation(animName);
+    pObject->PlayAnimation(&animation);
 }
 
 BSTEventResult ObjectService::OnEvent(const TESActivateEvent* acEvent, const EventDispatcher<TESActivateEvent>* aDispatcher)

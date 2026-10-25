@@ -1,24 +1,37 @@
 {
-  "schema_version": 1,
-  "modpack": "Requiem for a Balance (drake1ch/RFAB)",
-  "target_runtime": "1.5.97.0.8",
+  "schema_version": 2,
+  "rfab_online_version": "1.2.0",
   "plugin_name": "RFAB.esp",
-  "editor_ids": {
+  "secondary_plugin_names": [
+    "RFAB.esp",
+    "Requiem for a Balance.esp",
+    "Requiem.esp"
+  ],
+  "editor_id_bindings": {
     "xp_amount_global": "RFAB_XP_Amount",
     "xp_bonus_global": "RFAB_XP_Multiplier",
     "xp_books_formlist": "XPBooksReaded",
     "no_death_handling_global": "REQ_Combat_NoDeathHandling",
-    "kill_counter_global": "TFOTG_Kill_Counter",
-    "xp_handler_quest": "RFAB_XP_Handler"
+    "kill_counter_global": "RFAB_TFOTG_Kill_Counter",
+    "xp_handler_quest": "RFAB_XP_Handler",
+    "adventurer_ring": "RFAB_ExperienceRing",
+    "restoration_improved_healing_perk": "RFAB_Perk_Restoration_ImprovedHealing",
+    "universal_altar": "RFAB_BA_UniversalAltar",
+    "no_ally_damage_allowed_spells": "RFAB_List_NoAllyDamage_AllowedSpells"
   },
   "fallback_base_form_ids": {
-    "xp_amount_global": "0x00AD45BB"
+    "xp_amount_global": "0x00AD45BB",
+    "adventurer_ring": "0x00112812",
+    "restoration_improved_healing_perk": "0x000581F8",
+    "universal_altar": "0x00239FC5",
+    "no_ally_damage_allowed_spells": "0x00005CAA"
   },
   "synced_global_prefixes": [
     "RFAB_Counter_",
     "RFAB_Global_",
     "RFAB_Boss_",
     "RFAB_Quest_",
+    "RFAB_TFOTG_",
     "TFOTG_"
   ],
   "excluded_global_prefixes": [
@@ -28,30 +41,33 @@
     "RFAB_Key_",
     "RFAB_HUD_",
     "RFAB_Sound_",
-    "RFAB_Camera_",
     "RFAB_XP_Amount",
     "RFAB_XP_Multiplier",
-    "RFAB_XP_Bonus"
+    "RFAB_XP_Bonus_IsActive"
   ],
-  "storage_util_paths": {
-    "experience_ini": "Data/SKSE/Plugins/StorageUtilData/Experience.ini",
-    "quests_ini": "Data/SKSE/Plugins/StorageUtilData/Quests.ini",
+  "storage_util_files": {
+    "experience_ini": "Data/SKSE/Plugins/StorageUtilData/RFAB/XP/Experience.ini",
+    "quests_ini": "Data/SKSE/Plugins/StorageUtilData/RFAB/XP/Quests.ini",
     "xp_settings_json": "Data/SKSE/Plugins/StorageUtilData/RFAB_XP_Settings.json",
-    "boss_list_json": "Data/SKSE/Plugins/StorageUtilData/BossList.json",
-    "race_list_json": "Data/SKSE/Plugins/StorageUtilData/RaceList.json",
-    "rfab_autosave_ini": "Data/SKSE/Plugins/[RFAB] Autosave.ini"
+    "boss_list_json": "Data/SKSE/Plugins/StorageUtilData/RFAB_BossList.json",
+    "race_list_json": "Data/SKSE/Plugins/StorageUtilData/RFAB_RaceList.json"
   },
-  "balance_defaults": {
-    "auto_scale_enemy_health": true,
-    "health_extra_base": 1.0,
-    "downed_revive_duration_sec": 4.0,
-    "downed_revive_hp_fraction": 0.30,
-    "post_revive_grace_sec": 3.0,
-    "combat_leash_radius_meters": 120.0,
-    "combat_clear_hysteresis_sec": 4.5,
-    "post_combat_autosave_interval_sec": 180,
-    "save_ring_buffer_size": 3,
-    "ambush_dedup_radius_meters": 12.0,
-    "ambush_dedup_window_ms": 3000
+  "coop_gameplay": {
+    "quest_xp_radius_meters": 150.0,
+    "book_xp_radius_meters": 45.0,
+    "revive_interaction_radius_meters": 3.5,
+    "revive_channel_seconds": 3.5,
+    "revived_health_fraction": 0.35,
+    "suppress_rfab_solo_autosave": true,
+    "enforce_no_death_handling_in_party": true
+  },
+  "tactical_hud_and_pings": {
+    "tactical_ping_virtual_key": 121,
+    "tactical_hud_toggle_virtual_key": 122,
+    "tactical_ping_duration_sec": 12.0,
+    "tactical_ping_cooldown_sec": 0.6,
+    "tactical_hud_default_mode": 1,
+    "show_boss_encounter_bar": true,
+    "show_downed_3d_beacons": true
   }
 }

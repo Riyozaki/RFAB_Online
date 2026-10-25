@@ -4,7 +4,9 @@
 #include <Structs/GameId.h>
 
 struct World;
+struct Player;
 struct UpdateEvent;
+struct PlayerEnterWorldEvent;
 struct RequestQuestUpdate;
 struct RequestQuestSceneUpdate;
 
@@ -16,9 +18,13 @@ class QuestService
   public:
     QuestService(World& aWorld, entt::dispatcher& aDispatcher);
 
+    void SyncPartyQuestsForPlayer(Player* apPlayer) noexcept;
+
   private:
     void OnQuestChanges(const PacketEvent<RequestQuestUpdate>& aChanges) noexcept;
     void OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate>& aChanges) noexcept;
+    void OnPlayerEnterWorld(const PlayerEnterWorldEvent& acEvent) noexcept;
+    void SyncLeaderQuestLogToMember(Player* apLeader, Player* apMember) noexcept;
 
     World& m_world;
 

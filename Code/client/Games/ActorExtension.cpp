@@ -39,6 +39,11 @@ bool ActorExtension::IsDownedPlayer() const noexcept
     return (onlineFlags.load(std::memory_order_relaxed) & kDownedPlayer) != 0;
 }
 
+bool ActorExtension::IsPlayerSummonFlag() const noexcept
+{
+    return (onlineFlags.load(std::memory_order_relaxed) & kPlayerSummon) != 0;
+}
+
 void ActorExtension::SetRemote(bool aSet) noexcept
 {
     if (aSet)
@@ -69,4 +74,12 @@ void ActorExtension::SetDownedPlayer(bool aSet) noexcept
         onlineFlags.fetch_or(kDownedPlayer, std::memory_order_relaxed);
     else
         onlineFlags.fetch_and(~kDownedPlayer, std::memory_order_relaxed);
+}
+
+void ActorExtension::SetPlayerSummonFlag(bool aSet) noexcept
+{
+    if (aSet)
+        onlineFlags.fetch_or(kPlayerSummon, std::memory_order_relaxed);
+    else
+        onlineFlags.fetch_and(~kPlayerSummon, std::memory_order_relaxed);
 }

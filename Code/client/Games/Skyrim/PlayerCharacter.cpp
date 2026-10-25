@@ -23,6 +23,7 @@
 #include <Forms/TESObjectCELL.h>
 
 #include <ModCompat/BehaviorVar.h>
+#include <common/RfabModpackCompat.h>
 
 int32_t PlayerCharacter::LastUsedCombatSkill = -1;
 
@@ -152,23 +153,35 @@ void PlayerCharacter::RemoveWaypoint() noexcept
 
 char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, bool aUnk2)
 {
-    auto& modSystem = World::Get().GetModSystem();
-
-    Inventory::Entry item{};
-    modSystem.GetServerModId(apObject->baseForm->formID, item.BaseId);
-    item.Count = aCount;
-
-    if (apObject->GetExtraDataList() && !ScopedExtraDataOverride::IsOverriden())
+    if (apObject && apObject->baseForm)
     {
-        ScopedExtraDataOverride _;
-        apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
+        auto& modSystem = World::Get().GetModSystem();
+
+        Inventory::Entry item{};
+        modSystem.GetServerModId(apObject->baseForm->formID, item.BaseId);
+        item.Count = aCount;
+
+        if (apObject->GetExtraDataList() && !ScopedExtraDataOverride::IsOverriden())
+        {
+            ScopedExtraDataOverride _;
+            apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
+        }
+
+        if (!item.IsQuestItem && item.Count > 0)
+        {
+            const char* pEditorId = apObject->baseForm->GetFormEditorID();
+            const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
+            const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+            if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apObject->baseForm->formType), apObject->baseForm->formID, syncHomes))
+                item.IsQuestItem = true;
+        }
+
+        // When picking up a temporary dropped 0xFFxxxxxx world item, set Drop = true so peer clients
+        // despawn their matching ground visual inside Actor::DropOrPickUpObject (zero duplication!).
+        const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
+
+        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), isTempDropPickup, true));
     }
-
-    // When picking up a temporary dropped 0xFFxxxxxx world item, set Drop = true so peer clients
-    // despawn their matching ground visual inside Actor::DropOrPickUpObject (zero duplication!).
-    const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
-
-    World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), isTempDropPickup, true));
 
     ScopedInventoryOverride _;
 
@@ -225,12 +238,15 @@ bool TP_MAKE_THISCALL(HookCalculateExperience, int32_t, float* aFactor, float* a
 
 void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace)
 {
-    Vector3_NetQuantize position{};
-    position.x = apPosition->x;
-    position.y = apPosition->y;
-    position.z = apPosition->z;
+    if (apPosition)
+    {
+        Vector3_NetQuantize position{};
+        position.x = apPosition->x;
+        position.y = apPosition->y;
+        position.z = apPosition->z;
 
-    World::Get().GetRunner().Trigger(SetWaypointEvent(position, apWorldSpace ? apWorldSpace->formID : 0));
+        World::Get().GetRunner().Trigger(SetWaypointEvent(position, apWorldSpace ? apWorldSpace->formID : 0));
+    }
 
     return TiltedPhoques::ThisCall(RealSetWaypoint, apThis, apPosition, apWorldSpace);
 }

@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$VersionTag = "v1.1.0",
+    [string]$VersionTag = "v1.2.0",
     [string]$BuildMode = "releasedbg"
 )
 
@@ -456,6 +456,11 @@ foreach ($SrvDst in $SrvCandidates) {
             }
             if ($updIni -notmatch '(?mi)^\s*bEnableItemDrops\s*=') {
                 $updIni = [regex]::Replace($updIni, '(?mi)^(\s*uDifficulty\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableItemDrops = true`r`n")
+            }
+            if ($updIni -match '(?mi)^\s*bEnableMiscQuestSync\s*=\s*false') {
+                $updIni = [regex]::Replace($updIni, '(?mi)^(\s*bEnableMiscQuestSync\s*=\s*)false(\s*)$', '${1}true${2}')
+            } elseif ($updIni -notmatch '(?mi)^\s*bEnableMiscQuestSync\s*=') {
+                $updIni = [regex]::Replace($updIni, '(?mi)^(\s*bEnableItemDrops\s*=\s*[^\r\n]+\r?\n)', "`$1bEnableMiscQuestSync = true`r`n")
             }
             if ($updIni -ne $rawIni) { [System.IO.File]::WriteAllText($SrvIni, $updIni, (New-Object System.Text.UTF8Encoding($false))) }
         }

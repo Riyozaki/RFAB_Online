@@ -22,6 +22,7 @@ enum class ExtraDataType : uint32_t
     Poison = 0x3E,
     Faction = 0x5B,
     EncounterZone = 0x70,
+    Ghost = 0x7A,
     AliasInstanceArray = 0x88,
     OutfitItem = 0x8E,
     TextDisplayData = 0x99,
@@ -45,3 +46,13 @@ struct ExtraEncounterZone : BSExtraData
 };
 
 static_assert(sizeof(ExtraEncounterZone) == 0x18);
+
+struct ExtraGhost : BSExtraData
+{
+    inline static constexpr auto eExtraData = ExtraDataType::Ghost;
+
+    bool ghost{false};
+    uint8_t pad11[7]{};
+};
+
+static_assert(sizeof(ExtraGhost) == 0x18);

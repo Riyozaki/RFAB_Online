@@ -121,6 +121,10 @@ void WeatherService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::e
 
 void WeatherService::OnWeatherChange(const NotifyWeatherChange& acMessage) noexcept
 {
+    Sky* pSky = Sky::Get();
+    if (!pSky)
+        return;
+
     auto& modSystem = m_world.GetModSystem();
     const uint32_t weatherId = modSystem.GetGameId(acMessage.Id);
     TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(weatherId));
@@ -131,7 +135,7 @@ void WeatherService::OnWeatherChange(const NotifyWeatherChange& acMessage) noexc
         return;
     }
 
-    Sky::Get()->ForceWeather(pWeather);
+    pSky->ForceWeather(pWeather);
 
     m_cachedWeatherId = weatherId;
 }
@@ -185,9 +189,14 @@ void WeatherService::RunWeatherUpdates(const double acDelta) noexcept
 void WeatherService::ToggleGameWeatherSystem(bool aToggle) noexcept
 {
     if (aToggle)
-        Sky::Get()->ReleaseWeatherOverride();
+    {
+        if (Sky* pSky = Sky::Get())
+            pSky->ReleaseWeatherOverride();
+    }
     else
+    {
         m_transport.Send(RequestCurrentWeather());
+    }
 
     m_cachedWeatherId = 0;
 }
@@ -195,6 +204,10 @@ void WeatherService::ToggleGameWeatherSystem(bool aToggle) noexcept
 void WeatherService::SetCachedWeather() noexcept
 {
     if (m_cachedWeatherId == 0)
+        return;
+
+    Sky* pSky = Sky::Get();
+    if (!pSky)
         return;
 
     TESWeather* pWeather = Cast<TESWeather>(TESForm::GetById(m_cachedWeatherId));
@@ -205,5 +218,5 @@ void WeatherService::SetCachedWeather() noexcept
         return;
     }
 
-    Sky::Get()->ForceWeather(pWeather);
+    pSky->ForceWeather(pWeather);
 }

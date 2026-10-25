@@ -4,6 +4,7 @@
 #include <World.h>
 #include <Services/QuestService.h>
 #include <Services/PartyService.h>
+#include <Events/PlayerEnterWorldEvent.h>
 
 #include <Messages/RequestQuestUpdate.h>
 #include <Messages/RequestQuestSceneUpdate.h>
@@ -13,8 +14,28 @@
 #include <Setting.h>
 namespace
 {
-Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "(Experimental) Syncs miscellaneous quests when possible", false};
+Console::Setting bEnableMiscQuestSync{"Gameplay:bEnableMiscQuestSync", "Syncs dungeon, bounty, and miscellaneous quests across the party", true};
 Console::Setting uQuestHistoryExpiration("GameServer:uQuestHistoryExpiration", "Time in milliseconds to retain quest progression changes for deduplication", 30000U);
+
+void UpsertOrRemovePlayerQuestLogEntry(Player* apTarget, const GameId& acQuestId, uint16_t aStage, uint8_t aStatus) noexcept
+{
+    if (!apTarget)
+        return;
+
+    auto& entries = apTarget->GetQuestLogComponent().QuestContent.Entries;
+    auto it = std::find_if(entries.begin(), entries.end(), [&acQuestId](const auto& e) { return e.Id == acQuestId; });
+    if (aStatus == NotifyQuestUpdate::Stopped)
+    {
+        if (it != entries.end())
+            entries.erase(it);
+        return;
+    }
+
+    if (it != entries.end())
+        it->Stage = aStage;
+    else
+        entries.emplace_back(acQuestId, aStage);
+}
 }
 
 QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
@@ -22,6 +43,7 @@ QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
 {
     m_questUpdateConnection = aDispatcher.sink<PacketEvent<RequestQuestUpdate>>().connect<&QuestService::OnQuestChanges>(this);
     m_questSceneUpdateConnection = aDispatcher.sink<PacketEvent<RequestQuestSceneUpdate>>().connect<&QuestService::OnQuestSceneChanges>(this);
+    m_joinConnection = aDispatcher.sink<PlayerEnterWorldEvent>().connect<&QuestService::OnPlayerEnterWorld>(this);
 }
 
 void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessage) noexcept
@@ -122,76 +144,51 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
                 __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, notify.ClientQuestType);
         }
 
-        // Now that party MEMBERS can advance quests in addition to the party leader, must prevent loops/reflections.
-        // If the sender of the request is a party Member, SendToLeader() if noone is in the QuestStageDedpHistory for
-        // this quest+stage, then add self to the dedup history.
-        //
-        // If the requesting player is the party Leader, add self to the quest deduping history and SendToParty(). If
-        // the originator was a party member, they are already in the dedup history. SendToParty() skips sending to any
-        // party member who already has this quest+stage change.
-        //
-        // Scene End sends ::StageUpdateForced, setting useAggressiveSend, to kick any players that got stuck in a scene dialog.
-        if (isLeader)
+        // Direct 1-hop deduplicated party quest broadcast:
+        // Whether the quest stage was advanced by the Party Leader or by a Party Member (e.g. pulling a dungeon lever,
+        // picking up a Dragonstone, reading an Elder Scroll, or completing a dialogue), broadcast directly to all other
+        // party members and record them in dedupHistory so remote ScriptSetStage application never loops back.
+        if (!useAggressiveSend && dedupHistory.FoundWPlayerId(notify.Id, notify.Stage, notify.Status, pPlayer->GetId()))
         {
-            // Leader originated or party member sent to leader.
-            // SendToParty unless Leader has already done it.
-            if (!useAggressiveSend && dedupHistory.FoundWPlayerId(notify.Id, notify.Stage, notify.Status, pPlayer->GetId()))
-                spdlog::debug(
-                    "{}: SendToParty dropping duplicate: quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status,
-                    playerTypeString, pPlayer->GetId());
-            else
-            {
-                spdlog::debug(
-                    "{}: SendToParty: quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, playerTypeString,
-                    pPlayer->GetId());
-
-                dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pPlayer->GetId());
-
-                // We need our own loop since SendToParty can't decide which members already have updates
-                for (Player* pPlayer : m_world.GetPlayerManager())
-                {
-                    const auto& partyComponent = pPlayer->GetParty();
-                    if (partyComponent.JoinedPartyId == partyId)
-                    {
-                        if (!useAggressiveSend && dedupHistory.FoundWPlayerId(notify.Id, notify.Stage, notify.Status, pPlayer->GetId()))
-                        {
-                            spdlog::debug(
-                                "{}: SendToParty skipping duplicate send quest: {:X}, stage: {}, status: {}, "
-                                "SceneMaster {}, to player {:X}",
-                                __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, notify.SceneMaster, pPlayer->GetId());
-                        }
-                        else
-                        {
-                            spdlog::debug(
-                                "{}: SendToParty sending quest: {:X}, stage: {}, status: {}, SceneMaster {}, "
-                                "to player {:X}",
-                                __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, notify.SceneMaster, pPlayer->GetId());
-                            pPlayer->Send(notify);
-                        }
-                    }
-                }
-            }
+            spdlog::debug(
+                "{}: dropping duplicate quest update: {:X}, stage: {}, status: {}, by {} {:X}",
+                __FUNCTION__,
+                notify.Id.LogFormat(),
+                notify.Stage,
+                notify.Status,
+                playerTypeString,
+                pPlayer->GetId());
+            return;
         }
 
-        else
-        {
-            // Party member advanced quest; forward just to party leader
-            // But don't if someone already has!
-            bool bFound = !useAggressiveSend && dedupHistory.Found(notify.Id, notify.Stage, notify.Status);
-            dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pPlayer->GetId());
+        dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pPlayer->GetId());
 
-            if (bFound)
-                spdlog::debug(
-                    "{}: SendToLeader dropping duplicate quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status,
-                    playerTypeString, pPlayer->GetId());
-            else
+        for (Player* pMember : m_world.GetPlayerManager())
+        {
+            if (!pMember || pMember == pPlayer)
+                continue;
+
+            const auto& partyComponent = pMember->GetParty();
+            if (partyComponent.JoinedPartyId != partyId)
+                continue;
+
+            UpsertOrRemovePlayerQuestLogEntry(pMember, notify.Id, notify.Stage, notify.Status);
+
+            if (!useAggressiveSend && dedupHistory.FoundWPlayerId(notify.Id, notify.Stage, notify.Status, pMember->GetId()))
             {
                 spdlog::debug(
-                    "{}: SendToLeader quest: {:X}, stage: {}, status: {}, by {} {:X}", __FUNCTION__, notify.Id.LogFormat(), notify.Stage, notify.Status, playerTypeString,
-                    pPlayer->GetId());
-
-                GameServer::Get()->SendToLeader(notify, pPlayer->GetParty(), pLeader);
+                    "{}: skipping duplicate send quest: {:X}, stage: {}, status: {}, SceneMaster {}, to player {:X}",
+                    __FUNCTION__,
+                    notify.Id.LogFormat(),
+                    notify.Stage,
+                    notify.Status,
+                    notify.SceneMaster,
+                    pMember->GetId());
+                continue;
             }
+
+            dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pMember->GetId());
+            pMember->Send(notify);
         }
     }
 }
@@ -278,7 +275,92 @@ void QuestService::OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate
             newUpdate.ClientQuestType = message.ClientQuestType;
             const PacketEvent<RequestQuestUpdate> newMessage(&newUpdate, pPlayer);
             QuestService::OnQuestChanges(newMessage);
+
+            dedupHistory.ResetSceneMaster();
         }
+    }
+}
+
+void QuestService::OnPlayerEnterWorld(const PlayerEnterWorldEvent& acEvent) noexcept
+{
+    if (!acEvent.pPlayer)
+        return;
+
+    Player* pMutablePlayer = m_world.GetPlayerManager().GetById(acEvent.pPlayer->GetId());
+    SyncPartyQuestsForPlayer(pMutablePlayer);
+}
+
+void QuestService::SyncLeaderQuestLogToMember(Player* apLeader, Player* apMember) noexcept
+{
+    if (!apLeader || !apMember || apLeader == apMember)
+        return;
+
+    PartyService::Party* pParty = m_world.GetPartyService().GetPlayerParty(apLeader);
+    if (!pParty)
+        return;
+
+    auto& dedupHistory = pParty->GetQuestStageDedupHistory();
+    const auto& leaderEntries = apLeader->GetQuestLogComponent().QuestContent.Entries;
+    auto& memberEntries = apMember->GetQuestLogComponent().QuestContent.Entries;
+
+    for (const auto& leaderQuest : leaderEntries)
+    {
+        if (!leaderQuest.Id || leaderQuest.Stage == 0)
+            continue;
+
+        const auto memberIt = std::find_if(
+            memberEntries.begin(),
+            memberEntries.end(),
+            [&leaderQuest](const auto& e) { return e.Id == leaderQuest.Id; });
+
+        if (memberIt != memberEntries.end() && memberIt->Stage >= leaderQuest.Stage)
+            continue;
+
+        if (memberIt != memberEntries.end())
+            memberIt->Stage = leaderQuest.Stage;
+        else
+            memberEntries.emplace_back(leaderQuest.Id, leaderQuest.Stage);
+
+        NotifyQuestUpdate catchupNotify{};
+        catchupNotify.Id = leaderQuest.Id;
+        catchupNotify.Stage = leaderQuest.Stage;
+        catchupNotify.Status = NotifyQuestUpdate::StageUpdate;
+        catchupNotify.SceneMaster = dedupHistory.GetSceneMaster();
+        catchupNotify.ClientQuestType = 8; // SideQuest / general syncable quest
+
+        dedupHistory.Add(catchupNotify.Id, catchupNotify.Stage, catchupNotify.Status, apMember->GetId());
+        apMember->Send(catchupNotify);
+    }
+}
+
+void QuestService::SyncPartyQuestsForPlayer(Player* apPlayer) noexcept
+{
+    if (!apPlayer)
+        return;
+
+    auto& partyService = m_world.GetPartyService();
+    if (!partyService.IsPlayerInParty(apPlayer))
+        return;
+
+    PartyService::Party* pParty = partyService.GetPlayerParty(apPlayer);
+    if (!pParty)
+        return;
+
+    Player* pLeader = m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
+    if (!pLeader)
+        return;
+
+    if (apPlayer == pLeader)
+    {
+        for (Player* pMember : pParty->Members)
+        {
+            if (pMember && pMember != pLeader)
+                SyncLeaderQuestLogToMember(pLeader, pMember);
+        }
+    }
+    else
+    {
+        SyncLeaderQuestLogToMember(pLeader, apPlayer);
     }
 }
 

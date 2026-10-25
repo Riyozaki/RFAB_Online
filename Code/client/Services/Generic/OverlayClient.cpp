@@ -136,6 +136,17 @@ void OverlayClient::ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs)
     std::string contents = aEventArgs->GetString(1).ToString();
     if (!contents.empty())
     {
+        RfabCompat::TacticalChatCommand tacCmd{};
+        if (RfabCompat::ParseTacticalChatCommand(contents, tacCmd))
+        {
+            World::Get().GetRunner().Queue(
+                [tacCmd = std::move(tacCmd)]()
+                {
+                    World::Get().GetRfabAdapterService().ExecuteTacticalChatCommand(tacCmd);
+                });
+            return;
+        }
+
         const auto msgType = static_cast<ChatMessageType>(aEventArgs->GetInt(0));
         spdlog::info(L"Send chat message of type {}: '{}' ", msgType, aEventArgs->GetString(1).ToWString());
 

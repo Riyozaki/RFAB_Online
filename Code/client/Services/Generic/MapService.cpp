@@ -49,6 +49,17 @@ void MapService::OnRemoveWaypoint(const RemoveWaypointEvent& acMessage) noexcept
 
 void MapService::OnNotifySetWaypoint(const NotifySetWaypoint& acMessage) noexcept
 {
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer)
+        return;
+
+    if (!std::isfinite(acMessage.Position.x) ||
+        !std::isfinite(acMessage.Position.y) ||
+        !std::isfinite(acMessage.Position.z))
+    {
+        return;
+    }
+
     NiPoint3 pos{};
     pos.x = acMessage.Position.x;
     pos.y = acMessage.Position.y;
@@ -57,12 +68,15 @@ void MapService::OnNotifySetWaypoint(const NotifySetWaypoint& acMessage) noexcep
     ModSystem& modSystem = m_world.Get().GetModSystem();
     const uint32_t cWorldSpaceID = modSystem.GetGameId(acMessage.WorldSpaceFormID);
     TESWorldSpace* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(cWorldSpaceID));
+    if (!pWorldSpace)
+        return;
 
-    PlayerCharacter::Get()->SetWaypoint(&pos, pWorldSpace);
+    pPlayer->SetWaypoint(&pos, pWorldSpace);
 }
 
 void MapService::OnNotifyRemoveWaypoint(const NotifyRemoveWaypoint& acMessage) noexcept
 {
-    PlayerCharacter::Get()->RemoveWaypoint();
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->RemoveWaypoint();
 }
 

@@ -206,7 +206,8 @@ TEST_CASE("Stage 3: External RFAB bindings, EngineFixes override patcher & Autos
     SECTION("Loads repository Data/SKSE/Plugins/RFAB_Online_Bindings.json & wildcard global filter")
     {
         const auto cfg = RfabCompat::LoadBindingsFromDisk(std::filesystem::current_path());
-        REQUIRE(cfg.SchemaVersion == 1);
+        REQUIRE(cfg.SchemaVersion >= 1);
+        REQUIRE(cfg.SchemaVersion == 2);
         REQUIRE(cfg.PluginName == "RFAB.esp");
         REQUIRE(cfg.XpAmountGlobalEditorId == "RFAB_XP_Amount");
         REQUIRE(cfg.XpBooksFormListEditorId == "XPBooksReaded");

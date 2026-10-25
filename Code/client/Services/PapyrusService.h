@@ -35,7 +35,19 @@ template <class Return, class Type, class... Args> struct PapyrusFunction
     {
     }
 
-    Return operator()(const Type* apThis, Args... args) const noexcept { return m_pFunction(GameVM::Get()->virtualMachine, 0, apThis, std::forward<Args>(args)...); }
+    [[nodiscard]] explicit operator bool() const noexcept { return m_pFunction != nullptr; }
+
+    Return operator()(const Type* apThis, Args... args) const noexcept
+    {
+        if (!m_pFunction || !GameVM::Get() || !GameVM::Get()->virtualMachine)
+        {
+            if constexpr (!std::is_void_v<Return>)
+                return Return{};
+            else
+                return;
+        }
+        return m_pFunction(GameVM::Get()->virtualMachine, 0, apThis, std::forward<Args>(args)...);
+    }
 
 private:
     TFunction m_pFunction;
