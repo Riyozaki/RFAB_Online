@@ -1671,7 +1671,7 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
         REQUIRE(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
         REQUIRE(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
-        REQUIRE(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
+        REQUIRE(clientMapCpp.find("if (!pLocation || (!Cast<TESWorldSpace>(pLocation) && !Cast<TESObjectCELL>(pLocation)))") != std::string::npos);
         REQUIRE(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
 
         // v1.2.0-hotfix.1 Skills-CTD, MO2 gamePath, Render-Thread Snapshot & Cross-Version RFAB tests:

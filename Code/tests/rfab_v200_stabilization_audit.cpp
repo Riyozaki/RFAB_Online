@@ -148,16 +148,17 @@ TEST_CASE("v2.0.0 wire packet bounds and hostile/truncated payload resilience", 
         // Write an astronomical VarInt (> INT32_MAX and > UINT32_MAX) with zero trailing payload bytes
         Serialization::WriteVarInt(writer, 0x90000000ULL);
         Serialization::WriteVarInt(writer, 0x90000000ULL);
+        ViewBuffer truncatedPacket(buf.GetWriteData(), writer.Size());
 
         {
-            Buffer::Reader reader(&buf);
+            Buffer::Reader reader(&truncatedPacket);
             Inventory inv{};
             inv.Deserialize(reader);
             REQUIRE(inv.Entries.size() <= 2);
         }
 
         {
-            Buffer::Reader reader(&buf);
+            Buffer::Reader reader(&truncatedPacket);
             ActorValues av{};
             av.Deserialize(reader);
             REQUIRE(av.ActorValuesList.size() <= 2);
@@ -165,7 +166,7 @@ TEST_CASE("v2.0.0 wire packet bounds and hostile/truncated payload resilience", 
         }
 
         {
-            Buffer::Reader reader(&buf);
+            Buffer::Reader reader(&truncatedPacket);
             Factions factions{};
             // Previously threw std::runtime_error inside noexcept DeserializeRaw -> std::terminate()!
             REQUIRE_NOTHROW(factions.Deserialize(reader));
@@ -173,7 +174,7 @@ TEST_CASE("v2.0.0 wire packet bounds and hostile/truncated payload resilience", 
         }
 
         {
-            Buffer::Reader reader(&buf);
+            Buffer::Reader reader(&truncatedPacket);
             AnimationVariables anim{};
             REQUIRE_NOTHROW(anim.ApplyDiff(reader));
             REQUIRE(anim.Booleans.size() <= CoopPacketSafety::kMaxAnimVars);
