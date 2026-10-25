@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
+
 using TiltedPhoques::Buffer;
 
 struct GameId
@@ -17,8 +20,8 @@ struct GameId
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
     inline uint64_t LogFormat() const noexcept { return static_cast<uint64_t>(ModId) << 32 | BaseId; }
 
-    uint32_t BaseId;
-    uint32_t ModId;
+    uint32_t BaseId{0};
+    uint32_t ModId{0};
 };
 
 namespace std

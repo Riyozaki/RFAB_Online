@@ -49,118 +49,90 @@ void SendPlayerCellChanged(const Player* apPlayer) noexcept
 void PlayerService::HandleGridCellShift(const PacketEvent<ShiftGridCellRequest>& acMessage) const noexcept
 {
     auto* pPlayer = acMessage.pPlayer;
+    if (!pPlayer)
+        return;
 
     auto& message = acMessage.Packet;
 
     const CellIdComponent oldCellComponent = pPlayer->GetCellComponent();
     const GameId oldCell = oldCellComponent.Cell;
 
-    CellIdComponent cell = CellIdComponent{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
+    const CellIdComponent cell{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
     pPlayer->SetCellComponent(cell);
     if (pPlayer->GetCharacter())
     {
         if (auto* pCharCell = m_world.try_get<CellIdComponent>(*pPlayer->GetCharacter()))
-            *pCharCell = cell;
+        {
+            pCharCell->Cell = message.PlayerCell;
+            pCharCell->WorldSpaceId = message.WorldSpaceId;
+            if (!pCharCell->IsValid() || oldCellComponent.WorldSpaceId != message.WorldSpaceId)
+                pCharCell->CenterCoords = message.CenterCoords;
+        }
     }
 
     m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
 
-    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
-    for (auto character : characterView)
-    {
-        const auto& ownedComponent = characterView.get<OwnerComponent>(character);
-        const auto& characterCellComponent = characterView.get<CellIdComponent>(character);
-        const auto& characterComponent = characterView.get<CharacterComponent>(character);
-
-        if (ownedComponent.GetOwner() == pPlayer)
-            continue;
-
-        const auto cellIt = std::find_if(std::begin(message.Cells), std::end(message.Cells), [CharacterCell = characterCellComponent.Cell](auto playerCell) { return playerCell == CharacterCell; });
-
-        const bool matchedEnteringCell = (cellIt != std::end(message.Cells));
-        const bool newlyEnteredWorldRange =
-            !matchedEnteringCell &&
-            cell.WorldSpaceId != GameId{} &&
-            characterCellComponent.IsInRange(cell, characterComponent.IsDragon()) &&
-            (!oldCellComponent || !characterCellComponent.IsInRange(oldCellComponent, characterComponent.IsDragon()));
-
-        if (!matchedEnteringCell && !newlyEnteredWorldRange)
-        {
-            continue;
-        }
-
-        CharacterSpawnRequest spawnMessage;
-        CharacterService::Serialize(m_world, character, &spawnMessage);
-
-        pPlayer->Send(spawnMessage);
-    }
+    m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
 }
 
 void PlayerService::HandleExteriorCellEnter(const PacketEvent<EnterExteriorCellRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
     auto* pPlayer = acMessage.pPlayer;
+    if (!pPlayer)
+        return;
 
-    const bool hadCellComponent = static_cast<bool>(pPlayer->GetCellComponent());
-    auto cell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
-    pPlayer->SetCellComponent(cell);
+    const CellIdComponent prevObserverCell = pPlayer->GetCellComponent();
+    const GridCellCoords observerGridCenter =
+        (prevObserverCell.IsValid() && prevObserverCell.WorldSpaceId == message.WorldSpaceId)
+            ? prevObserverCell.CenterCoords
+            : message.CurrentCoords;
+
+    pPlayer->SetCellComponent(CellIdComponent{message.CellId, message.WorldSpaceId, observerGridCenter});
 
     if (pPlayer->GetCharacter())
     {
-        auto entity = *pPlayer->GetCharacter();
+        const auto entity = *pPlayer->GetCharacter();
         if (auto* pCharCell = m_world.try_get<CellIdComponent>(entity))
-            *pCharCell = cell;
+            *pCharCell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
 
-        if (hadCellComponent)
+        if (prevObserverCell.IsValid())
         {
             m_world.GetDispatcher().trigger(CharacterExteriorCellChangeEvent{pPlayer, entity, message.WorldSpaceId, message.CurrentCoords});
         }
     }
 
+    m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
     SendPlayerCellChanged(pPlayer);
 }
 
 void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellRequest>& acMessage) const noexcept
 {
     auto* pPlayer = acMessage.pPlayer;
+    if (!pPlayer)
+        return;
 
     auto& message = acMessage.Packet;
 
     const auto oldCell = pPlayer->GetCellComponent().Cell;
 
-    auto cell = CellIdComponent{message.CellId, {}, {}};
+    const CellIdComponent cell{message.CellId, {}, {}};
     pPlayer->SetCellComponent(cell);
 
     m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
 
     if (pPlayer->GetCharacter())
     {
-        auto entity = *pPlayer->GetCharacter();
+        const auto entity = *pPlayer->GetCharacter();
 
-        if (auto pCellIdComponent = m_world.try_get<CellIdComponent>(entity); pCellIdComponent)
+        if (auto* pCellIdComponent = m_world.try_get<CellIdComponent>(entity))
         {
             *pCellIdComponent = cell;
             m_world.GetDispatcher().trigger(CharacterInteriorCellChangeEvent{pPlayer, entity, message.CellId});
         }
     }
 
-    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
-    for (auto character : characterView)
-    {
-        const auto& ownedComponent = characterView.get<OwnerComponent>(character);
-
-        if (ownedComponent.GetOwner() == pPlayer)
-            continue;
-
-        if (message.CellId != characterView.get<CellIdComponent>(character).Cell)
-            continue;
-
-        CharacterSpawnRequest spawnMessage;
-        CharacterService::Serialize(m_world, character, &spawnMessage);
-
-        pPlayer->Send(spawnMessage);
-    }
-
+    m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
     SendPlayerCellChanged(pPlayer);
 }
 

@@ -141,6 +141,7 @@ TESNPC* TESNPC::Create(const String& acBuffer, const uint32_t aChangeFlags) noex
 
     pNpc->Initialize();
     pNpc->Deserialize(acBuffer, aChangeFlags);
+    pNpc->SetSkipSaveFlag(true);
     pNpc->UnsetChanged(0xFFFFFFFF);
 
     // This forces facegen for some reason

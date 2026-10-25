@@ -32,6 +32,13 @@ struct Actor : TESObjectREFR
     static GamePtr<Actor> New() noexcept;
     // Places a brand new actor in the world
     static GamePtr<Actor> Create(TESNPC* apBaseForm) noexcept;
+    // Places a brand new actor directly into an already-validated loaded target cell & coordinates
+    static GamePtr<Actor> CreateInCell(
+        TESNPC* apBaseForm,
+        TESObjectCELL* apCell,
+        TESWorldSpace* apWorldSpace,
+        const NiPoint3& acPosition,
+        const NiPoint3& acRotation) noexcept;
     static GamePtr<Actor> Spawn(uint32_t aBaseFormId) noexcept;
 
     virtual void sub_9C();

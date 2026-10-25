@@ -7,6 +7,7 @@
 #include <Events/CharacterExteriorCellChangeEvent.h>
 #include <Events/CharacterInteriorCellChangeEvent.h>
 #include <Events/PlayerEnterWorldEvent.h>
+#include <Events/PlayerLeaveEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Events/CharacterRemoveEvent.h>
 #include <Events/OwnershipTransferEvent.h>
@@ -20,6 +21,7 @@
 #include <Messages/CharacterSpawnRequest.h>
 #include <Messages/RequestFactionsChanges.h>
 #include <Messages/NotifyFactionsChanges.h>
+#include <Messages/NotifyPlayerCellChanged.h>
 #include <Messages/NotifyRemoveCharacter.h>
 #include <Messages/NotifySpawnData.h>
 #include <Messages/RequestOwnershipTransfer.h>
@@ -65,6 +67,7 @@ uint64_t SteadyClockMs() noexcept
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&CharacterService::OnUpdate>(this))
+    , m_playerLeaveConnection(aDispatcher.sink<PlayerLeaveEvent>().connect<&CharacterService::OnPlayerLeave>(this))
     , m_interiorCellChangeEventConnection(aDispatcher.sink<CharacterInteriorCellChangeEvent>().connect<&CharacterService::OnCharacterInteriorCellChange>(this))
     , m_exteriorCellChangeEventConnection(aDispatcher.sink<CharacterExteriorCellChangeEvent>().connect<&CharacterService::OnCharacterExteriorCellChange>(this))
     , m_characterAssignRequestConnection(aDispatcher.sink<PacketEvent<AssignCharacterRequest>>().connect<&CharacterService::OnAssignCharacterRequest>(this))
@@ -98,6 +101,7 @@ void CharacterService::Serialize(World& aRegistry, entt::entity aEntity, Charact
     apSpawnRequest->IsPlayer = characterComponent.IsPlayer();
     apSpawnRequest->IsWeaponDrawn = characterComponent.IsWeaponDrawn();
     apSpawnRequest->IsPlayerSummon = characterComponent.IsPlayerSummon();
+    apSpawnRequest->IsDragon = characterComponent.IsDragon();
     apSpawnRequest->PlayerId = characterComponent.PlayerId;
 
     const auto* pFormIdComponent = aRegistry.try_get<FormIdComponent>(aEntity);
@@ -135,10 +139,142 @@ void CharacterService::Serialize(World& aRegistry, entt::entity aEntity, Charact
     if (pCellIdComponent)
     {
         apSpawnRequest->CellId = pCellIdComponent->Cell;
+        apSpawnRequest->WorldSpaceId = pCellIdComponent->WorldSpaceId;
     }
 
     auto& animationComponent = aRegistry.get<AnimationComponent>(aEntity);
     apSpawnRequest->ActionsToReplay = animationComponent.ActionsReplayCache.FormRefinedReplayChain();
+}
+
+void CharacterService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noexcept
+{
+    if (acEvent.pPlayer)
+        m_interestRegistry.RemoveObserver(acEvent.pPlayer->GetId());
+}
+
+void CharacterService::ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept
+{
+    if (!m_world.valid(aEntity))
+        return;
+
+    const auto* pCharComp = m_world.try_get<CharacterComponent>(aEntity);
+    const auto* pCellComp = m_world.try_get<CellIdComponent>(aEntity);
+    const auto* pOwnerComp = m_world.try_get<OwnerComponent>(aEntity);
+    if (!pCharComp || !pCellComp || !pOwnerComp)
+        return;
+
+    const uint32_t serverId = World::ToInteger(aEntity);
+    Player* const pOwner = pOwnerComp->GetOwner();
+
+    std::optional<CharacterSpawnRequest> cachedSpawn{};
+    const auto getSpawnMessage = [&]() -> const CharacterSpawnRequest&
+    {
+        if (!cachedSpawn.has_value())
+        {
+            cachedSpawn.emplace();
+            Serialize(m_world, aEntity, &(*cachedSpawn));
+        }
+        return *cachedSpawn;
+    };
+
+    for (Player* pObserver : m_world.GetPlayerManager())
+    {
+        if (!pObserver)
+            continue;
+
+        if (pObserver == pOwner)
+        {
+            m_interestRegistry.UnmarkInRange(pObserver->GetId(), serverId);
+            continue;
+        }
+
+        const bool nowInRange = pCellComp->IsInRange(pObserver->GetCellComponent(), pCharComp->IsDragon());
+        const auto action = m_interestRegistry.UpdateInterest(
+            pObserver->GetId(), serverId, pCharComp->IsPlayer(), nowInRange);
+
+        switch (action)
+        {
+        case CoopWorldView::ServerPeerSyncAction::kSendSpawn:
+            pObserver->Send(getSpawnMessage());
+            break;
+        case CoopWorldView::ServerPeerSyncAction::kSendRemove:
+        {
+            NotifyRemoveCharacter removeMsg{};
+            removeMsg.ServerId = serverId;
+            pObserver->Send(removeMsg);
+            break;
+        }
+        case CoopWorldView::ServerPeerSyncAction::kSendPlayerCellChangedOnly:
+        {
+            if (pOwner)
+            {
+                NotifyPlayerCellChanged cellNotify{};
+                cellNotify.PlayerId = pOwner->GetId();
+                cellNotify.WorldSpaceId = pCellComp->WorldSpaceId;
+                cellNotify.CellId = pCellComp->Cell;
+                pObserver->Send(cellNotify);
+            }
+            break;
+        }
+        case CoopWorldView::ServerPeerSyncAction::kNone:
+        default:
+            break;
+        }
+    }
+}
+
+void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept
+{
+    if (!apObserver)
+        return;
+
+    if (const auto observerChar = apObserver->GetCharacter(); observerChar.has_value() && m_world.valid(*observerChar))
+    {
+        if (auto* pObserverCharCell = m_world.try_get<CellIdComponent>(*observerChar))
+        {
+            const auto& obsCell = apObserver->GetCellComponent();
+            if (obsCell.IsValid() &&
+                (!pObserverCharCell->IsValid() ||
+                 pObserverCharCell->WorldSpaceId != obsCell.WorldSpaceId ||
+                 (obsCell.IsInInteriorCell() && pObserverCharCell->Cell != obsCell.Cell)))
+            {
+                *pObserverCharCell = obsCell;
+            }
+        }
+        ReconcileEntityForAllObservers(*observerChar);
+    }
+
+    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
+    for (auto entity : characterView)
+    {
+        const auto& ownerComp = characterView.get<OwnerComponent>(entity);
+        const auto& cellComp = characterView.get<CellIdComponent>(entity);
+        const auto& charComp = characterView.get<CharacterComponent>(entity);
+        const uint32_t serverId = World::ToInteger(entity);
+
+        if (ownerComp.GetOwner() == apObserver)
+        {
+            m_interestRegistry.UnmarkInRange(apObserver->GetId(), serverId);
+            continue;
+        }
+
+        const bool nowInRange = apObserver->GetCellComponent().IsInRange(cellComp, charComp.IsDragon());
+        const auto action = m_interestRegistry.UpdateInterest(
+            apObserver->GetId(), serverId, charComp.IsPlayer(), nowInRange);
+
+        if (action == CoopWorldView::ServerPeerSyncAction::kSendSpawn)
+        {
+            CharacterSpawnRequest spawnMessage{};
+            Serialize(m_world, entity, &spawnMessage);
+            apObserver->Send(spawnMessage);
+        }
+        else if (action == CoopWorldView::ServerPeerSyncAction::kSendRemove)
+        {
+            NotifyRemoveCharacter removeMsg{};
+            removeMsg.ServerId = serverId;
+            apObserver->Send(removeMsg);
+        }
+    }
 }
 
 void CharacterService::OnUpdate(const UpdateEvent&) const noexcept
@@ -149,46 +285,12 @@ void CharacterService::OnUpdate(const UpdateEvent&) const noexcept
 
 void CharacterService::OnCharacterExteriorCellChange(const CharacterExteriorCellChangeEvent& acEvent) const noexcept
 {
-    CharacterSpawnRequest spawnMessage;
-    Serialize(m_world, acEvent.Entity, &spawnMessage);
-
-    NotifyRemoveCharacter removeMessage;
-    removeMessage.ServerId = World::ToInteger(acEvent.Entity);
-
-    for (auto pPlayer : m_world.GetPlayerManager())
-    {
-        if (acEvent.Owner == pPlayer)
-            continue;
-
-        if (pPlayer->GetCellComponent().WorldSpaceId != acEvent.WorldSpaceId || pPlayer->GetCellComponent().WorldSpaceId == acEvent.WorldSpaceId && !GridCellCoords::IsCellInGridCell(acEvent.CurrentCoords, pPlayer->GetCellComponent().CenterCoords, false))
-        {
-            pPlayer->Send(removeMessage);
-        }
-        else if (pPlayer->GetCellComponent().WorldSpaceId == acEvent.WorldSpaceId && GridCellCoords::IsCellInGridCell(acEvent.CurrentCoords, pPlayer->GetCellComponent().CenterCoords, false))
-        {
-            pPlayer->Send(spawnMessage);
-        }
-    }
+    ReconcileEntityForAllObservers(acEvent.Entity);
 }
 
 void CharacterService::OnCharacterInteriorCellChange(const CharacterInteriorCellChangeEvent& acEvent) const noexcept
 {
-    CharacterSpawnRequest spawnMessage;
-    Serialize(m_world, acEvent.Entity, &spawnMessage);
-
-    NotifyRemoveCharacter removeMessage;
-    removeMessage.ServerId = World::ToInteger(acEvent.Entity);
-
-    for (auto pPlayer : m_world.GetPlayerManager())
-    {
-        if (acEvent.Owner == pPlayer)
-            continue;
-
-        if (acEvent.NewCell == pPlayer->GetCellComponent().Cell)
-            pPlayer->Send(spawnMessage);
-        else
-            pPlayer->Send(removeMessage);
-    }
+    ReconcileEntityForAllObservers(acEvent.Entity);
 }
 
 void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacterRequest>& acMessage) const noexcept
@@ -519,6 +621,8 @@ void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& ac
 
 void CharacterService::OnCharacterRemoveEvent(const CharacterRemoveEvent& acEvent) const noexcept
 {
+    m_interestRegistry.ForgetEntityEverywhere(acEvent.ServerId);
+
     const auto view = m_world.view<OwnerComponent>();
     const auto it = view.find(static_cast<entt::entity>(acEvent.ServerId));
     if (it == view.end())
@@ -637,12 +741,28 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
 
 void CharacterService::OnCharacterSpawned(const CharacterSpawnedEvent& acEvent) const noexcept
 {
-    CharacterSpawnRequest message;
-    Serialize(m_world, acEvent.Entity, &message);
+    ReconcileEntityForAllObservers(acEvent.Entity);
 
-    const auto& ownerComp = m_world.get<OwnerComponent>(acEvent.Entity);
-    if (!GameServer::Get()->SendToPlayersInRange(message, acEvent.Entity, ownerComp.GetOwner()))
-        spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+    // For human player avatars, also seed initial RemotePlayerModel metadata on out-of-range connected peers
+    // (leaving m_interestRegistry unmarked so a fresh CharacterSpawnRequest is still sent upon entering range).
+    if (const auto* pCharComp = m_world.try_get<CharacterComponent>(acEvent.Entity);
+        pCharComp && pCharComp->IsPlayer())
+    {
+        const uint32_t serverId = World::ToInteger(acEvent.Entity);
+        const auto* pOwnerComp = m_world.try_get<OwnerComponent>(acEvent.Entity);
+        Player* const pOwner = pOwnerComp ? pOwnerComp->GetOwner() : nullptr;
+
+        CharacterSpawnRequest message{};
+        Serialize(m_world, acEvent.Entity, &message);
+
+        for (Player* pPeer : m_world.GetPlayerManager())
+        {
+            if (!pPeer || pPeer == pOwner)
+                continue;
+            if (!m_interestRegistry.IsMarkedInRange(pPeer->GetId(), serverId))
+                pPeer->Send(message);
+        }
+    }
 
     GameServer::Get()->GetWorld().GetScriptService().HandleCharacterSpawn(acEvent.Entity);
 }
@@ -670,7 +790,7 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
 
         movementComponent.Tick = message.Tick;
 
-        const auto movementCopy = movementComponent;
+        const CellIdComponent previousCellComp = cellIdComponent;
 
         auto& update = entry.second;
         auto& movement = update.UpdatedMovement;
@@ -680,9 +800,22 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         movementComponent.Variables = movement.Variables;
         movementComponent.Direction = movement.Direction;
 
-        cellIdComponent.Cell = movement.CellId;
-        cellIdComponent.WorldSpaceId = movement.WorldSpaceId;
-        cellIdComponent.CenterCoords = GridCellCoords::CalculateGridCellCoords(movement.Position.x, movement.Position.y);
+        if (movement.WorldSpaceId || movement.CellId)
+        {
+            cellIdComponent.Cell = movement.CellId;
+            cellIdComponent.WorldSpaceId = movement.WorldSpaceId;
+            if (movement.WorldSpaceId)
+                cellIdComponent.CenterCoords = GridCellCoords::CalculateGridCellCoords(movement.Position.x, movement.Position.y);
+            else
+                cellIdComponent.CenterCoords.Reset();
+        }
+        else if (cellIdComponent.WorldSpaceId)
+        {
+            cellIdComponent.CenterCoords = GridCellCoords::CalculateGridCellCoords(movement.Position.x, movement.Position.y);
+        }
+
+        if (cellIdComponent != previousCellComp)
+            ReconcileEntityForAllObservers(entity);
 
         for (auto& action : update.ActionEvents)
         {
@@ -919,6 +1052,8 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
         const auto pPlayer = acMessage.pPlayer;
 
         pPlayer->SetCharacter(cEntity);
+        if (!pPlayer->GetCellComponent().IsValid() && cellIdComponent.IsValid())
+            pPlayer->SetCellComponent(cellIdComponent);
         pPlayer->GetQuestLogComponent().QuestContent = message.QuestContent;
         characterComponent.PlayerId = pPlayer->GetId();
 
@@ -958,12 +1093,13 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     auto& dispatcher = m_world.GetDispatcher();
     dispatcher.trigger(CharacterSpawnedEvent(cEntity));
 
-    // Guarantee symmetric mutual visibility after coordinated save-load / simultaneous reconnects:
-    // OnCharacterSpawned(cEntity) sends THIS player's avatar to peers in range; also send all ALREADY-spawned
-    // remote player avatars in range of `cellIdComponent` directly back to `acMessage.pPlayer` (client
-    // OnCharacterSpawn deduplicates cleanly via RemoteComponent + FormIdComponent).
+    // Guarantee symmetric mutual visibility & persistent RemotePlayerModel registration on join/reload:
+    // ReconcileAllEntitiesForObserver replicates all in-range NPCs/summons/players to `acMessage.pPlayer`,
+    // and we also seed out-of-range human player models so `acMessage.pPlayer` knows all connected peers immediately.
     if (isPlayer && acMessage.pPlayer)
     {
+        ReconcileAllEntitiesForObserver(acMessage.pPlayer);
+
         auto existingPlayersView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
         for (auto otherEntity : existingPlayersView)
         {
@@ -972,11 +1108,11 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
 
             const auto& otherChar = existingPlayersView.get<CharacterComponent>(otherEntity);
             const auto& otherOwner = existingPlayersView.get<OwnerComponent>(otherEntity);
-            const auto& otherCell = existingPlayersView.get<CellIdComponent>(otherEntity);
             if (!otherChar.IsPlayer() || otherOwner.GetOwner() == acMessage.pPlayer)
                 continue;
 
-            if (otherCell.IsInRange(cellIdComponent, false))
+            const uint32_t otherServerId = World::ToInteger(otherEntity);
+            if (!m_interestRegistry.IsMarkedInRange(acMessage.pPlayer->GetId(), otherServerId))
             {
                 CharacterSpawnRequest spawnMessage{};
                 Serialize(m_world, otherEntity, &spawnMessage);
@@ -1006,8 +1142,17 @@ void CharacterService::TransferOwnership(Player* apPlayer, const uint32_t acServ
     const uint64_t newEpoch = characterOwnerComponent.SetOwner(apPlayer, nowMs);
     characterOwnerComponent.InvalidOwners.clear();
 
+    m_interestRegistry.UnmarkInRange(apPlayer->GetId(), acServerId);
+
     if (pPreviousOwner && pPreviousOwner != apPlayer)
     {
+        if (const auto* pCellComp = m_world.try_get<CellIdComponent>(*it))
+        {
+            const auto* pCharComp = m_world.try_get<CharacterComponent>(*it);
+            if (pCellComp->IsInRange(pPreviousOwner->GetCellComponent(), pCharComp ? pCharComp->IsDragon() : false))
+                m_interestRegistry.MarkInRange(pPreviousOwner->GetId(), acServerId);
+        }
+
         NotifyRelinquishControl notify{};
         notify.ServerId = acServerId;
         notify.OwnershipEpoch = newEpoch;
@@ -1177,6 +1322,8 @@ void CharacterService::ProcessMovementChanges() const noexcept
             auto& update = message.Updates[World::ToInteger(entity)];
             auto& movement = update.UpdatedMovement;
 
+            movement.CellId = cellIdComponent.Cell;
+            movement.WorldSpaceId = cellIdComponent.WorldSpaceId;
             movement.Position = movementComponent.Position;
 
             movement.Rotation.x = movementComponent.Rotation.x;

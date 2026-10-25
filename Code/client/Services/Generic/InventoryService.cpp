@@ -320,6 +320,9 @@ void InventoryService::RunWeaponStateUpdates() noexcept
     {
         const auto& formIdComponent = view.get<FormIdComponent>(entity);
         Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+        if (!pActor)
+            continue;
+
         auto& localComponent = view.get<LocalComponent>(entity);
 
         bool isWeaponDrawn = pActor->actorState.IsWeaponDrawn();
@@ -367,25 +370,27 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
         if (pActor->GetExtension()->nakedDeadline == cNoDeadline)
             continue;
 
+        const char* pBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
+
         if (pActor->IsDead() || !pActor->ShouldWearBodyPiece())
         {
             pActor->GetExtension()->nakedDeadline = cNoDeadline;
-            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check is irrelevant {}", pActor->formID, pActor->baseForm->GetName());
+            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check is irrelevant {}", pActor->formID, pBaseName);
             continue; 
         }
 
         if (now < pActor->GetExtension()->nakedDeadline + cDelayAfterAssignment)
         {
-            spdlog::debug(__FUNCTION__ ": actorId {:X} with naked check deadline {}", pActor->formID, pActor->baseForm->GetName());
+            spdlog::debug(__FUNCTION__ ": actorId {:X} with naked check deadline {}", pActor->formID, pBaseName);
             continue; 
         }
 
         else
         {
-            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check deadline expires {}", pActor->formID, pActor->baseForm->GetName());
+            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check deadline expires {}", pActor->formID, pBaseName);
             if (m_world.try_get<WaitingForAssignmentComponent>(entity))
             {
-                spdlog::debug(__FUNCTION__ ": but still WaitingForAssignment", pActor->formID, pActor->baseForm->GetName());
+                spdlog::debug(__FUNCTION__ ": but still WaitingForAssignment", pActor->formID, pBaseName);
                 pActor->GetExtension()->SetNakedDeadline();
                 continue;
             }
@@ -395,7 +400,7 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
 
         if (pActor->GetExtension()->IsPlayer() || pActor->IsDead())
         {
-            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check skipped (player or dead) {}", pActor->formID, pActor->baseForm->GetName());
+            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check skipped (player or dead) {}", pActor->formID, pBaseName);
             continue;
         }
 
@@ -410,7 +415,7 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
         TESNPC* pBase = Cast<TESNPC>(pActor->baseForm);
         if (!pActor->IsWearingBodyPiece() && pBase)
         {
-            spdlog::warn(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pActor->baseForm->GetName());
+            spdlog::warn(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pBaseName);
             pActor->EquipOutfit();
         }
     }

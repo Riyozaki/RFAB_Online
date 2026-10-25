@@ -6,6 +6,7 @@ void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
     FormId.Serialize(aWriter);
     BaseId.Serialize(aWriter);
     CellId.Serialize(aWriter);
+    WorldSpaceId.Serialize(aWriter);
     Position.Serialize(aWriter);
     Rotation.Serialize(aWriter);
     aWriter.WriteBits(ChangeFlags, 32);
@@ -20,6 +21,7 @@ void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
     Serialization::WriteBool(aWriter, IsPlayer);
     Serialization::WriteBool(aWriter, IsWeaponDrawn);
     Serialization::WriteBool(aWriter, IsPlayerSummon);
+    Serialization::WriteBool(aWriter, IsDragon);
 }
 
 void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -30,6 +32,7 @@ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
     FormId.Deserialize(aReader);
     BaseId.Deserialize(aReader);
     CellId.Deserialize(aReader);
+    WorldSpaceId.Deserialize(aReader);
     Position.Deserialize(aReader);
     Rotation.Deserialize(aReader);
 
@@ -55,4 +58,5 @@ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
     IsPlayer = Serialization::ReadBool(aReader);
     IsWeaponDrawn = Serialization::ReadBool(aReader);
     IsPlayerSummon = Serialization::ReadBool(aReader);
+    IsDragon = Serialization::ReadBool(aReader);
 }

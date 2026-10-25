@@ -186,37 +186,38 @@ void Actor::QueueUpdate() noexcept
     pSetting->data = originalValue;
 }
 
-GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
+GamePtr<Actor> Actor::CreateInCell(
+    TESNPC* apBaseForm,
+    TESObjectCELL* apCell,
+    TESWorldSpace* apWorldSpace,
+    const NiPoint3& acPosition,
+    const NiPoint3& acRotation) noexcept
 {
-    if (!apBaseForm)
-        return nullptr;
-
-    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
-    if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+    if (!apBaseForm || !apCell || !apCell->loadedCellData)
         return nullptr;
 
     auto pActor = New();
     if (!pActor)
         return nullptr;
 
-    // Prevent saving
+    if ((apBaseForm->formID & 0xFF000000u) == 0xFF000000u)
+    {
+        apBaseForm->SetSkipSaveFlag(true);
+        apBaseForm->UnsetChanged(0xFFFFFFFF);
+    }
+
     pActor->SetSkipSaveFlag(true);
     pActor->GetExtension()->SetRemote(true);
 
-    auto pCell = pPlayer->parentCell;
-    const auto pWorldSpace = pPlayer->GetWorldSpace();
-
     pActor->SetLevelMod(4);
-    pActor->SetParentCell(pCell);
+    pActor->SetParentCell(apCell);
     pActor->SetBaseForm(apBaseForm);
 
-    auto position = pPlayer->position;
-    auto rotation = pPlayer->rotation;
+    auto position = acPosition;
+    auto rotation = acRotation;
 
-    if (pCell && !(pCell->cellFlags[0] & 1))
-        pCell = nullptr;
-
-    ModManager::Get()->Spawn(position, rotation, pCell, pWorldSpace, pActor);
+    TESObjectCELL* pSpawnCell = (apCell->cellFlags[0] & 1) ? apCell : nullptr;
+    ModManager::Get()->Spawn(position, rotation, pSpawnCell, apWorldSpace, pActor);
 
     pActor->ForcePosition(position);
 
@@ -229,6 +230,18 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
     pActor->UnsetChanged(0xFFFFFFFF);
 
     return pActor;
+}
+
+GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
+{
+    if (!apBaseForm)
+        return nullptr;
+
+    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
+    if (!pPlayer || !pPlayer->parentCell || !pPlayer->parentCell->loadedCellData)
+        return nullptr;
+
+    return CreateInCell(apBaseForm, pPlayer->parentCell, pPlayer->GetWorldSpace(), pPlayer->position, pPlayer->rotation);
 }
 
 GamePtr<Actor> Actor::Spawn(uint32_t aBaseFormId) noexcept

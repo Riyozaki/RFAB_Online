@@ -2,11 +2,14 @@
 
 #include <Events/PacketEvent.h>
 #include <Structs/ActorData.h>
+#include <CoopWorldView.h>
 
 struct UpdateEvent;
 struct CharacterInteriorCellChangeEvent;
 struct CharacterSpawnedEvent;
+struct PlayerLeaveEvent;
 struct World;
+struct Player;
 struct AssignCharacterRequest;
 struct CharacterSpawnRequest;
 struct ClientReferencesMoveRequest;
@@ -37,8 +40,12 @@ struct CharacterService
 
     static void Serialize(World& aRegistry, entt::entity aEntity, CharacterSpawnRequest* apSpawnRequest) noexcept;
 
+    void ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept;
+    void ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept;
+
 protected:
     void OnUpdate(const UpdateEvent& acEvent) const noexcept;
+    void OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noexcept;
     void OnCharacterExteriorCellChange(const CharacterExteriorCellChangeEvent& acEvent) const noexcept;
     void OnCharacterInteriorCellChange(const CharacterInteriorCellChangeEvent& acEvent) const noexcept;
     void OnAssignCharacterRequest(const PacketEvent<AssignCharacterRequest>& acMessage) const noexcept;
@@ -68,8 +75,10 @@ protected:
 
 private:
     World& m_world;
+    mutable CoopWorldView::ServerInterestRegistry m_interestRegistry{};
 
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_playerLeaveConnection;
     entt::scoped_connection m_exteriorCellChangeEventConnection;
     entt::scoped_connection m_interiorCellChangeEventConnection;
     entt::scoped_connection m_characterAssignRequestConnection;

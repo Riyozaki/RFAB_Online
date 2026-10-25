@@ -308,16 +308,21 @@ void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
 
 void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
     if (!pPlayerComponent)
         return;
 
-    const auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
+    const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(aEntity);
+    if (!pFormIdComponent)
+        return;
 
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+    Actor* pActor = Cast<Actor>(TESForm::GetById(pFormIdComponent->Id));
     if (!pActor)
     {
-        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, formIdComponent.Id);
+        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, pFormIdComponent->Id);
         return;
     }
 
@@ -332,10 +337,15 @@ void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::enti
 
 void OverlayService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
-    const auto& playerComponent = m_world.get<PlayerComponent>(aEntity);
+    if (!m_pOverlay)
+        return;
+
+    const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
+    if (!pPlayerComponent)
+        return;
 
     auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, playerComponent.Id);
+    pArguments->SetInt(0, pPlayerComponent->Id);
 
     m_pOverlay->ExecuteAsync("setPlayer3dUnloaded", pArguments);
 }
