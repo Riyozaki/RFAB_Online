@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$VersionTag = "v1.2.0-hotfix.2",
     [string]$BuildMode = "releasedbg"
 )
