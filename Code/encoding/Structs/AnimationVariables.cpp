@@ -1,5 +1,6 @@
 #include <Structs/AnimationVariables.h>
 #include <TiltedCore/Serialization.hpp>
+#include <CoopPacketSafety.h>
 #include <iostream>
 
 bool AnimationVariables::operator==(const AnimationVariables& acRhs) const noexcept
@@ -110,9 +111,16 @@ void AnimationVariables::GenerateDiff(const AnimationVariables& aPrevious, Tilte
 // 
 void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader)
 {
-    size_t booleansSize = TiltedPhoques::Serialization::ReadVarInt(aReader);
-    size_t integersSize = TiltedPhoques::Serialization::ReadVarInt(aReader);
-    size_t floatsSize   = TiltedPhoques::Serialization::ReadVarInt(aReader);
+    const size_t booleansSize = CoopPacketSafety::ClampCollectionCount(
+        TiltedPhoques::Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxAnimVars);
+    const size_t integersSize = CoopPacketSafety::ClampCollectionCount(
+        TiltedPhoques::Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxAnimVars);
+    const size_t floatsSize = CoopPacketSafety::ClampCollectionCount(
+        TiltedPhoques::Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxAnimVars);
+
     if (Integers.size() != integersSize)
         Integers.assign(integersSize, 0);
     if (Floats.size() != floatsSize)
@@ -126,9 +134,9 @@ void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader)
 
     auto biter = changedVector.begin() + booleansSize;
     for (size_t i = 0; i < integersSize; i++)
-        if (*biter++)
-            Integers[i] = TiltedPhoques::Serialization::ReadVarInt(aReader);
+        if (*biter++ && !aReader.Eof())
+            Integers[i] = TiltedPhoques::Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     for (size_t i = 0; i < floatsSize; i++)
-        if (*biter++)
+        if (*biter++ && !aReader.Eof())
             Floats[i] = TiltedPhoques::Serialization::ReadFloat(aReader);
 }

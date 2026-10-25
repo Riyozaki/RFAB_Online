@@ -20,7 +20,7 @@ struct NotifyPlayerCellChanged final : ServerMessage
 
     bool operator==(const NotifyPlayerCellChanged& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && PlayerId == acRhs.PlayerId && WorldSpaceId == acRhs.WorldSpaceId && CellId == acRhs.CellId; }
 
-    uint32_t PlayerId;
+    uint32_t PlayerId{};
     GameId WorldSpaceId;
     GameId CellId;
 };

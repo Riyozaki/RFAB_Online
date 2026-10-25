@@ -23,6 +23,6 @@ struct NotifyPartyJoined final : ServerMessage
     bool operator==(const NotifyPartyJoined& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && PlayerIds == acRhs.PlayerIds && IsLeader == acRhs.IsLeader && LeaderPlayerId == acRhs.LeaderPlayerId; }
 
     Vector<uint32_t> PlayerIds{};
-    bool IsLeader;
-    uint32_t LeaderPlayerId;
+    bool IsLeader{};
+    uint32_t LeaderPlayerId{};
 };

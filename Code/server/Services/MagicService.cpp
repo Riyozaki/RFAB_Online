@@ -1,7 +1,9 @@
 #include <Services/MagicService.h>
 
+#include <Components.h>
 #include <GameServer.h>
 #include <World.h>
+#include <CoopPacketSafety.h>
 #include <algorithm>
 #include <cmath>
 
@@ -26,18 +28,24 @@ MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher) noexcep
 void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const auto entity = static_cast<entt::entity>(message.CasterId);
+    if (!m_world.valid(entity))
+        return;
 
-    NotifySpellCast notify;
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(entity))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+            return;
+    }
+
+    NotifySpellCast notify{};
     notify.CasterId = message.CasterId;
     notify.SpellFormId = message.SpellFormId;
     notify.CastingSource = message.CastingSource;
     notify.IsDualCasting = message.IsDualCasting;
     notify.DesiredTarget = message.DesiredTarget;
-    notify.EffectivenessMult = std::isfinite(message.EffectivenessMult)
-                                   ? std::clamp(message.EffectivenessMult, 0.05f, 10.0f)
-                                   : 1.0f;
+    notify.EffectivenessMult = CoopPacketSafety::SanitizeFiniteFloat(message.EffectivenessMult, 0.05f, 10.0f, 1.0f);
 
-    const auto entity = static_cast<entt::entity>(message.CasterId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }
@@ -45,12 +53,20 @@ void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMes
 void MagicService::OnInterruptCastRequest(const PacketEvent<InterruptCastRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const auto entity = static_cast<entt::entity>(message.CasterId);
+    if (!m_world.valid(entity))
+        return;
 
-    NotifyInterruptCast notify;
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(entity))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+            return;
+    }
+
+    NotifyInterruptCast notify{};
     notify.CasterId = message.CasterId;
     notify.CastingSource = message.CastingSource;
 
-    const auto entity = static_cast<entt::entity>(message.CasterId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }
@@ -58,18 +74,23 @@ void MagicService::OnInterruptCastRequest(const PacketEvent<InterruptCastRequest
 void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const auto entity = static_cast<entt::entity>(message.TargetId);
+    if (!m_world.valid(entity))
+        return;
 
-    NotifyAddTarget notify;
+    if (!std::isfinite(message.Magnitude))
+        return;
+
+    NotifyAddTarget notify{};
     notify.TargetId = message.TargetId;
     notify.CasterId = message.CasterId;
     notify.SpellId = message.SpellId;
     notify.EffectId = message.EffectId;
-    notify.Magnitude = message.Magnitude;
+    notify.Magnitude = CoopPacketSafety::SanitizeFiniteFloat(message.Magnitude, -100000.0f, 100000.0f, 0.0f);
     notify.IsDualCasting = message.IsDualCasting;
     notify.ApplyHealPerkBonus = message.ApplyHealPerkBonus;
     notify.ApplyStaminaPerkBonus = message.ApplyStaminaPerkBonus;
 
-    const auto entity = static_cast<entt::entity>(message.TargetId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }
@@ -77,14 +98,14 @@ void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMes
 void MagicService::OnRemoveSpellRequest(const PacketEvent<RemoveSpellRequest>& acMessage) const noexcept
 {
     const auto& message = acMessage.Packet;
-    
-    NotifyRemoveSpell notify;
+    const auto entity = static_cast<entt::entity>(message.TargetId);
+    if (!m_world.valid(entity))
+        return;
+
+    NotifyRemoveSpell notify{};
     notify.TargetId = message.TargetId;
     notify.SpellId = message.SpellId;
 
-    //spdlog::info(__FUNCTION__ ": TargetId: {}, Spell baseId: {}", notify.TargetId, notify.SpellId.BaseId);
-
-    const auto entity = static_cast<entt::entity>(message.TargetId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }

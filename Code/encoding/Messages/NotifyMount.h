@@ -16,6 +16,6 @@ struct NotifyMount final : ServerMessage
 
     bool operator==(const NotifyMount& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && RiderId == acRhs.RiderId && MountId == acRhs.MountId; }
 
-    uint32_t RiderId;
-    uint32_t MountId;
+    uint32_t RiderId{};
+    uint32_t MountId{};
 };

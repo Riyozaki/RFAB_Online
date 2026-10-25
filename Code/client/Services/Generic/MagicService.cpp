@@ -144,15 +144,26 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
     if (!m_transport.IsConnected())
         return;
 
-    if (!acEvent.pCaster->pCasterActor || !acEvent.pCaster->pCasterActor->GetNiNode())
+    if (!acEvent.pCaster || !acEvent.pCaster->pCasterActor || !acEvent.pCaster->pCasterActor->GetNiNode())
     {
         spdlog::warn("Spell cast event has no actor or actor is not loaded");
         return;
     }
 
+    TESForm* pMagicForm = TESForm::GetById(acEvent.SpellId);
+
+    // Summon staves (EnchantmentItem : MagicItem) spawn actors that replicate through CharacterService;
+    // syncing SpellCastEvent on peers spawns a second hostile duplicate summon (#894).
+    if (const MagicItem* pMagicItem = Cast<MagicItem>(pMagicForm);
+        pMagicItem && pMagicItem->HasSummonEffect())
+    {
+        spdlog::debug("Skipping SpellCastEvent sync for summon magic item {:X}", acEvent.SpellId);
+        return;
+    }
+
     // Sync concentration spells (including targeted ally concentration heals/buffs like Healing Hands,
     // while excluding self-only concentration heals so puppets don't double-heal themselves), wards, and invisibility.
-    if (SpellItem* pSpell = Cast<SpellItem>(TESForm::GetById(acEvent.SpellId)))
+    if (SpellItem* pSpell = Cast<SpellItem>(pMagicForm))
     {
         bool isSelfOnlyHeal = false;
         if (pSpell->IsHealingSpell())

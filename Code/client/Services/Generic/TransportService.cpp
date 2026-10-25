@@ -25,6 +25,8 @@
 
 #include <ScriptExtender.h>
 #include <Services/DiscordService.h>
+#include <CoopPacketSafety.h>
+#include <Utils.h>
 
 // #include <imgui_internal.h>
 
@@ -225,6 +227,41 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
         m_connected = true;
 
         m_world.SetServerSettings(acMessage.Settings);
+
+        if (auto* const cpModManager = ModManager::Get())
+        {
+            std::vector<std::string> serverModNames;
+            serverModNames.reserve(acMessage.UserMods.ModList.size());
+            for (const auto& m : acMessage.UserMods.ModList)
+                serverModNames.emplace_back(m.Filename.c_str(), m.Filename.size());
+
+            std::vector<std::string> clientModNames;
+            for (auto* pMod : cpModManager->mods)
+            {
+                if (pMod && pMod->IsLoaded() && pMod->filename[0] != '\0')
+                    clientModNames.emplace_back(pMod->filename);
+            }
+
+            const auto audit = CoopPacketSafety::AuditModListCompatibility(serverModNames, clientModNames);
+            if (!audit.Compatible)
+            {
+                spdlog::warn("[RFAB LoadOrder] {} (serverRfab={}, clientRfab={}, missingCritical={}, orderMismatches={})",
+                    audit.SummaryRu,
+                    audit.ServerHasRfab,
+                    audit.ClientHasRfab,
+                    audit.MissingCriticalMods.size(),
+                    audit.OrderMismatchCount);
+                if (!audit.SummaryRu.empty())
+                    Utils::ShowHudMessage(String(audit.SummaryRu.c_str()));
+            }
+            else
+            {
+                spdlog::info("[RFAB LoadOrder] Mod list handshake verified cleanly (serverMods={}, clientMods={}, rfabActive={})",
+                    serverModNames.size(),
+                    clientModNames.size(),
+                    audit.ClientHasRfab);
+            }
+        }
 
         m_dispatcher.trigger(acMessage.UserMods);
         m_dispatcher.trigger(acMessage.Settings);

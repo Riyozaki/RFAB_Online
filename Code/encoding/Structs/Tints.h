@@ -10,9 +10,9 @@ struct Tints
     struct Entry
     {
         CachedString Name;
-        float Alpha;
-        uint32_t Color;
-        uint32_t Type;
+        float Alpha{};
+        uint32_t Color{};
+        uint32_t Type{};
 
         bool operator==(const Entry& acRhs) const noexcept;
         bool operator!=(const Entry& acRhs) const noexcept;

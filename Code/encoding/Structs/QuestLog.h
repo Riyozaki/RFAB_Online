@@ -10,7 +10,7 @@ struct QuestLog
     struct Entry
     {
         GameId Id;
-        uint16_t Stage;
+        uint16_t Stage{};
 
         bool operator==(const Entry& acRhs) const noexcept { return Id == acRhs.Id && Stage == acRhs.Stage; }
 

@@ -19,5 +19,5 @@ struct NotifyQuestSceneUpdate final : ServerMessage
 
     GameId SceneId;
     GameId QuestId;
-    uint8_t SceneType; // BEGIN (0) or END (1)
+    uint8_t SceneType{}; // BEGIN (0) or END (1)
 };

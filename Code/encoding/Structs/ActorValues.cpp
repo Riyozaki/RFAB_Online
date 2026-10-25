@@ -1,11 +1,13 @@
 #include <Structs/ActorValues.h>
 #include <TiltedCore/Serialization.hpp>
+#include <CoopPacketSafety.h>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
 bool ActorValues::operator==(const ActorValues& acRhs) const noexcept
 {
-    return ActorValuesList == acRhs.ActorValuesList;
+    return ActorValuesList == acRhs.ActorValuesList && ActorMaxValuesList == acRhs.ActorMaxValuesList;
 }
 
 bool ActorValues::operator!=(const ActorValues& acRhs) const noexcept
@@ -15,16 +17,24 @@ bool ActorValues::operator!=(const ActorValues& acRhs) const noexcept
 
 void ActorValues::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    Serialization::WriteVarInt(aWriter, ActorValuesList.size());
+    const size_t valCount = std::min(ActorValuesList.size(), CoopPacketSafety::kMaxActorValues);
+    Serialization::WriteVarInt(aWriter, valCount);
+    size_t written = 0;
     for (auto& value : ActorValuesList)
     {
+        if (written++ >= valCount)
+            break;
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
 
-    Serialization::WriteVarInt(aWriter, ActorMaxValuesList.size());
+    const size_t maxValCount = std::min(ActorMaxValuesList.size(), CoopPacketSafety::kMaxActorValues);
+    Serialization::WriteVarInt(aWriter, maxValCount);
+    written = 0;
     for (auto& value : ActorMaxValuesList)
     {
+        if (written++ >= maxValCount)
+            break;
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
@@ -32,19 +42,23 @@ void ActorValues::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexce
 
 void ActorValues::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    auto count = Serialization::ReadVarInt(aReader);
-    for (int i = 0; i < count; i++)
+    const size_t count = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxActorValues);
+    for (size_t i = 0; i < count && !aReader.Eof(); i++)
     {
-        auto key = Serialization::ReadVarInt(aReader);
-        auto value = Serialization::ReadFloat(aReader);
+        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+        const float value = Serialization::ReadFloat(aReader);
         ActorValuesList.insert({key, value});
     }
 
-    auto maxCount = Serialization::ReadVarInt(aReader);
-    for (int i = 0; i < maxCount; i++)
+    const size_t maxCount = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxActorValues);
+    for (size_t i = 0; i < maxCount && !aReader.Eof(); i++)
     {
-        auto key = Serialization::ReadVarInt(aReader);
-        auto value = Serialization::ReadFloat(aReader);
+        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+        const float value = Serialization::ReadFloat(aReader);
         ActorMaxValuesList.insert({key, value});
     }
 }

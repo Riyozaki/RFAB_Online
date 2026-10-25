@@ -1,4 +1,5 @@
 #include <Messages/ShiftGridCellRequest.h>
+#include <algorithm>
 
 void ShiftGridCellRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
@@ -6,11 +7,12 @@ void ShiftGridCellRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) 
     PlayerCell.Serialize(aWriter);
     CenterCoords.Serialize(aWriter);
 
-    aWriter.WriteBits(Cells.size() & 0xFF, 8);
+    const size_t count = std::min<size_t>(Cells.size(), 255);
+    aWriter.WriteBits(count & 0xFF, 8);
 
-    for (const auto& cell : Cells)
+    for (size_t i = 0; i < count; ++i)
     {
-        cell.Serialize(aWriter);
+        Cells[i].Serialize(aWriter);
     }
 }
 
@@ -25,10 +27,13 @@ void ShiftGridCellRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader
     uint64_t count = 0;
     aReader.ReadBits(count, 8);
 
-    Cells.resize(count);
+    Cells.clear();
+    Cells.reserve(count & 0xFF);
 
-    for (auto i = 0u; i < count; ++i)
+    for (size_t i = 0; i < (count & 0xFF) && !aReader.Eof(); ++i)
     {
-        Cells[i].Deserialize(aReader);
+        GameId cell{};
+        cell.Deserialize(aReader);
+        Cells.push_back(cell);
     }
 }

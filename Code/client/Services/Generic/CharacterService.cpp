@@ -102,6 +102,38 @@ bool IsNetworkCreatedActor(const Actor* apActor) noexcept
            ((apActor->baseForm->formID & 0xFF000000u) == 0xFF000000u);
 }
 
+std::vector<uint32_t>& GetDeferredDialogueDeletes() noexcept
+{
+    static std::vector<uint32_t> s_deferred;
+    return s_deferred;
+}
+
+bool IsDialogueMenuCurrentlyOpen() noexcept
+{
+    if (auto* pUi = UI::Get())
+        return pUi->GetMenuOpen(BSFixedString("Dialogue Menu"));
+    return false;
+}
+
+void FlushDeferredDialogueDeletes() noexcept
+{
+    auto& queue = GetDeferredDialogueDeletes();
+    if (queue.empty() || IsDialogueMenuCurrentlyOpen())
+        return;
+
+    const auto pending = std::move(queue);
+    queue.clear();
+
+    for (const uint32_t formId : pending)
+    {
+        if (formId == 0 || formId == 0x14 || (formId & 0xFF000000u) != 0xFF000000u)
+            continue;
+
+        if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
+            pActor->Delete();
+    }
+}
+
 void PurgeDynamicActorCleanly(Actor* apActor) noexcept
 {
     if (!apActor || apActor->formID == 0x14)
@@ -126,7 +158,20 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
     // while Delete() queues a deferred Disable+Delete task into BSTaskPool (SE 36016) that then
     // crashes at SkyrimSE.exe+0x6EDFC2 (SE 40691, [RCX + 0x1F0] Actor::race) when flushed.
     if ((apActor->formID & 0xFF000000u) == 0xFF000000u)
-        apActor->Delete();
+    {
+        // SkyMP worldCleanerService guard: calling Delete() on a dynamic Actor while Dialogue Menu is open
+        // can crash MenuTopicManager in SkyrimSE.exe. Defer the final Delete() until dialogue closes.
+        if (IsDialogueMenuCurrentlyOpen())
+        {
+            auto& deferred = GetDeferredDialogueDeletes();
+            if (std::find(deferred.begin(), deferred.end(), apActor->formID) == deferred.end())
+                deferred.push_back(apActor->formID);
+        }
+        else
+        {
+            apActor->Delete();
+        }
+    }
 }
 
 void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
@@ -687,6 +732,7 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
 void CharacterService::BeginEngineWorldLoad() noexcept
 {
     m_engineWorldLoadInProgress = true;
+    GetDeferredDialogueDeletes().clear();
     DetachAllActorsForEngineLoad();
 }
 
@@ -3017,6 +3063,11 @@ void CharacterService::ReconcileRemoteWorldViews() const noexcept
     if (m_savePurgeActive || m_engineWorldLoadInProgress)
         return;
 
+    FlushDeferredDialogueDeletes();
+
+    constexpr size_t kMaxRemoteNpcSpawnsPerFrame = 4;
+    size_t nonPrioritySpawnsThisFrame = 0;
+
     const CoopWorldView::ObserverState obs = BuildLocalObserverState();
 
     auto remoteView = m_world.view<RemoteComponent>();
@@ -3060,8 +3111,15 @@ void CharacterService::ReconcileRemoteWorldViews() const noexcept
             DematerializeRemoteView(entity, &model);
             break;
         case CoopWorldView::ViewDecision::kMaterialize:
-            MaterializeRemoteView(entity, model, pTargetCell, pTargetWs);
+        {
+            const bool isHighPriority = model.SpawnRequest.IsPlayer || model.SpawnRequest.IsDragon;
+            if (!isHighPriority && nonPrioritySpawnsThisFrame >= kMaxRemoteNpcSpawnsPerFrame)
+                break;
+
+            if (MaterializeRemoteView(entity, model, pTargetCell, pTargetWs) != nullptr && !isHighPriority)
+                ++nonPrioritySpawnsThisFrame;
             break;
+        }
         case CoopWorldView::ViewDecision::kKeepMaterialized:
         case CoopWorldView::ViewDecision::kKeepDematerialized:
         default:

@@ -1,5 +1,6 @@
 #include <Services/CharacterService.h>
 #include <Components.h>
+#include <CoopPacketSafety.h>
 #include <GameServer.h>
 #include <World.h>
 
@@ -142,14 +143,28 @@ void CharacterService::Serialize(World& aRegistry, entt::entity aEntity, Charact
         apSpawnRequest->WorldSpaceId = pCellIdComponent->WorldSpaceId;
     }
 
-    auto& animationComponent = aRegistry.get<AnimationComponent>(aEntity);
-    apSpawnRequest->ActionsToReplay = animationComponent.ActionsReplayCache.FormRefinedReplayChain();
+    if (auto* pAnimationComponent = aRegistry.try_get<AnimationComponent>(aEntity))
+    {
+        apSpawnRequest->ActionsToReplay = pAnimationComponent->ActionsReplayCache.FormRefinedReplayChain();
+    }
 }
 
 void CharacterService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noexcept
 {
-    if (acEvent.pPlayer)
-        m_interestRegistry.RemoveObserver(acEvent.pPlayer->GetId());
+    if (!acEvent.pPlayer)
+        return;
+
+    m_interestRegistry.RemoveObserver(acEvent.pPlayer->GetId());
+
+    // Purge disconnecting Player* from every OwnerComponent::InvalidOwners list to prevent
+    // dangling pointers and ABA address-reuse blacklisting on reconnect.
+    auto ownerView = m_world.view<OwnerComponent>();
+    for (auto entity : ownerView)
+    {
+        auto& ownerComp = ownerView.get<OwnerComponent>(entity);
+        auto& invalid = ownerComp.InvalidOwners;
+        invalid.erase(std::remove(invalid.begin(), invalid.end(), acEvent.pPlayer), invalid.end());
+    }
 }
 
 void CharacterService::ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept
@@ -576,6 +591,11 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
 
             GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer);
         }
+
+        // Normal range/cell relinquish from a live materialized owner: clear stale historical blacklists
+        // so previous owners who walked back into range remain eligible (TiltedEvolution 1660eb0c),
+        // while keeping cascade blacklists intact when `hasValidHandoffCoords == false` (DeclineGrant).
+        pCharacterOwnerComponent->InvalidOwners.clear();
     }
 
     pCharacterOwnerComponent->InvalidOwners.push_back(acMessage.pPlayer);
@@ -832,6 +852,14 @@ void CharacterService::OnReferencesMoveRequest(const PacketEvent<ClientReference
         auto& update = entry.second;
         auto& movement = update.UpdatedMovement;
 
+        if (!std::isfinite(movement.Position.x) || !std::isfinite(movement.Position.y) || !std::isfinite(movement.Position.z) ||
+            std::fabs(movement.Position.x) > 4.0e6f || std::fabs(movement.Position.y) > 4.0e6f || std::fabs(movement.Position.z) > 4.0e6f ||
+            !std::isfinite(movement.Rotation.x) || !std::isfinite(movement.Rotation.y) || !std::isfinite(movement.Direction))
+        {
+            spdlog::warn("Rejected non-finite/out-of-bounds movement packet for {:X} from {:X}", entry.first, acMessage.pPlayer->GetConnectionId());
+            continue;
+        }
+
         movementComponent.Position = movement.Position;
         movementComponent.Rotation = glm::vec3(movement.Rotation.x, 0.f, movement.Rotation.y);
         movementComponent.Variables = movement.Variables;
@@ -963,12 +991,12 @@ void CharacterService::OnRequestRespawn(const PacketEvent<RequestRespawn>& acMes
 
     auto& ownerComponent = view.get<OwnerComponent>(*it);
 
-    // Replay cache needs to be cleared when a character respawns
-    if (auto* pAnimationComponent = m_world.try_get<AnimationComponent>(*it))
-        pAnimationComponent->ActionsReplayCache.Clear();
-
     if (ownerComponent.GetOwner() == acMessage.pPlayer)
     {
+        // Replay cache needs to be cleared when the authoritative owner respawns a character
+        if (auto* pAnimationComponent = m_world.try_get<AnimationComponent>(*it))
+            pAnimationComponent->ActionsReplayCache.Clear();
+
         if (!acMessage.Packet.AppearanceBuffer.empty())
         {
             auto& characterComponent = view.get<CharacterComponent>(*it);
@@ -982,9 +1010,9 @@ void CharacterService::OnRequestRespawn(const PacketEvent<RequestRespawn>& acMes
         if (!GameServer::Get()->SendToPlayersInRange(notify, *it, acMessage.GetSender()))
             spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
     }
-    else
+    else if (acMessage.GetSender())
     {
-        CharacterSpawnRequest message;
+        CharacterSpawnRequest message{};
         Serialize(m_world, *it, &message);
 
         acMessage.GetSender()->Send(message);
@@ -996,8 +1024,12 @@ void CharacterService::OnSyncExperienceRequest(const PacketEvent<SyncExperienceR
     if (!bEnableXpSync)
         return;
 
-    NotifySyncExperience notify;
-    notify.Experience = acMessage.Packet.Experience;
+    const float sanitizedXp = CoopPacketSafety::SanitizeFiniteFloat(acMessage.Packet.Experience, 0.0f, 1'000'000.0f, 0.0f);
+    if (sanitizedXp <= 0.0f)
+        return;
+
+    NotifySyncExperience notify{};
+    notify.Experience = sanitizedXp;
 
     const auto& partyComponent = acMessage.pPlayer->GetParty();
     if (partyComponent.JoinedPartyId.has_value())
@@ -1030,12 +1062,20 @@ void CharacterService::OnSyncRfabExperienceRequest(const PacketEvent<SyncRfabExp
 void CharacterService::OnDialogueRequest(const PacketEvent<DialogueRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity cEntity = static_cast<entt::entity>(message.ServerId);
+    if (!m_world.valid(cEntity))
+        return;
+
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(cEntity))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+            return;
+    }
 
     NotifyDialogue notify{};
     notify.ServerId = message.ServerId;
     notify.SoundFilename = message.SoundFilename;
 
-    const entt::entity cEntity = static_cast<entt::entity>(message.ServerId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }
@@ -1043,12 +1083,20 @@ void CharacterService::OnDialogueRequest(const PacketEvent<DialogueRequest>& acM
 void CharacterService::OnSubtitleRequest(const PacketEvent<SubtitleRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity cEntity = static_cast<entt::entity>(message.ServerId);
+    if (!m_world.valid(cEntity))
+        return;
+
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(cEntity))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+            return;
+    }
 
     NotifySubtitle notify{};
     notify.ServerId = message.ServerId;
     notify.Text = message.Text;
 
-    const entt::entity cEntity = static_cast<entt::entity>(message.ServerId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }

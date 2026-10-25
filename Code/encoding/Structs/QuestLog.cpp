@@ -3,6 +3,7 @@
 
 #include <TiltedCore/Serialization.hpp>
 #include <Structs/Mods.h>
+#include <CoopPacketSafety.h>
 #include <algorithm>
 
 using TiltedPhoques::Serialization;
@@ -19,9 +20,11 @@ bool QuestLog::operator!=(const QuestLog& acRhs) const noexcept
 
 void QuestLog::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    aWriter.WriteBits(Entries.size() & 0xFFFF, 16);
-    for (auto& e : Entries)
+    const size_t count = std::min(Entries.size(), CoopPacketSafety::kMaxQuests);
+    aWriter.WriteBits(count & 0xFFFF, 16);
+    for (size_t i = 0; i < count; ++i)
     {
+        const auto& e = Entries[i];
         e.Id.Serialize(aWriter);
 
         // id's can be in the full 16 bit range
@@ -31,17 +34,20 @@ void QuestLog::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    uint64_t temp;
+    uint64_t temp = 0;
     aReader.ReadBits(temp, 16);
 
-    const size_t count = temp & 0xFFFF;
-    Entries.resize(count);
+    const size_t count = CoopPacketSafety::ClampCollectionCount(temp & 0xFFFF, CoopPacketSafety::kMaxQuests);
+    Entries.clear();
+    Entries.reserve(std::min<size_t>(count, 256));
 
-    for (auto& e : Entries)
+    for (size_t i = 0; i < count && !aReader.Eof(); ++i)
     {
+        Entry e{};
         e.Id.Deserialize(aReader);
-        aReader.ReadBits(temp, 16);
-
-        e.Stage = temp & 0xFFFF;
+        uint64_t stageBits = 0;
+        aReader.ReadBits(stageBits, 16);
+        e.Stage = stageBits & 0xFFFF;
+        Entries.push_back(e);
     }
 }

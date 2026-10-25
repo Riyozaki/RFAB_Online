@@ -5,11 +5,12 @@ void NotifyPartyInfo::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const
 {
     Serialization::WriteBool(aWriter, IsLeader);
     Serialization::WriteVarInt(aWriter, LeaderPlayerId);
-    aWriter.WriteBits(PlayerIds.size() & 0xFF, 8);
+    const size_t count = PlayerIds.size() > 255 ? 255 : PlayerIds.size();
+    aWriter.WriteBits(count & 0xFF, 8);
 
-    for (auto player : PlayerIds)
+    for (size_t i = 0; i < count; ++i)
     {
-        Serialization::WriteVarInt(aWriter, player);
+        Serialization::WriteVarInt(aWriter, PlayerIds[i]);
     }
 }
 
@@ -21,10 +22,11 @@ void NotifyPartyInfo::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noe
     uint64_t count = 0;
     aReader.ReadBits(count, 8);
 
-    PlayerIds.resize(count);
+    PlayerIds.clear();
+    PlayerIds.reserve(count & 0xFF);
 
-    for (auto i = 0u; i < count; ++i)
+    for (size_t i = 0; i < (count & 0xFF) && !aReader.Eof(); ++i)
     {
-        PlayerIds[i] = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+        PlayerIds.push_back(Serialization::ReadVarInt(aReader) & 0xFFFFFFFF);
     }
 }

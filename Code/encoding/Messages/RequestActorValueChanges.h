@@ -16,6 +16,6 @@ struct RequestActorValueChanges final : ClientMessage
 
     bool operator==(const RequestActorValueChanges& acRhs) const noexcept { return Id == acRhs.Id && Values == acRhs.Values && GetOpcode() == acRhs.GetOpcode(); }
 
-    uint32_t Id;
+    uint32_t Id{};
     TiltedPhoques::Map<uint32_t, float> Values;
 };

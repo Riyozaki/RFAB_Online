@@ -10,8 +10,8 @@ struct Mods
     struct Entry
     {
         String Filename;
-        uint16_t Id;
-        bool IsLite;
+        uint16_t Id{};
+        bool IsLite{};
 
         bool operator==(const Entry& acRhs) const noexcept { return Filename == acRhs.Filename && Id == acRhs.Id && IsLite == acRhs.IsLite; }
 

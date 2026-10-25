@@ -15,5 +15,5 @@ struct NotifyRespawn final : ServerMessage
 
     bool operator==(const NotifyRespawn& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && ActorId == acRhs.ActorId; }
 
-    uint32_t ActorId;
+    uint32_t ActorId{};
 };

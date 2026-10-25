@@ -294,9 +294,14 @@ void DebugService::OnDraw() noexcept
 
         if (ImGui::Button("Clear stuck screen effects"))
         {
-            for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
+            if (TES* pTes = TES::Get())
             {
-                ImageSpaceModifierInstance::Stop(modifier.object);
+                const auto activeModifiers = pTes->activeImageSpaceModifiers;
+                for (const auto& modifier : activeModifiers)
+                {
+                    if (modifier.object)
+                        ImageSpaceModifierInstance::Stop(modifier.object);
+                }
             }
         }
         ImGui::EndMenu();

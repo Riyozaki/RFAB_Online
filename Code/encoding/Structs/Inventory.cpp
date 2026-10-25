@@ -1,5 +1,7 @@
 #include <Structs/Inventory.h>
 #include <TiltedCore/Serialization.hpp>
+#include <CoopPacketSafety.h>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -59,10 +61,14 @@ void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexc
 
     ExtraEnchantId.Deserialize(aReader);
     ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
-    uint64_t effectCount = Serialization::ReadVarInt(aReader);
-    for (uint64_t i = 0; i < effectCount; i++)
+    const size_t effectCount = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxEnchantEffects);
+    EnchantData.Effects.clear();
+    EnchantData.Effects.reserve(effectCount);
+    for (size_t i = 0; i < effectCount && !aReader.Eof(); i++)
     {
-        EffectItem effect;
+        EffectItem effect{};
         effect.Deserialize(aReader);
         EnchantData.Effects.push_back(effect);
     }
@@ -103,10 +109,11 @@ bool Inventory::Entry::operator!=(const Inventory::Entry& acRhs) const noexcept
 
 void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    Serialization::WriteVarInt(aWriter, Entries.size());
-    for (const Entry& entry : Entries)
+    const size_t entryCount = std::min(Entries.size(), CoopPacketSafety::kMaxInventoryEntries);
+    Serialization::WriteVarInt(aWriter, entryCount);
+    for (size_t i = 0; i < entryCount; ++i)
     {
-        entry.Serialize(aWriter);
+        Entries[i].Serialize(aWriter);
     }
 
     CurrentMagicEquipment.Serialize(aWriter);
@@ -114,15 +121,20 @@ void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 
 void Inventory::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    uint32_t count = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    for (uint32_t i = 0; i < count; i++)
+    const size_t count = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxInventoryEntries);
+    Entries.clear();
+    Entries.reserve(std::min<size_t>(count, 256));
+    for (size_t i = 0; i < count && !aReader.Eof(); i++)
     {
-        Entry entry;
+        Entry entry{};
         entry.Deserialize(aReader);
-        Entries.push_back(entry);
+        Entries.push_back(std::move(entry));
     }
 
-    CurrentMagicEquipment.Deserialize(aReader);
+    if (!aReader.Eof())
+        CurrentMagicEquipment.Deserialize(aReader);
 }
 
 std::optional<Inventory::Entry> Inventory::GetEntryById(GameId& aItemId) const noexcept

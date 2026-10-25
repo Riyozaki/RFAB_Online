@@ -921,22 +921,17 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
         return;
     }
 
-    spdlog::info("Setting inventory for actor {:X}", formID);
+    spdlog::info("Setting inventory differentially for actor {:X}", formID);
 
-    // Protect living NPCs wearing Requiem/RFAB Fortify-Health armor from transient <= 0 HP instant-kill
-    // during RemoveAllItems() before the replacement armor enchantments are re-equipped.
+    // SkyMP-style differential inventory reconciliation keeps unchanged items and already-worn
+    // Requiem/RFAB Fortify-Health gear untouched in ExtraContainerChanges (no RemoveAllItems() strip
+    // and no +4096 HP spike needed). Preserve relative health ratio only if MaxHealth genuinely changed.
     const bool wasAlive = !IsDead();
     const float preHealth = wasAlive ? GetActorValue(ActorValueInfo::kHealth) : 0.0f;
     const float preMaxHealth = wasAlive ? GetActorPermanentValue(ActorValueInfo::kHealth) : 0.0f;
     const float preRatio = (wasAlive && preMaxHealth > 0.0f)
         ? std::clamp(preHealth / preMaxHealth, 0.05f, 1.0f)
         : 1.0f;
-
-    if (wasAlive && preHealth > 0.0f)
-    {
-        ScopedActorValueOverride avOverride;
-        ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, preHealth + 4096.0f);
-    }
 
     const auto* pSelfExt = this->GetExtension();
     if ((!pSelfExt || !pSelfExt->IsPlayer()) && currentInventory.ContainsQuestItems())
@@ -948,12 +943,15 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 
     if (wasAlive && preHealth > 0.0f)
     {
-        ScopedActorValueOverride avOverride;
         const float postMaxHealth = GetActorPermanentValue(ActorValueInfo::kHealth);
-        const float restoredHealth = (postMaxHealth > 0.0f)
-            ? std::max(1.0f, postMaxHealth * preRatio)
-            : std::max(1.0f, preHealth);
-        ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, restoredHealth);
+        if (std::fabs(postMaxHealth - preMaxHealth) > 0.5f || GetActorValue(ActorValueInfo::kHealth) <= 0.0f)
+        {
+            ScopedActorValueOverride avOverride;
+            const float restoredHealth = (postMaxHealth > 0.0f)
+                ? std::max(1.0f, postMaxHealth * preRatio)
+                : std::max(1.0f, preHealth);
+            ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, restoredHealth);
+        }
     }
 }
 

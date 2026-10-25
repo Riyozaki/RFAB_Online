@@ -18,6 +18,6 @@ struct NotifyActivate final : ServerMessage
     bool operator==(const NotifyActivate& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && Id == acRhs.Id && ActivatorId == acRhs.ActivatorId && PreActivationOpenState == acRhs.PreActivationOpenState; }
 
     GameId Id;
-    uint32_t ActivatorId;
-    uint8_t PreActivationOpenState;
+    uint32_t ActivatorId{};
+    uint8_t PreActivationOpenState{};
 };

@@ -16,6 +16,19 @@ CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexc
 void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunchRequest>& acMessage) const noexcept
 {
     auto& packet = acMessage.Packet;
+    const auto cShooterEntity = static_cast<entt::entity>(packet.ShooterID);
+    if (!m_world.valid(cShooterEntity))
+        return;
+
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(cShooterEntity))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+        {
+            spdlog::debug("Ignored non-owner ProjectileLaunchRequest for {:X}", packet.ShooterID);
+            return;
+        }
+    }
+
     if (!RfabCompat::AreProjectileLaunchParamsSafe(
             packet.OriginX,
             packet.OriginY,
@@ -63,7 +76,6 @@ void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunch
     notify.UnkBool1 = packet.UnkBool1;
     notify.UnkBool2 = packet.UnkBool2;
 
-    const auto cShooterEntity = static_cast<entt::entity>(packet.ShooterID);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cShooterEntity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }

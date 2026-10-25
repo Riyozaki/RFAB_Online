@@ -1,5 +1,6 @@
 #include <TiltedOnlinePCH.h>
 
+#include <CoopInventoryDiff.h>
 #include <Games/References.h>
 #include <Games/Overrides.h>
 #include <Games/Skyrim/Interface/UI.h>
@@ -823,19 +824,97 @@ bool TESObjectREFR::IsItemInInventory(uint32_t aFormID) const noexcept
     return !inventory.Entries.empty();
 }
 
+namespace
+{
+bool ShouldSkipRemoteRingEquip(Actor* apActor, TESBoundObject* apObject, uint32_t aObjectId) noexcept
+{
+    if (!apActor || !apObject || !apActor->GetExtension() || !apActor->GetExtension()->IsRemotePlayer())
+        return false;
+
+    if (const auto* pArmor = Cast<TESObjectARMO>(apObject);
+        pArmor && (pArmor->slotType & (1u << 6u)) != 0)
+    {
+        return true;
+    }
+
+    const auto& rfabAdapter = World::Get().GetRfabAdapterService();
+    const auto& bindings = rfabAdapter.GetBindings();
+    if (TESForm* pAdvRing = rfabAdapter.ResolveFormByEditorIdOrBaseId(
+            bindings.AdventurerRingEditorId, bindings.FallbackAdventurerRingBaseFormId);
+        pAdvRing && pAdvRing->formID == aObjectId)
+    {
+        return true;
+    }
+
+    return (aObjectId & 0x00FFFFFFu) == bindings.FallbackAdventurerRingBaseFormId;
+}
+
+void ApplyDifferentialWornTransitions(
+    Actor* apActor,
+    const std::vector<CoopInventoryDiff::EquipTransition<Inventory::Entry>>& acTransitions) noexcept
+{
+    if (!apActor || acTransitions.empty())
+        return;
+
+    ScopedEquipOverride equipOverride_;
+    ModSystem& modSystem = World::Get().GetModSystem();
+    const auto& dom = DefaultObjectManager::Get();
+
+    for (const auto& tr : acTransitions)
+    {
+        const uint32_t objectId = modSystem.GetGameId(tr.Item.BaseId);
+        TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
+        if (!pObject)
+            continue;
+
+        TESForm* pEquipSlot = nullptr;
+        int32_t equipCount = 1;
+        if (const auto* pWeapon = Cast<TESObjectWEAP>(pObject))
+        {
+            if (pWeapon->UsesSingleHandEquipSlot(dom))
+                pEquipSlot = tr.Item.ExtraWornLeft ? dom.leftEquipSlot : dom.rightEquipSlot;
+        }
+        else if (pObject->formType == FormType::Ammo)
+        {
+            equipCount = std::max(1, tr.Item.Count);
+        }
+
+        if (tr.Action == CoopInventoryDiff::EquipActionKind::Equip)
+        {
+            if (!ShouldSkipRemoteRingEquip(apActor, pObject, objectId))
+                EquipManager::Get()->Equip(apActor, pObject, nullptr, equipCount, pEquipSlot, false, true, false, false);
+        }
+        else if (tr.Action == CoopInventoryDiff::EquipActionKind::Unequip)
+        {
+            EquipManager::Get()->UnEquip(apActor, pObject, nullptr, 1, pEquipSlot, false, true, false, false, nullptr);
+        }
+    }
+}
+} // namespace
+
 void TESObjectREFR::SetInventory(const Inventory& aInventory) noexcept
 {
-    spdlog::debug("Setting inventory for {:X}", formID);
+    spdlog::debug("Setting inventory differentially for {:X}", formID);
 
     ScopedInventoryOverride _;
 
-    RemoveAllItems();
+    const Inventory currentInventory = GetInventory();
+    const auto delta = CoopInventoryDiff::ComputeInventoryDelta<Inventory::Entry>(
+        currentInventory.Entries,
+        aInventory.Entries,
+        false);
 
-    for (const Inventory::Entry& entry : aInventory.Entries)
-    {
-        if (entry.Count > 0)
-            AddOrRemoveItem(entry, true);
-    }
+    if (delta.IsNoOp())
+        return;
+
+    for (const Inventory::Entry& rem : delta.ItemsToRemove)
+        AddOrRemoveItem(rem, true);
+
+    for (const Inventory::Entry& add : delta.ItemsToAdd)
+        AddOrRemoveItem(add, true);
+
+    if (Actor* pActor = Cast<Actor>(this))
+        ApplyDifferentialWornTransitions(pActor, delta.WornStateChanges);
 }
 
 Vector<uint32_t> TESObjectREFR::RemoveNonQuestItems(Inventory& aCurrentInventory) noexcept
@@ -867,25 +946,26 @@ Vector<uint32_t> TESObjectREFR::RemoveNonQuestItems(Inventory& aCurrentInventory
 
 void TESObjectREFR::SetInventoryRetainingQuestItems(Inventory& aCurrentInventory, const Inventory& acSourceInventory) noexcept
 {
-    spdlog::debug("Setting inventory for {:X}", formID);
+    spdlog::debug("Setting inventory differentially (retaining quest items) for {:X}", formID);
 
     ScopedInventoryOverride _;
 
-    // Remove all non-quest items first
-    Vector<uint32_t> questItemIds = RemoveNonQuestItems(aCurrentInventory);
-    auto& modSystem = World::Get().GetModSystem();
+    const auto delta = CoopInventoryDiff::ComputeInventoryDelta<Inventory::Entry>(
+        aCurrentInventory.Entries,
+        acSourceInventory.Entries,
+        true);
 
-    for (const auto& entry : acSourceInventory.Entries)
-    {
-        uint32_t gameId = modSystem.GetGameId(entry.BaseId);
+    if (delta.IsNoOp())
+        return;
 
-        // If the item is not in the list of quest items, add it
-        if (std::find(questItemIds.begin(), questItemIds.end(), gameId) == questItemIds.end())
-        {
-            if (entry.Count > 0)
-                AddOrRemoveItem(entry, true);
-        }
-    }
+    for (const Inventory::Entry& rem : delta.ItemsToRemove)
+        AddOrRemoveItem(rem, true);
+
+    for (const Inventory::Entry& add : delta.ItemsToAdd)
+        AddOrRemoveItem(add, true);
+
+    if (Actor* pActor = Cast<Actor>(this))
+        ApplyDifferentialWornTransitions(pActor, delta.WornStateChanges);
 }
 
 void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSettingInventory) noexcept
