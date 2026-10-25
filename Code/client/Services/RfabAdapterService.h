@@ -208,7 +208,7 @@ private:
 
     struct TacticalPingSnapshotEntry
     {
-        RfabCompat::TacticalPingKind Kind{RfabCompat::TacticalPingKind::MoveHere};
+        RfabCompat::TacticalPingKind Kind{RfabCompat::TacticalPingKind::Rally};
         std::string TargetLabel{};
         float DistMeters{0.0f};
         float NormScreenX{0.5f};
