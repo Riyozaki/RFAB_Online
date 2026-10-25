@@ -1,0 +1,34 @@
+[BOOT] Checkpoint | ExeVersion='launcher_startup' | GamePathSet=0
+[BOOT] Checkpoint | ExeVersion='1.5.97.0' | GamePathSet=1
+[BOOT 2/4] EnsureTiltedInitialized entered (CRT post-unpack)
+[BOOT 3/4] Address Library SE 1.5.97 loaded; constructing TiltedOnlineApp...
+[BOOT 3.1/4] TiltedOnlineApp constructed; calling InstallHooks2()...
+[BOOT 3.3/4] Committing delayed .text hooks...
+[BOOT 3.5/4] All .text hooks committed successfully!
+[BOOT 4/4] Entering BeginMain() + StartSKSE()...
+[SKSE 1/3] Loading skse64_1_5_97.dll via LoadLibraryW...
+[SKSE 2/3] Invoking StartSKSE()...
+[SKSE 3/3] StartSKSE() finished cleanly — all SKSE plugins initialized!
+[BOOT OK] BeginMain() + StartSKSE() completed; entering WinMain!
+[UNHANDLED_CRASH] Code=0xC0000005 RIP=0x18065D2CB FaultAddr=0x1B1400000124 Module='C:\The Elder Scrolls V Skyrim - Special Edition\SkyrimSE.exe' Base=0x140000000 RVA=+0x4065D2CB RSP=0x7725F740 RAX=0xFFFFFFFF RCX=0x1B140000011C RDX=0x38F19FE0 Bytes=[F0 0F C1 41 08 FF C8 A9 FF 03 00 00 75 07 48 8B ]
+    [stack #0] SkyrimSE.exe+0x40714B38 (0x180714B38)
+    [stack #1] SkyrimSE.exe+0x409C7FCC (0x1809C7FCC)
+    [stack #2] SkyrimSE.exe+0xA9BFF6 (0x140A9BFF6)
+    [stack #3] SkyrimSE.exe+0x4044E580 (0x18044E580)
+    [stack #4] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #5] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #6] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #7] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #8] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #9] SkyrimSE.exe+0x407B7500 (0x1807B7500)
+[UNHANDLED_CRASH] Code=0xC0000005 RIP=0x18065D2CB FaultAddr=0x1B1400000124 Module='C:\The Elder Scrolls V Skyrim - Special Edition\SkyrimSE.exe' Base=0x140000000 RVA=+0x4065D2CB RSP=0x7725F740 RAX=0xFFFFFFFF RCX=0x1B140000011C RDX=0x38F19FE0 Bytes=[F0 0F C1 41 08 FF C8 A9 FF 03 00 00 75 07 48 8B ]
+    [stack #0] SkyrimSE.exe+0x40714B38 (0x180714B38)
+    [stack #1] SkyrimSE.exe+0x409C7FCC (0x1809C7FCC)
+    [stack #2] SkyrimSE.exe+0xA9BFF6 (0x140A9BFF6)
+    [stack #3] SkyrimSE.exe+0x4044E580 (0x18044E580)
+    [stack #4] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #5] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #6] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #7] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #8] SkyrimSE.exe+0x4015CEF8 (0x18015CEF8)
+    [stack #9] SkyrimSE.exe+0x407B7500 (0x1807B7500)
