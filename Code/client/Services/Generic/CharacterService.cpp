@@ -2929,7 +2929,8 @@ Actor* CharacterService::MaterializeRemoteView(
     if (acMessage.IsPlayerSummon)
         AssignRemoteSummonOwner(m_world, pActor, acMessage.PlayerId);
 
-    m_world.emplace_or_replace<CacheComponent>(aEntity, acMessage.FactionsContent);
+    auto& cacheComp = m_world.emplace_or_replace<CacheComponent>(aEntity);
+    cacheComp.FactionsContent = acMessage.FactionsContent;
     pActor->SetFactions(acMessage.FactionsContent);
     pActor->GetExtension()->SetNakedDeadline();
 
