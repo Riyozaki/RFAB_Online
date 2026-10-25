@@ -40,6 +40,7 @@ MAP_CSV = REPO_ROOT / "docs" / "se-1597-id-map.csv"
 #   516860 = BGSSaveLoadManager::Singleton (0x2F26740)
 EXTRA_VALID_SE_IDS = {
     14464: 0x01944E0,
+    17859: 0x023D000,
     20470: 0x02C53D0,
     33672: 0x05506C0,
     34818: 0x0586DE0,

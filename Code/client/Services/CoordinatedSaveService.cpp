@@ -18,6 +18,7 @@
 #include <PlayerCharacter.h>
 #include <SaveLoad.h>
 #include <Services/CharacterService.h>
+#include <Services/DiscoveryService.h>
 #include <Services/DownedStateService.h>
 #include <Services/PartyService.h>
 #include <Services/RfabAdapterService.h>
@@ -206,12 +207,17 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_world.GetDownedStateService().ResetAllStates();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
     m_world.GetCharacterService().BeginEngineWorldLoad();
+    m_world.GetDiscoveryService().ResetLoadedForms();
 
-    if (m_transport.IsConnected() && m_transport.HasLastServerEndpoint())
+    if (m_transport.IsConnected() || m_transport.IsOnline())
     {
-        m_autoReconnectPendingAfterLoad = true;
-        m_sawLoadingScreenForReconnect = false;
-        m_autoReconnectDelaySec = 1.5;
+        if (m_transport.HasLastServerEndpoint())
+        {
+            m_autoReconnectPendingAfterLoad = true;
+            m_sawLoadingScreenForReconnect = false;
+            m_autoReconnectDelaySec = 1.5;
+            m_autoReconnectAttemptsLeft = 6;
+        }
         m_transport.Close();
     }
 }
@@ -316,6 +322,7 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     m_deferredLoadSlot.clear();
     m_autoReconnectPendingAfterLoad = false;
     m_sawLoadingScreenForReconnect = false;
+    m_autoReconnectAttemptsLeft = 0;
     m_partyCheckpointSettleSec = 0.0;
 
     const std::string normBackup = RfabCompat::Detail::NormalizeSaveSlotStem(m_preJoinBackupSlot);
@@ -359,7 +366,7 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (!m_pendingSaveSlot.empty() && m_pendingSavePurgeFrames > 0 && !IsLoadingMenuOpen())
         --m_pendingSavePurgeFrames;
 
-    if (m_autoReconnectPendingAfterLoad && !m_transport.IsConnected())
+    if (m_autoReconnectPendingAfterLoad && !m_transport.IsOnline())
     {
         if (IsLoadingMenuOpen() || m_world.GetCharacterService().IsEngineWorldLoading())
         {
@@ -368,14 +375,23 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
         }
 
         PlayerCharacter* pPlayer = PlayerCharacter::Get();
-        if (pPlayer && !pPlayer->IsStillLoading() && (pPlayer->parentCell || pPlayer->GetWorldSpace()))
+        if (pPlayer && !pPlayer->IsStillLoading() && pPlayer->parentCell != nullptr)
         {
             m_autoReconnectDelaySec -= acEvent.Delta;
             if (m_autoReconnectDelaySec <= 0.0)
             {
-                m_autoReconnectPendingAfterLoad = false;
-                m_sawLoadingScreenForReconnect = false;
-                Utils::ShowHudMessage(String("RFAB Online: Автоматическое переподключение к сессии..."));
+                if (m_autoReconnectAttemptsLeft == 0)
+                {
+                    m_autoReconnectPendingAfterLoad = false;
+                    m_sawLoadingScreenForReconnect = false;
+                    return;
+                }
+
+                if (m_autoReconnectAttemptsLeft == 6)
+                    Utils::ShowHudMessage(String("RFAB Online: Автоматическое переподключение к сессии..."));
+
+                --m_autoReconnectAttemptsLeft;
+                m_autoReconnectDelaySec = 3.5;
                 m_transport.ReconnectToLastServer();
             }
         }

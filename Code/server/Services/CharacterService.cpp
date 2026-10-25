@@ -440,6 +440,7 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
         }
 
         // Dynamic temporary spawns (0xFFxxxxxx) do not carry FormIdComponent on the server.
+        // Only notify peers whose active cell/grid is actually in range of the NPC's new location!
         if (const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(cEntity))
         {
             NotifyActorTeleport notify{};
@@ -448,7 +449,7 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
             notify.CellId = message.CellId;
             notify.Position = message.Position;
 
-            GameServer::Get()->SendToPlayers(notify, acMessage.pPlayer);
+            GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer);
         }
     }
 
@@ -956,6 +957,33 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
 
     auto& dispatcher = m_world.GetDispatcher();
     dispatcher.trigger(CharacterSpawnedEvent(cEntity));
+
+    // Guarantee symmetric mutual visibility after coordinated save-load / simultaneous reconnects:
+    // OnCharacterSpawned(cEntity) sends THIS player's avatar to peers in range; also send all ALREADY-spawned
+    // remote player avatars in range of `cellIdComponent` directly back to `acMessage.pPlayer` (client
+    // OnCharacterSpawn deduplicates cleanly via RemoteComponent + FormIdComponent).
+    if (isPlayer && acMessage.pPlayer)
+    {
+        auto existingPlayersView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
+        for (auto otherEntity : existingPlayersView)
+        {
+            if (otherEntity == cEntity)
+                continue;
+
+            const auto& otherChar = existingPlayersView.get<CharacterComponent>(otherEntity);
+            const auto& otherOwner = existingPlayersView.get<OwnerComponent>(otherEntity);
+            const auto& otherCell = existingPlayersView.get<CellIdComponent>(otherEntity);
+            if (!otherChar.IsPlayer() || otherOwner.GetOwner() == acMessage.pPlayer)
+                continue;
+
+            if (otherCell.IsInRange(cellIdComponent, false))
+            {
+                CharacterSpawnRequest spawnMessage{};
+                Serialize(m_world, otherEntity, &spawnMessage);
+                acMessage.pPlayer->Send(spawnMessage);
+            }
+        }
+    }
 }
 
 void CharacterService::TransferOwnership(Player* apPlayer, const uint32_t acServerId,

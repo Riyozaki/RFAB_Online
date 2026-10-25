@@ -179,7 +179,7 @@ void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 
             static char s_address[256] = "127.0.0.1:10578";
             if (!m_transport.IsOnline())
-                m_transport.Connect(s_address);
+                m_transport.ConnectToServer(s_address);
             else
                 m_transport.Close();
         }
@@ -253,8 +253,7 @@ void DebugService::DrawServerView() noexcept
     {
         if (ImGui::Button("Connect"))
         {
-            m_transport.SetServerPassword(s_password);
-            m_transport.Connect(s_address);
+            m_transport.ConnectToServer(s_address, s_password);
         }
     }
 

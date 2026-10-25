@@ -1,12 +1,12 @@
-﻿param(
-    [string]$VersionTag = "v1.2.0-hotfix.1",
+param(
+    [string]$VersionTag = "v1.2.0-hotfix.2",
     [string]$BuildMode = "releasedbg"
 )
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1")
 if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v1.2.0-hotfix.1' (v1.0.0, v1.1.0, v1.2.0, and v1.2.0-backup are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v1.2.0-hotfix.1"
+    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v1.2.0-hotfix.2' (previous releases are preserved untouched)." -ForegroundColor Yellow
+    $VersionTag = "v1.2.0-hotfix.2"
 }
 if ($VersionTag -in $ProtectedTags) {
     throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"

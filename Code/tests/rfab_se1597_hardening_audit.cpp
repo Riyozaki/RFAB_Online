@@ -1073,6 +1073,39 @@ int main()
             std::string fileMappingCpp;
             assert(RfabCompat::Detail::ReadTextFile("Code/immersive_launcher/stubs/FileMapping.cpp", fileMappingCpp));
             assert(fileMappingCpp.find("DllName->Length / sizeof(wchar_t)") != std::string::npos);
+
+            // 5. Live-test Fixes #1, #2, #3 regression guards
+            std::string discoveryCpp;
+            std::string coordSaveCpp2;
+            std::string clientCharCpp;
+            std::string serverCharCpp;
+            std::string cellCpp;
+            std::string skillsMenuCpp;
+            std::string patchSubmodulesPy;
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/DiscoveryService.cpp", discoveryCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/CoordinatedSaveService.cpp", coordSaveCpp2));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CharacterService.cpp", clientCharCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/server/Services/CharacterService.cpp", serverCharCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp", cellCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp", skillsMenuCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Tools/rfab/patch_submodules.py", patchSubmodulesPy));
+
+            assert(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
+            assert(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
+            assert(coordSaveCpp2.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+            assert(coordSaveCpp2.find("pPlayer->parentCell != nullptr") != std::string::npos);
+            assert(coordSaveCpp2.find("m_autoReconnectAttemptsLeft") != std::string::npos);
+            assert(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
+            assert(serverCharCpp.find("otherCell.IsInRange(cellIdComponent, false)") != std::string::npos);
+            assert(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
+
+            assert(clientCharCpp.find("pWorldSpace->LoadCell") == std::string::npos);
+            assert(clientCharCpp.find("GetCellFromCoordinates(coordinates.X, coordinates.Y, pWorldSpace, false)") != std::string::npos);
+            assert(serverCharCpp.find("SendToPlayersInRange(notify, cEntity, acMessage.pPlayer)") != std::string::npos);
+            assert(cellCpp.find("SafeGetWorldSpaceOfExteriorCell") != std::string::npos);
+            assert(cellCpp.find("17859") != std::string::npos);
+
+            assert(skillsMenuCpp.find("ApplyRfabDllPerkPlacementBoundsFixPostSkse") != std::string::npos);
         }
     }
 
@@ -1667,6 +1700,99 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         std::string fileMappingCpp;
         REQUIRE(RfabCompat::Detail::ReadTextFile("Code/immersive_launcher/stubs/FileMapping.cpp", fileMappingCpp));
         REQUIRE(fileMappingCpp.find("DllName->Length / sizeof(wchar_t)") != std::string::npos);
+
+        // Live-test Fixes #1, #2, #3 regression guards:
+        // 1) Save+Load mutual player visibility, DiscoveryService reset & GNS lingering-handle reconnect guard
+        std::string discoveryCpp;
+        std::string clientCharCpp;
+        std::string serverCharCpp;
+        std::string cellCpp;
+        std::string skillsMenuCpp;
+        std::string patchSubmodulesPy;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/DiscoveryService.cpp", discoveryCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CharacterService.cpp", clientCharCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/CharacterService.cpp", serverCharCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp", cellCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp", skillsMenuCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Tools/rfab/patch_submodules.py", patchSubmodulesPy));
+
+        REQUIRE(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
+        REQUIRE(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("pPlayer->parentCell != nullptr") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("m_autoReconnectAttemptsLeft") != std::string::npos);
+        REQUIRE(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
+        REQUIRE(serverCharCpp.find("otherCell.IsInRange(cellIdComponent, false)") != std::string::npos);
+        REQUIRE(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
+
+        // 2) SkyrimSE.exe+0x23D000 (SE_ID 17859) Teleport CTD guard: MoveActor never invokes TESWorldSpace::LoadCell
+        REQUIRE(clientCharCpp.find("pWorldSpace->LoadCell") == std::string::npos);
+        REQUIRE(clientCharCpp.find("GetCellFromCoordinates(coordinates.X, coordinates.Y, pWorldSpace, false)") != std::string::npos);
+        REQUIRE(serverCharCpp.find("SendToPlayersInRange(notify, cEntity, acMessage.pPlayer)") != std::string::npos);
+        REQUIRE(cellCpp.find("SafeGetWorldSpaceOfExteriorCell") != std::string::npos);
+        REQUIRE(cellCpp.find("17859") != std::string::npos);
+
+        // 3) Update-resilient RFAB.dll PerkPlacementMenuOpenCloseManager bounds scanner + trampoline builder
+        REQUIRE(skillsMenuCpp.find("ApplyRfabDllPerkPlacementBoundsFixPostSkse") != std::string::npos);
+        {
+            // Exact byte slice of RFAB.dll PerkPlacement loop placed at an arbitrary shifted RVA (+0x1234):
+            std::vector<uint8_t> fakeText(0x2000, 0xCC);
+            const size_t baseOff = 0x1234;
+            const uint8_t unpatchedLoop[] = {
+                0x33, 0xDB,                                     // xor ebx, ebx
+                0x48, 0x8B, 0x90, 0x18, 0x01, 0x00, 0x00,       // mov rdx, [rax+0x118]  (head = baseOff + 2)
+                0x48, 0x85, 0xD2,                               // test rdx, rdx         (resume = head + 7)
+                0x74, 0x1F,                                     // je skip (+0x1F)
+                0x83, 0x7A, 0x20, 0x00,                         // cmp dword ptr [rdx+0x20], 0
+                0x74, 0x19,                                     // je skip
+                // 25 bytes of inner loop body (`lea rcx, [rdx+0x10]; call copy_ctor; ...`)
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0x90, 0x90, 0x90, 0x90, 0x90,
+                0x48, 0xFF, 0xC3,                               // inc rbx               (skip = head + 0x2B)
+                0x48, 0x8B, 0x44, 0xDE, 0x08,                   // mov rax, [rsi+rbx*8+8]
+                0x48, 0x85, 0xC0,                               // test rax, rax
+                0x75, 0xC8,                                     // jne head              (exit = skip + 13)
+                0x48, 0x8B, 0x4F, 0x08                          // mov rcx, [rdi+8]
+            };
+            std::memcpy(fakeText.data() + baseOff, unpatchedLoop, sizeof(unpatchedLoop));
+
+            const auto scan = RfabCompat::LocateRfabPerkPlacementLoop(fakeText.data(), fakeText.size());
+            REQUIRE(scan.State == RfabCompat::RfabPerkLoopScanResult::Status::FoundUnpatched);
+            REQUIRE(scan.LoopHeadOffset == baseOff + 2);
+            REQUIRE(scan.ResumeOffset == baseOff + 9);
+            REQUIRE(scan.SkipOffset == baseOff + 2 + 0x2B);
+            REQUIRE(scan.ExitOffset == baseOff + 2 + 0x2B + 13);
+
+            uint8_t cave[RfabCompat::kRfabPerkTrampolineSize]{};
+            const uintptr_t moduleBase = 0x180000000ULL;
+            const uintptr_t caveAddr = 0x180250000ULL;
+            REQUIRE(RfabCompat::BuildRfabPerkPlacementTrampoline(
+                caveAddr,
+                moduleBase + scan.ResumeOffset,
+                moduleBase + scan.SkipOffset,
+                moduleBase + scan.ExitOffset,
+                cave));
+
+            auto readRel32Target = [&](size_t dispOffset, size_t nextIpOffset) -> uintptr_t
+            {
+                int32_t d32 = 0;
+                std::memcpy(&d32, cave + dispOffset, sizeof(d32));
+                return static_cast<uintptr_t>(static_cast<intptr_t>(caveAddr + nextIpOffset) + static_cast<intptr_t>(d32));
+            };
+            REQUIRE(readRel32Target(9,  13) == moduleBase + scan.ExitOffset);
+            REQUIRE(readRel32Target(19, 23) == moduleBase + scan.SkipOffset);
+            REQUIRE(readRel32Target(35, 39) == moduleBase + scan.SkipOffset);
+            REQUIRE(readRel32Target(46, 50) == moduleBase + scan.SkipOffset);
+            REQUIRE(readRel32Target(51, 55) == moduleBase + scan.ResumeOffset);
+
+            // Simulate user's disk-patched RFAB.dll (`E9 <rel32> 90 90` at loopHead) -> must detect AlreadyPatched
+            fakeText[scan.LoopHeadOffset] = 0xE9;
+            fakeText[scan.LoopHeadOffset + 5] = 0x90;
+            fakeText[scan.LoopHeadOffset + 6] = 0x90;
+            const auto scanDiskPatched = RfabCompat::LocateRfabPerkPlacementLoop(fakeText.data(), fakeText.size());
+            REQUIRE(scanDiskPatched.State == RfabCompat::RfabPerkLoopScanResult::Status::AlreadyPatched);
+        }
     }
 }
 #endif

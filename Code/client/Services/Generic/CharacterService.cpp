@@ -11,6 +11,7 @@
 
 #include <Games/Overrides.h>
 #include <Games/References.h>
+#include <Games/TES.h>
 #include <Games/Misc/SubtitleManager.h>
 
 #include <Forms/ActorValueInfo.h>
@@ -511,6 +512,16 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     }
 
     RunSpawnUpdates();
+    if (m_transport.IsOnline())
+    {
+        static std::chrono::steady_clock::time_point s_lastLocalPlayerCheck{};
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_lastLocalPlayerCheck >= 500ms)
+        {
+            s_lastLocalPlayerCheck = now;
+            EnsureLocalPlayerRegistered();
+        }
+    }
     RunLocalUpdates();
     RunFactionsUpdates();
     if (!m_savePurgeActive && m_pendingPostSaveRemoteRestore)
@@ -522,6 +533,48 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
     ApplyCachedWeaponDraws(acUpdateEvent);
 }
 
+void CharacterService::EnsureLocalPlayerRegistered() noexcept
+{
+    if (m_engineWorldLoadInProgress || m_savePurgeActive)
+        return;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || pPlayer->formID != 0x14 || pPlayer->IsStillLoading() || !pPlayer->parentCell)
+        return;
+
+    if (auto* pExt = pPlayer->GetExtension())
+    {
+        pExt->SetPlayer(true);
+        pExt->SetRemote(false);
+    }
+
+    entt::entity playerEntity = entt::null;
+    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    for (entt::entity candidate : view)
+    {
+        if (view.get<FormIdComponent>(candidate).Id == 0x14)
+        {
+            playerEntity = candidate;
+            break;
+        }
+    }
+
+    if (playerEntity == entt::null)
+    {
+        playerEntity = m_world.create();
+        m_world.emplace_or_replace<FormIdComponent>(playerEntity, 0x14u);
+        m_world.emplace_or_replace<EarlyAnimationBufferComponent>(playerEntity);
+        spdlog::info("[RFAB SaveLoad] Re-registered local PlayerCharacter (0x14) entity after world load.");
+    }
+
+    if (m_transport.IsOnline() &&
+        !m_world.all_of<LocalComponent>(playerEntity) &&
+        !m_world.all_of<WaitingForAssignmentComponent>(playerEntity))
+    {
+        ProcessNewEntity(playerEntity);
+    }
+}
+
 void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexcept
 {
     m_savePurgeActive = false;
@@ -530,6 +583,8 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
     m_pendingLocalTempSpawns.clear();
     m_cachedRemoteSpawns.clear();
     NotifySaveLoadReset();
+
+    EnsureLocalPlayerRegistered();
 
     // Go through all the forms that were previously detected.
     // Delete ONLY genuine network-created clones (never native TESLevCharacter 0xFFxxxxxx dungeon enemies!).
@@ -934,6 +989,9 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         AnimationSystem::AddActionsForReplay(m_world.get<RemoteAnimationComponent>(deferredEntity), acMessage.ActionsToReplay);
         m_world.emplace_or_replace<WaitingFor3D>(deferredEntity, acMessage);
     };
+
+    if (m_engineWorldLoadInProgress)
+        return;
 
     if (m_savePurgeActive || !pLocalPlayer || !pLocalPlayer->parentCell)
     {
@@ -1871,19 +1929,31 @@ void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& 
 
 void CharacterService::OnNotifyActorTeleport(const NotifyActorTeleport& acMessage) noexcept
 {
-    auto& modSystem = m_world.GetModSystem();
+    if (m_engineWorldLoadInProgress || m_savePurgeActive)
+        return;
 
-    const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
+    const uint32_t cActorId = m_world.GetModSystem().GetGameId(acMessage.FormId);
+    if (cActorId == 0 || cActorId == 0x14)
+        return;
+
     Actor* pActor = Cast<Actor>(TESForm::GetById(cActorId));
-    if (!pActor)
+    if (!pActor || pActor->IsStillLoading())
     {
-        spdlog::error(__FUNCTION__ ": failed to retrieve actor to teleport.");
+        spdlog::debug(__FUNCTION__ ": skipping unloaded actor {:X} for distant teleport notify.", cActorId);
         return;
     }
 
-    MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position);
-
-    spdlog::info("Successfully teleported actor, form id: {:X}, world space: {:X}, cell: {:X}, position: ({}, {}, {})", pActor->formID, acMessage.WorldSpaceId.BaseId, acMessage.CellId.BaseId, acMessage.Position.x, acMessage.Position.y, acMessage.Position.z);
+    if (MoveActor(pActor, acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position))
+    {
+        spdlog::info(
+            "Successfully teleported actor, form id: {:X}, world space: {:X}, cell: {:X}, position: ({}, {}, {})",
+            pActor->formID,
+            acMessage.WorldSpaceId.BaseId,
+            acMessage.CellId.BaseId,
+            acMessage.Position.x,
+            acMessage.Position.y,
+            acMessage.Position.z);
+    }
 }
 
 void CharacterService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
@@ -1958,33 +2028,49 @@ void CharacterService::ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlaye
     }
 }
 
-void CharacterService::MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept
+bool CharacterService::MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept
 {
+    if (!apActor || apActor->formID == 0x14 || apActor->IsStillLoading() || m_engineWorldLoadInProgress || m_savePurgeActive)
+        return false;
+
+    PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+    if (!pLocalPlayer || pLocalPlayer->IsStillLoading() || !pLocalPlayer->parentCell)
+        return false;
+
     TESObjectCELL* pCell = nullptr;
     if (!acWorldSpaceId)
     {
         const uint32_t cCellId = m_world.GetModSystem().GetGameId(acCellId);
         pCell = Cast<TESObjectCELL>(TESForm::GetById(cCellId));
+        if (!pCell || !pCell->loadedCellData || pLocalPlayer->GetWorldSpace() != nullptr || pLocalPlayer->GetParentCell() != pCell)
+            return false;
     }
-    // In case of lazy-loading of exterior cells
     else
     {
+        // CRITICAL FOR SKYRIM SE 1.5.97 (+0x23D000 QueuedPromoteLargeReferencesTask / GetWorldSpaceOfExteriorCell):
+        // NEVER invoke TESWorldSpace::LoadCell(X, Y) for an NPC! Synchronously force-loading exterior cells outside
+        // the local player's active 5x5 uGridsToLoad corrupts background large-reference promotion tasks when Skyrim
+        // purges detached cells on the next frame (crashing at RIP=0x14023D000 with TESObjectCELL* RCX = nullptr).
+        // Only move NPCs into exterior cells that are ALREADY loaded inside the local player's active 5x5 grid.
         const uint32_t cWorldSpaceId = m_world.GetModSystem().GetGameId(acWorldSpaceId);
         TESWorldSpace* const pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(cWorldSpaceId));
-        if (pWorldSpace)
-        {
-            GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acPosition);
-            pCell = pWorldSpace->LoadCell(coordinates.X, coordinates.Y);
-        }
-    }
+        const TES* pTes = TES::Get();
+        ModManager* pModMgr = ModManager::Get();
+        if (!pWorldSpace || !pTes || !pModMgr || pLocalPlayer->GetWorldSpace() != pWorldSpace)
+            return false;
 
-    if (!pCell)
-    {
-        spdlog::error(__FUNCTION__ ": failed to fetch cell to teleport, actor: {:X}, worldspace: {:X}, cell: {:X}, position: {}, {}, {}", apActor->formID, acWorldSpaceId.BaseId, acCellId.BaseId, acPosition.x, acPosition.y, acPosition.z);
-        return;
+        const GridCellCoords coordinates = GridCellCoords::CalculateGridCellCoords(acPosition);
+        const GridCellCoords playerCenterGrid(pTes->centerGridX, pTes->centerGridY);
+        if (!GridCellCoords::IsCellInGridCell(coordinates, playerCenterGrid, false))
+            return false;
+
+        pCell = pModMgr->GetCellFromCoordinates(coordinates.X, coordinates.Y, pWorldSpace, false);
+        if (!pCell || !pCell->loadedCellData)
+            return false;
     }
 
     apActor->MoveTo(pCell, acPosition);
+    return true;
 }
 
 void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept

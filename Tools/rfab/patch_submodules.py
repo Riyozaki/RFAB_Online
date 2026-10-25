@@ -572,3 +572,57 @@ if "kDefaultAllocStubsize = 64;" in jit_txt:
         encoding="utf-8",
     )
     print("[patch_submodules] Patched TiltedReverse JitAssembly.hpp (kDefaultAllocStubsize 64 -> 512 bytes).")
+
+# 8. TiltedConnect Client.cpp (prevent stale lingering GNS callback from killing post-LoadGame reconnect!)
+tc_path = ROOT / "Libraries" / "TiltedConnect" / "Code" / "connect" / "src" / "Client.cpp"
+tc_txt = tc_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+old_tc_connect = """    bool Client::Connect(const SteamNetworkingIPAddr& acEndpoint) noexcept
+    {
+        SteamNetworkingConfigValue_t opt = {};
+        opt.SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged, reinterpret_cast<void*>(&SteamNetConnectionStatusChangedCallback));
+        m_connection = m_pInterface->ConnectByIPAddress(acEndpoint, 1, &opt);
+
+        return m_connection != k_HSteamNetConnection_Invalid;
+    }"""
+
+new_tc_connect = """    bool Client::Connect(const SteamNetworkingIPAddr& acEndpoint) noexcept
+    {
+        if (m_connection != k_HSteamNetConnection_Invalid)
+        {
+            m_pInterface->CloseConnection(m_connection, 0, nullptr, false);
+            m_connection = k_HSteamNetConnection_Invalid;
+        }
+
+        SteamNetworkingConfigValue_t opt = {};
+        opt.SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged, reinterpret_cast<void*>(&SteamNetConnectionStatusChangedCallback));
+        m_connection = m_pInterface->ConnectByIPAddress(acEndpoint, 1, &opt);
+
+        return m_connection != k_HSteamNetConnection_Invalid;
+    }"""
+
+old_tc_status = """        case k_ESteamNetworkingConnectionState_ClosedByPeer:
+        case k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
+        {
+            m_pInterface->CloseConnection(m_connection, 0, nullptr, false);
+            m_connection = k_HSteamNetConnection_Invalid;"""
+
+new_tc_status = """        case k_ESteamNetworkingConnectionState_ClosedByPeer:
+        case k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
+        {
+            if (apInfo->m_hConn != m_connection)
+            {
+                m_pInterface->CloseConnection(apInfo->m_hConn, 0, nullptr, false);
+                break;
+            }
+
+            m_pInterface->CloseConnection(m_connection, 0, nullptr, false);
+            m_connection = k_HSteamNetConnection_Invalid;"""
+
+if "apInfo->m_hConn != m_connection" not in tc_txt:
+    assert old_tc_connect in tc_txt, "Failed to match Client::Connect in TiltedConnect Client.cpp!"
+    assert old_tc_status in tc_txt, "Failed to match OnSteamNetConnectionStatusChanged in TiltedConnect Client.cpp!"
+    tc_txt = tc_txt.replace(old_tc_connect, new_tc_connect, 1).replace(old_tc_status, new_tc_status, 1)
+    tc_path.write_text(tc_txt, encoding="utf-8")
+    print("[patch_submodules] Patched TiltedConnect Client.cpp (guarded stale m_hConn callback across reconnects).")
+

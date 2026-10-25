@@ -27,6 +27,9 @@ struct DiscoveryService final : BSTEventSink<TESLoadGameEvent>
 
     TP_NOCOPYMOVE(DiscoveryService);
 
+    void ResetLoadedForms() noexcept;
+    void ReconcileMissingWorldEntities() noexcept;
+
 protected:
     /**
      * Checks whether the cell has changed, and if so,

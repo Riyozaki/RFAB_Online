@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -3160,6 +3162,156 @@ inline void AppendCodePointUtf8(std::string& aOut, uint32_t aCp)
     }
 
     return false;
+}
+
+// ============================================================================
+// Runtime signature scanner & trampoline builder for RFAB.dll StatsMenu crash:
+// PerkPlacementMenuOpenCloseManager::ProcessEvent walks ActorValueList::actorValues
+// (`[rsi + rbx*8 + 0x8]`) until `rax == 0` with no `< 164` (`0xA4`) upper bound and
+// no `children._data != nullptr` (`[rdx + 0x10]`) check before BSTArray copy-ctor.
+// Scanning the loop tail (`48 FF C3 48 8B 44 DE 08 48 85 C0 75 <rel8>`) works across:
+//   - unpatched RFAB.dll builds (even if recompiled at new RVAs in future RFAB updates),
+//   - already disk-patched RFAB.dll builds (`loopHead[0] == 0xE9`, left untouched).
+// ============================================================================
+struct RfabPerkLoopScanResult
+{
+    enum class Status : uint8_t
+    {
+        NotFound = 0,
+        FoundUnpatched = 1,
+        AlreadyPatched = 2,
+    };
+
+    Status State{Status::NotFound};
+    size_t LoopHeadOffset{0};
+    size_t ResumeOffset{0};
+    size_t SkipOffset{0};
+    size_t ExitOffset{0};
+};
+
+[[nodiscard]] inline RfabPerkLoopScanResult LocateRfabPerkPlacementLoop(
+    const uint8_t* apBytes,
+    size_t aSize) noexcept
+{
+    RfabPerkLoopScanResult res{};
+    if (!apBytes || aSize < 64)
+        return res;
+
+    // Loop tail signature:
+    //   48 FF C3             inc rbx
+    //   48 8B 44 DE 08       mov rax, qword ptr [rsi + rbx*8 + 0x8]
+    //   48 85 C0             test rax, rax
+    //   75 <rel8>            jne loopHead
+    constexpr uint8_t kTailSig[12] = {
+        0x48, 0xFF, 0xC3,
+        0x48, 0x8B, 0x44, 0xDE, 0x08,
+        0x48, 0x85, 0xC0,
+        0x75
+    };
+
+    for (size_t i = 0; i + 13 <= aSize; ++i)
+    {
+        if (std::memcmp(apBytes + i, kTailSig, sizeof(kTailSig)) != 0)
+            continue;
+
+        const int8_t backDisp = static_cast<int8_t>(apBytes[i + 12]);
+        if (backDisp >= 0)
+            continue;
+
+        const ptrdiff_t headSigned = static_cast<ptrdiff_t>(i + 13) + static_cast<ptrdiff_t>(backDisp);
+        if (headSigned < 2 || static_cast<size_t>(headSigned + 16) > aSize)
+            continue;
+
+        const size_t head = static_cast<size_t>(headSigned);
+        // Preceded by `xor ebx, ebx` (`33 DB`)
+        if (apBytes[head - 2] != 0x33 || apBytes[head - 1] != 0xDB)
+            continue;
+
+        // Resume at `head + 7` must be `48 85 D2 74 <skipDisp> 83 7A 20 00 74`
+        if (apBytes[head + 7] != 0x48 || apBytes[head + 8] != 0x85 || apBytes[head + 9] != 0xD2 ||
+            apBytes[head + 10] != 0x74 ||
+            apBytes[head + 12] != 0x83 || apBytes[head + 13] != 0x7A || apBytes[head + 14] != 0x20 || apBytes[head + 15] != 0x00)
+        {
+            continue;
+        }
+
+        const int8_t skipDisp = static_cast<int8_t>(apBytes[head + 11]);
+        const ptrdiff_t targetSkip = static_cast<ptrdiff_t>(head + 12) + static_cast<ptrdiff_t>(skipDisp);
+        if (targetSkip != static_cast<ptrdiff_t>(i))
+            continue;
+
+        res.LoopHeadOffset = head;
+        res.ResumeOffset = head + 7;
+        res.SkipOffset = i;
+        res.ExitOffset = i + 13;
+
+        if (apBytes[head] == 0xE9)
+        {
+            res.State = RfabPerkLoopScanResult::Status::AlreadyPatched;
+            return res;
+        }
+
+        constexpr uint8_t kUnpatchedHead[7] = {0x48, 0x8B, 0x90, 0x18, 0x01, 0x00, 0x00};
+        if (std::memcmp(apBytes + head, kUnpatchedHead, sizeof(kUnpatchedHead)) == 0)
+        {
+            res.State = RfabPerkLoopScanResult::Status::FoundUnpatched;
+            return res;
+        }
+    }
+
+    return res;
+}
+
+inline constexpr size_t kRfabPerkTrampolineSize = 55;
+
+[[nodiscard]] inline bool BuildRfabPerkPlacementTrampoline(
+    uintptr_t aCaveAddr,
+    uintptr_t aResumeAddr,
+    uintptr_t aSkipAddr,
+    uintptr_t aExitAddr,
+    uint8_t (&aOutCave)[kRfabPerkTrampolineSize]) noexcept
+{
+    auto writeRel32 = [](uint8_t* pDest, uintptr_t nextIp, uintptr_t target) noexcept -> bool
+    {
+        const intptr_t diff = static_cast<intptr_t>(target) - static_cast<intptr_t>(nextIp);
+        if (diff < INT32_MIN || diff > INT32_MAX)
+            return false;
+        const auto d32 = static_cast<int32_t>(diff);
+        std::memcpy(pDest, &d32, sizeof(d32));
+        return true;
+    };
+
+    // 00: 48 81 FB A4 00 00 00    cmp rbx, 0xA4 (164 entries in SE 1.5.97 ActorValueList)
+    // 07: 0F 83 <rel32 exit>      jae exitAddr
+    // 0D: 80 78 1A 5F             cmp byte ptr [rax+0x1A], 0x5F (FormType::ActorValueInfo)
+    // 11: 0F 85 <rel32 skip>      jne skipAddr
+    // 17: 48 8B 90 18 01 00 00    mov rdx, qword ptr [rax+0x118]
+    // 1E: 48 85 D2                test rdx, rdx
+    // 21: 0F 84 <rel32 skip>      je skipAddr
+    // 27: 48 83 7A 10 00          cmp qword ptr [rdx+0x10], 0 (children._data != nullptr)
+    // 2C: 0F 84 <rel32 skip>      je skipAddr
+    // 32: E9 <rel32 resume>       jmp resumeAddr
+    const uint8_t tmpl[kRfabPerkTrampolineSize] = {
+        0x48, 0x81, 0xFB, 0xA4, 0x00, 0x00, 0x00,
+        0x0F, 0x83, 0x00, 0x00, 0x00, 0x00,
+        0x80, 0x78, 0x1A, 0x5F,
+        0x0F, 0x85, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x8B, 0x90, 0x18, 0x01, 0x00, 0x00,
+        0x48, 0x85, 0xD2,
+        0x0F, 0x84, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x83, 0x7A, 0x10, 0x00,
+        0x0F, 0x84, 0x00, 0x00, 0x00, 0x00,
+        0xE9, 0x00, 0x00, 0x00, 0x00
+    };
+    std::memcpy(aOutCave, tmpl, sizeof(tmpl));
+
+    if (!writeRel32(aOutCave + 9,  aCaveAddr + 13, aExitAddr))   return false;
+    if (!writeRel32(aOutCave + 19, aCaveAddr + 23, aSkipAddr))   return false;
+    if (!writeRel32(aOutCave + 35, aCaveAddr + 39, aSkipAddr))   return false;
+    if (!writeRel32(aOutCave + 46, aCaveAddr + 50, aSkipAddr))   return false;
+    if (!writeRel32(aOutCave + 51, aCaveAddr + 55, aResumeAddr)) return false;
+
+    return true;
 }
 
 } // namespace RfabCompat

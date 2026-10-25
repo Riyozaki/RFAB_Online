@@ -80,6 +80,7 @@ private:
     bool m_autoReconnectPendingAfterLoad{false};
     bool m_sawLoadingScreenForReconnect{false};
     double m_autoReconnectDelaySec{0.0};
+    uint32_t m_autoReconnectAttemptsLeft{0};
     bool m_initialPartyCheckpointSent{false};
     double m_partyCheckpointSettleSec{0.0};
     std::string m_preJoinBackupSlot{"RFAB_MP_PreJoin_Backup"};
