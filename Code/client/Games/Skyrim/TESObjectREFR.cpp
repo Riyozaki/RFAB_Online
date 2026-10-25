@@ -52,7 +52,7 @@ TP_THIS_FUNCTION(TPlayAnimationAndWait, bool, void, uint32_t auiStackID, TESObje
 TP_THIS_FUNCTION(TPlayAnimation, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apEventName);
 TP_THIS_FUNCTION(TRotate, void, TESObjectREFR, float aAngle);
 TP_THIS_FUNCTION(TLockChange, void, TESObjectREFR);
-TP_THIS_FUNCTION(TInternalMoveTo, bool, TESObjectREFR, uint32_t*& arTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation);
+TP_THIS_FUNCTION(TInternalMoveTo, bool, TESObjectREFR, uint32_t* apTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation);
 
 static TActivate* RealActivate = nullptr;
 static TAddInventoryItem* RealAddInventoryItem = nullptr;
@@ -1432,7 +1432,7 @@ void TP_MAKE_THISCALL(HookRotateZ, TESObjectREFR, float aAngle)
     return TiltedPhoques::ThisCall(RealRotateZ, apThis, aAngle);
 }
 
-bool TP_MAKE_THISCALL(HookInternalMoveTo, TESObjectREFR, uint32_t*& arTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation)
+bool TP_MAKE_THISCALL(HookInternalMoveTo, TESObjectREFR, uint32_t* apTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation)
 {
     if (!apThis)
         return false;
@@ -1465,7 +1465,7 @@ bool TP_MAKE_THISCALL(HookInternalMoveTo, TESObjectREFR, uint32_t*& arTargetHand
         }
     }
 
-    return TiltedPhoques::ThisCall(RealInternalMoveTo, apThis, arTargetHandle, apTargetCell, apTargetWorldSpace, acPosition, acRotation);
+    return TiltedPhoques::ThisCall(RealInternalMoveTo, apThis, apTargetHandle, apTargetCell, apTargetWorldSpace, acPosition, acRotation);
 }
 
 void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
