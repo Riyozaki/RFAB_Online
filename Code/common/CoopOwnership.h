@@ -190,6 +190,13 @@ struct SafeHealthStepPlan
     return plan;
 }
 
+[[nodiscard]] inline bool IsValidHandoffCoordinates(float aPosX, float aPosY, float aPosZ) noexcept
+{
+    if (!std::isfinite(aPosX) || !std::isfinite(aPosY) || !std::isfinite(aPosZ))
+        return false;
+    return std::fabs(aPosX) < 4000000.0f && std::fabs(aPosY) < 4000000.0f && std::fabs(aPosZ) < 4000000.0f;
+}
+
 // Rejects bogus (0, 0, 0) coordinates sent when an already-unloaded actor form is cancelled,
 // preventing exterior persistent/city NPCs from being warped to world origin (0, 0, 0) and falling to death.
 [[nodiscard]] inline bool IsValidHandoffCoordinates(
