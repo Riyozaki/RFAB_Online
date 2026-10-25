@@ -15,5 +15,5 @@ struct StatsMenu final : IMenu, MenuEventHandler
     // TBD
 };
 
+[[nodiscard]] bool ShouldKeepStatsMenuPausedRuntime() noexcept;
 void ApplyFallbackStatsMenuPatchesPostSkse() noexcept;
-

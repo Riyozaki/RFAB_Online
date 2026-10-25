@@ -105,6 +105,8 @@ private:
     void PollBossEncounterState() noexcept;
     void UpdateTacticalPingsAndInput(double aDeltaSec) noexcept;
     void UpsertActiveTacticalPing(const RfabCompat::TacticalPingPayload& acPayload) noexcept;
+    void RefreshTacticalHudSnapshot() noexcept;
+    void ClearTacticalHudSnapshot() noexcept;
     void SelfHealFreeRoamMenuControls() noexcept;
     void SuppressSoloRfabAutosave() noexcept;
     void RestoreSoloRfabAutosave() noexcept;
@@ -193,6 +195,77 @@ private:
     double m_pingCooldownRemainingSec{0.0};
     bool m_pingKeyWasDown{false};
     bool m_hudKeyWasDown{false};
+
+    struct DownedBeaconSnapshotEntry
+    {
+        std::string AllyName{};
+        float DistMeters{0.0f};
+        float NormScreenX{0.5f};
+        float NormScreenY{0.5f};
+        float NormScreenZ{1.0f};
+        bool BeingRevived{false};
+    };
+
+    struct TacticalPingSnapshotEntry
+    {
+        RfabCompat::TacticalPingKind Kind{RfabCompat::TacticalPingKind::MoveHere};
+        std::string TargetLabel{};
+        float DistMeters{0.0f};
+        float NormScreenX{0.5f};
+        float NormScreenY{0.5f};
+        float NormScreenZ{1.0f};
+        double RemainingSec{0.0};
+        double TotalDurationSec{12.0};
+    };
+
+    struct BossHudSnapshotEntry
+    {
+        bool Active{false};
+        std::string Name{};
+        std::string TargetPlayerName{};
+        uint16_t Level{1};
+        float CurHp{0.0f};
+        float MaxHp{1.0f};
+        float HpRatio{1.0f};
+        bool IsEtherealPhase{false};
+    };
+
+    struct PartyMemberHudSnapshotEntry
+    {
+        std::string Name{};
+        std::string CellName{};
+        uint16_t Level{1};
+        bool IsLeader{false};
+        bool IsDowned{false};
+        bool IsBeingRevived{false};
+        bool IsGraceActive{false};
+        bool IsInCombat{false};
+        bool IsLoaded3D{false};
+        float DistMeters{0.0f};
+        float HpPct{100.0f};
+        float MpPct{100.0f};
+        float SpPct{100.0f};
+    };
+
+    struct TacticalHudRenderSnapshot
+    {
+        bool Visible{false};
+        RfabCompat::TacticalHudMode Mode{RfabCompat::TacticalHudMode::Full};
+        bool AllyProtectionEnabled{true};
+        bool IsChannelingRevive{false};
+        float ReviveChannelProgress{0.0f};
+        bool IsLocalPlayerDowned{false};
+        bool IsLocalPlayerBeingRevived{false};
+        bool IsLocalPlayerInvulnerable{false};
+        double GraceRemainingSec{0.0};
+        std::vector<DownedBeaconSnapshotEntry> DownedBeacons{};
+        std::vector<TacticalPingSnapshotEntry> ActivePings{};
+        BossHudSnapshotEntry Boss{};
+        std::vector<PartyMemberHudSnapshotEntry> PartyRows{};
+    };
+
+    mutable std::mutex m_tacticalHudSnapshotMutex{};
+    TacticalHudRenderSnapshot m_tacticalHudSnapshot{};
 
     entt::scoped_connection m_connectedConnection;
     entt::scoped_connection m_disconnectedConnection;

@@ -199,13 +199,58 @@ bool IsLocalModulePath(HMODULE aHmod)
     return buf.find(s_OverridePath) != std::wstring::npos;
 }
 
+bool IsSkyrimMainModuleQueryW(std::wstring_view aModuleName) noexcept
+{
+    if (aModuleName.empty())
+        return false;
+
+    const size_t slash = aModuleName.find_last_of(L"/\\");
+    const std::wstring_view leaf = (slash == std::wstring_view::npos) ? aModuleName : aModuleName.substr(slash + 1);
+
+    constexpr std::wstring_view kExe = TARGET_NAME L".exe";
+    constexpr std::wstring_view kStem = TARGET_NAME;
+    constexpr std::wstring_view kAltExe = L"SkyrimTogether.exe";
+    constexpr std::wstring_view kAltStem = L"SkyrimTogether";
+
+    auto equalsIgnoreCaseW = [](std::wstring_view a, std::wstring_view b) noexcept -> bool
+    {
+        return a.size() == b.size() && _wcsnicmp(a.data(), b.data(), a.size()) == 0;
+    };
+
+    return equalsIgnoreCaseW(leaf, kExe) ||
+           equalsIgnoreCaseW(leaf, kStem) ||
+           equalsIgnoreCaseW(leaf, kAltExe) ||
+           equalsIgnoreCaseW(leaf, kAltStem);
+}
+
+bool IsSkyrimMainModuleQueryA(std::string_view aModuleName) noexcept
+{
+    if (aModuleName.empty())
+        return false;
+
+    const size_t slash = aModuleName.find_last_of("/\\");
+    const std::string_view leaf = (slash == std::string_view::npos) ? aModuleName : aModuleName.substr(slash + 1);
+
+    constexpr std::string_view kExe = TARGET_NAME_A ".exe";
+    constexpr std::string_view kStem = TARGET_NAME_A;
+    constexpr std::string_view kAltExe = "SkyrimTogether.exe";
+    constexpr std::string_view kAltStem = "SkyrimTogether";
+
+    auto equalsIgnoreCaseA = [](std::string_view a, std::string_view b) noexcept -> bool
+    {
+        return a.size() == b.size() && _strnicmp(a.data(), b.data(), a.size()) == 0;
+    };
+
+    return equalsIgnoreCaseA(leaf, kExe) ||
+           equalsIgnoreCaseA(leaf, kStem) ||
+           equalsIgnoreCaseA(leaf, kAltExe) ||
+           equalsIgnoreCaseA(leaf, kAltStem);
+}
+
 // some mods do GetModuleHandle("SkyrimSE.exe") for some reason instead of GetModuleHandle(nullptr)
 HMODULE WINAPI TP_GetModuleHandleW(LPCWSTR lpModuleName)
 {
-    constexpr auto pTarget = TARGET_NAME L".exe";
-    auto targetSize = std::wcslen(pTarget);
-
-    if (lpModuleName && std::wcsncmp(pTarget, lpModuleName, targetSize) == 0)
+    if (lpModuleName && IsSkyrimMainModuleQueryW(lpModuleName))
         lpModuleName = nullptr;
     return RealGetModuleHandleW(lpModuleName);
 }
@@ -213,10 +258,7 @@ HMODULE WINAPI TP_GetModuleHandleW(LPCWSTR lpModuleName)
 // some mods do GetModuleHandle("SkyrimSE.exe") for some reason instead of GetModuleHandle(nullptr)
 HMODULE WINAPI TP_GetModuleHandleA(LPCSTR lpModuleName)
 {
-    constexpr auto pTarget = TARGET_NAME_A ".exe";
-    constexpr auto targetSize = sizeof(TARGET_NAME_A ".exe");
-
-    if (lpModuleName && std::strncmp(pTarget, lpModuleName, targetSize) == 0)
+    if (lpModuleName && IsSkyrimMainModuleQueryA(lpModuleName))
         lpModuleName = nullptr;
     return RealGetModuleHandleA(lpModuleName);
 }
@@ -226,7 +268,8 @@ NTSTATUS WINAPI TP_LdrGetDllHandle(PWSTR DllPath, PULONG DllCharacteristics, PUN
 {
     TP_EMPTY_HOOK_PLACEHOLDER;
 
-    if (std::wcsncmp(TARGET_NAME L".exe", DllName->Buffer, DllName->Length) == 0)
+    if (DllName && DllName->Buffer && DllHandle &&
+        IsSkyrimMainModuleQueryW(std::wstring_view(DllName->Buffer, DllName->Length / sizeof(wchar_t))))
     {
         *DllHandle = NtInternal::ThePeb()->pImageBase;
         return 0; // success
@@ -237,7 +280,8 @@ NTSTATUS WINAPI TP_LdrGetDllHandle(PWSTR DllPath, PULONG DllCharacteristics, PUN
 
 NTSTATUS WINAPI TP_LdrGetDllHandleEx(ULONG Flags, PWSTR DllPath, PULONG DllCharacteristics, UNICODE_STRING* DllName, PVOID* DllHandle)
 {
-    if (DllName && std::wcsncmp(TARGET_NAME L".exe", DllName->Buffer, DllName->Length) == 0)
+    if (DllName && DllName->Buffer && DllHandle &&
+        IsSkyrimMainModuleQueryW(std::wstring_view(DllName->Buffer, DllName->Length / sizeof(wchar_t))))
     {
         *DllHandle = NtInternal::ThePeb()->pImageBase;
         return 0; // success

@@ -140,6 +140,8 @@ def patch_skyrim_souls_ini(content: str) -> Tuple[str, bool]:
     any_changed = False
     cur, _, ch = patch_toml_key(cur, "fSlowMotionMultiplier", "1.000000")
     any_changed = any_changed or ch
+    cur, _, ch_stats = patch_toml_key(cur, "bStatsMenu", "false")
+    any_changed = any_changed or ch_stats
 
     slow_re = re.compile(r"^(\s*bEnableSlowMotion[A-Za-z0-9_]*\s*=\s*)([^\r\n;#]+)(.*)$", re.MULTILINE | re.IGNORECASE)
 

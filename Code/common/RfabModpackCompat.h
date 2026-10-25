@@ -1197,6 +1197,13 @@ inline bool PatchSkyrimSoulsReIniContent(std::string& aIni)
                     line = line.substr(0, rawEq + 1) + " false";
                     changed = true;
                 }
+                else if (keyLower == "bstatsmenu" && Detail::ToLowerAscii(val) != "false")
+                {
+                    // StatsMenu (Skills/Perks) MUST remain paused so CustomSkills skydomes and RFAB PerkPlacementMenuOpenCloseManager never race unpaused world ticks.
+                    const size_t rawEq = line.find('=');
+                    line = line.substr(0, rawEq + 1) + " false";
+                    changed = true;
+                }
                 else if (keyLower == "fslowmotionmultiplier" && val != "1.000000" && val != "1.0" && val != "1")
                 {
                     const size_t rawEq = line.find('=');
@@ -2822,6 +2829,337 @@ inline void DecodeSkyrimGameHour(float aGameHour, int& aOutHours, int& aOutMinut
         return aHasWorldSpaceId;
 
     return aHasCellId || aHasWorldSpaceId;
+}
+
+namespace Detail
+{
+[[nodiscard]] inline int HexDigitVal(char c) noexcept
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F')
+        return 10 + (c - 'A');
+    return -1;
+}
+
+inline void AppendCodePointUtf8(std::string& aOut, uint32_t aCp)
+{
+    if (aCp <= 0x7Fu)
+    {
+        aOut.push_back(static_cast<char>(aCp));
+    }
+    else if (aCp <= 0x7FFu)
+    {
+        aOut.push_back(static_cast<char>(0xC0u | ((aCp >> 6) & 0x1Fu)));
+        aOut.push_back(static_cast<char>(0x80u | (aCp & 0x3Fu)));
+    }
+    else if (aCp <= 0xFFFFu)
+    {
+        aOut.push_back(static_cast<char>(0xE0u | ((aCp >> 12) & 0x0Fu)));
+        aOut.push_back(static_cast<char>(0x80u | ((aCp >> 6) & 0x3Fu)));
+        aOut.push_back(static_cast<char>(0x80u | (aCp & 0x3Fu)));
+    }
+    else if (aCp <= 0x10FFFFu)
+    {
+        aOut.push_back(static_cast<char>(0xF0u | ((aCp >> 18) & 0x07u)));
+        aOut.push_back(static_cast<char>(0x80u | ((aCp >> 12) & 0x3Fu)));
+        aOut.push_back(static_cast<char>(0x80u | ((aCp >> 6) & 0x3Fu)));
+        aOut.push_back(static_cast<char>(0x80u | (aCp & 0x3Fu)));
+    }
+}
+
+[[nodiscard]] inline std::filesystem::path PathFromUtf8Safe(std::string_view aUtf8)
+{
+#ifndef _WIN32
+    std::string normalized(aUtf8);
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    const std::u8string u8(reinterpret_cast<const char8_t*>(normalized.data()), normalized.size());
+#else
+    const std::u8string u8(reinterpret_cast<const char8_t*>(aUtf8.data()), aUtf8.size());
+#endif
+    return std::filesystem::path(u8);
+}
+
+[[nodiscard]] inline std::string PathToUtf8Safe(const std::filesystem::path& acPath)
+{
+    const std::u8string u8 = acPath.u8string();
+    return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
+}
+} // namespace Detail
+
+/**
+ * Decodes a ModOrganizer.ini value into clean UTF-8, supporting both Qt `@ByteArray(...)`
+ * (\xHH raw UTF-8 byte escapes + \\) and Qt QSettings string escapes (\xHHHH UTF-16 code units + \\).
+ */
+[[nodiscard]] inline std::string DecodeMo2IniValueUtf8(std::string_view aRaw)
+{
+    std::string val = Detail::Trim(aRaw);
+    if (val.empty())
+        return {};
+
+    std::string out;
+    if (val.size() >= 12 && Detail::StartsWithIgnoreCase(val, "@bytearray(") && val.back() == ')')
+    {
+        const std::string_view inner(val.data() + 11, val.size() - 12);
+        out.reserve(inner.size());
+        for (size_t i = 0; i < inner.size(); ++i)
+        {
+            if (inner[i] == '\\' && (i + 1) < inner.size())
+            {
+                const char n = inner[i + 1];
+                if (n == 'x' && (i + 3) < inner.size())
+                {
+                    const int hi = Detail::HexDigitVal(inner[i + 2]);
+                    const int lo = Detail::HexDigitVal(inner[i + 3]);
+                    if (hi >= 0 && lo >= 0)
+                    {
+                        out.push_back(static_cast<char>((hi << 4) | lo));
+                        i += 3;
+                        continue;
+                    }
+                }
+                else if (n == '\\')
+                {
+                    out.push_back('\\');
+                    ++i;
+                    continue;
+                }
+                else if (n == '"')
+                {
+                    out.push_back('"');
+                    ++i;
+                    continue;
+                }
+                else if (n == 't')
+                {
+                    out.push_back('\t');
+                    ++i;
+                    continue;
+                }
+            }
+            out.push_back(inner[i]);
+        }
+    }
+    else
+    {
+        out.reserve(val.size());
+        for (size_t i = 0; i < val.size(); ++i)
+        {
+            if (val[i] == '\\' && (i + 1) < val.size())
+            {
+                const char n = val[i + 1];
+                if (n == 'x')
+                {
+                    uint32_t codeUnit = 0;
+                    size_t digits = 0;
+                    while (digits < 4 && (i + 2 + digits) < val.size())
+                    {
+                        const int hv = Detail::HexDigitVal(val[i + 2 + digits]);
+                        if (hv < 0)
+                            break;
+                        codeUnit = (codeUnit << 4) | static_cast<uint32_t>(hv);
+                        ++digits;
+                    }
+                    if (digits >= 2)
+                    {
+                        Detail::AppendCodePointUtf8(out, codeUnit);
+                        i += 1 + digits;
+                        continue;
+                    }
+                }
+                else if (n == '\\')
+                {
+                    out.push_back('\\');
+                    ++i;
+                    continue;
+                }
+                else if (n == '"')
+                {
+                    out.push_back('"');
+                    ++i;
+                    continue;
+                }
+            }
+            out.push_back(val[i]);
+        }
+    }
+
+    out = Detail::Trim(out);
+    if (out.size() >= 2 && out.front() == '"' && out.back() == '"')
+        out = out.substr(1, out.size() - 2);
+
+    return out;
+}
+
+/**
+ * Walks up from `acStartDir` (e.g. `<MO2>/mods/RFAB_Online/SkyrimTogetherReborn`) to locate `<MO2>/ModOrganizer.ini`,
+ * parses `gamePath=` (and `%BASE_DIR%`), and returns the configured Skyrim root if `<gamePath>/<acExeName>` + `Data` exist.
+ * Prevents USVFS / CWD desync when a user reinstalls clean Skyrim in a new path while an old `SkyrimSE.exe` or registry
+ * `TitlePath` still exists elsewhere on disk.
+ */
+[[nodiscard]] inline std::filesystem::path ResolveMo2ConfiguredGamePath(
+    const std::filesystem::path& acStartDir,
+    const std::filesystem::path& acSelfDir = {},
+    std::string_view aExeNameUtf8 = "SkyrimSE.exe") noexcept
+{
+    std::error_code ec;
+    if (acStartDir.empty())
+        return {};
+
+    std::filesystem::path cur = acStartDir;
+    for (int depth = 0; depth < 6 && !cur.empty(); ++depth)
+    {
+        const std::filesystem::path iniPath = cur / "ModOrganizer.ini";
+        ec.clear();
+        if (std::filesystem::exists(iniPath, ec) && std::filesystem::is_regular_file(iniPath, ec))
+        {
+            std::string content;
+            if (Detail::ReadTextFile(iniPath, content))
+            {
+                std::string rawBaseDir;
+                std::string rawGamePath;
+                std::istringstream iss(content);
+                std::string line;
+                while (std::getline(iss, line))
+                {
+                    if (!line.empty() && line.back() == '\r')
+                        line.pop_back();
+                    const std::string trimmed = Detail::Trim(line);
+                    if (trimmed.empty() || trimmed.front() == ';' || trimmed.front() == '#' || trimmed.front() == '[')
+                        continue;
+                    const size_t eq = trimmed.find('=');
+                    if (eq == std::string::npos)
+                        continue;
+                    const std::string keyLower = Detail::ToLowerAscii(Detail::Trim(std::string_view(trimmed).substr(0, eq)));
+                    const std::string_view rhs = std::string_view(trimmed).substr(eq + 1);
+                    if (keyLower == "base_directory")
+                        rawBaseDir = DecodeMo2IniValueUtf8(rhs);
+                    else if (keyLower == "gamepath")
+                        rawGamePath = DecodeMo2IniValueUtf8(rhs);
+                }
+
+                if (!rawGamePath.empty())
+                {
+                    std::filesystem::path baseDirPath = cur;
+                    if (!rawBaseDir.empty())
+                    {
+                        std::filesystem::path parsedBase = Detail::PathFromUtf8Safe(rawBaseDir);
+                        if (!parsedBase.is_absolute())
+                            parsedBase = (cur / parsedBase).lexically_normal();
+                        ec.clear();
+                        if (std::filesystem::exists(parsedBase, ec))
+                            baseDirPath = parsedBase;
+                    }
+
+                    // Case-insensitive %BASE_DIR% token replacement
+                    const std::string baseDirUtf8 = Detail::PathToUtf8Safe(baseDirPath);
+                    std::string expanded = rawGamePath;
+                    constexpr std::string_view kToken = "%base_dir%";
+                    for (;;)
+                    {
+                        const std::string lowerExp = Detail::ToLowerAscii(expanded);
+                        const size_t pos = lowerExp.find(kToken);
+                        if (pos == std::string::npos)
+                            break;
+                        expanded.replace(pos, kToken.size(), baseDirUtf8);
+                    }
+
+                    std::filesystem::path candidateRoot = Detail::PathFromUtf8Safe(expanded);
+                    if (!candidateRoot.is_absolute())
+                        candidateRoot = (cur / candidateRoot).lexically_normal();
+                    else
+                        candidateRoot = candidateRoot.lexically_normal();
+
+                    ec.clear();
+                    const bool sameAsSelf =
+                        !acSelfDir.empty() &&
+                        std::filesystem::exists(acSelfDir, ec) &&
+                        std::filesystem::exists(candidateRoot, ec) &&
+                        std::filesystem::equivalent(candidateRoot, acSelfDir, ec);
+
+                    if (!sameAsSelf)
+                    {
+                        const std::filesystem::path exePath = candidateRoot / Detail::PathFromUtf8Safe(aExeNameUtf8);
+                        const std::filesystem::path dataPath = candidateRoot / "Data";
+                        ec.clear();
+                        if (std::filesystem::exists(exePath, ec) && std::filesystem::exists(dataPath, ec))
+                            return candidateRoot;
+                    }
+                }
+            }
+        }
+
+        const std::filesystem::path parent = cur.parent_path();
+        if (parent == cur)
+            break;
+        cur = parent;
+    }
+
+    return {};
+}
+
+/**
+ * Version-agnostic detection of CustomSkills (v1 .NetScriptFramework configs OR v2/v3 SKSE JSON configs),
+ * RFAB PerkPlacement configs, or Extended UI under `Data/`, so StatsMenu stays safely paused across all RFAB updates.
+ */
+[[nodiscard]] inline bool HasCustomSkillsOrRfabFilesUnderData(const std::filesystem::path& acDataDir) noexcept
+{
+    std::error_code ec;
+    if (acDataDir.empty() || !std::filesystem::exists(acDataDir, ec))
+        return false;
+
+    // 1. CustomSkills v2/v3+ directory (`Data/SKSE/Plugins/CustomSkills`) or RFAB PerkPlacement INI
+    const std::filesystem::path sksePlugins = acDataDir / "SKSE" / "Plugins";
+    ec.clear();
+    if (std::filesystem::exists(sksePlugins / "CustomSkills", ec) ||
+        std::filesystem::exists(sksePlugins / "[RFAB] PerksPlacement.ini", ec))
+    {
+        return true;
+    }
+
+    ec.clear();
+    if (std::filesystem::exists(sksePlugins, ec) && std::filesystem::is_directory(sksePlugins, ec))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(sksePlugins, ec))
+        {
+            if (ec)
+                break;
+            const std::string lowerName = Detail::ToLowerAscii(Detail::PathToUtf8Safe(entry.path().filename()));
+            if (lowerName.starts_with("customskills") ||
+                lowerName.starts_with("rfab") ||
+                lowerName.starts_with("[rfab]"))
+            {
+                return true;
+            }
+        }
+    }
+
+    // 2. CustomSkills v1 (`Data/NetScriptFramework/Plugins/customskill.*.config.txt`)
+    const std::filesystem::path nsfPlugins = acDataDir / "NetScriptFramework" / "Plugins";
+    ec.clear();
+    if (std::filesystem::exists(nsfPlugins, ec) && std::filesystem::is_directory(nsfPlugins, ec))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(nsfPlugins, ec))
+        {
+            if (ec)
+                break;
+            const std::string lowerName = Detail::ToLowerAscii(Detail::PathToUtf8Safe(entry.path().filename()));
+            if (lowerName.starts_with("customskill."))
+                return true;
+        }
+    }
+
+    // 3. Extended UI or RFAB master plugin in Data
+    ec.clear();
+    if (std::filesystem::exists(acDataDir / "Extended UI.esp", ec) ||
+        std::filesystem::exists(acDataDir / "RFAB.esp", ec))
+    {
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace RfabCompat

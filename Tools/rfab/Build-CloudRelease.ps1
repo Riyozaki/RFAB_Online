@@ -1,15 +1,18 @@
 ﻿param(
-    [string]$VersionTag = "v1.2.0",
+    [string]$VersionTag = "v1.2.0-hotfix.1",
     [string]$BuildMode = "releasedbg"
 )
 
-if ($VersionTag -ne "v1.2.0") {
-    Write-Host "[RELEASE POLICY] Remapping -VersionTag '$VersionTag' -> 'v1.2.0' (v1.0.0 and v1.1.0 backups are preserved untouched; active release target is v1.2.0)." -ForegroundColor Yellow
-    $VersionTag = "v1.2.0"
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup")
+if ($VersionTag -in $ProtectedTags) {
+    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v1.2.0-hotfix.1' (v1.0.0, v1.1.0, v1.2.0, and v1.2.0-backup are preserved untouched)." -ForegroundColor Yellow
+    $VersionTag = "v1.2.0-hotfix.1"
 }
-if ($VersionTag -eq "v1.0.0" -or $VersionTag -eq "v1.1.0") {
-    throw "Hard guard: v1.0.0 and v1.1.0 must never be overwritten!"
+if ($VersionTag -in $ProtectedTags) {
+    throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"
 }
+
+$IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main")
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
@@ -20,8 +23,64 @@ $script:LastDiagTail = ""
 $script:ProgressLog = New-Object System.Collections.Generic.List[string]
 $CacheMarker = Join-Path $env:LOCALAPPDATA ".xmake\packages\.rfab_cached_ok"
 
+function Ensure-V120BackupRelease([string]$RepoRootPath) {
+    try {
+        if (-not $env:GH_TOKEN) { return }
+        & cmd.exe /d /s /c "gh release view v1.2.0-backup >nul 2>&1"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[BACKUP] Protected backup release v1.2.0-backup already exists on GitHub." -ForegroundColor Green
+            return
+        }
+        & cmd.exe /d /s /c "gh release view v1.2.0 >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) { return }
+
+        Write-Host "[BACKUP] Mirroring immutable v1.2.0 assets into permanent backup release v1.2.0-backup..." -ForegroundColor Cyan
+        $bakDir = Join-Path $env:TEMP ("rfab_v120_bak_" + [Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
+        try {
+            & cmd.exe /d /s /c "gh release download v1.2.0 -D `"$bakDir`" --clobber"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "[BACKUP] Could not download v1.2.0 assets for mirror; live v1.2.0 remains untouched."
+                return
+            }
+
+            $manifestPath = Join-Path $RepoRootPath "docs\V1.2.0_RELEASE_BACKUP_MANIFEST.json"
+            if (Test-Path -LiteralPath $manifestPath) {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                foreach ($exp in $manifest.assets) {
+                    $f = Join-Path $bakDir $exp.name
+                    if (-not (Test-Path -LiteralPath $f)) {
+                        throw "Missing v1.2.0 backup asset: $($exp.name)"
+                    }
+                    $actualHash = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant()
+                    if ($actualHash -ne $exp.sha256.ToLowerInvariant()) {
+                        throw "SHA256 mismatch on v1.2.0 asset $($exp.name): expected $($exp.sha256), got $actualHash"
+                    }
+                }
+            }
+
+            $bakNotes = Join-Path $bakDir "BACKUP_NOTES.md"
+            $bakText = "Immutable backup mirror of stable release **v1.2.0** (commit ``b431be0da38764ce1f4d658329934b4a8ccc5692``), preserved automatically before v1.2.0 hotfix/refinement builds.`r`n"
+            [System.IO.File]::WriteAllText($bakNotes, $bakText, (New-Object System.Text.UTF8Encoding($false)))
+
+            & cmd.exe /d /s /c "gh release create v1.2.0-backup --target b431be0da38764ce1f4d658329934b4a8ccc5692 --title `"RFAB Online v1.2.0 (Immutable Backup Archive)`" --notes-file `"$bakNotes`" --prerelease"
+            if ($LASTEXITCODE -eq 0) {
+                Get-ChildItem -LiteralPath $bakDir -File | Where-Object { $_.Name -ne "BACKUP_NOTES.md" } | ForEach-Object {
+                    & cmd.exe /d /s /c "gh release upload v1.2.0-backup `"$($_.FullName)`" --clobber"
+                }
+                Write-Host "[BACKUP] Created verified GitHub backup release v1.2.0-backup!" -ForegroundColor Green
+            }
+        } finally {
+            Remove-Item -LiteralPath $bakDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Write-Warning ("[BACKUP] Non-fatal backup mirror warning (v1.2.0 itself remains untouched): " + $_.Exception.Message)
+    }
+}
+
 function Update-ReleaseTelemetry([string]$StateTitle, [string]$BodyText) {
     try {
+        if ($VersionTag -in $ProtectedTags) { return }
         if ($StateTitle.Length -gt 200) { $StateTitle = $StateTitle.Substring(0, 200) }
         if ($BodyText.Length -gt 60000) {
             $BodyText = $BodyText.Substring($BodyText.Length - 60000)
@@ -75,9 +134,11 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
             $compactTail = @($tailShow | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             $script:LastDiagTail = ($compactTail -join "`r`n")
             Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n")
-            $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
-            Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
-            & cmd.exe /d /s /c "gh release upload $VersionTag `"$failLogAsset`" --clobber >nul 2>&1"
+            if ($VersionTag -notin $ProtectedTags) {
+                $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
+                Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
+                & cmd.exe /d /s /c "gh release upload $VersionTag `"$failLogAsset`" --clobber >nul 2>&1"
+            }
             Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
             throw "$StepName exited with code $code"
         }
@@ -93,8 +154,10 @@ try {
     $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\.."))
     Set-Location -LiteralPath $RepoRoot
 
+    Ensure-V120BackupRelease -RepoRootPath $RepoRoot
+
     Invoke-LoggedCmd "[1/7] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
-    Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA & Struct Audit" "python Tools\rfab\verify_se1597_port.py"
+    Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"
     Invoke-LoggedCmd "[3/7] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
     $script:PackagesReady = $true
 
@@ -124,14 +187,16 @@ try {
     $PdbZip       = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_PDB_Symbols.zip"
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
+    $RelFlags     = if ($IsPrereleaseTag) { "--prerelease" } else { "--prerelease=false --latest" }
+    $CreateFlags  = if ($IsPrereleaseTag) { "--prerelease" } else { "--latest" }
 
     & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
     if ($LASTEXITCODE -ne 0) {
         Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
-            "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --latest"
+            "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $CreateFlags"
     } else {
         Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
-            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --prerelease=false --latest"
+            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
     }
 
     foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {
@@ -155,16 +220,11 @@ try {
         }
     }
 
-    & cmd.exe /d /s /c "gh release view v1.0.0-rfab >nul 2>&1"
-    if ($LASTEXITCODE -eq 0) {
-        & cmd.exe /d /s /c "gh release delete v1.0.0-rfab --yes --cleanup-tag"
-    }
-
     if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
         [System.IO.File]::WriteAllText($CacheMarker, "ok")
     }
     & cmd.exe /d /s /c "gh release delete-asset $VersionTag build_step_log.txt --yes >nul 2>&1"
-    & cmd.exe /d /s /c "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" --prerelease=false --latest"
+    & cmd.exe /d /s /c "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
     Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/Riyozaki/RFAB_Online/releases/tag/$VersionTag"
     $global:LASTEXITCODE = 0
     exit 0

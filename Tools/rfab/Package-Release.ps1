@@ -173,7 +173,7 @@ New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\profiles\RFAB\saves
 $MockTruncEss = New-Object byte[] 512
 [System.Text.Encoding]::ASCII.GetBytes("TESV_SAVEGAME").CopyTo($MockTruncEss, 0)
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.ess"), $MockTruncEss)
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[UNPAUSED_MENUS]`r`nbStatsMenu = true`r`n[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnable autosave = 1`r`nSave after combat = 1`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll"), "stub")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\ModOrganizer.ini"), "[General]`r`nselected_profile=@ByteArray(RFAB)`r`n")
@@ -249,13 +249,31 @@ $SrcDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $GameRoot = $null
 $RegKey = "HKCU:\Software\TiltedPhoques\TiltedEvolution\Skyrim Special Edition"
+$CandRoots = New-Object System.Collections.Generic.List[string]
+foreach ($relCand in @($SrcDir, (Split-Path -Parent $SrcDir), (Split-Path -Parent (Split-Path -Parent $SrcDir)))) {
+    if (-not [string]::IsNullOrWhiteSpace($relCand)) { [void]$CandRoots.Add($relCand) }
+}
 if (Test-Path -LiteralPath $RegKey) {
-    $GameRoot = (Get-ItemProperty -LiteralPath $RegKey -Name "TitlePath" -ErrorAction SilentlyContinue).TitlePath
+    $regProps = Get-ItemProperty -LiteralPath $RegKey -ErrorAction SilentlyContinue
+    if ($regProps.RfabRoot) { [void]$CandRoots.Add($regProps.RfabRoot) }
+    if ($regProps.Mo2Path)  { [void]$CandRoots.Add((Split-Path -Parent $regProps.Mo2Path)); [void]$CandRoots.Add($regProps.Mo2Path) }
+    if ($regProps.TitlePath){ [void]$CandRoots.Add($regProps.TitlePath) }
+}
+foreach ($cr in $CandRoots) {
+    if ([string]::IsNullOrWhiteSpace($cr) -or -not (Test-Path -LiteralPath $cr)) { continue }
+    if (Test-Path -LiteralPath (Join-Path $cr "MO2\mods\RFAB_Online\SkyrimTogetherReborn")) {
+        $GameRoot = $cr
+        break
+    }
+    if (Test-Path -LiteralPath (Join-Path $cr "mods\RFAB_Online\SkyrimTogetherReborn")) {
+        $GameRoot = $cr
+        break
+    }
 }
 if ([string]::IsNullOrWhiteSpace($GameRoot) -or -not (Test-Path -LiteralPath $GameRoot)) {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = "Select your RFAB root folder (e.g. G:\RFAB Online SkyrimSE)"
+    $dlg.Description = "Select your RFAB or MO2 folder (containing MO2\mods\RFAB_Online)"
     if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }
     $GameRoot = $dlg.SelectedPath
 }
@@ -278,7 +296,8 @@ if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
 }
 Start-Sleep -Milliseconds 400
 
-$ModRoot = Join-Path $GameRoot "MO2\mods\RFAB_Online"
+$Mo2Base = if (Test-Path -LiteralPath (Join-Path $GameRoot "MO2\mods\RFAB_Online")) { Join-Path $GameRoot "MO2" } elseif (Test-Path -LiteralPath (Join-Path $GameRoot "mods\RFAB_Online")) { $GameRoot } else { Join-Path $GameRoot "MO2" }
+$ModRoot = Join-Path $Mo2Base "mods\RFAB_Online"
 $ClientDst = Join-Path $ModRoot "SkyrimTogetherReborn"
 if (-not (Test-Path -LiteralPath $ClientDst)) {
     throw "Client folder not found: $ClientDst (run INSTALL_RFAB_ONLINE.bat from Full_Installer first!)"
@@ -318,7 +337,7 @@ if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
     Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath (Join-Path $SrcDir "UI") -Destination (Join-Path $ClientDst "UI") -Recurse -Force
 }
-Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem -LiteralPath $Mo2Base -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
     $rawEf = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
     $updEf = [regex]::Replace($rawEf, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
     $updEf = [regex]::Replace($updEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
@@ -346,7 +365,14 @@ Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "EngineFixes.toml
     }
     if ($updEf -ne $rawEf) { [System.IO.File]::WriteAllText($_.FullName, $updEf, (New-Object System.Text.UTF8Encoding($false))) }
 }
-Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2") -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "[RFAB] Autosave.ini" } | ForEach-Object {
+Get-ChildItem -LiteralPath $Mo2Base -Filter "SkyrimSoulsRE.ini" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+    $rawSs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+    $updSs = [regex]::Replace($rawSs, '(?mi)^(\s*fSlowMotionMultiplier\s*=\s*)([^\r\n;#]+)(.*)$', '${1}1.000000${3}')
+    $updSs = [regex]::Replace($updSs, '(?mi)^(\s*bEnableSlowMotion[A-Za-z0-9_]*\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
+    $updSs = [regex]::Replace($updSs, '(?mi)^(\s*bStatsMenu\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
+    if ($updSs -ne $rawSs) { [System.IO.File]::WriteAllText($_.FullName, $updSs, (New-Object System.Text.UTF8Encoding($false))) }
+}
+Get-ChildItem -LiteralPath $Mo2Base -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "[RFAB] Autosave.ini" } | ForEach-Object {
     $rawAs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
     $updAs = $rawAs
     foreach ($ak in @("Enable autosave","Save after combat","Save on location change","Save on sleep/wait")) {
@@ -410,8 +436,8 @@ if (Test-Path -LiteralPath $DocsSaves) {
         $_.Name -ine "Quarantined_Corrupt_v100" -and $_.Name -ine "_RFAB_CorruptQuarantine"
     } | ForEach-Object { $SaveDirsToScan.Add($_.FullName) }
 }
-if (Test-Path -LiteralPath (Join-Path $GameRoot "MO2\profiles")) {
-    Get-ChildItem -LiteralPath (Join-Path $GameRoot "MO2\profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+if (Test-Path -LiteralPath (Join-Path $Mo2Base "profiles")) {
+    Get-ChildItem -LiteralPath (Join-Path $Mo2Base "profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
         $ps = Join-Path $_.FullName "saves"
         if (Test-Path -LiteralPath $ps) { $SaveDirsToScan.Add($ps) }
     }

@@ -30,6 +30,7 @@
 #include <Services/TransportService.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -40,18 +41,33 @@ constexpr float kClientRevivePromptMeters = 3.0f;
 constexpr float kHostileScanRadiusMeters = 55.0f;
 constexpr float kRfabBossMaxHealthThreshold = 1200.0f;
 
+struct CachedReviveBlockedMenus
+{
+    std::array<BSFixedString, 11> Names{
+        BSFixedString("Console"),
+        BSFixedString("StatsMenu"),
+        BSFixedString("CustomMenu"),
+        BSFixedString("TweenMenu"),
+        BSFixedString("MapMenu"),
+        BSFixedString("Journal Menu"),
+        BSFixedString("InventoryMenu"),
+        BSFixedString("MagicMenu"),
+        BSFixedString("Dialogue Menu"),
+        BSFixedString("ContainerMenu"),
+        BSFixedString("Loading Menu"),
+    };
+};
+
 bool IsHoldReviveKeyPressed() noexcept
 {
 #ifdef _WIN32
     if (auto* pUi = UI::Get())
     {
-        if (pUi->GetMenuOpen(BSFixedString("Console")) ||
-            pUi->GetMenuOpen(BSFixedString("Journal Menu")) ||
-            pUi->GetMenuOpen(BSFixedString("InventoryMenu")) ||
-            pUi->GetMenuOpen(BSFixedString("MagicMenu")) ||
-            pUi->GetMenuOpen(BSFixedString("Loading Menu")))
+        static const CachedReviveBlockedMenus* s_pMenus = new CachedReviveBlockedMenus();
+        for (const auto& menuName : s_pMenus->Names)
         {
-            return false;
+            if (pUi->GetMenuOpen(menuName))
+                return false;
         }
     }
     return (GetAsyncKeyState('E') & 0x8000) != 0;

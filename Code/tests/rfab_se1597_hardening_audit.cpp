@@ -982,8 +982,97 @@ int main()
             assert(clientCommandCpp.find("CanResolveTeleportDestination") != std::string::npos);
             assert(clientPlayerCpp.find("IsBeastFormRace") != std::string::npos);
             assert(clientWeatherCpp.find("if (Sky* pSky = Sky::Get())") != std::string::npos);
+            assert(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
+            assert(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
+            assert(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
             assert(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
             assert(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
+        }
+
+        // v1.2.0-hotfix.1 Skills-CTD, MO2 gamePath, Render-Thread Snapshot & Cross-Version RFAB tests:
+        {
+            assert(fs::exists("docs/V1.2.0_RELEASE_BACKUP_MANIFEST.json"));
+
+            // 1. SkyrimSoulsRE.ini bStatsMenu = false self-healer
+            std::string soulsStats = "[UNPAUSED_MENUS]\r\nbStatsMenu = true\r\nbCustomMenu = true\r\n[SLOWMOTION]\r\nfSlowMotionMultiplier = 0.5\r\n";
+            assert(RfabCompat::PatchSkyrimSoulsReIniContent(soulsStats));
+            assert(soulsStats.find("bStatsMenu = false") != std::string::npos);
+            assert(soulsStats.find("bCustomMenu = true") != std::string::npos);
+            assert(soulsStats.find("fSlowMotionMultiplier = 1.000000") != std::string::npos);
+            assert(!RfabCompat::PatchSkyrimSoulsReIniContent(soulsStats));
+
+            // 2. MO2 ModOrganizer.ini gamePath= decoder (portable ..\\, clean Skyrim override over stale p4, Cyrillic @ByteArray & \xHHHH, %BASE_DIR%)
+            assert(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(..\\\\)") == "..\\");
+            assert(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(D:\\\\\\xd0\\x98\\xd0\\xb3\\xd1\\x80\\xd1\\x8b\\\\RFAB)") == "D:\\Игры\\RFAB");
+            assert(RfabCompat::DecodeMo2IniValueUtf8("D:/\\x0418\\x0433\\x0440\\x044b/RFAB") == "D:/Игры/RFAB");
+
+            const fs::path tmpMo2Root = fs::temp_directory_path() / "rfab_mo2_gamepath_unit_test";
+            std::error_code ec;
+            fs::remove_all(tmpMo2Root, ec);
+            const fs::path stalePackRoot = tmpMo2Root / "OldRfabPack";
+            const fs::path cleanSkyrimRoot = tmpMo2Root / RfabCompat::Detail::PathFromUtf8Safe("Чистый_Skyrim_1597");
+            const fs::path mo2Dir = stalePackRoot / "MO2";
+            const fs::path launcherSelfDir = mo2Dir / "mods" / "RFAB_Online" / "SkyrimTogetherReborn";
+            fs::create_directories(stalePackRoot / "Data", ec);
+            fs::create_directories(cleanSkyrimRoot / "Data", ec);
+            fs::create_directories(launcherSelfDir, ec);
+            RfabCompat::Detail::WriteTextFile(stalePackRoot / "SkyrimSE.exe", "MZ");
+            RfabCompat::Detail::WriteTextFile(cleanSkyrimRoot / "SkyrimSE.exe", "MZ");
+
+            const std::string cleanUtf8 = RfabCompat::Detail::PathToUtf8Safe(cleanSkyrimRoot);
+            std::string hexEscaped;
+            for (unsigned char ch : cleanUtf8)
+            {
+                if (ch == '\\')
+                    hexEscaped += "\\\\";
+                else if (ch >= 0x80u)
+                {
+                    char b[8]{};
+                    std::snprintf(b, sizeof(b), "\\x%02x", static_cast<unsigned>(ch));
+                    hexEscaped += b;
+                }
+                else
+                    hexEscaped.push_back(static_cast<char>(ch));
+            }
+            RfabCompat::Detail::WriteTextFile(
+                mo2Dir / "ModOrganizer.ini",
+                "[General]\r\ngameName=Skyrim Special Edition\r\ngamePath=@ByteArray(" + hexEscaped + ")\r\n");
+
+            const fs::path resolvedClean = RfabCompat::ResolveMo2ConfiguredGamePath(launcherSelfDir, launcherSelfDir, "SkyrimSE.exe");
+            assert(!resolvedClean.empty());
+            assert(fs::equivalent(resolvedClean, cleanSkyrimRoot, ec));
+
+            // Portable template `gamePath=@ByteArray(..\\)` resolves to stalePackRoot
+            RfabCompat::Detail::WriteTextFile(
+                mo2Dir / "ModOrganizer.ini",
+                "[General]\r\ngamePath=@ByteArray(..\\\\)\r\n");
+            const fs::path resolvedPortable = RfabCompat::ResolveMo2ConfiguredGamePath(launcherSelfDir, launcherSelfDir, "SkyrimSE.exe");
+            assert(!resolvedPortable.empty());
+            assert(fs::equivalent(resolvedPortable, stalePackRoot, ec));
+
+            // Version-agnostic CustomSkills / RFAB VFS detection (v1 NSF, v2/v3 SKSE CustomSkills, PerksPlacement, Extended UI)
+            assert(!RfabCompat::HasCustomSkillsOrRfabFilesUnderData(cleanSkyrimRoot / "Data"));
+            fs::create_directories(cleanSkyrimRoot / "Data" / "SKSE" / "Plugins" / "CustomSkills", ec);
+            assert(RfabCompat::HasCustomSkillsOrRfabFilesUnderData(cleanSkyrimRoot / "Data"));
+            fs::remove_all(tmpMo2Root, ec);
+
+            // 3. Render-thread isolation check on RfabAdapterService::OnDrawTacticalHud()
+            std::string rfabAdapterCpp;
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/RfabAdapterService.cpp", rfabAdapterCpp));
+            const size_t drawPos = rfabAdapterCpp.find("void RfabAdapterService::OnDrawTacticalHud() noexcept");
+            assert(drawPos != std::string::npos);
+            const std::string drawBody = rfabAdapterCpp.substr(drawPos);
+            assert(drawBody.find("m_tacticalHudSnapshotMutex") != std::string::npos);
+            assert(drawBody.find("BSFixedString") == std::string::npos);
+            assert(drawBody.find("GetMenuOpen") == std::string::npos);
+            assert(drawBody.find("m_world.view") == std::string::npos);
+            assert(drawBody.find("TESForm::GetById") == std::string::npos);
+            assert(drawBody.find("WorldPtToScreenPt3") == std::string::npos);
+
+            // 4. UNICODE_STRING byte-length safety in FileMapping.cpp
+            std::string fileMappingCpp;
+            assert(RfabCompat::Detail::ReadTextFile("Code/immersive_launcher/stubs/FileMapping.cpp", fileMappingCpp));
+            assert(fileMappingCpp.find("DllName->Length / sizeof(wchar_t)") != std::string::npos);
         }
     }
 
@@ -1545,8 +1634,39 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(clientCommandCpp.find("CanResolveTeleportDestination") != std::string::npos);
         REQUIRE(clientPlayerCpp.find("IsBeastFormRace") != std::string::npos);
         REQUIRE(clientWeatherCpp.find("if (Sky* pSky = Sky::Get())") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
         REQUIRE(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
         REQUIRE(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
+
+        // v1.2.0-hotfix.1 Skills-CTD, MO2 gamePath, Render-Thread Snapshot & Cross-Version RFAB tests:
+        REQUIRE(std::filesystem::exists("docs/V1.2.0_RELEASE_BACKUP_MANIFEST.json"));
+
+        std::string soulsStats = "[UNPAUSED_MENUS]\r\nbStatsMenu = true\r\n[SLOWMOTION]\r\nfSlowMotionMultiplier = 0.5\r\n";
+        REQUIRE(RfabCompat::PatchSkyrimSoulsReIniContent(soulsStats));
+        REQUIRE(soulsStats.find("bStatsMenu = false") != std::string::npos);
+        REQUIRE(soulsStats.find("fSlowMotionMultiplier = 1.000000") != std::string::npos);
+
+        REQUIRE(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(..\\\\)") == "..\\");
+        REQUIRE(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(D:\\\\\\xd0\\x98\\xd0\\xb3\\xd1\\x80\\xd1\\x8b\\\\RFAB)") == "D:\\Игры\\RFAB");
+        REQUIRE(RfabCompat::DecodeMo2IniValueUtf8("D:/\\x0418\\x0433\\x0440\\x044b/RFAB") == "D:/Игры/RFAB");
+
+        std::string rfabAdapterCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/RfabAdapterService.cpp", rfabAdapterCpp));
+        const size_t drawPos = rfabAdapterCpp.find("void RfabAdapterService::OnDrawTacticalHud() noexcept");
+        REQUIRE(drawPos != std::string::npos);
+        const std::string drawBody = rfabAdapterCpp.substr(drawPos);
+        REQUIRE(drawBody.find("m_tacticalHudSnapshotMutex") != std::string::npos);
+        REQUIRE(drawBody.find("BSFixedString") == std::string::npos);
+        REQUIRE(drawBody.find("GetMenuOpen") == std::string::npos);
+        REQUIRE(drawBody.find("m_world.view") == std::string::npos);
+        REQUIRE(drawBody.find("TESForm::GetById") == std::string::npos);
+        REQUIRE(drawBody.find("WorldPtToScreenPt3") == std::string::npos);
+
+        std::string fileMappingCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/immersive_launcher/stubs/FileMapping.cpp", fileMappingCpp));
+        REQUIRE(fileMappingCpp.find("DllName->Length / sizeof(wchar_t)") != std::string::npos);
     }
 }
 #endif

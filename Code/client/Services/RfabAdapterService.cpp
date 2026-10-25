@@ -48,6 +48,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -747,6 +748,7 @@ void RfabAdapterService::OnDisconnected(const DisconnectedEvent&) noexcept
     m_lastBossGhostByServerId.clear();
     m_partyHudPeers.clear();
     m_activeTacticalPings.clear();
+    ClearTacticalHudSnapshot();
     m_pingCooldownRemainingSec = 0.0;
     m_pingKeyWasDown = false;
     m_hudKeyWasDown = false;
@@ -798,14 +800,23 @@ void RfabAdapterService::SelfHealFreeRoamMenuControls() noexcept
 
     if (auto* pUi = UI::Get())
     {
-        static constexpr const char* kModalOrSceneMenus[] = {
-            "Loading Menu",  "Main Menu",        "Dialogue Menu",  "BarterMenu",
-            "Crafting Menu", "Lockpicking Menu", "Book Menu",      "Sleep/Wait Menu",
-            "RaceSex Menu",  "MapMenu",          "StatsMenu",      "Journal Menu",
-            "MessageBoxMenu","Console",          "TweenMenu",      "CustomMenu"};
-        for (const char* menuName : kModalOrSceneMenus)
+        struct CachedControlHealMenus
         {
-            if (pUi->GetMenuOpen(BSFixedString(menuName)))
+            std::array<BSFixedString, 18> Names{
+                BSFixedString("Loading Menu"),   BSFixedString("Main Menu"),
+                BSFixedString("Dialogue Menu"),  BSFixedString("BarterMenu"),
+                BSFixedString("Crafting Menu"),  BSFixedString("Lockpicking Menu"),
+                BSFixedString("Book Menu"),      BSFixedString("Sleep/Wait Menu"),
+                BSFixedString("RaceSex Menu"),   BSFixedString("MapMenu"),
+                BSFixedString("StatsMenu"),      BSFixedString("Journal Menu"),
+                BSFixedString("MessageBoxMenu"), BSFixedString("Console"),
+                BSFixedString("TweenMenu"),      BSFixedString("CustomMenu"),
+                BSFixedString("Fader Menu"),     BSFixedString("Mist Menu")};
+        };
+        static const CachedControlHealMenus* s_pMenus = new CachedControlHealMenus();
+        for (const auto& menuName : s_pMenus->Names)
+        {
+            if (pUi->GetMenuOpen(menuName))
                 return;
         }
     }
@@ -840,10 +851,14 @@ void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
     }
 
     if (!m_transport.IsConnected())
+    {
+        ClearTacticalHudSnapshot();
         return;
+    }
 
     UpdateTacticalPingsAndInput(acEvent.Delta);
     RefreshCoopCombatSnapshot();
+    RefreshTacticalHudSnapshot();
 
     m_pollAccumulatorSec += acEvent.Delta;
     if (m_pollAccumulatorSec < 0.5)
@@ -1227,29 +1242,42 @@ bool IsTacticalHudBlockedByModalMenu() noexcept
 {
     auto* pUi = UI::Get();
     if (!pUi)
-        return false;
+        return true;
 
-    static constexpr const char* kHiddenHudMenus[] = {
-        "Main Menu",
-        "Loading Menu",
-        "MapMenu",
-        "StatsMenu",
-        "Journal Menu",
-        "InventoryMenu",
-        "MagicMenu",
-        "ContainerMenu",
-        "BarterMenu",
-        "Crafting Menu",
-        "Book Menu",
-        "Lockpicking Menu",
-        "Sleep/Wait Menu",
-        "RaceSex Menu",
-        "Dialogue Menu",
+    // Must ONLY be called on the Main Game Thread (inside OnUpdate / RefreshTacticalHudSnapshot), NEVER on D3D11 Render Thread!
+    // Includes CustomMenu (RFAB_Menu / RFAB_SliderMenu / RFAB_ColorPicker), TweenMenu, FavoritesMenu, GiftMenu, Training Menu, Fader/Mist.
+    struct CachedHiddenHudMenus
+    {
+        std::array<BSFixedString, 22> Names{
+            BSFixedString("Main Menu"),
+            BSFixedString("Loading Menu"),
+            BSFixedString("Fader Menu"),
+            BSFixedString("Mist Menu"),
+            BSFixedString("MapMenu"),
+            BSFixedString("StatsMenu"),
+            BSFixedString("CustomMenu"),
+            BSFixedString("TweenMenu"),
+            BSFixedString("Journal Menu"),
+            BSFixedString("InventoryMenu"),
+            BSFixedString("MagicMenu"),
+            BSFixedString("FavoritesMenu"),
+            BSFixedString("ContainerMenu"),
+            BSFixedString("BarterMenu"),
+            BSFixedString("GiftMenu"),
+            BSFixedString("Training Menu"),
+            BSFixedString("Crafting Menu"),
+            BSFixedString("Book Menu"),
+            BSFixedString("Lockpicking Menu"),
+            BSFixedString("Sleep/Wait Menu"),
+            BSFixedString("RaceSex Menu"),
+            BSFixedString("Dialogue Menu"),
+        };
     };
 
-    for (const char* menuName : kHiddenHudMenus)
+    static const CachedHiddenHudMenus* s_pMenus = new CachedHiddenHudMenus();
+    for (const auto& menuName : s_pMenus->Names)
     {
-        if (pUi->GetMenuOpen(BSFixedString(menuName)))
+        if (pUi->GetMenuOpen(menuName))
             return true;
     }
 
@@ -1263,10 +1291,18 @@ bool IsHotkeyInputBlockedByTextMenu(World& aWorld) noexcept
 
     if (auto* pUi = UI::Get())
     {
-        if (pUi->GetMenuOpen(BSFixedString("Console")) ||
-            pUi->GetMenuOpen(BSFixedString("MessageBoxMenu")))
+        struct CachedTextMenus
         {
-            return true;
+            std::array<BSFixedString, 2> Names{
+                BSFixedString("Console"),
+                BSFixedString("MessageBoxMenu"),
+            };
+        };
+        static const CachedTextMenus* s_pTextMenus = new CachedTextMenus();
+        for (const auto& menuName : s_pTextMenus->Names)
+        {
+            if (pUi->GetMenuOpen(menuName))
+                return true;
         }
     }
 
@@ -1362,6 +1398,8 @@ void RfabAdapterService::OnPlayerList(const NotifyPlayerList& acMessage) noexcep
 void RfabAdapterService::SetTacticalHudMode(RfabCompat::TacticalHudMode aMode, bool aShowNotice) noexcept
 {
     m_tacticalHudMode = aMode;
+    if (m_tacticalHudMode == RfabCompat::TacticalHudMode::Hidden)
+        ClearTacticalHudSnapshot();
     if (aShowNotice)
     {
         char buf[128]{};
@@ -1805,34 +1843,54 @@ void RfabAdapterService::UpdateTacticalPingsAndInput(double aDeltaSec) noexcept
 #endif
 }
 
-void RfabAdapterService::OnDrawTacticalHud() noexcept
+void RfabAdapterService::ClearTacticalHudSnapshot() noexcept
 {
+    std::lock_guard<std::mutex> lock(m_tacticalHudSnapshotMutex);
+    m_tacticalHudSnapshot = TacticalHudRenderSnapshot{};
+}
+
+void RfabAdapterService::RefreshTacticalHudSnapshot() noexcept
+{
+    // Runs EXCLUSIVELY on the Main Game Thread during World::Update() so UI::GetMenuOpen, BSFixedString,
+    // entt::registry, TESForm::GetById, Actor::GetActorValue, HUDMenuUtils::WorldPtToScreenPt3, and
+    // service state are never touched from the D3D11 Render Thread (Hook_Renderer_End).
     if (!m_transport.IsConnected() || m_tacticalHudMode == RfabCompat::TacticalHudMode::Hidden)
+    {
+        ClearTacticalHudSnapshot();
         return;
+    }
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
     if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+    {
+        ClearTacticalHudSnapshot();
         return;
+    }
 
     if (IsTacticalHudBlockedByModalMenu())
+    {
+        ClearTacticalHudSnapshot();
         return;
+    }
 
-    auto* pViewport = BSGraphics::GetMainWindow();
-    if (!pViewport || pViewport->uiWindowWidth == 0 || pViewport->uiWindowHeight == 0)
-        return;
+    TacticalHudRenderSnapshot next{};
+    next.Visible = true;
+    next.Mode = m_tacticalHudMode;
+    next.AllyProtectionEnabled = IsAllyProtectionEnabled();
 
-    ImDrawList* pDrawList = ImGui::GetBackgroundDrawList();
-    if (!pDrawList)
-        return;
-
-    const float viewW = static_cast<float>(pViewport->uiWindowWidth);
-    const float viewH = static_cast<float>(pViewport->uiWindowHeight);
     const uint32_t localWorldId = pPlayer->GetWorldSpace() ? (pPlayer->GetWorldSpace()->formID & 0x00FFFFFFu) : 0u;
     const uint32_t localCellId = pPlayer->parentCell ? (pPlayer->parentCell->formID & 0x00FFFFFFu) : 0u;
     const auto& downedService = m_world.GetDownedStateService();
     const auto& partyService = m_world.GetPartyService();
+    const uint32_t localPid = m_hasLocalPlayerId ? m_localPlayerId : m_transport.GetLocalPlayerId();
 
-    // Map loaded player FormIds/PlayerIds -> live Actor*
+    next.IsChannelingRevive = downedService.IsChannelingRevive();
+    next.ReviveChannelProgress = downedService.GetReviveChannelProgress();
+    next.IsLocalPlayerDowned = downedService.IsLocalPlayerDowned();
+    next.IsLocalPlayerBeingRevived = downedService.IsPlayerBeingRevived(localPid);
+    next.IsLocalPlayerInvulnerable = downedService.IsLocalPlayerInvulnerable();
+    next.GraceRemainingSec = downedService.GetGraceRemainingSec();
+
     std::unordered_map<uint32_t, Actor*> loadedActorByPlayerId;
     std::unordered_map<uint32_t, std::string> playerNameByFormId;
     if (pPlayer->baseForm && pPlayer->baseForm->GetName())
@@ -1856,9 +1914,7 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
         }
     }
 
-    // ------------------------------------------------------------------------
-    // 1. 3D World-Space Downed Teammate Beacons & Off-Screen Edge Arrows
-    // ------------------------------------------------------------------------
+    // 1. 3D World-Space Downed Teammate Beacons (projected safely on Main Game Thread)
     if (m_bindings.ShowDowned3dBeacons)
     {
         for (const auto& [pid, pAlly] : loadedActorByPlayerId)
@@ -1881,71 +1937,21 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
 
             NiPoint3 normScreen{};
             HUDMenuUtils::WorldPtToScreenPt3(worldHead, normScreen);
-            const auto proj = RfabCompat::ComputeTacticalMarkerScreenPlacement(
-                normScreen.x, normScreen.y, normScreen.z, viewW, viewH, 56.0f);
 
-            const bool beingRevived = downedService.IsPlayerBeingRevived(pid);
-            const ImU32 beaconCol = beingRevived ? IM_COL32(61, 220, 132, 245) : IM_COL32(255, 58, 76, 245);
-
-            std::string allyName = "Союзник";
+            DownedBeaconSnapshotEntry entry{};
+            entry.AllyName = "Союзник";
             if (auto it = m_partyHudPeers.find(pid); it != m_partyHudPeers.end() && !it->second.Username.empty())
-                allyName = it->second.Username;
-
-            const ImVec2 center(proj.ScreenX, proj.ScreenY);
-            if (proj.IsOnScreen)
-            {
-                const float r = 11.0f;
-                const ImVec2 pts[4] = {
-                    ImVec2(center.x, center.y - r),
-                    ImVec2(center.x + r, center.y),
-                    ImVec2(center.x, center.y + r),
-                    ImVec2(center.x - r, center.y),
-                };
-                pDrawList->AddConvexPolyFilled(pts, 4, beaconCol);
-                pDrawList->AddPolyline(pts, 4, IM_COL32(255, 235, 190, 240), ImDrawFlags_Closed, 2.0f);
-
-                char line1[128]{};
-                if (beingRevived)
-                    std::snprintf(line1, sizeof(line1), "[+] РЕАНИМАЦИЯ: %s (%.0f м)", allyName.c_str(), distMeters);
-                else if (distMeters <= 3.2f)
-                    std::snprintf(line1, sizeof(line1), "[E] ПОДНЯТЬ: %s (%.1f м)", allyName.c_str(), distMeters);
-                else
-                    std::snprintf(line1, sizeof(line1), "[!] В НОКАУТЕ: %s (%.0f м)", allyName.c_str(), distMeters);
-
-                const ImVec2 textSz = ImGui::CalcTextSize(line1);
-                const ImVec2 boxMin(center.x - textSz.x * 0.5f - 7.0f, center.y - r - textSz.y - 10.0f);
-                const ImVec2 boxMax(center.x + textSz.x * 0.5f + 7.0f, center.y - r - 2.0f);
-                pDrawList->AddRectFilled(boxMin, boxMax, IM_COL32(18, 12, 16, 215), 4.0f);
-                pDrawList->AddRect(boxMin, boxMax, beaconCol, 4.0f, 0, 1.5f);
-                DrawShadowedText(pDrawList, ImVec2(boxMin.x + 7.0f, boxMin.y + 3.0f), beaconCol, line1);
-            }
-            else
-            {
-                // Off-screen directional chevron arrow
-                const ImVec2 tip(center.x + proj.DirX * 14.0f, center.y + proj.DirY * 14.0f);
-                const ImVec2 perp(-proj.DirY * 9.0f, proj.DirX * 9.0f);
-                const ImVec2 baseCenter(center.x - proj.DirX * 6.0f, center.y - proj.DirY * 6.0f);
-                pDrawList->AddTriangleFilled(
-                    tip,
-                    ImVec2(baseCenter.x + perp.x, baseCenter.y + perp.y),
-                    ImVec2(baseCenter.x - perp.x, baseCenter.y - perp.y),
-                    beaconCol);
-
-                char edgeLabel[96]{};
-                std::snprintf(edgeLabel, sizeof(edgeLabel), "[!] %s (%.0fм)", allyName.c_str(), distMeters);
-                const ImVec2 textSz = ImGui::CalcTextSize(edgeLabel);
-                DrawShadowedText(
-                    pDrawList,
-                    ImVec2(center.x - textSz.x * 0.5f, center.y + 16.0f),
-                    beaconCol,
-                    edgeLabel);
-            }
+                entry.AllyName = it->second.Username;
+            entry.DistMeters = distMeters;
+            entry.NormScreenX = normScreen.x;
+            entry.NormScreenY = normScreen.y;
+            entry.NormScreenZ = normScreen.z;
+            entry.BeingRevived = downedService.IsPlayerBeingRevived(pid);
+            next.DownedBeacons.push_back(std::move(entry));
         }
     }
 
-    // ------------------------------------------------------------------------
-    // 2. Active Tactical 3D Pings & Off-Screen Edge Arrows
-    // ------------------------------------------------------------------------
+    // 2. Active Tactical 3D Pings (projected safely on Main Game Thread)
     for (const auto& pingEntry : m_activeTacticalPings)
     {
         const auto& ping = pingEntry.Payload;
@@ -1970,10 +1976,299 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
         worldPt.z = ping.PosZ;
         NiPoint3 normScreen{};
         HUDMenuUtils::WorldPtToScreenPt3(worldPt, normScreen);
-        const auto proj = RfabCompat::ComputeTacticalMarkerScreenPlacement(
-            normScreen.x, normScreen.y, normScreen.z, viewW, viewH, 52.0f);
 
-        const float alphaFade = static_cast<float>(std::clamp(pingEntry.RemainingSec / 1.5, 0.25, 1.0));
+        TacticalPingSnapshotEntry snapPing{};
+        snapPing.Kind = ping.Kind;
+        snapPing.TargetLabel = ping.TargetLabel;
+        snapPing.DistMeters = distMeters;
+        snapPing.NormScreenX = normScreen.x;
+        snapPing.NormScreenY = normScreen.y;
+        snapPing.NormScreenZ = normScreen.z;
+        snapPing.RemainingSec = pingEntry.RemainingSec;
+        snapPing.TotalDurationSec = pingEntry.TotalDurationSec;
+        next.ActivePings.push_back(std::move(snapPing));
+    }
+
+    if (m_tacticalHudMode != RfabCompat::TacticalHudMode::MarkersOnly)
+    {
+        // 3. Active Boss Encounter Health & Phase Snapshot
+        if (m_bindings.ShowBossEncounterBar)
+        {
+            Actor* pBestBoss = nullptr;
+            uint32_t bestBossServerId = 0;
+            float bestBossDistSq = RfabCompat::MetersToSkyrimUnits(65.0f) * RfabCompat::MetersToSkyrimUnits(65.0f);
+
+            auto actorView = m_world.view<FormIdComponent>();
+            for (auto entity : actorView)
+            {
+                const uint32_t fid = actorView.get<FormIdComponent>(entity).Id;
+                if (fid == 0 || fid == 0x14)
+                    continue;
+                Actor* pNpc = Cast<Actor>(TESForm::GetById(fid));
+                if (!pNpc || pNpc->IsDead() || !pNpc->IsInCombat() || !IsBossActor(pNpc))
+                    continue;
+
+                const float dx = pNpc->position.x - pPlayer->position.x;
+                const float dy = pNpc->position.y - pPlayer->position.y;
+                const float dz = pNpc->position.z - pPlayer->position.z;
+                const float dSq = dx * dx + dy * dy + dz * dz;
+                if (dSq <= bestBossDistSq)
+                {
+                    bestBossDistSq = dSq;
+                    pBestBoss = pNpc;
+                    bestBossServerId = 0;
+                    if (const auto* pLocal = m_world.try_get<LocalComponent>(entity))
+                        bestBossServerId = pLocal->Id;
+                    else if (const auto* pRemote = m_world.try_get<RemoteComponent>(entity))
+                        bestBossServerId = pRemote->Id;
+                }
+            }
+
+            if (pBestBoss)
+            {
+                const float maxHp = std::max(
+                    pBestBoss->GetActorPermanentValue(ActorValueInfo::kHealth) + pBestBoss->healthModifiers.temporaryModifier,
+                    1.0f);
+                const float curHp = std::clamp(pBestBoss->GetActorValue(ActorValueInfo::kHealth), 0.0f, maxHp);
+                const float hpRatio = std::clamp(curHp / maxHp, 0.0f, 1.0f);
+                bool isEtherealPhase = pBestBoss->IsGhost();
+                if (!isEtherealPhase && bestBossServerId != 0)
+                {
+                    if (const auto itGhost = m_lastBossGhostByServerId.find(bestBossServerId);
+                        itGhost != m_lastBossGhostByServerId.end() && itGhost->second)
+                    {
+                        isEtherealPhase = true;
+                    }
+                }
+
+                const char* bossName = (pBestBoss->baseForm && pBestBoss->baseForm->GetName() && pBestBoss->baseForm->GetName()[0] != '\0')
+                    ? pBestBoss->baseForm->GetName()
+                    : "Босс RFAB";
+
+                std::string targetPlayerName;
+                Actor* pTarget = pBestBoss->GetCombatTarget();
+                if (!pTarget && pBestBoss->pCombatController && pBestBoss->pCombatController->targetHandle != 0)
+                    pTarget = Cast<Actor>(TESObjectREFR::GetByHandle(pBestBoss->pCombatController->targetHandle));
+                if (pTarget)
+                {
+                    if (const auto itName = playerNameByFormId.find(pTarget->formID); itName != playerNameByFormId.end())
+                        targetPlayerName = itName->second;
+                    else if (pTarget->baseForm && pTarget->baseForm->GetName())
+                        targetPlayerName = pTarget->baseForm->GetName();
+                }
+
+                next.Boss.Active = true;
+                next.Boss.Name = bossName;
+                next.Boss.TargetPlayerName = std::move(targetPlayerName);
+                next.Boss.Level = pBestBoss->GetLevel();
+                next.Boss.CurHp = curHp;
+                next.Boss.MaxHp = maxHp;
+                next.Boss.HpRatio = hpRatio;
+                next.Boss.IsEtherealPhase = isEtherealPhase;
+            }
+        }
+
+        // 4. Party / Connected Peers Snapshot
+        auto computeActorVitalPct = [](Actor* apActor, int aAvIndex, float aTempMod) noexcept -> float
+        {
+            if (!apActor)
+                return 0.0f;
+            const float maxVal = apActor->GetActorPermanentValue(aAvIndex) + aTempMod;
+            if (!std::isfinite(maxVal) || maxVal <= 0.001f)
+                return 0.0f;
+            const float curVal = apActor->GetActorValue(aAvIndex);
+            if (!std::isfinite(curVal))
+                return 0.0f;
+            return std::clamp((curVal / maxVal) * 100.0f, 0.0f, 100.0f);
+        };
+
+        std::vector<uint32_t> displayPeerIds;
+        const auto& partyMemberIds = partyService.GetPartyMembers();
+        if (!partyMemberIds.empty())
+        {
+            for (uint32_t pid : partyMemberIds)
+            {
+                if (pid != localPid)
+                    displayPeerIds.push_back(pid);
+            }
+        }
+        else
+        {
+            for (const auto& [pid, peerState] : m_partyHudPeers)
+            {
+                (void)peerState;
+                if (pid != localPid)
+                    displayPeerIds.push_back(pid);
+            }
+            std::sort(displayPeerIds.begin(), displayPeerIds.end());
+        }
+
+        next.PartyRows.reserve(1 + displayPeerIds.size());
+
+        // Row 0: Local Player
+        PartyMemberHudSnapshotEntry selfRow{};
+        selfRow.Name = (pPlayer->baseForm && pPlayer->baseForm->GetName() && pPlayer->baseForm->GetName()[0] != '\0')
+            ? pPlayer->baseForm->GetName()
+            : "Вы";
+        selfRow.Level = pPlayer->GetLevel();
+        selfRow.IsLeader = IsLocalPlayerAllyProtectionHost();
+        selfRow.IsDowned = next.IsLocalPlayerDowned;
+        selfRow.IsBeingRevived = next.IsLocalPlayerBeingRevived;
+        selfRow.IsGraceActive = next.IsLocalPlayerInvulnerable;
+        selfRow.IsInCombat = pPlayer->IsInCombat();
+        selfRow.IsLoaded3D = true;
+        selfRow.DistMeters = 0.0f;
+        selfRow.HpPct = computeActorVitalPct(pPlayer, ActorValueInfo::kHealth, pPlayer->healthModifiers.temporaryModifier);
+        selfRow.MpPct = computeActorVitalPct(pPlayer, ActorValueInfo::kMagicka, pPlayer->magickaModifiers.temporaryModifier);
+        selfRow.SpPct = computeActorVitalPct(pPlayer, ActorValueInfo::kStamina, pPlayer->staminaModifiers.temporaryModifier);
+        next.PartyRows.push_back(std::move(selfRow));
+
+        for (uint32_t pid : displayPeerIds)
+        {
+            PartyMemberHudSnapshotEntry row{};
+            row.Name = "Союзник";
+            row.CellName = "Скайрим";
+            row.Level = 1;
+            row.HpPct = 100.0f;
+            row.MpPct = 100.0f;
+            row.SpPct = 100.0f;
+
+            if (const auto it = m_partyHudPeers.find(pid); it != m_partyHudPeers.end())
+            {
+                if (!it->second.Username.empty())
+                    row.Name = it->second.Username;
+                row.Level = it->second.Level;
+                row.HpPct = it->second.HealthPercent;
+                if (!it->second.CellName.empty())
+                    row.CellName = it->second.CellName;
+            }
+            else if (const auto& partyPlayers = partyService.GetPlayers(); partyPlayers.contains(pid))
+            {
+                row.Name = std::string(partyPlayers.at(pid).c_str(), partyPlayers.at(pid).size());
+            }
+
+            row.IsLeader = partyService.IsInParty() && partyService.GetLeaderPlayerId() == pid;
+            row.IsDowned = downedService.IsRemotePlayerDowned(pid);
+            row.IsBeingRevived = downedService.IsPlayerBeingRevived(pid);
+            row.IsGraceActive = false;
+
+            if (const auto itAct = loadedActorByPlayerId.find(pid); itAct != loadedActorByPlayerId.end() && itAct->second)
+            {
+                Actor* pPeerActor = itAct->second;
+                row.IsLoaded3D = true;
+                const uint16_t liveLvl = pPeerActor->GetLevel();
+                if (liveLvl > row.Level)
+                    row.Level = liveLvl;
+                row.HpPct = computeActorVitalPct(pPeerActor, ActorValueInfo::kHealth, pPeerActor->healthModifiers.temporaryModifier);
+                row.MpPct = computeActorVitalPct(pPeerActor, ActorValueInfo::kMagicka, pPeerActor->magickaModifiers.temporaryModifier);
+                row.SpPct = computeActorVitalPct(pPeerActor, ActorValueInfo::kStamina, pPeerActor->staminaModifiers.temporaryModifier);
+                row.IsInCombat = pPeerActor->IsInCombat();
+
+                const float dx = pPeerActor->position.x - pPlayer->position.x;
+                const float dy = pPeerActor->position.y - pPlayer->position.y;
+                const float dz = pPeerActor->position.z - pPlayer->position.z;
+                row.DistMeters = RfabCompat::SkyrimUnitsToMeters(std::sqrt(dx * dx + dy * dy + dz * dz));
+            }
+
+            next.PartyRows.push_back(std::move(row));
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_tacticalHudSnapshotMutex);
+    m_tacticalHudSnapshot = std::move(next);
+}
+
+void RfabAdapterService::OnDrawTacticalHud() noexcept
+{
+    // Runs on D3D11 Render Thread (BSGraphics::Hook_Renderer_End): ONLY reads a lock-copied POD/string snapshot!
+    TacticalHudRenderSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_tacticalHudSnapshotMutex);
+        if (!m_tacticalHudSnapshot.Visible)
+            return;
+        snapshot = m_tacticalHudSnapshot;
+    }
+
+    auto* pViewport = BSGraphics::GetMainWindow();
+    if (!pViewport || pViewport->uiWindowWidth == 0 || pViewport->uiWindowHeight == 0)
+        return;
+
+    ImDrawList* pDrawList = ImGui::GetBackgroundDrawList();
+    if (!pDrawList)
+        return;
+
+    const float viewW = static_cast<float>(pViewport->uiWindowWidth);
+    const float viewH = static_cast<float>(pViewport->uiWindowHeight);
+
+    // ------------------------------------------------------------------------
+    // 1. 3D World-Space Downed Teammate Beacons & Off-Screen Edge Arrows
+    // ------------------------------------------------------------------------
+    for (const auto& beacon : snapshot.DownedBeacons)
+    {
+        const auto proj = RfabCompat::ComputeTacticalMarkerScreenPlacement(
+            beacon.NormScreenX, beacon.NormScreenY, beacon.NormScreenZ, viewW, viewH, 56.0f);
+
+        const ImU32 beaconCol = beacon.BeingRevived ? IM_COL32(61, 220, 132, 245) : IM_COL32(255, 58, 76, 245);
+        const ImVec2 center(proj.ScreenX, proj.ScreenY);
+
+        if (proj.IsOnScreen)
+        {
+            const float r = 11.0f;
+            const ImVec2 pts[4] = {
+                ImVec2(center.x, center.y - r),
+                ImVec2(center.x + r, center.y),
+                ImVec2(center.x, center.y + r),
+                ImVec2(center.x - r, center.y),
+            };
+            pDrawList->AddConvexPolyFilled(pts, 4, beaconCol);
+            pDrawList->AddPolyline(pts, 4, IM_COL32(255, 235, 190, 240), ImDrawFlags_Closed, 2.0f);
+
+            char line1[128]{};
+            if (beacon.BeingRevived)
+                std::snprintf(line1, sizeof(line1), "[+] РЕАНИМАЦИЯ: %s (%.0f м)", beacon.AllyName.c_str(), beacon.DistMeters);
+            else if (beacon.DistMeters <= 3.2f)
+                std::snprintf(line1, sizeof(line1), "[E] ПОДНЯТЬ: %s (%.1f м)", beacon.AllyName.c_str(), beacon.DistMeters);
+            else
+                std::snprintf(line1, sizeof(line1), "[!] В НОКАУТЕ: %s (%.0f м)", beacon.AllyName.c_str(), beacon.DistMeters);
+
+            const ImVec2 textSz = ImGui::CalcTextSize(line1);
+            const ImVec2 boxMin(center.x - textSz.x * 0.5f - 7.0f, center.y - r - textSz.y - 10.0f);
+            const ImVec2 boxMax(center.x + textSz.x * 0.5f + 7.0f, center.y - r - 2.0f);
+            pDrawList->AddRectFilled(boxMin, boxMax, IM_COL32(18, 12, 16, 215), 4.0f);
+            pDrawList->AddRect(boxMin, boxMax, beaconCol, 4.0f, 0, 1.5f);
+            DrawShadowedText(pDrawList, ImVec2(boxMin.x + 7.0f, boxMin.y + 3.0f), beaconCol, line1);
+        }
+        else
+        {
+            const ImVec2 tip(center.x + proj.DirX * 14.0f, center.y + proj.DirY * 14.0f);
+            const ImVec2 perp(-proj.DirY * 9.0f, proj.DirX * 9.0f);
+            const ImVec2 baseCenter(center.x - proj.DirX * 6.0f, center.y - proj.DirY * 6.0f);
+            pDrawList->AddTriangleFilled(
+                tip,
+                ImVec2(baseCenter.x + perp.x, baseCenter.y + perp.y),
+                ImVec2(baseCenter.x - perp.x, baseCenter.y - perp.y),
+                beaconCol);
+
+            char edgeLabel[96]{};
+            std::snprintf(edgeLabel, sizeof(edgeLabel), "[!] %s (%.0fм)", beacon.AllyName.c_str(), beacon.DistMeters);
+            const ImVec2 textSz = ImGui::CalcTextSize(edgeLabel);
+            DrawShadowedText(
+                pDrawList,
+                ImVec2(center.x - textSz.x * 0.5f, center.y + 16.0f),
+                beaconCol,
+                edgeLabel);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // 2. Active Tactical 3D Pings & Off-Screen Edge Arrows
+    // ------------------------------------------------------------------------
+    for (const auto& ping : snapshot.ActivePings)
+    {
+        const auto proj = RfabCompat::ComputeTacticalMarkerScreenPlacement(
+            ping.NormScreenX, ping.NormScreenY, ping.NormScreenZ, viewW, viewH, 52.0f);
+
+        const float alphaFade = static_cast<float>(std::clamp(ping.RemainingSec / 1.5, 0.25, 1.0));
         const uint8_t alphaByte = static_cast<uint8_t>(240.0f * alphaFade);
         const ImU32 pingCol = GetPingPrimaryColor(ping.Kind, alphaByte);
         const ImVec2 center(proj.ScreenX, proj.ScreenY);
@@ -1994,9 +2289,9 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
             const char* badge = RfabCompat::GetTacticalPingBadgeAscii(ping.Kind);
             const char* title = RfabCompat::GetTacticalPingTitleRu(ping.Kind);
             if (!ping.TargetLabel.empty())
-                std::snprintf(headerBuf, sizeof(headerBuf), "%s %s: %s (%.0f м)", badge, title, ping.TargetLabel.c_str(), distMeters);
+                std::snprintf(headerBuf, sizeof(headerBuf), "%s %s: %s (%.0f м)", badge, title, ping.TargetLabel.c_str(), ping.DistMeters);
             else
-                std::snprintf(headerBuf, sizeof(headerBuf), "%s %s (%.0f м)", badge, title, distMeters);
+                std::snprintf(headerBuf, sizeof(headerBuf), "%s %s (%.0f м)", badge, title, ping.DistMeters);
 
             const ImVec2 textSz = ImGui::CalcTextSize(headerBuf);
             const ImVec2 boxMin(center.x - textSz.x * 0.5f - 7.0f, center.y - r - textSz.y - 12.0f);
@@ -2005,8 +2300,8 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
             pDrawList->AddRect(boxMin, boxMax, pingCol, 4.0f, 0, 1.2f);
             DrawShadowedText(pDrawList, ImVec2(boxMin.x + 7.0f, boxMin.y + 2.0f), pingCol, headerBuf);
 
-            const float lifeFrac = (pingEntry.TotalDurationSec > 0.1)
-                ? static_cast<float>(std::clamp(pingEntry.RemainingSec / pingEntry.TotalDurationSec, 0.0, 1.0))
+            const float lifeFrac = (ping.TotalDurationSec > 0.1)
+                ? static_cast<float>(std::clamp(ping.RemainingSec / ping.TotalDurationSec, 0.0, 1.0))
                 : 0.0f;
             const float barW = boxMax.x - boxMin.x - 4.0f;
             pDrawList->AddRectFilled(
@@ -2026,7 +2321,7 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
                 pingCol);
 
             char edgeBuf[64]{};
-            std::snprintf(edgeBuf, sizeof(edgeBuf), "%s %.0fм", RfabCompat::GetTacticalPingBadgeAscii(ping.Kind), distMeters);
+            std::snprintf(edgeBuf, sizeof(edgeBuf), "%s %.0fм", RfabCompat::GetTacticalPingBadgeAscii(ping.Kind), ping.DistMeters);
             const ImVec2 textSz = ImGui::CalcTextSize(edgeBuf);
             DrawShadowedText(pDrawList, ImVec2(center.x - textSz.x * 0.5f, center.y + 13.0f), pingCol, edgeBuf);
         }
@@ -2035,9 +2330,9 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
     // ------------------------------------------------------------------------
     // 3. Center-Screen Revive Channeling / Downed / Grace Progress Bar
     // ------------------------------------------------------------------------
-    if (downedService.IsChannelingRevive())
+    if (snapshot.IsChannelingRevive)
     {
-        const float progress = downedService.GetReviveChannelProgress();
+        const float progress = snapshot.ReviveChannelProgress;
         const float barW = 300.0f;
         const float barH = 22.0f;
         const ImVec2 barMin((viewW - barW) * 0.5f, viewH * 0.62f);
@@ -2060,14 +2355,12 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
             IM_COL32(255, 255, 255, 250),
             revText);
     }
-    else if (downedService.IsLocalPlayerDowned())
+    else if (snapshot.IsLocalPlayerDowned)
     {
-        const uint32_t localPid = m_hasLocalPlayerId ? m_localPlayerId : m_transport.GetLocalPlayerId();
-        const bool beingRevived = downedService.IsPlayerBeingRevived(localPid);
-        const char* downedBanner = beingRevived
+        const char* downedBanner = snapshot.IsLocalPlayerBeingRevived
             ? "[+] СОЮЗНИК ПОДНИМАЕТ ВАС НА НОГИ..."
             : "[!] ВЫ ТЯЖЕЛО РАНЕНЫ (НА КОЛЕНЕ) - ОЖИДАНИЕ ПОМОЩИ ОТРЯДА [E]";
-        const ImU32 bannerCol = beingRevived ? IM_COL32(61, 220, 132, 245) : IM_COL32(255, 72, 82, 245);
+        const ImU32 bannerCol = snapshot.IsLocalPlayerBeingRevived ? IM_COL32(61, 220, 132, 245) : IM_COL32(255, 72, 82, 245);
         const ImVec2 tSz = ImGui::CalcTextSize(downedBanner);
         const ImVec2 boxMin((viewW - tSz.x) * 0.5f - 14.0f, viewH * 0.62f);
         const ImVec2 boxMax((viewW + tSz.x) * 0.5f + 14.0f, boxMin.y + tSz.y + 10.0f);
@@ -2075,10 +2368,10 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
         pDrawList->AddRect(boxMin, boxMax, bannerCol, 5.0f, 0, 1.5f);
         DrawShadowedText(pDrawList, ImVec2(boxMin.x + 14.0f, boxMin.y + 5.0f), bannerCol, downedBanner);
     }
-    else if (downedService.IsLocalPlayerInvulnerable() && downedService.GetGraceRemainingSec() > 0.05)
+    else if (snapshot.IsLocalPlayerInvulnerable && snapshot.GraceRemainingSec > 0.05)
     {
         char graceBuf[96]{};
-        std::snprintf(graceBuf, sizeof(graceBuf), "ЩИТ ПОСЛЕ ПОДЪЁМА: %.1f с", downedService.GetGraceRemainingSec());
+        std::snprintf(graceBuf, sizeof(graceBuf), "ЩИТ ПОСЛЕ ПОДЪЁМА: %.1f с", snapshot.GraceRemainingSec);
         const ImVec2 tSz = ImGui::CalcTextSize(graceBuf);
         const ImVec2 boxMin((viewW - tSz.x) * 0.5f - 10.0f, viewH * 0.62f);
         const ImVec2 boxMax((viewW + tSz.x) * 0.5f + 10.0f, boxMin.y + tSz.y + 8.0f);
@@ -2087,153 +2380,72 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
         DrawShadowedText(pDrawList, ImVec2(boxMin.x + 10.0f, boxMin.y + 4.0f), IM_COL32(165, 238, 255, 245), graceBuf);
     }
 
-    if (m_tacticalHudMode == RfabCompat::TacticalHudMode::MarkersOnly)
+    if (snapshot.Mode == RfabCompat::TacticalHudMode::MarkersOnly)
         return;
 
     // ------------------------------------------------------------------------
     // 4. Top-Center Active Boss Encounter Health & Phase Bar
     // ------------------------------------------------------------------------
-    if (m_bindings.ShowBossEncounterBar)
+    if (snapshot.Boss.Active)
     {
-        Actor* pBestBoss = nullptr;
-        uint32_t bestBossServerId = 0;
-        float bestBossDistSq = RfabCompat::MetersToSkyrimUnits(65.0f) * RfabCompat::MetersToSkyrimUnits(65.0f);
+        const auto& boss = snapshot.Boss;
+        const float bossBarW = std::clamp(viewW * 0.34f, 380.0f, 620.0f);
+        const float bossBarH = 26.0f;
+        const ImVec2 bossMin((viewW - bossBarW) * 0.5f, 26.0f);
+        const ImVec2 bossMax(bossMin.x + bossBarW, bossMin.y + bossBarH);
 
-        auto actorView = m_world.view<FormIdComponent>();
-        for (auto entity : actorView)
-        {
-            const uint32_t fid = actorView.get<FormIdComponent>(entity).Id;
-            if (fid == 0 || fid == 0x14)
-                continue;
-            Actor* pNpc = Cast<Actor>(TESForm::GetById(fid));
-            if (!pNpc || pNpc->IsDead() || !pNpc->IsInCombat() || !IsBossActor(pNpc))
-                continue;
+        char bossTitle[256]{};
+        if (boss.IsEtherealPhase)
+            std::snprintf(bossTitle, sizeof(bossTitle), "%s [Ур. %u] - [ЭФИРНАЯ ФАЗА / НЕУЯЗВИМ]", boss.Name.c_str(), boss.Level);
+        else if (!boss.TargetPlayerName.empty())
+            std::snprintf(bossTitle, sizeof(bossTitle), "%s [Ур. %u]  |  Цель: %s", boss.Name.c_str(), boss.Level, boss.TargetPlayerName.c_str());
+        else
+            std::snprintf(bossTitle, sizeof(bossTitle), "%s [Ур. %u]", boss.Name.c_str(), boss.Level);
 
-            const float dx = pNpc->position.x - pPlayer->position.x;
-            const float dy = pNpc->position.y - pPlayer->position.y;
-            const float dz = pNpc->position.z - pPlayer->position.z;
-            const float dSq = dx * dx + dy * dy + dz * dz;
-            if (dSq <= bestBossDistSq)
-            {
-                bestBossDistSq = dSq;
-                pBestBoss = pNpc;
-                bestBossServerId = 0;
-                if (const auto* pLocal = m_world.try_get<LocalComponent>(entity))
-                    bestBossServerId = pLocal->Id;
-                else if (const auto* pRemote = m_world.try_get<RemoteComponent>(entity))
-                    bestBossServerId = pRemote->Id;
-            }
-        }
+        const ImVec2 titleSz = ImGui::CalcTextSize(bossTitle);
+        DrawShadowedText(
+            pDrawList,
+            ImVec2(bossMin.x + (bossBarW - titleSz.x) * 0.5f, bossMin.y - titleSz.y - 4.0f),
+            boss.IsEtherealPhase ? IM_COL32(115, 230, 255, 250) : IM_COL32(255, 224, 155, 250),
+            bossTitle);
 
-        if (pBestBoss)
-        {
-            const float maxHp = std::max(
-                pBestBoss->GetActorPermanentValue(ActorValueInfo::kHealth) + pBestBoss->healthModifiers.temporaryModifier,
-                1.0f);
-            const float curHp = std::clamp(pBestBoss->GetActorValue(ActorValueInfo::kHealth), 0.0f, maxHp);
-            const float hpRatio = std::clamp(curHp / maxHp, 0.0f, 1.0f);
-            bool isEtherealPhase = pBestBoss->IsGhost();
-            if (!isEtherealPhase && bestBossServerId != 0)
-            {
-                if (const auto itGhost = m_lastBossGhostByServerId.find(bestBossServerId);
-                    itGhost != m_lastBossGhostByServerId.end() && itGhost->second)
-                {
-                    isEtherealPhase = true;
-                }
-            }
+        pDrawList->AddRectFilled(bossMin, bossMax, IM_COL32(16, 14, 18, 225), 5.0f);
+        const ImU32 fillCol = boss.IsEtherealPhase ? IM_COL32(65, 195, 235, 225) : IM_COL32(198, 38, 48, 235);
+        pDrawList->AddRectFilled(
+            ImVec2(bossMin.x + 2.0f, bossMin.y + 2.0f),
+            ImVec2(bossMin.x + 2.0f + (bossBarW - 4.0f) * boss.HpRatio, bossMax.y - 2.0f),
+            fillCol,
+            4.0f);
+        pDrawList->AddRect(
+            bossMin,
+            bossMax,
+            boss.IsEtherealPhase ? IM_COL32(95, 225, 255, 240) : IM_COL32(215, 175, 95, 225),
+            5.0f,
+            0,
+            1.6f);
 
-            const char* bossName = (pBestBoss->baseForm && pBestBoss->baseForm->GetName() && pBestBoss->baseForm->GetName()[0] != '\0')
-                ? pBestBoss->baseForm->GetName()
-                : "Босс RFAB";
-
-            std::string targetPlayerName;
-            Actor* pTarget = pBestBoss->GetCombatTarget();
-            if (!pTarget && pBestBoss->pCombatController && pBestBoss->pCombatController->targetHandle != 0)
-                pTarget = Cast<Actor>(TESObjectREFR::GetByHandle(pBestBoss->pCombatController->targetHandle));
-            if (pTarget)
-            {
-                if (const auto itName = playerNameByFormId.find(pTarget->formID); itName != playerNameByFormId.end())
-                    targetPlayerName = itName->second;
-                else if (pTarget->baseForm && pTarget->baseForm->GetName())
-                    targetPlayerName = pTarget->baseForm->GetName();
-            }
-
-            const float bossBarW = std::clamp(viewW * 0.34f, 380.0f, 620.0f);
-            const float bossBarH = 26.0f;
-            const ImVec2 bossMin((viewW - bossBarW) * 0.5f, 26.0f);
-            const ImVec2 bossMax(bossMin.x + bossBarW, bossMin.y + bossBarH);
-
-            char bossTitle[256]{};
-            if (isEtherealPhase)
-                std::snprintf(bossTitle, sizeof(bossTitle), "%s [Ур. %u] - [ЭФИРНАЯ ФАЗА / НЕУЯЗВИМ]", bossName, pBestBoss->GetLevel());
-            else if (!targetPlayerName.empty())
-                std::snprintf(bossTitle, sizeof(bossTitle), "%s [Ур. %u]  |  Цель: %s", bossName, pBestBoss->GetLevel(), targetPlayerName.c_str());
-            else
-                std::snprintf(bossTitle, sizeof(bossTitle), "%s [Ур. %u]", bossName, pBestBoss->GetLevel());
-
-            const ImVec2 titleSz = ImGui::CalcTextSize(bossTitle);
-            DrawShadowedText(
-                pDrawList,
-                ImVec2(bossMin.x + (bossBarW - titleSz.x) * 0.5f, bossMin.y - titleSz.y - 4.0f),
-                isEtherealPhase ? IM_COL32(115, 230, 255, 250) : IM_COL32(255, 224, 155, 250),
-                bossTitle);
-
-            pDrawList->AddRectFilled(bossMin, bossMax, IM_COL32(16, 14, 18, 225), 5.0f);
-            const ImU32 fillCol = isEtherealPhase ? IM_COL32(65, 195, 235, 225) : IM_COL32(198, 38, 48, 235);
-            pDrawList->AddRectFilled(
-                ImVec2(bossMin.x + 2.0f, bossMin.y + 2.0f),
-                ImVec2(bossMin.x + 2.0f + (bossBarW - 4.0f) * hpRatio, bossMax.y - 2.0f),
-                fillCol,
-                4.0f);
-            pDrawList->AddRect(
-                bossMin,
-                bossMax,
-                isEtherealPhase ? IM_COL32(95, 225, 255, 240) : IM_COL32(215, 175, 95, 225),
-                5.0f,
-                0,
-                1.6f);
-
-            char hpText[96]{};
-            std::snprintf(hpText, sizeof(hpText), "%.0f / %.0f (%.0f%%)", curHp, maxHp, hpRatio * 100.0f);
-            const ImVec2 hpSz = ImGui::CalcTextSize(hpText);
-            DrawShadowedText(
-                pDrawList,
-                ImVec2(bossMin.x + (bossBarW - hpSz.x) * 0.5f, bossMin.y + (bossBarH - hpSz.y) * 0.5f),
-                IM_COL32(255, 255, 255, 245),
-                hpText);
-        }
+        char hpText[96]{};
+        std::snprintf(hpText, sizeof(hpText), "%.0f / %.0f (%.0f%%)", boss.CurHp, boss.MaxHp, boss.HpRatio * 100.0f);
+        const ImVec2 hpSz = ImGui::CalcTextSize(hpText);
+        DrawShadowedText(
+            pDrawList,
+            ImVec2(bossMin.x + (bossBarW - hpSz.x) * 0.5f, bossMin.y + (bossBarH - hpSz.y) * 0.5f),
+            IM_COL32(255, 255, 255, 245),
+            hpText);
     }
 
     // ------------------------------------------------------------------------
     // 5. Top-Left Co-Op Party Tactical HUD Panel
     // ------------------------------------------------------------------------
-    std::vector<uint32_t> displayPeerIds;
-    const auto& partyMemberIds = partyService.GetPartyMembers();
-    const uint32_t localPid = m_hasLocalPlayerId ? m_localPlayerId : m_transport.GetLocalPlayerId();
-    if (!partyMemberIds.empty())
-    {
-        for (uint32_t pid : partyMemberIds)
-        {
-            if (pid != localPid)
-                displayPeerIds.push_back(pid);
-        }
-    }
-    else
-    {
-        for (const auto& [pid, peerState] : m_partyHudPeers)
-        {
-            if (pid != localPid)
-                displayPeerIds.push_back(pid);
-        }
-        std::sort(displayPeerIds.begin(), displayPeerIds.end());
-    }
+    if (snapshot.PartyRows.empty())
+        return;
 
-    const bool fullMode = (m_tacticalHudMode == RfabCompat::TacticalHudMode::Full);
+    const bool fullMode = (snapshot.Mode == RfabCompat::TacticalHudMode::Full);
     const float panelX = 18.0f;
     const float panelY = 18.0f;
     const float panelW = 292.0f;
     const float rowH = fullMode ? 54.0f : 38.0f;
-    const size_t totalRows = 1 + displayPeerIds.size();
+    const size_t totalRows = snapshot.PartyRows.size();
     const float panelH = 34.0f + static_cast<float>(totalRows) * rowH + 6.0f;
 
     pDrawList->AddRectFilled(
@@ -2249,78 +2461,65 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
         0,
         1.2f);
 
-    const bool allyProt = IsAllyProtectionEnabled();
     char headerText[128]{};
     std::snprintf(
         headerText,
         sizeof(headerText),
         "ОТРЯД RFAB (%zu)  |  %s",
         totalRows,
-        allyProt ? "ЕДИНСТВО: ВКЛ" : "УРОН ПО СВОИМ");
+        snapshot.AllyProtectionEnabled ? "ЕДИНСТВО: ВКЛ" : "УРОН ПО СВОИМ");
     DrawShadowedText(
         pDrawList,
         ImVec2(panelX + 10.0f, panelY + 7.0f),
-        allyProt ? IM_COL32(235, 210, 145, 245) : IM_COL32(255, 110, 110, 245),
+        snapshot.AllyProtectionEnabled ? IM_COL32(235, 210, 145, 245) : IM_COL32(255, 110, 110, 245),
         headerText);
 
-    auto drawMemberRow = [&](size_t aRowIndex,
-                             const char* apName,
-                             uint16_t aLevel,
-                             bool aIsLeader,
-                             bool aIsDowned,
-                             bool aIsBeingRevived,
-                             bool aIsGraceActive,
-                             bool aIsInCombat,
-                             bool aIsLoaded3D,
-                             float aDistMeters,
-                             const char* apCellName,
-                             float aHpPct,
-                             float aMpPct,
-                             float aSpPct) noexcept
+    for (size_t i = 0; i < snapshot.PartyRows.size(); ++i)
     {
-        const float y0 = panelY + 32.0f + static_cast<float>(aRowIndex) * rowH;
+        const auto& row = snapshot.PartyRows[i];
+        const float y0 = panelY + 32.0f + static_cast<float>(i) * rowH;
         const float x0 = panelX + 10.0f;
         const float innerW = panelW - 20.0f;
 
         char lineBuf[192]{};
-        const char* leaderPrefix = aIsLeader ? "[Л] " : "";
-        if (aIsDowned)
+        const char* leaderPrefix = row.IsLeader ? "[Л] " : "";
+        if (row.IsDowned)
         {
             std::snprintf(
                 lineBuf,
                 sizeof(lineBuf),
                 "%s%s [Ур.%u] - %s",
                 leaderPrefix,
-                apName,
-                aLevel,
-                aIsBeingRevived ? "РЕАНИМАЦИЯ..." : "В НОКАУТЕ!");
+                row.Name.c_str(),
+                row.Level,
+                row.IsBeingRevived ? "РЕАНИМАЦИЯ..." : "В НОКАУТЕ!");
         }
-        else if (aIsGraceActive)
+        else if (row.IsGraceActive)
         {
-            std::snprintf(lineBuf, sizeof(lineBuf), "%s%s [Ур.%u] - ЩИТ", leaderPrefix, apName, aLevel);
+            std::snprintf(lineBuf, sizeof(lineBuf), "%s%s [Ур.%u] - ЩИТ", leaderPrefix, row.Name.c_str(), row.Level);
         }
-        else if (aRowIndex == 0)
+        else if (i == 0)
         {
             std::snprintf(
                 lineBuf,
                 sizeof(lineBuf),
                 "%s%s [Ур.%u]%s",
                 leaderPrefix,
-                apName,
-                aLevel,
-                aIsInCombat ? " | В БОЮ" : "");
+                row.Name.c_str(),
+                row.Level,
+                row.IsInCombat ? " | В БОЮ" : "");
         }
-        else if (aIsLoaded3D)
+        else if (row.IsLoaded3D)
         {
             std::snprintf(
                 lineBuf,
                 sizeof(lineBuf),
                 "%s%s [Ур.%u] | %.0f м%s",
                 leaderPrefix,
-                apName,
-                aLevel,
-                aDistMeters,
-                aIsInCombat ? " | В БОЮ" : "");
+                row.Name.c_str(),
+                row.Level,
+                row.DistMeters,
+                row.IsInCombat ? " | В БОЮ" : "");
         }
         else
         {
@@ -2329,24 +2528,24 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
                 sizeof(lineBuf),
                 "%s%s [Ур.%u] | %s",
                 leaderPrefix,
-                apName,
-                aLevel,
-                (apCellName && apCellName[0] != '\0') ? apCellName : "Другая зона");
+                row.Name.c_str(),
+                row.Level,
+                !row.CellName.empty() ? row.CellName.c_str() : "Другая зона");
         }
 
-        const ImU32 nameCol = aIsDowned
+        const ImU32 nameCol = row.IsDowned
             ? IM_COL32(255, 86, 96, 250)
-            : (aIsBeingRevived ? IM_COL32(75, 235, 145, 250) : IM_COL32(232, 236, 242, 245));
+            : (row.IsBeingRevived ? IM_COL32(75, 235, 145, 250) : IM_COL32(232, 236, 242, 245));
         DrawShadowedText(pDrawList, ImVec2(x0, y0), nameCol, lineBuf);
 
         // HP Bar
         const float hpY = y0 + 20.0f;
         const float hpH = 10.0f;
-        const float clampedHp = std::clamp(aHpPct, 0.0f, 100.0f) * 0.01f;
+        const float clampedHp = std::clamp(row.HpPct, 0.0f, 100.0f) * 0.01f;
         pDrawList->AddRectFilled(ImVec2(x0, hpY), ImVec2(x0 + innerW, hpY + hpH), IM_COL32(32, 18, 22, 220), 3.0f);
-        const ImU32 hpFill = aIsDowned
+        const ImU32 hpFill = row.IsDowned
             ? IM_COL32(255, 52, 62, 235)
-            : (aIsGraceActive ? IM_COL32(71, 209, 255, 230) : IM_COL32(198, 42, 52, 235));
+            : (row.IsGraceActive ? IM_COL32(71, 209, 255, 230) : IM_COL32(198, 42, 52, 235));
         pDrawList->AddRectFilled(
             ImVec2(x0 + 1.0f, hpY + 1.0f),
             ImVec2(x0 + 1.0f + (innerW - 2.0f) * clampedHp, hpY + hpH - 1.0f),
@@ -2354,13 +2553,13 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
             2.5f);
 
         // Dual MP + SP Bars in Full mode when 3D actor is loaded
-        if (fullMode && aIsLoaded3D)
+        if (fullMode && row.IsLoaded3D)
         {
             const float subY = hpY + hpH + 3.0f;
             const float subH = 6.0f;
             const float halfW = (innerW - 6.0f) * 0.5f;
-            const float clampedMp = std::clamp(aMpPct, 0.0f, 100.0f) * 0.01f;
-            const float clampedSp = std::clamp(aSpPct, 0.0f, 100.0f) * 0.01f;
+            const float clampedMp = std::clamp(row.MpPct, 0.0f, 100.0f) * 0.01f;
+            const float clampedSp = std::clamp(row.SpPct, 0.0f, 100.0f) * 0.01f;
 
             // Magicka (Left)
             pDrawList->AddRectFilled(ImVec2(x0, subY), ImVec2(x0 + halfW, subY + subH), IM_COL32(18, 24, 38, 215), 2.0f);
@@ -2379,109 +2578,5 @@ void RfabAdapterService::OnDrawTacticalHud() noexcept
                 IM_COL32(48, 188, 92, 230),
                 2.0f);
         }
-    };
-
-    auto computeActorVitalPct = [](Actor* apActor, int aAvIndex, float aTempMod) noexcept -> float
-    {
-        if (!apActor)
-            return 0.0f;
-        const float maxVal = apActor->GetActorPermanentValue(aAvIndex) + aTempMod;
-        if (!std::isfinite(maxVal) || maxVal <= 0.001f)
-            return 0.0f;
-        const float curVal = apActor->GetActorValue(aAvIndex);
-        if (!std::isfinite(curVal))
-            return 0.0f;
-        return std::clamp((curVal / maxVal) * 100.0f, 0.0f, 100.0f);
-    };
-
-    // Row 0: Local Player
-    const char* localName = (pPlayer->baseForm && pPlayer->baseForm->GetName() && pPlayer->baseForm->GetName()[0] != '\0')
-        ? pPlayer->baseForm->GetName()
-        : "Вы";
-    const float localHpPct = computeActorVitalPct(pPlayer, ActorValueInfo::kHealth, pPlayer->healthModifiers.temporaryModifier);
-    const float localMpPct = computeActorVitalPct(pPlayer, ActorValueInfo::kMagicka, pPlayer->magickaModifiers.temporaryModifier);
-    const float localSpPct = computeActorVitalPct(pPlayer, ActorValueInfo::kStamina, pPlayer->staminaModifiers.temporaryModifier);
-
-    drawMemberRow(
-        0,
-        localName,
-        pPlayer->GetLevel(),
-        IsLocalPlayerAllyProtectionHost(),
-        downedService.IsLocalPlayerDowned(),
-        downedService.IsPlayerBeingRevived(localPid),
-        downedService.IsLocalPlayerInvulnerable(),
-        pPlayer->IsInCombat(),
-        true,
-        0.0f,
-        "",
-        localHpPct,
-        localMpPct,
-        localSpPct);
-
-    // Rows 1..N: Party / Connected Peers
-    for (size_t i = 0; i < displayPeerIds.size(); ++i)
-    {
-        const uint32_t pid = displayPeerIds[i];
-        std::string peerName = "Союзник";
-        uint16_t peerLevel = 1;
-        float peerHpPct = 100.0f;
-        std::string peerCell = "Скайрим";
-
-        if (const auto it = m_partyHudPeers.find(pid); it != m_partyHudPeers.end())
-        {
-            if (!it->second.Username.empty())
-                peerName = it->second.Username;
-            peerLevel = it->second.Level;
-            peerHpPct = it->second.HealthPercent;
-            if (!it->second.CellName.empty())
-                peerCell = it->second.CellName;
-        }
-        else if (const auto& partyPlayers = partyService.GetPlayers(); partyPlayers.contains(pid))
-        {
-            peerName = std::string(partyPlayers.at(pid).c_str(), partyPlayers.at(pid).size());
-        }
-
-        Actor* pPeerActor = nullptr;
-        if (const auto itAct = loadedActorByPlayerId.find(pid); itAct != loadedActorByPlayerId.end())
-            pPeerActor = itAct->second;
-
-        bool loaded3D = false;
-        float distMeters = 0.0f;
-        float mpPct = 100.0f;
-        float spPct = 100.0f;
-        bool inCombat = false;
-
-        if (pPeerActor)
-        {
-            loaded3D = true;
-            const uint16_t liveLvl = pPeerActor->GetLevel();
-            if (liveLvl > peerLevel)
-                peerLevel = liveLvl;
-            peerHpPct = computeActorVitalPct(pPeerActor, ActorValueInfo::kHealth, pPeerActor->healthModifiers.temporaryModifier);
-            mpPct = computeActorVitalPct(pPeerActor, ActorValueInfo::kMagicka, pPeerActor->magickaModifiers.temporaryModifier);
-            spPct = computeActorVitalPct(pPeerActor, ActorValueInfo::kStamina, pPeerActor->staminaModifiers.temporaryModifier);
-            inCombat = pPeerActor->IsInCombat();
-
-            const float dx = pPeerActor->position.x - pPlayer->position.x;
-            const float dy = pPeerActor->position.y - pPlayer->position.y;
-            const float dz = pPeerActor->position.z - pPlayer->position.z;
-            distMeters = RfabCompat::SkyrimUnitsToMeters(std::sqrt(dx * dx + dy * dy + dz * dz));
-        }
-
-        drawMemberRow(
-            i + 1,
-            peerName.c_str(),
-            peerLevel,
-            partyService.IsInParty() && partyService.GetLeaderPlayerId() == pid,
-            downedService.IsRemotePlayerDowned(pid),
-            downedService.IsPlayerBeingRevived(pid),
-            false,
-            inCombat,
-            loaded3D,
-            distMeters,
-            peerCell.c_str(),
-            peerHpPct,
-            mpPct,
-            spPct);
     }
 }
