@@ -27,6 +27,7 @@
 #include <Forms/TESNPC.h>
 #include <Forms/BGSOutfit.h>
 #include <Forms/TESObjectARMO.h>
+#include <Forms/TESObjectWEAP.h>
 #include <DefaultObjectManager.h>
 #include <Services/RfabAdapterService.h>
 
@@ -392,6 +393,25 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
             pActorExt->nakedDeadline = cNoDeadline;
             spdlog::debug(__FUNCTION__ ": actorId {:X} naked check is irrelevant {}", pActor->formID, pBaseName);
             continue; 
+        }
+
+        // NEVER re-dress an actor that is fighting or already holding a weapon.
+        // `EquipOutfit()` equips the *whole* default outfit, and Skyrim outfits may contain weapons: on RFAB
+        // bosses whose weapon is granted by script (not by the base outfit) this replaced the real main-hand
+        // weapon with the template one, so the NPC swung a "non-primary" weapon right after a takeover/reload.
+        // The naked check exists purely for appearance after a respawn/re-materialisation, so a fighting or
+        // armed actor must be left alone.
+        const bool holdsRealWeapon =
+            Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0)) != nullptr ||
+            Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(1)) != nullptr;
+        if (pActor->IsInCombat() || holdsRealWeapon)
+        {
+            pActorExt->nakedDeadline = cNoDeadline;
+            spdlog::debug(
+                __FUNCTION__ ": actorId {:X} naked check skipped (in combat or armed) {}",
+                pActor->formID,
+                pBaseName);
+            continue;
         }
 
         if (now < pActorExt->nakedDeadline + cDelayAfterAssignment)

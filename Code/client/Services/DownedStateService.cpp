@@ -212,7 +212,13 @@ void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealth
 
     bool expected = false;
     if (m_isLocalDowned.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+    {
         m_pendingEnterDownedTransition.store(true, std::memory_order_release);
+        spdlog::info(
+            "Local player entered downed state (hp {:.1f}, cell {:X}) - AI targetability locked off until revive",
+            apPlayer->GetActorValue(ActorValueInfo::kHealth),
+            apPlayer->parentCell ? apPlayer->parentCell->formID : 0u);
+    }
 }
 
 void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept
@@ -517,6 +523,12 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
     SetDownedControlLock(false);
     RestoreLivingCombatTargetability(pPlayer, true);
+
+    spdlog::info(
+        "Local player revived (fraction {:.2f}, grace {:.1f}s, hp {:.1f}) - AI targetability restored",
+        aHealthFraction,
+        aGraceSec,
+        pPlayer->GetActorValue(ActorValueInfo::kHealth));
 
     BSFixedString bleedoutStopLower("bleedoutStop");
     pPlayer->SendAnimationEvent(&bleedoutStopLower);
@@ -986,6 +998,14 @@ void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState
     m_remoteDownedByPlayerId[acMessage.PlayerId] = acMessage.IsDowned;
     if (!acMessage.IsDowned)
         m_playersBeingRevived.erase(acMessage.PlayerId);
+
+    spdlog::info(
+        "Peer {} downed state -> {} (position {:.0f}, {:.0f}, {:.0f})",
+        acMessage.PlayerId,
+        acMessage.IsDowned ? "downed" : "standing",
+        acMessage.PositionX,
+        acMessage.PositionY,
+        acMessage.PositionZ);
 
     Actor* pDownedRemoteActor = nullptr;
     auto playerView = m_world.view<FormIdComponent, PlayerComponent>();

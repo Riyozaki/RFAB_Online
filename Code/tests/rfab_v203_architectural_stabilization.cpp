@@ -342,3 +342,78 @@ TEST_CASE("v2.0.3 Phase 4: Persistent ContainerLootLedger (>10 min anti-dupe + s
         REQUIRE(coordSaveCpp.find("RefreshCurrentCellObjectsAfterRollback()") != std::string::npos);
     }
 }
+
+TEST_CASE("v2.0.3 playtest hardening: level-sync must never demolish a live actor", "[rfab][v203][playtest]")
+{
+    const auto root = LocateRepoRootForV203Audit();
+    REQUIRE_FALSE(root.empty());
+
+    SECTION("Placed actor base-form reconciliation never detaches the reference from the world")
+    {
+        const std::string clientCharCpp = LoadV203RepoFile(root, "Code/client/Services/Generic/CharacterService.cpp");
+
+        // Root cause found in `tp_client.log` (v2.0.3 playtest): 25 of 26 `[RFAB LeveledSync] Reconciling placed
+        // actor` lines were followed within 1..104 log lines by `CancelServerAssignment` + `Actor removed` for the
+        // SAME form id. `DisableImpl()` dropped the NiNode, `DiscoveryService` reported `ActorRemovedEvent`, the
+        // client handed ownership back to the server, the NPC lost local AI ("ignored the player") and its
+        // equipment was rebuilt from stale spawn data ("attacked with a non-primary weapon").
+        const size_t reconcileStart = clientCharCpp.find("bool CharacterService::ReconcilePlacedActorBaseFormInPlace");
+        REQUIRE(reconcileStart != std::string::npos);
+        const size_t reconcileEnd = clientCharCpp.find("\n}\n", reconcileStart);
+        REQUIRE(reconcileEnd != std::string::npos);
+        const std::string body = clientCharCpp.substr(reconcileStart, reconcileEnd - reconcileStart);
+
+        REQUIRE(body.find("apActor->DisableImpl()") == std::string::npos);
+        REQUIRE(body.find("apActor->EnableImpl()") == std::string::npos);
+        REQUIRE(body.find("IsInCombat()") != std::string::npos);
+        // Ownership guard: ECS `LocalComponent`, not `ActorExtension::IsLocal()` (which is still true right before
+        // the call sites flip the actor to remote and would silently disable level sync altogether).
+        REQUIRE(body.find("m_world.all_of<LocalComponent>(ownerEntity)") != std::string::npos);
+        // A reference whose 3D is already up must never be re-templated: `SetBaseForm` tears the NiNode down and
+        // `DiscoveryService` reports the still-registered ref as `Actor removed` ~50-100 ms later.
+        REQUIRE(body.find("if (apActor->GetNiNode())") != std::string::npos);
+        REQUIRE(body.find("SetBaseForm") != std::string::npos);
+        REQUIRE(body.find("QueueUpdate()") != std::string::npos);
+
+        // The owner client keeps its RFAB leveled template instead of adopting the stale server cache.
+        REQUIRE(clientCharCpp.find("keeping owner-authoritative base form") != std::string::npos);
+
+        // ...and the wire format stays untouched: no `ActorData::BaseId`, so a v2.0.3 client and server (or any
+        // build inside the same `v2.0.x` protocol family) keep interoperating without a handshake change.
+        const std::string actorDataH = LoadV203RepoFile(root, "Code/encoding/Structs/ActorData.h");
+        REQUIRE(actorDataH.find("GameId BaseId") == std::string::npos);
+        const std::string actorDataCpp = LoadV203RepoFile(root, "Code/encoding/Structs/ActorData.cpp");
+        REQUIRE(actorDataCpp.find("BaseId.Serialize") == std::string::npos);
+        REQUIRE(clientCharCpp.find("actorData.BaseId") == std::string::npos);
+    }
+
+    SECTION("Relinquish control resolves the entity through the server-id index instead of scanning the registry")
+    {
+        const std::string clientCharCpp = LoadV203RepoFile(root, "Code/client/Services/Generic/CharacterService.cpp");
+        const size_t fnStart = clientCharCpp.find("void CharacterService::OnNotifyRelinquishControl");
+        REQUIRE(fnStart != std::string::npos);
+        const size_t fnEnd = clientCharCpp.find("\n}\n", fnStart);
+        REQUIRE(fnEnd != std::string::npos);
+        const std::string body = clientCharCpp.substr(fnStart, fnEnd - fnStart);
+
+        REQUIRE(body.find("FindEntityByServerId(acMessage.ServerId)") != std::string::npos);
+        REQUIRE(body.find("spdlog::error(__FUNCTION__ \": failed to find server id") == std::string::npos);
+        REQUIRE(body.find("for (auto entity : entities)") == std::string::npos);
+    }
+
+    SECTION("Naked-outfit repair never re-dresses a fighting or armed actor")
+    {
+        const std::string inventoryCpp = LoadV203RepoFile(root, "Code/client/Services/Generic/InventoryService.cpp");
+        REQUIRE(inventoryCpp.find("holdsRealWeapon") != std::string::npos);
+        REQUIRE(inventoryCpp.find("Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0))") != std::string::npos);
+        REQUIRE(inventoryCpp.find("pActor->IsInCombat() || holdsRealWeapon") != std::string::npos);
+    }
+
+    SECTION("Downed/revive transitions are observable in the client log")
+    {
+        const std::string downedCpp = LoadV203RepoFile(root, "Code/client/Services/DownedStateService.cpp");
+        REQUIRE(downedCpp.find("Local player entered downed state") != std::string::npos);
+        REQUIRE(downedCpp.find("Local player revived") != std::string::npos);
+        REQUIRE(downedCpp.find("Peer {} downed state -> {}") != std::string::npos);
+    }
+}

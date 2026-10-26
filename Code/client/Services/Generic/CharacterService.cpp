@@ -775,6 +775,12 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
     }
 
     ActorExtension* pExtension = pActor->GetExtension();
+    if (!pExtension)
+    {
+        spdlog::error("Cannot take control over actor without extension, form id: {:X}", acFormId);
+        return false;
+    }
+
     if (pExtension->IsRemotePlayer())
     {
         spdlog::error("Cannot take control over remote player actor, form id: {:X}, server id: {:X}", acFormId, acServerId);
@@ -840,7 +846,8 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
 
     if (acEvent.FormId == 0x14 && pActor)
     {
-        pActor->GetExtension()->SetPlayer(true);
+        if (auto* pPlayerExt = pActor->GetExtension())
+            pPlayerExt->SetPlayer(true);
     }
     else if (pActor && (acEvent.FormId & 0xFF000000) != 0xFF000000)
     {
@@ -1457,7 +1464,27 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         if (const auto modelIt = m_remoteModels.find(acMessage.ServerId);
             modelIt != m_remoteModels.end() && acMessage.PlayerId == 0)
         {
-            (void)ReconcilePlacedActorBaseFormInPlace(pActor, modelIt->second.SpawnRequest.BaseId);
+            // NEVER re-template a live, locally owned actor here. RFAB resolves `TESLevCharacter` placed
+            // references into its own dynamic leveled templates (`0xFF00xxxx`), so the server-side cached
+            // `BaseId` is by definition older than the live base form. Forcing it back used to run
+            // `DisableImpl()` -> `SetBaseForm()` -> `EnableImpl()`, which made the engine drop the NiNode,
+            // which `DiscoveryService` reported as `ActorRemovedEvent`, which triggered
+            // `CancelServerAssignment()` -> ownership transfer to the server -> the NPC lost its local AI
+            // (it "ignored" the player) and had its equipment re-applied from stale spawn data (it fought
+            // with a non-primary weapon) until the next assignment round.
+            // The owner client is authoritative for its own actors: keep the live base form and publish it
+            // upwards through `RequestOwnershipClaim` (`ActorData::BaseId`) instead.
+            const uint32_t cExpectedBaseId = m_world.GetModSystem().GetGameId(modelIt->second.SpawnRequest.BaseId);
+            if (cExpectedBaseId != 0 && pActor->baseForm && pActor->baseForm->formID != cExpectedBaseId)
+            {
+                spdlog::debug(
+                    "[RFAB LeveledSync] keeping owner-authoritative base form {:X} on locally owned actor {:X} "
+                    "(server cached {:X}); publishing it upwards instead of re-templating the live reference",
+                    pActor->baseForm->formID,
+                    pActor->formID,
+                    cExpectedBaseId);
+            }
+
             m_remoteModels.erase(modelIt);
         }
         m_cachedRemoteSpawns.erase(acMessage.ServerId);
@@ -2700,76 +2727,79 @@ void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& 
         return;
     }
 
-    auto formView = m_world.view<FormIdComponent>();
-    Vector<entt::entity> entities(formView.begin(), formView.end());
-
-    // TODO(cosideci): this entity iteration shouldn't technically be necessary, just look for the local component
-    for (auto entity : entities)
+    // O(1) server-id lookup through the entity index.
+    // The previous implementation walked every `FormIdComponent` in the registry and logged an error for each
+    // entity that has no `Local`/`RemoteComponent` (the vast majority: the player, objects, waiting entities).
+    // A single relinquish therefore produced dozens of bogus "failed to find server id for entity" errors and
+    // still found the actor afterwards, which made real desyncs impossible to spot in the logs.
+    const entt::entity entity = FindEntityByServerId(acMessage.ServerId);
+    if (entity == entt::null)
     {
-        std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-        if (!serverIdRes.has_value())
-        {
-            spdlog::error(__FUNCTION__ ": failed to find server id for entity");
-            continue;
-        }
-
-        uint32_t serverId = serverIdRes.value();
-
-        if (serverId == acMessage.ServerId)
-        {
-            auto& formIdComponent = m_world.get<FormIdComponent>(entity);
-
-            if (m_world.all_of<LocalComponent>(entity))
-            {
-                m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
-                m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.ServerId, formIdComponent.Id);
-            }
-
-            Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-            if (!pActor)
-            {
-                // Probably left the room and/or temporary.
-                spdlog::info(__FUNCTION__ ": no local Actor for serverId {:X} to relinquish", serverId);
-                continue;
-            }
-
-            pActor->GetExtension()->SetRemote(true);
-
-            auto& model = m_remoteModels[acMessage.ServerId];
-            m_world.GetModSystem().GetServerModId(pActor->formID, model.SpawnRequest.FormId);
-            if (pActor->baseForm)
-                m_world.GetModSystem().GetServerModId(pActor->baseForm->formID, model.SpawnRequest.BaseId);
-            model.SpawnRequest.ServerId = acMessage.ServerId;
-            if (TESWorldSpace* pWs = pActor->GetWorldSpace())
-                m_world.GetModSystem().GetServerModId(pWs->formID, model.SpawnRequest.WorldSpaceId);
-            else
-                model.SpawnRequest.WorldSpaceId = GameId{};
-            if (pActor->parentCell)
-                m_world.GetModSystem().GetServerModId(pActor->parentCell->formID, model.SpawnRequest.CellId);
-            model.SpawnRequest.Position = pActor->position;
-            model.SpawnRequest.IsDragon = pActor->IsDragon();
-            model.SpawnRequest.IsPlayerSummon = pActor->IsPlayerSummon();
-            model.Location = CoopWorldView::WorldOrCell::FromPacket(
-                model.SpawnRequest.WorldSpaceId,
-                model.SpawnRequest.CellId,
-                pActor->position.x,
-                pActor->position.y);
-            model.LatestPosition = pActor->position;
-            model.LatestRotation.x = pActor->rotation.x;
-            model.LatestRotation.y = pActor->rotation.z;
-            model.IsMaterialized = true;
-
-            auto& interp = InterpolationSystem::Setup(m_world, entity);
-            interp.Position = pActor->position;
-            AnimationSystem::Setup(m_world, entity);
-
-            spdlog::info(__FUNCTION__ ": relinquished control of actor {:X} with server id {:X}", pActor->formID, acMessage.ServerId);
-
-            return;
-        }
+        // The entity can legitimately be gone already: the actor left the cell (cell purge) or was unloaded while
+        // the server was still revoking our ownership. There is nothing left to hand back, so this is diagnostics,
+        // not an error: keep it at debug level so genuine ownership desyncs stay visible in the logs.
+        spdlog::debug(
+            __FUNCTION__ ": no tracked entity for server id {:X} to relinquish (actor already unloaded)",
+            acMessage.ServerId);
+        return;
     }
 
-    spdlog::error("Did not find actor to relinquish control of, server id {:X}", acMessage.ServerId);
+    const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(entity);
+    if (!pFormIdComponent)
+    {
+        spdlog::debug(__FUNCTION__ ": entity for server id {:X} has no form id component", acMessage.ServerId);
+        return;
+    }
+
+    const uint32_t actorFormId = pFormIdComponent->Id;
+    const uint32_t serverId = acMessage.ServerId;
+
+    if (m_world.all_of<LocalComponent>(entity))
+    {
+        m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
+        m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.ServerId, actorFormId);
+    }
+
+    Actor* pActor = Cast<Actor>(TESForm::GetById(actorFormId));
+    if (!pActor)
+    {
+        // Probably left the room and/or temporary.
+        spdlog::info(__FUNCTION__ ": no local Actor for serverId {:X} to relinquish", serverId);
+        return;
+    }
+
+    if (auto* pRelinquishExt = pActor->GetExtension())
+        pRelinquishExt->SetRemote(true);
+
+    auto& model = m_remoteModels[acMessage.ServerId];
+    m_world.GetModSystem().GetServerModId(pActor->formID, model.SpawnRequest.FormId);
+    if (pActor->baseForm)
+        m_world.GetModSystem().GetServerModId(pActor->baseForm->formID, model.SpawnRequest.BaseId);
+    model.SpawnRequest.ServerId = acMessage.ServerId;
+    if (TESWorldSpace* pWs = pActor->GetWorldSpace())
+        m_world.GetModSystem().GetServerModId(pWs->formID, model.SpawnRequest.WorldSpaceId);
+    else
+        model.SpawnRequest.WorldSpaceId = GameId{};
+    if (pActor->parentCell)
+        m_world.GetModSystem().GetServerModId(pActor->parentCell->formID, model.SpawnRequest.CellId);
+    model.SpawnRequest.Position = pActor->position;
+    model.SpawnRequest.IsDragon = pActor->IsDragon();
+    model.SpawnRequest.IsPlayerSummon = pActor->IsPlayerSummon();
+    model.Location = CoopWorldView::WorldOrCell::FromPacket(
+        model.SpawnRequest.WorldSpaceId,
+        model.SpawnRequest.CellId,
+        pActor->position.x,
+        pActor->position.y);
+    model.LatestPosition = pActor->position;
+    model.LatestRotation.x = pActor->rotation.x;
+    model.LatestRotation.y = pActor->rotation.z;
+    model.IsMaterialized = true;
+
+    auto& interp = InterpolationSystem::Setup(m_world, entity);
+    interp.Position = pActor->position;
+    AnimationSystem::Setup(m_world, entity);
+
+    spdlog::info(__FUNCTION__ ": relinquished control of actor {:X} with server id {:X}", pActor->formID, acMessage.ServerId);
 }
 
 void CharacterService::OnNotifyActorTeleport(const NotifyActorTeleport& acMessage) noexcept
@@ -3420,22 +3450,42 @@ bool CharacterService::ReconcilePlacedActorBaseFormInPlace(Actor* apActor, const
     if (!pExpectedNpc || pExpectedNpc->IsStillLoading() || pExpectedNpc->IsDeleted())
         return false;
 
+    // Never re-template an actor that is mid-fight or already dead: the swap rebuilds the 3D and resets the
+    // combat/equipment state. For a live local actor this is strictly worse than a temporary base mismatch.
+    if (apActor->IsDead() || apActor->IsInCombat() || apActor->actorState.IsWeaponFullyDrawn())
+        return false;
+
+    // NEVER touch a reference whose 3D is already up. `SetBaseForm` on a loaded `REFR` forces the engine to
+    // rebuild the whole actor (NiNode teardown), and the playtest log shows that `DiscoveryService` reports the
+    // still-registered reference as `Actor removed` ~50-100 ms later, which cascades into
+    // `CancelServerAssignment`. A base mismatch on a rendered actor is cosmetic; the swap is destructive, so it is
+    // only ever performed while the view is still materialising and has no NiNode yet.
+    if (apActor->GetNiNode())
+        return false;
+
+    // Only reconcile views we do not actively simulate. `ActorExtension::IsLocal()` is NOT the right test here:
+    // every call site runs *before* `SetRemote(true)`, so `IsLocal()` is still true for perfectly remote views.
+    // What matters is ECS ownership: an actor with a `LocalComponent` is simulated by this client, and its RFAB
+    // leveled template is authoritative (see `OnAssignCharacter`), so it must never be re-templated here.
+    const entt::entity ownerEntity = FindActorEntityByFormId(apActor->formID);
+    if (ownerEntity != entt::null && m_world.all_of<LocalComponent>(ownerEntity))
+        return false;
+
     spdlog::info(
         "[RFAB LeveledSync] Reconciling placed actor {:X} baseForm {:X} -> {:X} in-place (preserving 0x00..0xFE quest/ambush identity)",
         apActor->formID,
         apActor->baseForm->formID,
         expectedFormId);
 
-    const bool wasDisabled = apActor->IsDisabled();
-    if (!wasDisabled)
-        apActor->DisableImpl();
-
+    // CRITICAL: never `DisableImpl()`/`EnableImpl()` around the swap, and never swap above a posed 3D (see the
+    // `GetNiNode()` guard). Disabling a reference makes the engine drop its NiNode while the REFR is still
+    // registered; `DiscoveryService::VisitForms` then dispatches `ActorRemovedEvent` for it, which triggers
+    // `CancelServerAssignment()` -> ownership hand-back to the server -> the NPC loses local AI and its equipment
+    // is rebuilt from stale spawn data. `SetBaseForm` + `QueueUpdate` on a view that is still materialising streams
+    // the correct 3D on its first build, so the entity never leaves the registry.
     apActor->SetBaseForm(pExpectedNpc);
     if (pExpectedNpc->raceForm.race)
         apActor->race = pExpectedNpc->raceForm.race;
-
-    if (!wasDisabled)
-        apActor->EnableImpl();
 
     apActor->QueueUpdate();
     return true;
@@ -3786,6 +3836,7 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
     actorData.InitialInventory = apActor->GetActorInventory();
     actorData.IsDead = apActor->IsDead();
     actorData.IsWeaponDrawn = apActor->actorState.IsWeaponFullyDrawn();
+
 
     return actorData;
 }
