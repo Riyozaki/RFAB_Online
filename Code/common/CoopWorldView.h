@@ -382,6 +382,11 @@ class CancelledCookieTracker
 public:
     void RecordCancelled(uint32_t aCookie) noexcept
     {
+        for (size_t i = 0; i < Capacity; ++i)
+        {
+            if (m_valid[i] && m_entries[i] == aCookie)
+                return;
+        }
         m_entries[m_cursor % Capacity] = aCookie;
         m_valid[m_cursor % Capacity] = true;
         ++m_cursor;

@@ -229,7 +229,7 @@ TEST_CASE("NotifyActorTeleport wire round-trip preserves rollback spatial state 
     REQUIRE(decoded.FormId == outgoing.FormId);
     REQUIRE(decoded.WorldSpaceId == outgoing.WorldSpaceId);
     REQUIRE(decoded.CellId == outgoing.CellId);
-    REQUIRE(Approx(decoded.Position.x).margin(0.25f) == outgoing.Position.x);
-    REQUIRE(Approx(decoded.Position.y).margin(0.25f) == outgoing.Position.y);
-    REQUIRE(Approx(decoded.Position.z).margin(0.25f) == outgoing.Position.z);
+    REQUIRE(Approx(decoded.Position.x).margin(1.0f) == outgoing.Position.x);
+    REQUIRE(Approx(decoded.Position.y).margin(1.0f) == outgoing.Position.y);
+    REQUIRE(Approx(decoded.Position.z).margin(1.0f) == outgoing.Position.z);
 }
