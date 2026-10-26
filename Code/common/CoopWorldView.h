@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -468,7 +469,7 @@ private:
 //   - ServerId      <-> Entity across overlapping (LocalComponent, RemoteComponent, ObjectComponent) lifecycles.
 // Guarantees that `TakeOwnership` (emplace Local before removing Remote) and `OnNotifyMount` (emplace Remote before
 // removing Local) NEVER drop the live ServerId mapping, and `on_update` ALWAYS erases superseded keys.
-template <class TEntity, TEntity NullEntity>
+template <class TEntity>
 class EntityIndexTable
 {
 public:
@@ -491,9 +492,6 @@ public:
 
     void UpsertFormId(TEntity aEntity, uint32_t aFormId, bool aIsObject)
     {
-        if (aEntity == NullEntity)
-            return;
-
         EraseFormId(aEntity);
         if (aFormId == 0)
             return;
@@ -507,7 +505,7 @@ public:
 
     void PromoteFormToObject(TEntity aEntity, uint32_t aFormId)
     {
-        if (aEntity == NullEntity || aFormId == 0)
+        if (aFormId == 0)
             return;
         UpsertFormId(aEntity, aFormId, true);
     }
@@ -536,7 +534,7 @@ public:
 
     void BindServerId(TEntity aEntity, ServerBindingKind aKind, uint32_t aServerId)
     {
-        if (aEntity == NullEntity || aKind == kNone)
+        if (aKind == kNone)
             return;
 
         auto& slot = m_serverByEntity[aEntity];
@@ -574,7 +572,7 @@ public:
 
     void UnbindServerId(TEntity aEntity, ServerBindingKind aKind) noexcept
     {
-        if (aEntity == NullEntity || aKind == kNone)
+        if (aKind == kNone)
             return;
 
         const auto revIt = m_serverByEntity.find(aEntity);
@@ -614,33 +612,33 @@ public:
             m_serverByEntity.erase(revIt);
     }
 
-    [[nodiscard]] TEntity FindActorByFormId(uint32_t aFormId) const noexcept
+    [[nodiscard]] std::optional<TEntity> FindActorByFormId(uint32_t aFormId) const noexcept
     {
         if (aFormId == 0)
-            return NullEntity;
+            return std::nullopt;
         const auto it = m_actorByFormId.find(aFormId);
-        return it != m_actorByFormId.end() ? it->second : NullEntity;
+        return it != m_actorByFormId.end() ? std::optional<TEntity>(it->second) : std::nullopt;
     }
 
-    [[nodiscard]] TEntity FindObjectByFormId(uint32_t aFormId) const noexcept
+    [[nodiscard]] std::optional<TEntity> FindObjectByFormId(uint32_t aFormId) const noexcept
     {
         if (aFormId == 0)
-            return NullEntity;
+            return std::nullopt;
         const auto it = m_objectByFormId.find(aFormId);
-        return it != m_objectByFormId.end() ? it->second : NullEntity;
+        return it != m_objectByFormId.end() ? std::optional<TEntity>(it->second) : std::nullopt;
     }
 
-    [[nodiscard]] TEntity FindAnyByFormId(uint32_t aFormId) const noexcept
+    [[nodiscard]] std::optional<TEntity> FindAnyByFormId(uint32_t aFormId) const noexcept
     {
-        if (const TEntity actor = FindActorByFormId(aFormId); actor != NullEntity)
+        if (const auto actor = FindActorByFormId(aFormId); actor.has_value())
             return actor;
         return FindObjectByFormId(aFormId);
     }
 
-    [[nodiscard]] TEntity FindByServerId(uint32_t aServerId) const noexcept
+    [[nodiscard]] std::optional<TEntity> FindByServerId(uint32_t aServerId) const noexcept
     {
         const auto it = m_entityByServerId.find(aServerId);
-        return it != m_entityByServerId.end() ? it->second : NullEntity;
+        return it != m_entityByServerId.end() ? std::optional<TEntity>(it->second) : std::nullopt;
     }
 
 private:

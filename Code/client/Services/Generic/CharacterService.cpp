@@ -474,11 +474,14 @@ entt::entity CharacterService::FindActorEntityByFormId(uint32_t aFormId) const n
     if (aFormId == 0)
         return entt::null;
 
-    const entt::entity candidate = m_entityIndex.FindActorByFormId(aFormId);
-    if (candidate != entt::null && m_world.valid(candidate) && !m_world.all_of<ObjectComponent>(candidate))
+    if (const auto candidate = m_entityIndex.FindActorByFormId(aFormId); candidate.has_value())
     {
-        if (const auto* pForm = m_world.try_get<FormIdComponent>(candidate); pForm && pForm->Id == aFormId)
-            return candidate;
+        const entt::entity cached = *candidate;
+        if (m_world.valid(cached) && !m_world.all_of<ObjectComponent>(cached))
+        {
+            if (const auto* pForm = m_world.try_get<FormIdComponent>(cached); pForm && pForm->Id == aFormId)
+                return cached;
+        }
     }
 
     auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
@@ -502,11 +505,14 @@ entt::entity CharacterService::FindAnyEntityByFormId(uint32_t aFormId) const noe
     if (const entt::entity actorEntity = FindActorEntityByFormId(aFormId); actorEntity != entt::null)
         return actorEntity;
 
-    const entt::entity objCandidate = m_entityIndex.FindObjectByFormId(aFormId);
-    if (objCandidate != entt::null && m_world.valid(objCandidate))
+    if (const auto objCandidate = m_entityIndex.FindObjectByFormId(aFormId); objCandidate.has_value())
     {
-        if (const auto* pForm = m_world.try_get<FormIdComponent>(objCandidate); pForm && pForm->Id == aFormId)
-            return objCandidate;
+        const entt::entity cached = *objCandidate;
+        if (m_world.valid(cached))
+        {
+            if (const auto* pForm = m_world.try_get<FormIdComponent>(cached); pForm && pForm->Id == aFormId)
+                return cached;
+        }
     }
 
     auto view = m_world.view<FormIdComponent>();
@@ -524,15 +530,18 @@ entt::entity CharacterService::FindAnyEntityByFormId(uint32_t aFormId) const noe
 
 entt::entity CharacterService::FindEntityByServerId(uint32_t aServerId) const noexcept
 {
-    const entt::entity candidate = m_entityIndex.FindByServerId(aServerId);
-    if (candidate != entt::null && m_world.valid(candidate))
+    if (const auto candidate = m_entityIndex.FindByServerId(aServerId); candidate.has_value())
     {
-        if (const auto* pRemote = m_world.try_get<RemoteComponent>(candidate); pRemote && pRemote->Id == aServerId)
-            return candidate;
-        if (const auto* pLocal = m_world.try_get<LocalComponent>(candidate); pLocal && pLocal->Id == aServerId)
-            return candidate;
-        if (const auto* pObj = m_world.try_get<ObjectComponent>(candidate); pObj && pObj->Id == aServerId)
-            return candidate;
+        const entt::entity cached = *candidate;
+        if (m_world.valid(cached))
+        {
+            if (const auto* pRemote = m_world.try_get<RemoteComponent>(cached); pRemote && pRemote->Id == aServerId)
+                return cached;
+            if (const auto* pLocal = m_world.try_get<LocalComponent>(cached); pLocal && pLocal->Id == aServerId)
+                return cached;
+            if (const auto* pObj = m_world.try_get<ObjectComponent>(cached); pObj && pObj->Id == aServerId)
+                return cached;
+        }
     }
 
     auto remoteView = m_world.view<RemoteComponent>();
@@ -3422,8 +3431,8 @@ bool CharacterService::ReconcilePlacedActorBaseFormInPlace(Actor* apActor, const
         apActor->DisableImpl();
 
     apActor->SetBaseForm(pExpectedNpc);
-    if (pExpectedNpc->race)
-        apActor->race = pExpectedNpc->race;
+    if (pExpectedNpc->raceForm.race)
+        apActor->race = pExpectedNpc->raceForm.race;
 
     if (!wasDisabled)
         apActor->EnableImpl();

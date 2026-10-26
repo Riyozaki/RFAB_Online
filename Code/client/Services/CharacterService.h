@@ -206,7 +206,7 @@ private:
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};
     mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
     mutable Set<uint32_t> m_createdNetworkFormIds{};
-    mutable CoopWorldView::EntityIndexTable<entt::entity, entt::null> m_entityIndex{};
+    mutable CoopWorldView::EntityIndexTable<entt::entity> m_entityIndex{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};
     mutable Map<uint32_t, PendingMountAttach> m_pendingRemoteMounts{};
     mutable PendingLocalMountRequest m_pendingLocalMount{};

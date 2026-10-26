@@ -76,7 +76,7 @@ TEST_CASE("v2.0.3 Phase 1: EntityIndexTable overlapping handoffs, reconnect iden
 {
     SECTION("EntityIndexTable preserves ServerId across overlapping Local<->Remote ownership/mount handoffs and updates replaced keys")
     {
-        using Index = CoopWorldView::EntityIndexTable<uint32_t, 0u>;
+        using Index = CoopWorldView::EntityIndexTable<uint32_t>;
         Index idx;
 
         constexpr uint32_t kPlacedDraugrEntity = 11u;
@@ -85,37 +85,37 @@ TEST_CASE("v2.0.3 Phase 1: EntityIndexTable overlapping handoffs, reconnect iden
 
         idx.UpsertFormId(kPlacedDraugrEntity, kPlacedDraugrFormId, /*aIsObject=*/false);
         idx.BindServerId(kPlacedDraugrEntity, Index::kRemote, kServerId);
-        REQUIRE(idx.FindActorByFormId(kPlacedDraugrFormId) == kPlacedDraugrEntity);
-        REQUIRE(idx.FindByServerId(kServerId) == kPlacedDraugrEntity);
+        REQUIRE(idx.FindActorByFormId(kPlacedDraugrFormId).value() == kPlacedDraugrEntity);
+        REQUIRE(idx.FindByServerId(kServerId).value() == kPlacedDraugrEntity);
 
         // `TakeOwnership` emplaces `LocalComponent(kServerId)` BEFORE removing `RemoteComponent(kServerId)`:
         idx.BindServerId(kPlacedDraugrEntity, Index::kLocal, kServerId);
         idx.UnbindServerId(kPlacedDraugrEntity, Index::kRemote);
-        REQUIRE(idx.FindByServerId(kServerId) == kPlacedDraugrEntity);
+        REQUIRE(idx.FindByServerId(kServerId).value() == kPlacedDraugrEntity);
 
         // `OnNotifyMount` / `RelinquishOwnership` emplaces `RemoteComponent(kServerId)` BEFORE removing `LocalComponent(kServerId)`:
         idx.BindServerId(kPlacedDraugrEntity, Index::kRemote, kServerId);
         idx.UnbindServerId(kPlacedDraugrEntity, Index::kLocal);
-        REQUIRE(idx.FindByServerId(kServerId) == kPlacedDraugrEntity);
+        REQUIRE(idx.FindByServerId(kServerId).value() == kPlacedDraugrEntity);
 
         // Live `/disconnect` unbinds `ServerId` while keeping placed `0x00..0xFE` `FormIdComponent` alive for `/connect`:
         idx.UnbindServerId(kPlacedDraugrEntity, Index::kRemote);
-        REQUIRE(idx.FindByServerId(kServerId) == 0u);
-        REQUIRE(idx.FindActorByFormId(kPlacedDraugrFormId) == kPlacedDraugrEntity);
+        REQUIRE_FALSE(idx.FindByServerId(kServerId).has_value());
+        REQUIRE(idx.FindActorByFormId(kPlacedDraugrFormId).value() == kPlacedDraugrEntity);
 
         // Object entity replacing its `ServerId` in-place (`42 -> 99`) immediately evicts stale `42`:
         constexpr uint32_t kChestEntity = 22u;
         constexpr uint32_t kChestFormId = 0x0009ABCDu;
         idx.UpsertFormId(kChestEntity, kChestFormId, /*aIsObject=*/false);
         idx.PromoteFormToObject(kChestEntity, kChestFormId);
-        REQUIRE(idx.FindActorByFormId(kChestFormId) == 0u);
-        REQUIRE(idx.FindObjectByFormId(kChestFormId) == kChestEntity);
+        REQUIRE_FALSE(idx.FindActorByFormId(kChestFormId).has_value());
+        REQUIRE(idx.FindObjectByFormId(kChestFormId).value() == kChestEntity);
 
         idx.BindServerId(kChestEntity, Index::kObject, 42u);
-        REQUIRE(idx.FindByServerId(42u) == kChestEntity);
+        REQUIRE(idx.FindByServerId(42u).value() == kChestEntity);
         idx.BindServerId(kChestEntity, Index::kObject, 99u);
-        REQUIRE(idx.FindByServerId(42u) == 0u);
-        REQUIRE(idx.FindByServerId(99u) == kChestEntity);
+        REQUIRE_FALSE(idx.FindByServerId(42u).has_value());
+        REQUIRE(idx.FindByServerId(99u).value() == kChestEntity);
     }
 
     SECTION("BuildPlayerIdentityKey stays invariant across reconnect PlayerId shifts and case/whitespace variations")

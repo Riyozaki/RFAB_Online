@@ -341,13 +341,14 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
                 SerializePlayerStateRecord(writer, pRec);
             }
 
-            Serialization::WriteVarInt(writer, snap.LootLedger.WithdrawnBySlot.size());
-            for (const auto& [slotKey, withdrawn] : snap.LootLedger.WithdrawnBySlot)
+            Serialization::WriteVarInt(writer, static_cast<uint64_t>(snap.LootLedger.size()));
+            for (const auto& entry : snap.LootLedger)
             {
-                Serialization::WriteVarInt(writer, slotKey.ContainerId);
-                Serialization::WriteVarInt(writer, slotKey.ItemModId);
-                Serialization::WriteVarInt(writer, slotKey.ItemBaseId);
-                Serialization::WriteVarInt(writer, static_cast<uint64_t>(static_cast<uint32_t>(std::max<int32_t>(0, withdrawn))));
+                Serialization::WriteVarInt(writer, entry.ContainerServerId);
+                Serialization::WriteVarInt(writer, entry.ModId);
+                Serialization::WriteVarInt(writer, entry.BaseId);
+                Serialization::WriteVarInt(writer, entry.ClaimantPlayerId);
+                Serialization::WriteVarInt(writer, entry.DepletedAtMs);
             }
         }
 
@@ -522,17 +523,17 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
 
                         const uint64_t ledgerCount = std::min<uint64_t>(
                             Serialization::ReadVarInt(reader),
-                            static_cast<uint64_t>(CoopLootLedger::ContainerLootLedger::kMaxTrackedSlots));
+                            static_cast<uint64_t>(CoopLootLedger::ContainerLootLedger::kMaxTrackedDepletions));
+                        snap.LootLedger.reserve(static_cast<size_t>(ledgerCount));
                         for (uint64_t i = 0; i < ledgerCount; ++i)
                         {
-                            CoopLootLedger::ContainerLootLedger::SlotKey slotKey{};
-                            slotKey.ContainerId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
-                            slotKey.ItemModId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
-                            slotKey.ItemBaseId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
-                            const int32_t withdrawn = static_cast<int32_t>(
-                                std::min<uint64_t>(Serialization::ReadVarInt(reader), 1000000ULL));
-                            if (withdrawn > 0)
-                                snap.LootLedger.WithdrawnBySlot[slotKey] = withdrawn;
+                            CoopLootLedger::ContainerLootLedger::SnapshotEntry entry{};
+                            entry.ContainerServerId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            entry.ModId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            entry.BaseId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            entry.ClaimantPlayerId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            entry.DepletedAtMs = Serialization::ReadVarInt(reader);
+                            snap.LootLedger.push_back(entry);
                         }
                     }
                 }

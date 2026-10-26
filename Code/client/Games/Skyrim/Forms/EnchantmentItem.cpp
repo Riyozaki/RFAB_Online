@@ -4,6 +4,7 @@
 #include <Magic/EffectItem.h>
 #include <World.h>
 #include <Games/BGSCreatedObjectManager.h>
+#include <Games/Memory.h>
 
 EnchantmentItem* EnchantmentItem::Create(const Inventory::EnchantmentData& aData) noexcept
 {

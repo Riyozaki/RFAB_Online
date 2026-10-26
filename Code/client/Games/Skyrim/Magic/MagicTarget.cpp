@@ -1,5 +1,8 @@
 #include "MagicTarget.h"
 
+#include <algorithm>
+#include <chrono>
+
 #include <Actor.h>
 #include <World.h>
 #include "EffectItem.h"
