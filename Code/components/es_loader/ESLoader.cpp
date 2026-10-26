@@ -95,7 +95,7 @@ bool ESLoader::LoadLoadOrder()
     };
 
     Vector<ParsedLine> parsedLines;
-    bool anyStarLine = false;
+    bool anyStarredNonBaseLine = false;
 
     String line;
     while (std::getline(loadOrderFile, line))
@@ -127,7 +127,6 @@ bool ESLoader::LoadLoadOrder()
         if (line[0] == '*')
         {
             hasStar = true;
-            anyStarLine = true;
             line.erase(line.begin());
             while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
                 line.erase(line.begin());
@@ -136,15 +135,19 @@ bool ESLoader::LoadLoadOrder()
         if (line.empty())
             continue;
 
+        if (hasStar && !isImplicitBaseMaster(line))
+            anyStarredNonBaseLine = true;
+
         parsedLines.push_back(ParsedLine{line, hasStar});
     }
 
     Set<String> seenLowerPlugins;
     for (const auto& entry : parsedLines)
     {
-        // If user copied SSE plugins.txt (which marks active mods with '*'), ignore disabled lines without '*'
-        // except the 5 implicit vanilla SSE base masters.
-        if (anyStarLine && !entry.HasStar && !isImplicitBaseMaster(entry.Filename))
+        // If user copied SSE plugins.txt (which marks active non-base mods such as *SkyrimTogether.esp with '*'),
+        // ignore disabled lines without '*' except the 5 implicit vanilla SSE base masters.
+        // A pure loadorder.txt that merely has an accidental '*' on a base master (e.g. *Update.esm) keeps all lines.
+        if (anyStarredNonBaseLine && !entry.HasStar && !isImplicitBaseMaster(entry.Filename))
             continue;
 
         const String lowerName = toLowerCopy(entry.Filename);

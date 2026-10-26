@@ -3428,6 +3428,7 @@ inline constexpr size_t kRfabPerkTrampolineSize = 55;
 
     std::vector<RawEntry> entries;
     bool anyStarLine = false;
+    bool anyStarredNonBaseLine = false;
     bool firstLine = true;
 
     std::istringstream iss{std::string(aContent)};
@@ -3462,8 +3463,13 @@ inline constexpr size_t kRfabPerkTrampolineSize = 55;
         if (trimmed.empty())
             continue;
 
+        if (hasStar && !IsImplicitSseBaseMaster(trimmed))
+            anyStarredNonBaseLine = true;
+
         entries.push_back(RawEntry{std::move(trimmed), hasStar});
     }
+
+    const bool filterUnstarred = aInjectMissingBaseMastersInPluginsTxt ? anyStarLine : anyStarredNonBaseLine;
 
     std::vector<std::string> active;
     std::unordered_set<std::string> seenLower;
@@ -3475,7 +3481,7 @@ inline constexpr size_t kRfabPerkTrampolineSize = 55;
             active.push_back(name);
     };
 
-    if (anyStarLine && aInjectMissingBaseMastersInPluginsTxt)
+    if (filterUnstarred && aInjectMissingBaseMastersInPluginsTxt)
     {
         static constexpr std::string_view kBaseMasters[] = {
             "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"
@@ -3486,7 +3492,7 @@ inline constexpr size_t kRfabPerkTrampolineSize = 55;
 
     for (const auto& entry : entries)
     {
-        if (anyStarLine)
+        if (filterUnstarred)
         {
             // SSE `plugins.txt` mode: lines without `*` are disabled plugins in the user's MO2/Vortex profile,
             // except implicit SSE base masters which vanilla Skyrim SE may omit `*` on.

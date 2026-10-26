@@ -15,20 +15,27 @@ namespace
 std::filesystem::path LocateRepoRootForV202Audit()
 {
     std::error_code ec;
-    std::filesystem::path probe = std::filesystem::current_path(ec);
-    for (int depth = 0; depth < 8 && !probe.empty(); ++depth)
+    auto searchUpwards = [&](std::filesystem::path probe) -> std::filesystem::path
     {
-        if (std::filesystem::exists(probe / "xmake.lua", ec) &&
-            std::filesystem::exists(probe / "Code" / "client" / "Games" / "Skyrim" / "Actor.cpp", ec))
+        for (int depth = 0; depth < 8 && !probe.empty(); ++depth)
         {
-            return probe;
+            if (std::filesystem::exists(probe / "xmake.lua", ec) &&
+                std::filesystem::exists(probe / "Code" / "client" / "Games" / "Skyrim" / "Actor.cpp", ec))
+            {
+                return probe;
+            }
+            const auto parent = probe.parent_path();
+            if (parent == probe)
+                break;
+            probe = parent;
         }
-        const auto parent = probe.parent_path();
-        if (parent == probe)
-            break;
-        probe = parent;
-    }
-    return {};
+        return {};
+    };
+
+    if (const auto fromCwd = searchUpwards(std::filesystem::current_path(ec)); !fromCwd.empty())
+        return fromCwd;
+
+    return searchUpwards(std::filesystem::path(__FILE__).parent_path());
 }
 
 std::string LoadRepoFileText(const std::filesystem::path& acRoot, const char* acRelPath)
@@ -318,12 +325,14 @@ TEST_CASE("Stage 3.3: Cross-version RFAB binary ESP/ESL EDID indexer, plugins.tx
 
         const std::string pureLoadOrder =
             "Skyrim.esm\n"
-            "Update.esm\n"
+            "*Update.esm\n"
             "RFAB.esp\n"
             "SkyrimTogether.esp\n";
         const auto lo = RfabCompat::ParseActivePluginList(pureLoadOrder, false);
         REQUIRE(lo.size() == 4);
+        REQUIRE(lo[1] == "Update.esm");
         REQUIRE(lo[2] == "RFAB.esp");
+        REQUIRE(lo[3] == "SkyrimTogether.esp");
     }
 
     SECTION("ResolveRfabConfigPath discovers relocated RFAB configs in nested Data/SKSE/Plugins subdirectories")
