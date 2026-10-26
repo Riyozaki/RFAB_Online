@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "purpose": "Immutable backup manifest of the working RFAB Online v2.0.3 release before transitioning development to v2.1.0.",
+  "repository": "Riyozaki/RFAB_Online",
+  "source_release_id": 424566518,
+  "tag_name": "v2.0.3",
+  "backup_tag_name": "v2.0.3-backup",
+  "release_name": "RFAB Online v2.0.3 (Skyrim SE 1.5.97 + RFAB Co-Op)",
+  "target_commitish": "e7b96ef70276d29a916012c3489359a9bd736ce2",
+  "published_at": "2026-10-26T17:39:08Z",
+  "html_url": "https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3",
+  "assets": [
+    {
+      "id": 679247108,
+      "name": "RFAB_Online_v2.0.3_Full_Installer.zip",
+      "size": 176208761,
+      "sha256": "0b03101a09bf4beba42a707561a5a39d1f9abba7edd2f939354092bfb6870689",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/RFAB_Online_v2.0.3_Full_Installer.zip"
+    },
+    {
+      "id": 679247561,
+      "name": "RFAB_Online_v2.0.3_PDB_Symbols.zip",
+      "size": 87570871,
+      "sha256": "1fe98cfb3f02715b59e48b1798fa7ef3b7fd366ac79653b4d4afae5554e84a53",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/RFAB_Online_v2.0.3_PDB_Symbols.zip"
+    },
+    {
+      "id": 679247001,
+      "name": "RFAB_Online_v2.0.3_Quick_Update.zip",
+      "size": 15659087,
+      "sha256": "db297e2113c56416db6bcec2eb25d3b0cfa7489d93d4838074ff960721d20844",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/RFAB_Online_v2.0.3_Quick_Update.zip"
+    },
+    {
+      "id": 679247817,
+      "name": "SHA256SUMS.txt",
+      "size": 310,
+      "sha256": "c20d0734032ad0ea8a1a3e1bfc0620729bdbbc40a3c3767e82c74fc62ecb1f1f",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/SHA256SUMS.txt"
+    }
+  ]
+}

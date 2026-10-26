@@ -44,6 +44,16 @@ struct CharacterService
     void ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept;
     void ForceResyncObserverAfterRollback(Player* apObserver) const noexcept;
     [[nodiscard]] entt::entity FindPersistentCharacterByFormId(const GameId& acFormId) const noexcept;
+    entt::entity EnsureDormantPersistentCharacter(
+        const GameId& acFormId,
+        const GameId& acBaseId,
+        const GameId& acCellId,
+        const GameId& acWorldSpaceId,
+        const GridCellCoords& acCenterCoords,
+        const glm::vec3& acPosition,
+        const glm::vec3& acRotation,
+        bool aIsDead) const noexcept;
+    [[nodiscard]] const CoopWorldView::ServerInterestRegistry& GetInterestRegistry() const noexcept { return m_interestRegistry; }
 
 protected:
     void OnUpdate(const UpdateEvent& acEvent) const noexcept;

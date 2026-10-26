@@ -1,4 +1,5 @@
 #include <Services/MagicService.h>
+#include <Services/ActorValueService.h>
 
 #include <Components.h>
 #include <GameServer.h>
@@ -35,6 +36,14 @@ void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMes
     const auto* pOwner = m_world.try_get<OwnerComponent>(entity);
     if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
         return;
+
+    if (acMessage.pPlayer)
+    {
+        m_world.GetActorValueService().RecordCombatClaim(
+            acMessage.pPlayer->GetId(),
+            message.DesiredTarget,
+            CoopDamagePipeline::ServerHitClaimKind::kSpellOrTarget);
+    }
 
     NotifySpellCast notify{};
     notify.CasterId = message.CasterId;
@@ -108,6 +117,14 @@ void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMes
 
     if (!senderAuthorized)
         return;
+
+    if (acMessage.pPlayer)
+    {
+        m_world.GetActorValueService().RecordCombatClaim(
+            acMessage.pPlayer->GetId(),
+            message.TargetId,
+            CoopDamagePipeline::ServerHitClaimKind::kSpellOrTarget);
+    }
 
     NotifyAddTarget notify{};
     notify.TargetId = message.TargetId;

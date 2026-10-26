@@ -150,6 +150,68 @@ entt::entity CharacterService::FindPersistentCharacterByFormId(const GameId& acF
     return entt::null;
 }
 
+entt::entity CharacterService::EnsureDormantPersistentCharacter(
+    const GameId& acFormId,
+    const GameId& acBaseId,
+    const GameId& acCellId,
+    const GameId& acWorldSpaceId,
+    const GridCellCoords& acCenterCoords,
+    const glm::vec3& acPosition,
+    const glm::vec3& acRotation,
+    bool aIsDead) const noexcept
+{
+    if (acFormId == GameId{} || acFormId.ModId == std::numeric_limits<uint32_t>::max())
+        return entt::null;
+
+    entt::entity entity = FindPersistentCharacterByFormId(acFormId);
+    if (entity == entt::null || !m_world.valid(entity))
+    {
+        entity = m_world.create();
+        m_world.emplace<FormIdComponent>(entity, acFormId.BaseId, acFormId.ModId);
+        m_world.emplace<OwnerComponent>(entity, nullptr, SteadyClockMs());
+        m_world.emplace<CellIdComponent>(entity, acCellId, acWorldSpaceId, acCenterCoords);
+        auto& charComp = m_world.emplace<CharacterComponent>(entity);
+        if (acBaseId != GameId{})
+            charComp.BaseId = FormIdComponent(acBaseId);
+        charComp.SetDead(aIsDead);
+        m_world.emplace<InventoryComponent>(entity);
+        m_world.emplace<ActorValuesComponent>(entity);
+        auto& moveComp = m_world.emplace<MovementComponent>(entity);
+        moveComp.Position = acPosition;
+        moveComp.Rotation = acRotation;
+        moveComp.Sent = true;
+        m_world.emplace<AnimationComponent>(entity);
+    }
+    else
+    {
+        if (auto* pChar = m_world.try_get<CharacterComponent>(entity))
+        {
+            if (acBaseId != GameId{} && (!pChar->BaseId || pChar->BaseId->Id == GameId{}))
+                pChar->BaseId = FormIdComponent(acBaseId);
+            pChar->SetDead(aIsDead);
+        }
+        if (auto* pCell = m_world.try_get<CellIdComponent>(entity); pCell && (acCellId != GameId{} || acWorldSpaceId != GameId{}))
+        {
+            pCell->Cell = acCellId;
+            pCell->WorldSpaceId = acWorldSpaceId;
+            pCell->CenterCoords = acCenterCoords;
+        }
+        if (auto* pMove = m_world.try_get<MovementComponent>(entity))
+        {
+            pMove->Position = acPosition;
+            pMove->Rotation = acRotation;
+            pMove->Sent = true;
+        }
+    }
+
+    m_characterByFormKey[CoopWorldView::PackGameIdKey(acFormId.ModId, acFormId.BaseId)] = entity;
+    const GameId& spaceOrCell = acWorldSpaceId ? acWorldSpaceId : acCellId;
+    m_interestRegistry.BindEntityCell(
+        World::ToInteger(entity),
+        CoopWorldView::PackGameIdKey(spaceOrCell.ModId, spaceOrCell.BaseId));
+    return entity;
+}
+
 void CharacterService::Serialize(World& aRegistry, entt::entity aEntity, CharacterSpawnRequest* apSpawnRequest) noexcept
 {
     const auto& characterComponent = aRegistry.get<CharacterComponent>(aEntity);
@@ -240,6 +302,8 @@ void CharacterService::ReconcileEntityForAllObservers(entt::entity aEntity) cons
         return;
 
     const uint32_t serverId = World::ToInteger(aEntity);
+    const GameId& spaceOrCell = pCellComp->WorldSpaceId ? pCellComp->WorldSpaceId : pCellComp->Cell;
+    m_interestRegistry.BindEntityCell(serverId, CoopWorldView::PackGameIdKey(spaceOrCell.ModId, spaceOrCell.BaseId));
     Player* const pOwner = pOwnerComp->GetOwner();
 
     std::optional<CharacterSpawnRequest> cachedSpawn{};
@@ -452,6 +516,35 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             auto& movementComponent = m_world.get<MovementComponent>(existingEntity);
             auto& cellIdComponent = m_world.get<CellIdComponent>(existingEntity);
             auto& existingOwnerComp = m_world.get<OwnerComponent>(existingEntity);
+
+            // Hydrated dormant NPCs from rfab_checkpoints.bin may have empty baseline inventory/AV maps;
+            // seed any missing baseline fields from the first arriving client while preserving persisted
+            // dead state and persisted health!
+            if (existingOwnerComp.GetOwner() == nullptr)
+            {
+                if ((!characterComponent.BaseId || characterComponent.BaseId->Id == GameId{}) && message.FormId != GameId{})
+                    characterComponent.BaseId = FormIdComponent(message.FormId);
+                if (characterComponent.FactionsContent.StandardFactions.empty() && !message.FactionsContent.StandardFactions.empty())
+                    characterComponent.FactionsContent = message.FactionsContent;
+                if (inventoryComponent.Content.Entries.empty() && !message.CurrentActorData.InitialInventory.Entries.empty())
+                    inventoryComponent.Content = message.CurrentActorData.InitialInventory;
+                if (actorValuesComponent.CurrentActorValues.ActorValuesList.empty() &&
+                    !message.CurrentActorData.InitialActorValues.ActorValuesList.empty())
+                {
+                    const auto savedHpIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(24);
+                    const auto savedMaxHpIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(24);
+                    const bool hadSavedHp = (savedHpIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end());
+                    const float savedHp = hadSavedHp ? savedHpIt->second : 0.0f;
+                    const bool hadSavedMaxHp = (savedMaxHpIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end());
+                    const float savedMaxHp = hadSavedMaxHp ? savedMaxHpIt->second : 0.0f;
+
+                    actorValuesComponent.CurrentActorValues = message.CurrentActorData.InitialActorValues;
+                    if (hadSavedHp)
+                        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = savedHp;
+                    if (hadSavedMaxHp && savedMaxHp > 0.0f)
+                        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[24] = savedMaxHp;
+                }
+            }
 
             auto& partyService = m_world.GetPartyService();
 

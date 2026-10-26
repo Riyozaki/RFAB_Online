@@ -125,6 +125,9 @@ struct CharacterService
     void SyncRemoteCachedActorValues(uint32_t aServerId, const TiltedPhoques::Map<uint32_t, float>& acValues, bool aIsMaxValues) const noexcept;
     void SyncRemoteCachedDeathState(uint32_t aServerId, bool aIsDead) const noexcept;
     void SyncRemoteCachedWeaponDraw(uint32_t aServerId, bool aIsWeaponDrawn) const noexcept;
+    [[nodiscard]] const CharacterSpawnRequest& ResolveAuthoritativeSpawnState(
+        entt::entity aEntity,
+        const CharacterSpawnRequest& acFallback) const noexcept;
 
 private:
     struct RemoteEntityModel
@@ -136,6 +139,7 @@ private:
         uint64_t DematerializeGraceUntilMs{0};
         uint64_t PendingOwnershipEpoch{0};
         bool IsMaterialized{false};
+        bool HasAuthoritativeSpawnPacket{false};
     };
 
     struct PendingMountAttach

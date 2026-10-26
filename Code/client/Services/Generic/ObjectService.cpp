@@ -472,16 +472,14 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
         m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId);
     }
 
-    auto view = m_world.view<FormIdComponent>();
-    const auto pEntity = std::find_if(std::begin(view), std::end(view), [id = acEvent.pActivator->formID, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (pEntity == std::end(view))
-    {
-        // spdlog::error("Activator entity not found for form id {:X}", acEvent.pActivator->formID);
+    if (!acEvent.pActivator)
         return;
-    }
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*pEntity);
+    const entt::entity activatorEntity = m_world.GetCharacterService().FindAnyEntityByFormId(acEvent.pActivator->formID);
+    if (activatorEntity == entt::null)
+        return;
+
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(activatorEntity);
     if (!serverIdRes.has_value())
         return;
 
@@ -658,11 +656,7 @@ void ObjectService::OnNotifyScriptAnimation(const NotifyScriptAnimation& acMessa
 BSTEventResult ObjectService::OnEvent(const TESActivateEvent* acEvent, const EventDispatcher<TESActivateEvent>* aDispatcher)
 {
 #if ENVIRONMENT_DEBUG
-    auto view = m_world.view<ObjectComponent>();
-
-    const auto itor = std::find_if(std::begin(view), std::end(view), [id = acEvent->object->formID, view](entt::entity entity) { return view.get<ObjectComponent>(entity).Id == id; });
-
-    if (itor == std::end(view))
+    if (acEvent && acEvent->object && FindObjectEntity(acEvent->object->formID) == entt::null)
     {
         AddObjectComponent(acEvent->object);
     }

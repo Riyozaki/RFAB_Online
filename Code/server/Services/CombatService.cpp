@@ -1,4 +1,5 @@
 #include <Services/CombatService.h>
+#include <Services/ActorValueService.h>
 #include <Components.h>
 #include <GameServer.h>
 #include <World.h>
@@ -40,6 +41,14 @@ void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunch
             packet.Scale))
     {
         return;
+    }
+
+    if (acMessage.pPlayer)
+    {
+        m_world.GetActorValueService().RecordCombatClaim(
+            acMessage.pPlayer->GetId(),
+            0u,
+            CoopDamagePipeline::ServerHitClaimKind::kProjectileLaunch);
     }
 
     NotifyProjectileLaunch notify{};

@@ -254,6 +254,8 @@ class SaveSnapshotService
 public:
     struct ActorStateRecord
     {
+        GameId FormId{};
+        GameId BaseId{};
         float CurrentHealth{};
         float MaxHealth{};
         bool IsDead{false};
@@ -310,6 +312,7 @@ public:
         std::unordered_map<uint32_t, PlayerStateRecord> PlayersById{};
         std::unordered_map<std::string, PlayerStateRecord> PlayersByIdentityKey{};
         std::unordered_map<uint32_t, ActorStateRecord> TrackedActors{};
+        std::unordered_map<uint64_t, ActorStateRecord> PersistentActorsByKey{};
         std::vector<ObjectStateRecord> TrackedObjects{};
         CoopLootLedger::ContainerLootLedger::Snapshot LootLedger{};
         RfabProgressionLedger::Snapshot Progression{};

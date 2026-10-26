@@ -190,13 +190,11 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
 
     uint32_t formId = acEvent.CasterFormId;
 
-    auto view = m_world.view<FormIdComponent, LocalComponent>();
-    const auto casterEntityIt = std::find_if(std::begin(view), std::end(view), [formId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (casterEntityIt == std::end(view))
+    const entt::entity casterEntity = m_world.GetCharacterService().FindActorEntityByFormId(formId);
+    if (casterEntity == entt::null || !m_world.all_of<LocalComponent>(casterEntity))
         return;
 
-    auto& localComponent = view.get<LocalComponent>(*casterEntityIt);
+    auto& localComponent = m_world.get<LocalComponent>(casterEntity);
 
     SpellCastRequest request{};
 
@@ -214,12 +212,10 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
 
     if (acEvent.DesiredTargetID != 0)
     {
-        auto targetView = m_world.view<FormIdComponent>();
-        const auto targetEntityIt = std::find_if(std::begin(targetView), std::end(targetView), [id = acEvent.DesiredTargetID, targetView](entt::entity entity) { return targetView.get<FormIdComponent>(entity).Id == id; });
-
-        if (targetEntityIt != std::end(targetView))
+        const entt::entity targetEntity = m_world.GetCharacterService().FindAnyEntityByFormId(acEvent.DesiredTargetID);
+        if (targetEntity != entt::null)
         {
-            auto desiredTargetIdRes = Utils::GetServerId(*targetEntityIt);
+            auto desiredTargetIdRes = Utils::GetServerId(targetEntity);
             if (desiredTargetIdRes.has_value())
                 request.DesiredTarget = desiredTargetIdRes.value();
             else
@@ -236,16 +232,14 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
 {
     using CS = MagicSystem::CastingSource;
 
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.CasterId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    const entt::entity remoteEntity = m_world.GetCharacterService().FindEntityByServerId(acMessage.CasterId);
+    if (remoteEntity == entt::null || !m_world.all_of<RemoteComponent, FormIdComponent>(remoteEntity))
     {
         spdlog::warn("Caster with remote id {:X} not found.", acMessage.CasterId);
         return;
     }
 
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+    auto formIdComponent = m_world.get<FormIdComponent>(remoteEntity);
     TESForm* pForm = TESForm::GetById(formIdComponent.Id);
     Actor* pActor = Cast<Actor>(pForm);
     if (!pActor)
@@ -299,21 +293,11 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
 
     if (acMessage.DesiredTarget != 0)
     {
-        auto view = m_world.view<FormIdComponent>();
-        for (auto entity : view)
+        const entt::entity targetEntity = m_world.GetCharacterService().FindEntityByServerId(acMessage.DesiredTarget);
+        if (targetEntity != entt::null && m_world.all_of<FormIdComponent>(targetEntity))
         {
-            std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-            if (!serverIdRes.has_value())
-                continue;
-
-            uint32_t serverId = serverIdRes.value();
-
-            if (serverId == acMessage.DesiredTarget)
-            {
-                const auto& formIdComponent = view.get<FormIdComponent>(entity);
-                pDesiredTarget = Cast<TESObjectREFR>(TESForm::GetById(formIdComponent.Id));
-                break;
-            }
+            const auto& targetFormComp = m_world.get<FormIdComponent>(targetEntity);
+            pDesiredTarget = Cast<TESObjectREFR>(TESForm::GetById(targetFormComp.Id));
         }
     }
 
@@ -340,16 +324,14 @@ void MagicService::OnInterruptCastEvent(const InterruptCastEvent& acEvent) const
 
     uint32_t formId = acEvent.CasterFormID;
 
-    auto view = m_world.view<FormIdComponent, LocalComponent>();
-    const auto casterEntityIt = std::find_if(std::begin(view), std::end(view), [formId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (casterEntityIt == std::end(view))
+    const entt::entity casterEntity = m_world.GetCharacterService().FindActorEntityByFormId(formId);
+    if (casterEntity == entt::null || !m_world.all_of<LocalComponent>(casterEntity))
     {
         spdlog::debug("{}: skipping interrupt for non-local/unassigned caster form id {:X}", __FUNCTION__, formId);
         return;
     }
 
-    auto& localComponent = view.get<LocalComponent>(*casterEntityIt);
+    auto& localComponent = m_world.get<LocalComponent>(casterEntity);
 
     InterruptCastRequest request;
     request.CasterId = localComponent.Id;
@@ -368,16 +350,14 @@ void MagicService::OnNotifyInterruptCast(const NotifyInterruptCast& acMessage) c
         return;
     }
 
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.CasterId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    const entt::entity remoteEntity = m_world.GetCharacterService().FindEntityByServerId(acMessage.CasterId);
+    if (remoteEntity == entt::null || !m_world.all_of<RemoteComponent, FormIdComponent>(remoteEntity))
     {
         spdlog::warn("Caster with remote id {:X} not found.", acMessage.CasterId);
         return;
     }
 
-    auto formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+    auto formIdComponent = m_world.get<FormIdComponent>(remoteEntity);
 
     const TESForm* pForm = TESForm::GetById(formIdComponent.Id);
     Actor* pActor = Cast<Actor>(pForm);

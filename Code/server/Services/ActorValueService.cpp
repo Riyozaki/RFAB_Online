@@ -3,9 +3,11 @@
 #include <cmath>
 
 #include <Events/PacketEvent.h>
+#include <Events/PlayerLeaveEvent.h>
 #include <GameServer.h>
 #include <Services/ActorValueService.h>
 #include <Services/EncounterService.h>
+#include <Services/PartyService.h>
 #include <Services/RfabProgressionService.h>
 #include <World.h>
 #include <Components.h>
@@ -39,10 +41,30 @@ uint64_t SteadyActorValueNowMs() noexcept
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
 {
+    m_playerLeaveConnection = aDispatcher.sink<PlayerLeaveEvent>().connect<&ActorValueService::OnPlayerLeave>(this);
     m_updateHealthConnection = aDispatcher.sink<PacketEvent<RequestActorValueChanges>>().connect<&ActorValueService::OnActorValueChanges>(this);
     m_updateMaxValueConnection = aDispatcher.sink<PacketEvent<RequestActorMaxValueChanges>>().connect<&ActorValueService::OnActorMaxValueChanges>(this);
     m_updateDeltaHealthConnection = aDispatcher.sink<PacketEvent<RequestHealthChangeBroadcast>>().connect<&ActorValueService::OnHealthChangeBroadcast>(this);
     m_deathStateConnection = aDispatcher.sink<PacketEvent<RequestDeathStateChange>>().connect<&ActorValueService::OnDeathStateChange>(this);
+}
+
+void ActorValueService::RecordCombatClaim(
+    uint32_t aAttackerPlayerId,
+    uint32_t aTargetServerId,
+    CoopDamagePipeline::ServerHitClaimKind aKind) const noexcept
+{
+    m_combatAuthorityLedger.RecordCombatClaim(aAttackerPlayerId, aTargetServerId, aKind, SteadyActorValueNowMs());
+}
+
+void ActorValueService::RecordPlayerDownedState(uint32_t aPlayerId, bool aIsDowned) const noexcept
+{
+    m_combatAuthorityLedger.RecordPlayerDownedState(aPlayerId, aIsDowned, SteadyActorValueNowMs());
+}
+
+void ActorValueService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noexcept
+{
+    if (acEvent.pPlayer)
+        m_combatAuthorityLedger.ForgetPlayer(acEvent.pPlayer->GetId());
 }
 
 void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueChanges>& acMessage) const noexcept
@@ -175,10 +197,14 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     const auto& ownerComponent = actorValuesView.get<OwnerComponent>(*it);
     const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it);
     const bool isDragon = pCharacterComponent && pCharacterComponent->IsDragon();
+    const bool isOwner = (ownerComponent.GetOwner() == acMessage.pPlayer);
+    const uint64_t nowMs = SteadyActorValueNowMs();
 
+    bool isSenderInRange = (acMessage.pPlayer != nullptr);
     if (const auto* pTargetCell = m_world.try_get<CellIdComponent>(*it))
     {
-        if (!acMessage.pPlayer || !pTargetCell->IsInRange(acMessage.pPlayer->GetCellComponent(), isDragon))
+        isSenderInRange = acMessage.pPlayer && pTargetCell->IsInRange(acMessage.pPlayer->GetCellComponent(), isDragon);
+        if (!isSenderInRange)
             return;
     }
 
@@ -189,17 +215,59 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
             return;
     }
 
-    if (sanitizedDelta < 0.f &&
-        ownerComponent.GetOwner() != acMessage.pPlayer &&
-        m_world.GetRfabProgressionService().GetLedger().IsBossGhost(message.Id))
+    if (!isOwner)
     {
-        spdlog::debug("Blocked non-owner damage {:.1f} on invulnerable boss ghost {:x}", sanitizedDelta, message.Id);
-        return;
+        const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
+        const bool isSenderDowned = senderId != 0 &&
+            m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(senderId);
+        m_combatAuthorityLedger.RecordPlayerDownedState(senderId, isSenderDowned, nowMs);
+
+        bool areCoopPartyAllies = false;
+        if (pCharacterComponent && acMessage.pPlayer &&
+            (pCharacterComponent->IsPlayer() || pCharacterComponent->IsPlayerSummon()))
+        {
+            Player* pTargetOwner = ownerComponent.GetOwner();
+            if (pTargetOwner && pTargetOwner != acMessage.pPlayer)
+            {
+                const auto* pParty = m_world.GetPartyService().GetPlayerParty(acMessage.pPlayer);
+                if (pParty && std::find(pParty->Members.begin(), pParty->Members.end(), pTargetOwner) != pParty->Members.end())
+                    areCoopPartyAllies = true;
+            }
+        }
+
+        const bool isPvpEnabled = GameServer::Get() && GameServer::Get()->GetSettings().PvpEnabled;
+        const bool isTargetDead = pCharacterComponent && pCharacterComponent->IsDead();
+        if (!m_combatAuthorityLedger.ValidateNonOwnerHealthDelta(
+                senderId,
+                message.Id,
+                sanitizedDelta,
+                isSenderInRange,
+                isSenderDowned,
+                isTargetDead,
+                areCoopPartyAllies,
+                isPvpEnabled,
+                nowMs))
+        {
+            spdlog::debug(
+                "Rejected unauthorized non-owner health delta {:.1f} on {:x} from player {} (downed={}, partyAlly={})",
+                sanitizedDelta,
+                message.Id,
+                senderId,
+                isSenderDowned,
+                areCoopPartyAllies);
+            return;
+        }
+
+        if (m_world.GetRfabProgressionService().GetLedger().IsBossGhost(message.Id))
+        {
+            spdlog::debug("Blocked non-owner damage {:.1f} on invulnerable boss ghost {:x}", sanitizedDelta, message.Id);
+            return;
+        }
     }
 
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-    if (sanitizedDelta < 0.f && ownerComponent.GetOwner() != acMessage.pPlayer)
-        actorValuesComponent.LastExternalDamageAtMs = SteadyActorValueNowMs();
+    if (sanitizedDelta < 0.f && !isOwner)
+        actorValuesComponent.LastExternalDamageAtMs = nowMs;
 
     const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
     float updatedHealth = std::max(0.f, (std::isfinite(currentHealth) ? currentHealth : 0.f) + sanitizedDelta);

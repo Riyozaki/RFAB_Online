@@ -182,7 +182,27 @@ def main() -> int:
     assert "PendingOwnershipEpoch" in cli_char_cpp and "SyncRemoteCachedInventory" in cli_char_cpp
     assert "WakeDormantCharactersInActiveRanges" in srv_char_cpp and "NotifyDrawWeapon" in srv_inv_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 architectural regression checks passed!")
+    # 13. v2.1.0 Root-Cause Architectural Stabilization (RemoteEntityModel SSOT, Zero Linear Scans, Bidirectional InterestRegistry, ServerCombatAuthorityLedger, PartySessionLedger, TLV PersistentActorsByKey)
+    v203_backup_manifest = (ROOT / "docs" / "V2.0.3_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    world_view_h = (ROOT / "Code" / "common" / "CoopWorldView.h").read_text(encoding="utf-8")
+    checkpoint_h = (ROOT / "Code" / "common" / "CoopCheckpointStore.h").read_text(encoding="utf-8")
+    cli_magic_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "MagicService.cpp").read_text(encoding="utf-8")
+    cli_combat_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CombatService.cpp").read_text(encoding="utf-8")
+    cli_object_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "ObjectService.cpp").read_text(encoding="utf-8")
+    assert '"v2.0.3-backup"' in v203_backup_manifest and "424566518" in v203_backup_manifest
+    assert '"v2.0.3-backup"' in build_txt and "Ensure-V203BackupRelease" in build_txt
+    assert "ResolveAuthoritativeSpawnState" in cli_char_h and "HasAuthoritativeSpawnPacket" in cli_char_h
+    assert "std::find_if" not in cli_char_cpp
+    assert "std::find_if" not in cli_magic_cpp
+    assert "std::find_if" not in cli_combat_cpp
+    assert "std::find_if" not in cli_object_cpp
+    assert "BindEntityCell" in world_view_h and "ObserversOfEntity" in world_view_h and "PartySessionLedger" in world_view_h
+    assert "ServerCombatAuthorityLedger" in dmg_pipe_h and "ValidateNonOwnerHealthDelta" in srv_av_cpp
+    assert "m_sessionLedger" in srv_party_cpp and "FoundWPartyId" in (ROOT / "Code" / "server" / "Services" / "QuestService.cpp").read_text(encoding="utf-8")
+    assert "TlvContainerBuilder" in checkpoint_h and "ParseTlvContainer" in checkpoint_h
+    assert "PersistentActorsByKey" in save_snap_cpp and "EnsureDormantPersistentCharacter" in srv_char_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 architectural regression checks passed!")
     return 0
 
 

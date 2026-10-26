@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Events/PacketEvent.h>
+#include <CoopWorldView.h>
 
 struct World;
 struct UpdateEvent;
@@ -43,6 +44,7 @@ struct QuestStageDedupHistory
         QuestStage questStage{};
         QuestStatus questStatus{};
         PlayerId playerId{};
+        uint32_t partyId{0};
         TimeStamp timestamp{};
     };
 
@@ -51,12 +53,15 @@ struct QuestStageDedupHistory
     using const_iterator = Container::const_iterator;
 
     void Add(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage, const QuestStatus acQuestStatus,
-             const PlayerId& acPlayerId, const TimeStamp acTimeStamp = std::chrono::steady_clock::now());
+             const PlayerId& acPlayerId, const TimeStamp acTimeStamp = std::chrono::steady_clock::now(),
+             uint32_t aPartyId = 0);
 
     const_iterator Find(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
                         const QuestStatus acQuestStatus) noexcept;
     const_iterator FindWPlayerId(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
                                  const QuestStatus acQuestStatus, const PlayerId& acPlayerId) noexcept;
+    const_iterator FindWPartyId(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
+                                const QuestStatus acQuestStatus, uint32_t aPartyId) noexcept;
 
     void Reset() noexcept { m_cache.clear(); }
     bool Found(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
@@ -68,6 +73,11 @@ struct QuestStageDedupHistory
                         const QuestStatus acQuestStatus, const PlayerId& acPlayerId) noexcept
     {
         return FindWPlayerId(acQuestOrSceneId, acQuestStage, acQuestStatus, acPlayerId) != m_cache.end();
+    }
+    bool FoundWPartyId(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
+                       const QuestStatus acQuestStatus, uint32_t aPartyId) noexcept
+    {
+        return FindWPartyId(acQuestOrSceneId, acQuestStage, acQuestStatus, aPartyId) != m_cache.end();
     }
 
     uint32_t GetSceneMaster() const noexcept { return m_sceneMaster; }
@@ -115,7 +125,7 @@ protected:
     void OnPartyCreate(const PacketEvent<PartyCreateRequest>& acPacket) noexcept;
     void OnPartyChangeLeader(const PacketEvent<PartyChangeLeaderRequest>& acPacket) noexcept;
     void OnPartyKick(const PacketEvent<PartyKickRequest>& acPacket) noexcept;
-    void RemovePlayerFromParty(Player* apPlayer) noexcept;
+    void RemovePlayerFromParty(Player* apPlayer, bool aExplicitLeave = true) noexcept;
 
     void BroadcastPlayerList(Player* apPlayer = nullptr) const noexcept;
     void BroadcastPartyInfo(uint32_t aPartyId) const noexcept;
@@ -124,6 +134,7 @@ private:
     World& m_world;
 
     TiltedPhoques::Map<uint32_t, Party> m_parties;
+    CoopWorldView::PartySessionLedger m_sessionLedger{};
     uint32_t m_nextId{0};
     uint64_t m_nextInvitationExpire{0};
 

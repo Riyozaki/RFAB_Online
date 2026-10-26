@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v2.0.3` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — актуальная сборка глубокой архитектурной стабилизации (`Two-Phase Ownership` / `EntityIndexTable` / `In-Place Leveled Sync` / `Multi-Hop EngineFixes` / `ScriptDamageAuthLedger + ConcentrationSyncLimiter` / персистентный анти-дюп + чекпоинты с устойчивым ID игрока) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0)** — финальная сборка корневой архитектурной стабилизации (`RemoteEntityModel SSOT` / `100% O(1) ClientWorldView` / `Bidirectional & Cell-Bucketed ServerInterestRegistry` / `ServerCombatAuthorityLedger` / `PartySessionLedger` / `TLV PersistentActorsByKey`) для долгосрочной игры на **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.0.3-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3-backup)** и **[`v2.0.3`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — неприкосновенные эталонные бэкапы релиза `2.0.3` (`SHA-256` зафиксированы в `docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.2-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup)** и **[`v2.0.2`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — неприкосновенные эталонные бэкапы релиза `2.0.2` (`SHA-256` зафиксированы в `docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)** и **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — неприкосновенные эталонные бэкапы релиза `2.0.1` (`SHA-256` зафиксированы в `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`).
 - **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)** — сохранённый эталонный бэкап стабильной ветки `1.2.0`.
@@ -9,6 +10,41 @@
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
 
 > **Чистый переход с версии на версию:** при запуске `INSTALL_RFAB_ONLINE.bat` (или `UPDATE_RFAB_ONLINE.bat` из `Quick_Update.zip`) установщик автоматически останавливает фоновый сервер, **полностью удаляет старые файлы прошлой версии** из `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя ваши настройки `STServer.ini`), очищает возможные остатки в `MO2\overwrite` и устанавливает свежую версию с нуля.
+
+---
+
+## [v2.1.0] — 2026-10-26 *(Final Root-Cause Architectural Stabilization: RemoteEntityModel SSOT, 100% O(1) WorldView, Bidirectional Interest Registry, Server Combat Authority Ledger, Reconnect-Stable Party Ledger & TLV Persistent Actors)*
+
+### 🏛️ Фаза 0 — Неприкосновенный бэкап `v2.0.3-backup` и протокольная совместимость `v2.0.x <-> v2.1.x`
+- **Манифест `docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json` и `Ensure-V203BackupRelease` (`Build-CloudRelease.ps1`):** перед публикацией `v2.1.0` облачный пайплайн автоматически зеркалирует релиз `v2.0.3` в `v2.0.3-backup` со строгой проверкой `SHA-256` всех 4 архивов.
+- **Протокольная совместимость `v2.0.x` и `v2.1.x` (`RfabModpackCompat.h`):** `AreBuildVersionsProtocolCompatible` разрешает соединение между клиентами и серверами внутри семейства `2.0.x`–`2.1.x` без изменения формата сетевых пакетов.
+
+### 🎯 Фаза 1 — Единый источник истины `RemoteEntityModel` (SSOT) и 100% `O(1)` индексы `ClientWorldView`
+- **`ResolveAuthoritativeSpawnState` и защита `HasAuthoritativeSpawnPacket` (`Client::CharacterService`):**
+  - В момент готовности 3D (`RunRemoteUpdates`) материализация удалённого актёра всегда читает актуальное состояние из `m_remoteModels[serverId].SpawnRequest`, исключая применение устаревшего снапшота из лямбды `WaitingFor3D`.
+  - В `OnAssignCharacter` флаг `HasAuthoritativeSpawnPacket` защищает авторитетный `BaseId` уровневого NPC от перезаписи локальным роллом `TESLevCharacter`, а при `!pActor->GetNiNode()` создаёт `WaitingFor3D` для гарантированного применения инвентаря, экипировки и состояния смерти после загрузки 3D.
+- **Полная ликвидация `O(N)` линейных сканов ECS (`std::find_if` = 0):**
+  - Все 22 оставшихся вызова `std::find_if` по EnTT-представлениям в `CharacterService.cpp`, `MagicService.cpp`, `CombatService.cpp` и `ObjectService.cpp` заменены на `O(1)` индексные вызовы `Utils::FindActorEntityByFormId`, `FindAnyEntityByFormId` и `FindEntityByServerId`.
+
+### 🌐 Фаза 2 — Двунаправленный и клеточно-индексированный `ServerInterestRegistry`
+- **`CoopWorldView::ServerInterestRegistry` (`Code/common/CoopWorldView.h`, `Server::CharacterService`):**
+  - Добавлен обратный индекс наблюдателей `m_observersByEntity` (`O(1)` удаление сущности в `ForgetEntity` и мгновенный запрос `ObserversOfEntity`) и клеточные бакеты `m_entitiesByCell` / `m_cellByEntity` (`BindEntityCell`, `UnbindEntityCell`, `EntitiesInCell`).
+
+### ⚔️ Фаза 3 — Серверный реестр боевой авторизации (`ServerCombatAuthorityLedger`)
+- **`CoopDamagePipeline::ServerCombatAuthorityLedger` (`Code/common/CoopDamagePipeline.h`, `Server::ActorValueService`, `CombatService`, `MagicService`):**
+  - Сервер коррелирует боевые попадания с заявками стрел/снарядов (`OnProjectileLaunchRequest`) и заклинаний (`OnSpellCastRequest`, `OnAddTargetRequest`).
+  - Не-владельцы больше не могут прислать положительную дельту здоровья (`DeltaHealth >= 0`) от локального пассивного регена; дружественный огонь по участникам группы и их саммонам блокируется на сервере при `PvpEnabled = false`; урон от упавших (`downed`) игроков принимается только для уже летящих снарядов/кастов в окне `1500 мс` после падения.
+
+### 🤝 Фаза 4 — Устойчивая к реконнектам группа (`PartySessionLedger`) и дедупликация квестов по `PartyId`
+- **`CoopWorldView::PartySessionLedger` (`Code/common/CoopWorldView.h`, `Server::PartyService`):**
+  - Состав группы и роль лидера сохраняются за стабильным хешем личности игрока в течение `30 минут` после дисконнекта и автоматически восстанавливаются при повторном входе (`OnPlayerJoin`).
+- **Двусторонняя досинхронизация квестов и `FoundWPartyId` (`Server::QuestService`):**
+  - `QuestStageDedupHistory` дедуплицирует отражённые стадии квестов по `PartyId` при смене `PlayerId` после реконнекта, а `SyncPartyQuestsForPlayer` досинхронизирует прогресс квестов между всеми участниками группы в обе стороны (включая реконнект лидера).
+
+### 💾 Фаза 5 — Самоописывающийся контейнер TLV в `rfab_checkpoints.bin` и персистентная гидратация NPC по `FormId`
+- **TLV-контейнер (`CoopCheckpoint::TlvContainerBuilder` / `ParseTlvContainer`, `kTlvContainerMagic = 0x564C5452`) и `PersistentActorsByKey` (`SaveSnapshotService`, `Server::CharacterService`):**
+  - В конец `rfab_checkpoints.bin` дописывается расширяемый TLV-контейнер с `CRC-32C` каждого чанка (`TlvTag::kV210PersistentActors`), сохраняющий состояние размещённых мировых NPC (`0x00..0xFE`) по стабильному ключу `(ModId, BaseId)`.
+  - При перезапуске сервера (`HydratePersistedWorldState`) и откатах (`ApplyWorldSnapshot`) `EnsureDormantPersistentCharacter` восстанавливает спящие сущности NPC, а при входе первого игрока в локацию (`OnAssignCharacterRequest`) сервер сохраняет их статус смерти и здоровья вместо сброса к дефолтному живому состоянию клиента.
 
 ---
 

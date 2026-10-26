@@ -267,19 +267,8 @@ void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcep
     if (!m_transport.IsConnected())
         return;
 
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto it = std::find_if(
-        std::begin(view), std::end(view),
-        [view, formId](auto entity)
-        {
-            const auto& formIdComponent = view.get<FormIdComponent>(entity);
-
-            return formIdComponent.Id == formId;
-        });
-
-    if (it != std::end(view))
-        m_world.remove<ActorValuesComponent>(*it);
+    if (const auto entityOpt = Utils::FindActorEntityByFormId(formId, m_world); entityOpt.has_value())
+        m_world.remove<ActorValuesComponent>(*entityOpt);
 }
 
 void ActorValueService::OnUpdate(const UpdateEvent& acEvent) noexcept

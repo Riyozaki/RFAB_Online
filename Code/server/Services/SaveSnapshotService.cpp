@@ -352,6 +352,51 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
             }
         }
 
+        // Trailing v2.1.0+ self-describing TLV extension container (`kTlvContainerMagic`)
+        // holding persistent placed actor snapshots (`PersistentActorsByKey`) keyed by FormId.
+        {
+            TiltedPhoques::Buffer tlvChunkBuf(512 * 1024);
+            TiltedPhoques::Buffer::Writer chunkWriter(&tlvChunkBuf);
+            Serialization::WriteVarInt(chunkWriter, m_snapshots.size());
+            for (const auto& snap : m_snapshots)
+            {
+                Serialization::WriteVarInt(chunkWriter, snap.PersistentActorsByKey.size());
+                for (const auto& [packedKey, aRec] : snap.PersistentActorsByKey)
+                {
+                    Serialization::WriteVarInt(chunkWriter, packedKey);
+                    aRec.FormId.Serialize(chunkWriter);
+                    aRec.BaseId.Serialize(chunkWriter);
+                    Serialization::WriteFloat(chunkWriter, aRec.CurrentHealth);
+                    Serialization::WriteFloat(chunkWriter, aRec.MaxHealth);
+                    Serialization::WriteBool(chunkWriter, aRec.IsDead);
+                    Serialization::WriteBool(chunkWriter, aRec.HasSpatialState);
+                    if (aRec.HasSpatialState)
+                    {
+                        aRec.CellId.Serialize(chunkWriter);
+                        aRec.WorldSpaceId.Serialize(chunkWriter);
+                        aRec.CenterCoords.Serialize(chunkWriter);
+                        Serialization::WriteFloat(chunkWriter, aRec.Position.x);
+                        Serialization::WriteFloat(chunkWriter, aRec.Position.y);
+                        Serialization::WriteFloat(chunkWriter, aRec.Position.z);
+                        Serialization::WriteFloat(chunkWriter, aRec.Rotation.x);
+                        Serialization::WriteFloat(chunkWriter, aRec.Rotation.y);
+                        Serialization::WriteFloat(chunkWriter, aRec.Rotation.z);
+                    }
+                }
+            }
+
+            CoopCheckpoint::TlvContainerBuilder tlvBuilder;
+            tlvBuilder.AppendChunk(
+                CoopCheckpoint::TlvTag::kV210PersistentActors,
+                tlvChunkBuf.GetData(),
+                chunkWriter.Size());
+            if (!tlvBuilder.Bytes().empty() &&
+                writer.Size() + tlvBuilder.Bytes().size() <= rawBuffer.GetFullSize())
+            {
+                writer.WriteBytes(tlvBuilder.Bytes().data(), tlvBuilder.Bytes().size() * 8);
+            }
+        }
+
         return CoopCheckpoint::WriteAtomicCheckpointFile(acPath, rawBuffer.GetWriteData(), writer.Size());
     }
     catch (...)
@@ -537,6 +582,67 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
                         }
                     }
                 }
+
+                if (!reader.Eof() && reader.Size() < payload.size())
+                {
+                    const size_t remainingOffset = reader.Size();
+                    const size_t remainingBytes = payload.size() - remainingOffset;
+                    std::vector<CoopCheckpoint::TlvChunkView> tlvChunks;
+                    if (CoopCheckpoint::ParseTlvContainer(
+                            payload.data() + remainingOffset,
+                            remainingBytes,
+                            tlvChunks))
+                    {
+                        for (const auto& chunk : tlvChunks)
+                        {
+                            if (chunk.Tag != static_cast<uint32_t>(CoopCheckpoint::TlvTag::kV210PersistentActors) ||
+                                !chunk.Data || chunk.ByteLength == 0)
+                            {
+                                continue;
+                            }
+
+                            TiltedPhoques::Buffer chunkBuffer(chunk.ByteLength);
+                            std::memcpy(chunkBuffer.GetWriteData(), chunk.Data, chunk.ByteLength);
+                            TiltedPhoques::Buffer::Reader chunkReader(&chunkBuffer);
+
+                            const uint64_t tlvSnapCount = std::min<uint64_t>(
+                                Serialization::ReadVarInt(chunkReader),
+                                loadedSnapshots.size());
+                            for (uint64_t sIdx = 0; sIdx < tlvSnapCount; ++sIdx)
+                            {
+                                auto& snap = loadedSnapshots[static_cast<size_t>(sIdx)];
+                                const uint64_t actorCount = std::min<uint64_t>(
+                                    Serialization::ReadVarInt(chunkReader),
+                                    65536ULL);
+                                for (uint64_t i = 0; i < actorCount; ++i)
+                                {
+                                    const uint64_t packedKey = Serialization::ReadVarInt(chunkReader);
+                                    ActorStateRecord aRec{};
+                                    aRec.FormId.Deserialize(chunkReader);
+                                    aRec.BaseId.Deserialize(chunkReader);
+                                    aRec.CurrentHealth = Serialization::ReadFloat(chunkReader);
+                                    aRec.MaxHealth = Serialization::ReadFloat(chunkReader);
+                                    aRec.IsDead = Serialization::ReadBool(chunkReader);
+                                    aRec.HasSpatialState = Serialization::ReadBool(chunkReader);
+                                    if (aRec.HasSpatialState)
+                                    {
+                                        aRec.CellId.Deserialize(chunkReader);
+                                        aRec.WorldSpaceId.Deserialize(chunkReader);
+                                        aRec.CenterCoords.Deserialize(chunkReader);
+                                        aRec.Position.x = Serialization::ReadFloat(chunkReader);
+                                        aRec.Position.y = Serialization::ReadFloat(chunkReader);
+                                        aRec.Position.z = Serialization::ReadFloat(chunkReader);
+                                        aRec.Rotation.x = Serialization::ReadFloat(chunkReader);
+                                        aRec.Rotation.y = Serialization::ReadFloat(chunkReader);
+                                        aRec.Rotation.z = Serialization::ReadFloat(chunkReader);
+                                    }
+                                    if (packedKey != 0)
+                                        snap.PersistentActorsByKey[packedKey] = aRec;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -657,6 +763,26 @@ void SaveSnapshotService::HydratePersistedWorldState() noexcept
                 objRec.CurrentInventory);
         }
     }
+
+    if (auto* pCharSvc = m_world.ctx().find<CharacterService>())
+    {
+        for (const auto& [_, aRec] : latest.PersistentActorsByKey)
+        {
+            if (!aRec.FormId || aRec.FormId.ModId == 0xFFFFFFFFu || !aRec.HasSpatialState)
+                continue;
+            (void)pCharSvc->EnsureDormantPersistentCharacter(
+                aRec.FormId,
+                aRec.BaseId,
+                aRec.CellId,
+                aRec.WorldSpaceId,
+                aRec.CenterCoords,
+                aRec.Position,
+                aRec.Rotation,
+                aRec.IsDead,
+                aRec.CurrentHealth,
+                aRec.MaxHealth);
+        }
+    }
 }
 
 void SaveSnapshotService::RefreshPlayerJoinBaselines() noexcept
@@ -775,6 +901,12 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
             continue;
 
         ActorStateRecord rec{};
+        rec.BaseId = charComp.BaseId;
+        if (const auto* pForm = m_world.try_get<FormIdComponent>(entity);
+            pForm && static_cast<bool>(pForm->Id) && pForm->Id.ModId != 0xFFFFFFFFu)
+        {
+            rec.FormId = pForm->Id;
+        }
         rec.IsDead = charComp.IsDead();
         if (const auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
         {
@@ -801,6 +933,10 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
             rec.Rotation = pMov->Rotation;
         }
         snap.TrackedActors[World::ToInteger(entity)] = rec;
+        if (rec.FormId && rec.FormId.ModId != 0xFFFFFFFFu)
+        {
+            snap.PersistentActorsByKey[CoopFlight::PackObjectKey(rec.FormId.ModId, rec.FormId.BaseId)] = rec;
+        }
     }
 
     // 3. Capture authoritative RFAB XP ledger, read XP books, globals & ambush history
@@ -1011,6 +1147,26 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             if (auto* pServer = GameServer::Get())
                 pServer->SendToPlayers(hpNotify, nullptr);
         }
+    }
+
+    // 3a-persistent. Ensure persistent placed actors keyed by FormId are restored even if their
+    // transient entt::entity handle changed or was recreated across a server restart / cell unload.
+    for (const auto& [_, savedState] : acSnapshot.PersistentActorsByKey)
+    {
+        if (!savedState.FormId || savedState.FormId.ModId == 0xFFFFFFFFu || !savedState.HasSpatialState)
+            continue;
+
+        (void)m_world.GetCharacterService().EnsureDormantPersistentCharacter(
+            savedState.FormId,
+            savedState.BaseId,
+            savedState.CellId,
+            savedState.WorldSpaceId,
+            savedState.CenterCoords,
+            savedState.Position,
+            savedState.Rotation,
+            savedState.IsDead,
+            savedState.CurrentHealth,
+            savedState.MaxHealth);
     }
 
     // 3b. Restore world containers & lock states (ObjectComponent + InventoryComponent)

@@ -72,13 +72,11 @@ void CombatService::OnProjectileLaunchedEvent(const ProjectileLaunchedEvent& acE
     ModSystem& modSystem = m_world.Get().GetModSystem();
 
     uint32_t shooterFormId = acEvent.ShooterID;
-    auto view = m_world.view<FormIdComponent, LocalComponent>();
-    const auto shooterEntityIt = std::find_if(std::begin(view), std::end(view), [shooterFormId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == shooterFormId; });
-
-    if (shooterEntityIt == std::end(view))
+    const entt::entity shooterEntity = m_world.GetCharacterService().FindActorEntityByFormId(shooterFormId);
+    if (shooterEntity == entt::null || !m_world.all_of<LocalComponent>(shooterEntity))
         return;
 
-    LocalComponent& localComponent = view.get<LocalComponent>(*shooterEntityIt);
+    LocalComponent& localComponent = m_world.get<LocalComponent>(shooterEntity);
 
     ProjectileLaunchRequest request{};
 
@@ -135,16 +133,14 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
 
     ModSystem& modSystem = World::Get().GetModSystem();
 
-    auto remoteView = m_world.view<RemoteComponent, FormIdComponent>();
-    const auto remoteIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.ShooterID](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
-
-    if (remoteIt == std::end(remoteView))
+    const entt::entity remoteEntity = m_world.GetCharacterService().FindEntityByServerId(acMessage.ShooterID);
+    if (remoteEntity == entt::null || !m_world.all_of<RemoteComponent, FormIdComponent>(remoteEntity))
     {
         spdlog::warn("Shooter with remote id {:X} not found.", acMessage.ShooterID);
         return;
     }
 
-    FormIdComponent formIdComponent = remoteView.get<FormIdComponent>(*remoteIt);
+    FormIdComponent formIdComponent = m_world.get<FormIdComponent>(remoteEntity);
 
     Projectile::LaunchData launchData{};
 
@@ -252,13 +248,8 @@ void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept
     if (!pHitter || !pHitter->GetExtension())
         return;
 
-    auto view = m_world.view<FormIdComponent, LocalComponent>(entt::exclude<ObjectComponent>);
-    const auto hitteeIt = std::find_if(
-        std::begin(view),
-        std::end(view),
-        [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (hitteeIt == std::end(view))
+    const entt::entity hitteeEntity = m_world.GetCharacterService().FindActorEntityByFormId(acEvent.HitteeId);
+    if (hitteeEntity == entt::null || !m_world.all_of<LocalComponent>(hitteeEntity))
         return;
 
     const auto& downedService = m_world.GetDownedStateService();
@@ -286,7 +277,7 @@ void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept
     decision.IsHitteeDead = pHittee->IsDead();
     decision.IsHitterPlayer = pHitter->GetExtension()->IsPlayer();
     decision.IsHitterDowned = pHitter->IsDead() || downedService.IsActorDowned(pHitter->formID);
-    decision.HasActiveTargetLock = m_world.any_of<CombatComponent>(*hitteeIt);
+    decision.HasActiveTargetLock = m_world.any_of<CombatComponent>(hitteeEntity);
     decision.IsHitteeInCombat = pHittee->IsInCombat();
     decision.HasValidCurrentTarget = (pCurrentTarget != nullptr);
     decision.IsCurrentTargetDeadOrDowned =
@@ -297,7 +288,7 @@ void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept
     if (!RfabCompat::ShouldSwitchCoopCombatTarget(decision))
         return;
 
-    auto& combatComp = m_world.emplace_or_replace<CombatComponent>(*hitteeIt, acEvent.HitterId);
+    auto& combatComp = m_world.emplace_or_replace<CombatComponent>(hitteeEntity, acEvent.HitterId);
     combatComp.Timer = 4.0f;
     if (auto* pExt = pHittee->GetExtension())
         pExt->SetCombatTargetLock(true);
