@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v1.2.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)** — актуальная сборка для кооперативного прохождения **Skyrim SE `1.5.97.0.8` + RFAB** (обновляется на месте в рамках ветки `1.2.0`).
+- **[`v2.0.1` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — актуальная сборка нового поколения (`WorldOrCell` / `FormView` / бесшовные серверные чекпоинты + полный пакет архитектурных исправлений `v2.0.1`) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)** — сохранённый эталонный бэкап стабильной ветки `1.2.0`.
 - **[`v1.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)** — сохранённый бэкап стабильного релиза `1.1.0`.
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
 
