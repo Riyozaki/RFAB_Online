@@ -782,7 +782,8 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
         }
     }
 
-    const uint32_t removedFormId = view.get<FormIdComponent>(cId).Id;
+    const auto* pRemovedForm = m_world.try_get<FormIdComponent>(cId);
+    const uint32_t removedFormId = pRemovedForm ? pRemovedForm->Id : acEvent.FormId;
     CancelServerAssignment(cId, removedFormId);
 
     m_world.remove<EarlyAnimationBufferComponent>(cId);
