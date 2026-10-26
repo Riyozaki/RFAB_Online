@@ -1,15 +1,15 @@
 ﻿param(
-    [string]$VersionTag = "v2.0.2",
+    [string]$VersionTag = "v2.0.3",
     [string]$BuildMode = "releasedbg",
     [bool]$PublishRelease = $true,
     [switch]$SkipPublish
 )
 if ($SkipPublish) { $PublishRelease = $false }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup")
 if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v2.0.2' (previous releases are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v2.0.2"
+    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v2.0.3' (previous releases are preserved untouched)." -ForegroundColor Yellow
+    $VersionTag = "v2.0.3"
 }
 if ($VersionTag -in $ProtectedTags) {
     throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"
@@ -21,6 +21,7 @@ $IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GI
 $env:PYTHONIOENCODING = "utf-8"
 
 $script:PackagesReady = $false
+$script:V202BackupReady = $false
 $script:LastDiagMatches = ""
 $script:LastDiagTail = ""
 $script:ProgressLog = New-Object System.Collections.Generic.List[string]
@@ -81,6 +82,97 @@ function Ensure-V120BackupRelease([string]$RepoRootPath) {
     }
 }
 
+function Ensure-V202BackupRelease([string]$RepoRootPath) {
+    if (-not $PublishRelease) {
+        $script:V202BackupReady = $true
+        return
+    }
+    if (-not $env:GH_TOKEN) {
+        throw "[BACKUP] GH_TOKEN is required when PublishRelease=true so v2.0.2-backup can be verified before touching v2.0.2."
+    }
+
+    $manifestPath = Join-Path $RepoRootPath "docs\V2.0.2_RELEASE_BACKUP_MANIFEST.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "[BACKUP] Missing required manifest: $manifestPath"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+    $existingJson = & gh release view v2.0.2-backup --json assets 2>$null
+    if ($LASTEXITCODE -eq 0 -and $existingJson) {
+        $existingRel = $existingJson | ConvertFrom-Json
+        $existingMap = @{}
+        foreach ($a in $existingRel.assets) { $existingMap[$a.name] = $a }
+        $allVerified = $true
+        foreach ($exp in $manifest.assets) {
+            if (-not $existingMap.ContainsKey($exp.name)) {
+                $allVerified = $false
+                break
+            }
+            $gotAsset = $existingMap[$exp.name]
+            if ([int64]$gotAsset.size -ne [int64]$exp.size) {
+                throw "[BACKUP] Size mismatch on existing v2.0.2-backup asset $($exp.name): expected $($exp.size), got $($gotAsset.size)"
+            }
+            if ($gotAsset.PSObject.Properties.Name -contains "digest" -and $gotAsset.digest) {
+                $expectedDigest = "sha256:" + $exp.sha256.ToLowerInvariant()
+                if ($gotAsset.digest.ToLowerInvariant() -ne $expectedDigest) {
+                    throw "[BACKUP] Digest mismatch on existing v2.0.2-backup asset $($exp.name): expected $expectedDigest, got $($gotAsset.digest)"
+                }
+            }
+        }
+        if ($allVerified) {
+            Write-Host "[BACKUP] Protected backup release v2.0.2-backup already exists and all 4 SHA-256 assets are verified." -ForegroundColor Green
+            $script:V202BackupReady = $true
+            return
+        }
+    }
+
+    Write-Host "[BACKUP] Mirroring immutable initial v2.0.2 assets into permanent backup release v2.0.2-backup..." -ForegroundColor Cyan
+    $bakDir = Join-Path $env:TEMP ("rfab_v202_bak_" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
+    try {
+        & cmd.exe /d /s /c "gh release download v2.0.2 -D `"$bakDir`" --clobber"
+        if ($LASTEXITCODE -ne 0) {
+            throw "[BACKUP] Failed to download live v2.0.2 assets for backup mirror; aborting before touching v2.0.2."
+        }
+
+        foreach ($exp in $manifest.assets) {
+            $f = Join-Path $bakDir $exp.name
+            if (-not (Test-Path -LiteralPath $f)) {
+                throw "[BACKUP] Missing downloaded v2.0.2 asset: $($exp.name)"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $exp.sha256.ToLowerInvariant()) {
+                throw "[BACKUP] SHA256 mismatch on v2.0.2 asset $($exp.name): expected $($exp.sha256), got $actualHash"
+            }
+        }
+
+        $bakNotes = Join-Path $bakDir "BACKUP_NOTES.md"
+        $bakText = "Immutable golden backup mirror of initial release **v2.0.2** (commit ``f470d16404789948e9071b928b228edb3a136344``), preserved automatically before v2.0.2 architectural stabilization builds.`r`n"
+        [System.IO.File]::WriteAllText($bakNotes, $bakText, (New-Object System.Text.UTF8Encoding($false)))
+
+        & cmd.exe /d /s /c "gh release view v2.0.2-backup >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            & cmd.exe /d /s /c "gh release create v2.0.2-backup --target f470d16404789948e9071b928b228edb3a136344 --title `"RFAB Online v2.0.2 (Immutable Initial Release Backup)`" --notes-file `"$bakNotes`" --prerelease"
+            if ($LASTEXITCODE -ne 0) {
+                throw "[BACKUP] Failed to create GitHub release v2.0.2-backup; aborting before touching v2.0.2."
+            }
+        }
+
+        foreach ($exp in $manifest.assets) {
+            $assetFile = Join-Path $bakDir $exp.name
+            & cmd.exe /d /s /c "gh release upload v2.0.2-backup `"$assetFile`" --clobber"
+            if ($LASTEXITCODE -ne 0) {
+                throw "[BACKUP] Failed to upload $($exp.name) to v2.0.2-backup; aborting before touching v2.0.2."
+            }
+        }
+
+        Write-Host "[BACKUP] Created & SHA-256 verified immutable GitHub backup release v2.0.2-backup!" -ForegroundColor Green
+        $script:V202BackupReady = $true
+    } finally {
+        Remove-Item -LiteralPath $bakDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Write-StepSummary([string]$MarkdownText) {
     try {
         if ($env:GITHUB_STEP_SUMMARY) {
@@ -94,6 +186,7 @@ function Update-ReleaseTelemetry([string]$StateTitle, [string]$BodyText) {
         Write-StepSummary $BodyText
         if (-not $PublishRelease) { return }
         if ($VersionTag -in $ProtectedTags) { return }
+        if (-not $script:V202BackupReady) { return }
         if ($StateTitle.Length -gt 200) { $StateTitle = $StateTitle.Substring(0, 200) }
         if ($BodyText.Length -gt 60000) {
             $BodyText = $BodyText.Substring($BodyText.Length - 60000)
@@ -147,7 +240,7 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
             $compactTail = @($tailShow | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             $script:LastDiagTail = ($compactTail -join "`r`n")
             Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n")
-            if ($PublishRelease -and ($VersionTag -notin $ProtectedTags)) {
+            if ($PublishRelease -and ($VersionTag -notin $ProtectedTags) -and ($VersionTag -ne "v2.0.2" -or $script:V202BackupReady)) {
                 $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
                 Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
                 & cmd.exe /d /s /c "gh release upload $VersionTag `"$failLogAsset`" --clobber >nul 2>&1"
@@ -168,6 +261,7 @@ try {
     Set-Location -LiteralPath $RepoRoot
 
     Ensure-V120BackupRelease -RepoRootPath $RepoRoot
+    Ensure-V202BackupRelease -RepoRootPath $RepoRoot
 
     Invoke-LoggedCmd "[1/7] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
     Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"

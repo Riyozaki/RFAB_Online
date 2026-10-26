@@ -67,6 +67,9 @@ uint64_t SteadyClockMs() noexcept
 
 CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
+    , m_charIndexConstructConn(aWorld.on_construct<CharacterComponent>().connect<&CharacterService::OnCharacterIndexConstructed>(this))
+    , m_charIndexDestroyConn(aWorld.on_destroy<CharacterComponent>().connect<&CharacterService::OnCharacterIndexDestroyed>(this))
+    , m_formIndexDestroyConn(aWorld.on_destroy<FormIdComponent>().connect<&CharacterService::OnFormIdIndexDestroyed>(this))
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&CharacterService::OnUpdate>(this))
     , m_playerLeaveConnection(aDispatcher.sink<PlayerLeaveEvent>().connect<&CharacterService::OnPlayerLeave>(this))
     , m_interiorCellChangeEventConnection(aDispatcher.sink<CharacterInteriorCellChangeEvent>().connect<&CharacterService::OnCharacterInteriorCellChange>(this))
@@ -87,6 +90,64 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher)
     , m_dialogueConnection(aDispatcher.sink<PacketEvent<DialogueRequest>>().connect<&CharacterService::OnDialogueRequest>(this))
     , m_subtitleConnection(aDispatcher.sink<PacketEvent<SubtitleRequest>>().connect<&CharacterService::OnSubtitleRequest>(this))
 {
+}
+
+void CharacterService::OnCharacterIndexConstructed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != GameId{})
+        m_characterByFormKey[CoopWorldView::PackGameIdKey(pForm->Id.ModId, pForm->Id.BaseId)] = aEntity;
+}
+
+void CharacterService::OnCharacterIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != GameId{})
+    {
+        const uint64_t key = CoopWorldView::PackGameIdKey(pForm->Id.ModId, pForm->Id.BaseId);
+        const auto it = m_characterByFormKey.find(key);
+        if (it != m_characterByFormKey.end() && it->second == aEntity)
+            m_characterByFormKey.erase(it);
+    }
+}
+
+void CharacterService::OnFormIdIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != GameId{})
+    {
+        const uint64_t key = CoopWorldView::PackGameIdKey(pForm->Id.ModId, pForm->Id.BaseId);
+        const auto it = m_characterByFormKey.find(key);
+        if (it != m_characterByFormKey.end() && it->second == aEntity)
+            m_characterByFormKey.erase(it);
+    }
+}
+
+entt::entity CharacterService::FindPersistentCharacterByFormId(const GameId& acFormId) const noexcept
+{
+    if (acFormId == GameId{})
+        return entt::null;
+
+    const uint64_t key = CoopWorldView::PackGameIdKey(acFormId.ModId, acFormId.BaseId);
+    const auto it = m_characterByFormKey.find(key);
+    if (it != m_characterByFormKey.end())
+    {
+        const entt::entity candidate = it->second;
+        if (m_world.valid(candidate) && m_world.all_of<FormIdComponent, CharacterComponent>(candidate))
+        {
+            if (m_world.get<FormIdComponent>(candidate).Id == acFormId)
+                return candidate;
+        }
+    }
+
+    auto view = m_world.view<FormIdComponent, CharacterComponent>();
+    for (entt::entity entity : view)
+    {
+        if (view.get<FormIdComponent>(entity).Id == acFormId)
+        {
+            m_characterByFormKey[key] = entity;
+            return entity;
+        }
+    }
+
+    return entt::null;
 }
 
 void CharacterService::Serialize(World& aRegistry, entt::entity aEntity, CharacterSpawnRequest* apSpawnRequest) noexcept
@@ -282,16 +343,29 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
             CharacterSpawnRequest spawnMessage{};
             Serialize(m_world, entity, &spawnMessage);
             apObserver->Send(spawnMessage);
+        }
+        else if (action == CoopWorldView::ServerPeerSyncAction::kSendRemove)
+        {
+            NotifyRemoveCharacter removeMsg{};
+            removeMsg.ServerId = serverId;
+            apObserver->Send(removeMsg);
+        }
 
-            // Wake dormant persistent world NPCs immediately when a living player enters their cell range!
+        // Wake dormant persistent world NPCs whenever a living observer is in their cell range — even if
+        // `action == kNone` (`wasInRange == true` after `OnOwnershipTransferEvent` fell back to dormant)!
+        if (nowInRange)
+        {
             auto& mutableOwner = characterView.get<OwnerComponent>(entity);
+            const uint64_t nowMs = SteadyClockMs();
+            const bool cooldownReady = (action == CoopWorldView::ServerPeerSyncAction::kSendSpawn) ||
+                                       (nowMs >= mutableOwner.LastChangedAtMs && (nowMs - mutableOwner.LastChangedAtMs) >= 1000ULL);
             if (mutableOwner.GetOwner() == nullptr &&
+                cooldownReady &&
                 !charComp.IsPlayer() &&
                 !charComp.IsPlayerSummon() &&
                 !charComp.IsMount() &&
                 !m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(apObserver->GetId()))
             {
-                const uint64_t nowMs = SteadyClockMs();
                 const uint64_t newEpoch = mutableOwner.SetOwner(apObserver, nowMs);
                 mutableOwner.InvalidOwners.clear();
                 m_interestRegistry.UnmarkInRange(apObserver->GetId(), serverId);
@@ -304,12 +378,6 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
                 m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
                     nowMs, CoopFlight::FlightEventKind::kOwnershipChanged, serverId, apObserver->GetId());
             }
-        }
-        else if (action == CoopWorldView::ServerPeerSyncAction::kSendRemove)
-        {
-            NotifyRemoveCharacter removeMsg{};
-            removeMsg.ServerId = serverId;
-            apObserver->Send(removeMsg);
         }
     }
 }
@@ -347,6 +415,7 @@ void CharacterService::OnUpdate(const UpdateEvent&) const noexcept
 {
     ProcessFactionsChanges();
     ProcessMovementChanges();
+    WakeDormantCharactersInActiveRanges();
 }
 
 void CharacterService::OnCharacterExteriorCellChange(const CharacterExteriorCellChangeEvent& acEvent) const noexcept
@@ -370,34 +439,23 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
     // Check if id is the player
     if (!isCustom)
     {
-        // Look for the character
-        auto view = m_world.view<FormIdComponent, ActorValuesComponent, CharacterComponent, MovementComponent, CellIdComponent, OwnerComponent, InventoryComponent>();
-
-        const auto itor = std::find_if(
-            std::begin(view), std::end(view),
-            [view, refId](auto entity)
-            {
-                const auto& formIdComponent = view.get<FormIdComponent>(entity);
-
-                return formIdComponent.Id == refId;
-            });
-
-        if (itor != std::end(view))
+        const entt::entity existingEntity = FindPersistentCharacterByFormId(refId);
+        if (existingEntity != entt::null &&
+            m_world.all_of<FormIdComponent, ActorValuesComponent, CharacterComponent, MovementComponent, CellIdComponent, OwnerComponent, InventoryComponent>(existingEntity))
         {
             // This entity already has an owner
             spdlog::debug("FormId: {:x}:{:x} is already managed", refId.ModId, refId.BaseId);
 
-            auto& actorValuesComponent = view.get<ActorValuesComponent>(*itor);
-            auto& inventoryComponent = view.get<InventoryComponent>(*itor);
-            auto& characterComponent = view.get<CharacterComponent>(*itor);
-            auto& movementComponent = view.get<MovementComponent>(*itor);
-            auto& cellIdComponent = view.get<CellIdComponent>(*itor);
-            auto& ownerComponent = view.get<OwnerComponent>(*itor);
+            auto& actorValuesComponent = m_world.get<ActorValuesComponent>(existingEntity);
+            auto& inventoryComponent = m_world.get<InventoryComponent>(existingEntity);
+            auto& characterComponent = m_world.get<CharacterComponent>(existingEntity);
+            auto& movementComponent = m_world.get<MovementComponent>(existingEntity);
+            auto& cellIdComponent = m_world.get<CellIdComponent>(existingEntity);
+            auto& existingOwnerComp = m_world.get<OwnerComponent>(existingEntity);
 
             auto& partyService = m_world.GetPartyService();
 
             bool isOwner = false;
-            auto& existingOwnerComp = view.get<OwnerComponent>(*itor);
             Player* pOwningPlayer = existingOwnerComp.GetOwner();
 
             if (!characterComponent.IsMount())
@@ -439,8 +497,8 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                         if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
                             samePartyOrOrphan)
                         {
-                            const ActorData authoritativeActorData = BuildActorData(*itor);
-                            TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), authoritativeActorData);
+                            const ActorData authoritativeActorData = BuildActorData(existingEntity);
+                            TransferOwnership(acMessage.pPlayer, World::ToInteger(existingEntity), authoritativeActorData);
                             isOwner = true;
                         }
                     }
@@ -449,9 +507,9 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
 
             AssignCharacterResponse response{};
             response.Cookie = message.Cookie;
-            response.ServerId = World::ToInteger(*itor);
+            response.ServerId = World::ToInteger(existingEntity);
             response.Owner = isOwner;
-            response.OwnershipEpoch = view.get<OwnerComponent>(*itor).Epoch;
+            response.OwnershipEpoch = m_world.get<OwnerComponent>(existingEntity).Epoch;
             response.AllActorValues = actorValuesComponent.CurrentActorValues;
             response.CurrentInventory = inventoryComponent.Content;
             response.IsDead = characterComponent.IsDead();
@@ -461,7 +519,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             response.CellId = cellIdComponent.Cell;
             response.WorldSpaceId = cellIdComponent.WorldSpaceId;
 
-            if (auto* pAnimationComponent = m_world.try_get<AnimationComponent>(*itor))
+            if (auto* pAnimationComponent = m_world.try_get<AnimationComponent>(existingEntity))
             {
                 response.ActionsToReplay = pAnimationComponent->ActionsReplayCache.FormRefinedReplayChain();
             }
@@ -470,6 +528,20 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                 m_interestRegistry.MarkInRange(acMessage.pPlayer->GetId(), response.ServerId);
 
             acMessage.pPlayer->Send(response);
+
+            // If this placed `TESLevCharacter` resolved to a different `BaseId` on the creator than on the newly
+            // arriving peer (`characterComponent.BaseId.Id != message.FormId`), also emit `CharacterSpawnRequest`
+            // so the peer receives the authoritative `BaseId` immediately even if `AssignCharacterRequest` arrived first!
+            if (acMessage.pPlayer &&
+                characterComponent.BaseId &&
+                characterComponent.BaseId.Id != GameId{} &&
+                characterComponent.BaseId.Id != message.FormId &&
+                !isOwner)
+            {
+                CharacterSpawnRequest spawnSync{};
+                Serialize(m_world, existingEntity, &spawnSync);
+                acMessage.pPlayer->Send(spawnSync);
+            }
 
             return;
         }
@@ -1099,6 +1171,9 @@ void CharacterService::OnRequestRespawn(const PacketEvent<RequestRespawn>& acMes
 
     if (ownerComponent.GetOwner() == acMessage.pPlayer)
     {
+        // Reset per-corpse anti-dupe withdrawal history when an NPC naturally respawns!
+        m_world.GetInventoryService().ForgetContainerForEntity(*it, acMessage.Packet.ActorId);
+
         // Replay cache needs to be cleared when the authoritative owner respawns a character
         if (auto* pAnimationComponent = m_world.try_get<AnimationComponent>(*it))
             pAnimationComponent->ActionsReplayCache.Clear();
@@ -1573,7 +1648,81 @@ void CharacterService::ProcessMovementChanges() const noexcept
     for (auto& [pPlayer, message] : messages)
     {
         if (!message.Updates.empty())
-            pPlayer->Send(message);
+        {
+            bool hasActions = false;
+            for (const auto& [_, upd] : message.Updates)
+            {
+                if (!upd.ActionEvents.empty())
+                {
+                    hasActions = true;
+                    break;
+                }
+            }
+            pPlayer->Send(message, hasActions ? TiltedPhoques::kReliable : TiltedPhoques::kUnreliableNoNagle);
+        }
+    }
+}
+
+void CharacterService::WakeDormantCharactersInActiveRanges() const noexcept
+{
+    static std::chrono::steady_clock::time_point s_lastWakeSweep{};
+    const auto nowTp = std::chrono::steady_clock::now();
+    if (nowTp - s_lastWakeSweep < std::chrono::milliseconds(1000))
+        return;
+    s_lastWakeSweep = nowTp;
+
+    const uint64_t nowMs = SteadyClockMs();
+    auto view = m_world.view<FormIdComponent, CellIdComponent, CharacterComponent, OwnerComponent>();
+    for (auto entity : view)
+    {
+        auto& ownerComp = view.get<OwnerComponent>(entity);
+        if (ownerComp.GetOwner() != nullptr)
+            continue;
+        if (nowMs >= ownerComp.LastChangedAtMs && (nowMs - ownerComp.LastChangedAtMs) < 1000ULL)
+            continue;
+
+        const auto& charComp = view.get<CharacterComponent>(entity);
+        if (charComp.IsPlayer() || charComp.IsPlayerSummon() || charComp.IsMount())
+            continue;
+
+        const auto& cellComp = view.get<CellIdComponent>(entity);
+        Player* pBestObserver = nullptr;
+        for (Player* pCandidate : m_world.GetPlayerManager())
+        {
+            if (!pCandidate)
+                continue;
+            if (m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pCandidate->GetId()))
+                continue;
+            if (!pCandidate->GetCellComponent().IsInRange(cellComp, charComp.IsDragon()))
+                continue;
+
+            pBestObserver = pCandidate;
+            if (m_world.GetPartyService().IsPlayerLeader(pCandidate))
+                break; // Prefer party leader when multiple living observers are in range
+        }
+
+        if (!pBestObserver)
+            continue;
+
+        const uint32_t serverId = World::ToInteger(entity);
+        if (!m_interestRegistry.IsMarkedInRange(pBestObserver->GetId(), serverId))
+        {
+            CharacterSpawnRequest spawnMsg{};
+            Serialize(m_world, entity, &spawnMsg);
+            pBestObserver->Send(spawnMsg);
+        }
+
+        const uint64_t newEpoch = ownerComp.SetOwner(pBestObserver, nowMs);
+        ownerComp.InvalidOwners.clear();
+        m_interestRegistry.UnmarkInRange(pBestObserver->GetId(), serverId);
+
+        NotifyOwnershipTransfer grant{};
+        grant.ServerId = serverId;
+        grant.OwnershipEpoch = newEpoch;
+        pBestObserver->Send(grant);
+
+        m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+            nowMs, CoopFlight::FlightEventKind::kOwnershipChanged, serverId, pBestObserver->GetId());
     }
 }
 

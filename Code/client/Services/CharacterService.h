@@ -119,6 +119,13 @@ struct CharacterService
     [[nodiscard]] entt::entity FindAnyEntityByFormId(uint32_t aFormId) const noexcept;
     [[nodiscard]] entt::entity FindEntityByServerId(uint32_t aServerId) const noexcept;
 
+    void SyncRemoteCachedInventory(uint32_t aServerId, const Inventory::Entry& acItem, bool aDrop) const noexcept;
+    void SyncRemoteCachedEquipment(const struct NotifyEquipmentChanges& acMessage) const noexcept;
+    void SyncRemoteCachedHealthDelta(uint32_t aServerId, float aDeltaHealth) const noexcept;
+    void SyncRemoteCachedActorValues(uint32_t aServerId, const TiltedPhoques::Map<uint32_t, float>& acValues, bool aIsMaxValues) const noexcept;
+    void SyncRemoteCachedDeathState(uint32_t aServerId, bool aIsDead) const noexcept;
+    void SyncRemoteCachedWeaponDraw(uint32_t aServerId, bool aIsWeaponDrawn) const noexcept;
+
 private:
     struct RemoteEntityModel
     {
@@ -127,6 +134,7 @@ private:
         Vector3_NetQuantize LatestPosition{};
         Rotator2_NetQuantize LatestRotation{};
         uint64_t DematerializeGraceUntilMs{0};
+        uint64_t PendingOwnershipEpoch{0};
         bool IsMaterialized{false};
     };
 
@@ -150,6 +158,7 @@ private:
     [[nodiscard]] CoopWorldView::ObserverState BuildLocalObserverState() const noexcept;
     [[nodiscard]] TESObjectCELL* ResolveCompatibleTargetCell(const CoopWorldView::WorldOrCell& acTargetLoc, TESWorldSpace*& apOutWorldSpace, bool aAllowDistantWorldSpaceAnchor = false) const noexcept;
     void DematerializeRemoteView(entt::entity aEntity, RemoteEntityModel* apModel) const noexcept;
+    bool ReconcilePlacedActorBaseFormInPlace(Actor* apActor, const GameId& acExpectedBaseId) const noexcept;
     Actor* MaterializeRemoteView(entt::entity aEntity, RemoteEntityModel& aModel, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace) const noexcept;
     void ReconcileRemoteWorldViews() const noexcept;
 
@@ -197,10 +206,7 @@ private:
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};
     mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
     mutable Set<uint32_t> m_createdNetworkFormIds{};
-    mutable Set<uint32_t> m_suppressedPlacedActors{};
-    mutable Map<uint32_t, entt::entity> m_actorEntityByFormId{};
-    mutable Map<uint32_t, entt::entity> m_objectEntityByFormId{};
-    mutable Map<uint32_t, entt::entity> m_entityByServerId{};
+    mutable CoopWorldView::EntityIndexTable<entt::entity, entt::null> m_entityIndex{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};
     mutable Map<uint32_t, PendingMountAttach> m_pendingRemoteMounts{};
     mutable PendingLocalMountRequest m_pendingLocalMount{};

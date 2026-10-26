@@ -578,7 +578,7 @@ void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept
     m_coopCombatSnapshot = std::move(next);
 }
 
-Actor* RfabAdapterService::FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept
+GamePtr<Actor> RfabAdapterService::FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept
 {
     if (!apAttacker)
         return nullptr;
@@ -622,16 +622,16 @@ Actor* RfabAdapterService::FindBestStandingPlayerTargetFor(Actor* apAttacker) co
         }
     }
 
-    Actor* pReplacement = bestHandleBits ? Cast<Actor>(TESObjectREFR::GetByHandle(bestHandleBits)) : nullptr;
-    if (!pReplacement && bestFormId == 0x14)
-        pReplacement = PlayerCharacter::Get();
+    GamePtr<Actor> spReplacement = bestHandleBits ? Actor::LookupByHandle(bestHandleBits) : nullptr;
+    if (!spReplacement && bestFormId == 0x14)
+        spReplacement = PlayerCharacter::Get();
 
-    if (!pReplacement || pReplacement == apAttacker || pReplacement->VirtIsDead(false))
+    if (!spReplacement || spReplacement.Get() == apAttacker || spReplacement->VirtIsDead(false))
         return nullptr;
-    if (auto* pExt = pReplacement->GetExtension(); pExt && pExt->IsDownedPlayer())
+    if (auto* pExt = spReplacement->GetExtension(); pExt && pExt->IsDownedPlayer())
         return nullptr;
 
-    return pReplacement;
+    return spReplacement;
 }
 
 void RfabAdapterService::CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept

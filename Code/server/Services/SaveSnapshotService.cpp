@@ -1,6 +1,7 @@
 #include <Services/SaveSnapshotService.h>
 
 #include <common/CoopOwnership.h>
+#include <common/CoopWorldView.h>
 #include <common/RfabModpackCompat.h>
 #include <Components.h>
 #include <Events/PlayerLeaveEvent.h>
@@ -183,6 +184,17 @@ void DeserializePlayerStateRecord(TiltedPhoques::Buffer::Reader& aReader, SaveSn
     if (aOutRec.HasInventory)
         aOutRec.CurrentInventory.Deserialize(aReader);
 }
+
+std::string MakePlayerIdentityKey(const Player* apPlayer)
+{
+    if (!apPlayer)
+        return {};
+    const auto& username = apPlayer->GetUsername();
+    return CoopWorldView::BuildPlayerIdentityKey(
+        apPlayer->GetDiscordId(),
+        std::string_view(username.data(), username.size()),
+        apPlayer->GetId());
+}
 } // namespace
 
 std::filesystem::path SaveSnapshotService::GetDefaultCheckpointStorePath()
@@ -305,6 +317,37 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
                 Serialization::WriteFloat(writer, aRec.Rotation.x);
                 Serialization::WriteFloat(writer, aRec.Rotation.y);
                 Serialization::WriteFloat(writer, aRec.Rotation.z);
+            }
+        }
+
+        // Trailing v2.0.3+ reconnect-stable player identity + ContainerLootLedger snapshot block
+        // (100% backward-compatible with v2.0.1 and v2.0.2 checkpoint files!)
+        constexpr uint64_t kV203IdentityAndLedgerExtMagic = 0x49444C47323033ULL;
+        Serialization::WriteVarInt(writer, kV203IdentityAndLedgerExtMagic);
+        Serialization::WriteVarInt(writer, m_snapshots.size());
+        for (const auto& snap : m_snapshots)
+        {
+            Serialization::WriteVarInt(writer, snap.QuestLogsByIdentityKey.size());
+            for (const auto& [identKey, qlog] : snap.QuestLogsByIdentityKey)
+            {
+                WriteStdString(writer, identKey);
+                qlog.Serialize(writer);
+            }
+
+            Serialization::WriteVarInt(writer, snap.PlayersByIdentityKey.size());
+            for (const auto& [identKey, pRec] : snap.PlayersByIdentityKey)
+            {
+                WriteStdString(writer, identKey);
+                SerializePlayerStateRecord(writer, pRec);
+            }
+
+            Serialization::WriteVarInt(writer, snap.LootLedger.WithdrawnBySlot.size());
+            for (const auto& [slotKey, withdrawn] : snap.LootLedger.WithdrawnBySlot)
+            {
+                Serialization::WriteVarInt(writer, slotKey.ContainerId);
+                Serialization::WriteVarInt(writer, slotKey.ItemModId);
+                Serialization::WriteVarInt(writer, slotKey.ItemBaseId);
+                Serialization::WriteVarInt(writer, static_cast<uint64_t>(static_cast<uint32_t>(std::max<int32_t>(0, withdrawn))));
             }
         }
 
@@ -445,6 +488,55 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
                     }
                 }
             }
+
+            if (!reader.Eof())
+            {
+                constexpr uint64_t kV203IdentityAndLedgerExtMagic = 0x49444C47323033ULL;
+                const uint64_t extMagic2 = Serialization::ReadVarInt(reader);
+                if (extMagic2 == kV203IdentityAndLedgerExtMagic)
+                {
+                    const uint64_t extSnapCount2 = std::min<uint64_t>(Serialization::ReadVarInt(reader), loadedSnapshots.size());
+                    for (uint64_t sIdx = 0; sIdx < extSnapCount2; ++sIdx)
+                    {
+                        auto& snap = loadedSnapshots[static_cast<size_t>(sIdx)];
+
+                        const uint64_t qIdentCount = std::min<uint64_t>(Serialization::ReadVarInt(reader), 256ULL);
+                        for (uint64_t i = 0; i < qIdentCount; ++i)
+                        {
+                            const std::string identKey = ReadStdString(reader);
+                            QuestLog qlog{};
+                            qlog.Deserialize(reader);
+                            if (!identKey.empty())
+                                snap.QuestLogsByIdentityKey[identKey] = std::move(qlog);
+                        }
+
+                        const uint64_t pIdentCount = std::min<uint64_t>(Serialization::ReadVarInt(reader), 256ULL);
+                        for (uint64_t i = 0; i < pIdentCount; ++i)
+                        {
+                            const std::string identKey = ReadStdString(reader);
+                            PlayerStateRecord pRec{};
+                            DeserializePlayerStateRecord(reader, pRec);
+                            if (!identKey.empty())
+                                snap.PlayersByIdentityKey[identKey] = std::move(pRec);
+                        }
+
+                        const uint64_t ledgerCount = std::min<uint64_t>(
+                            Serialization::ReadVarInt(reader),
+                            static_cast<uint64_t>(CoopLootLedger::ContainerLootLedger::kMaxTrackedSlots));
+                        for (uint64_t i = 0; i < ledgerCount; ++i)
+                        {
+                            CoopLootLedger::ContainerLootLedger::SlotKey slotKey{};
+                            slotKey.ContainerId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            slotKey.ItemModId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            slotKey.ItemBaseId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                            const int32_t withdrawn = static_cast<int32_t>(
+                                std::min<uint64_t>(Serialization::ReadVarInt(reader), 1000000ULL));
+                            if (withdrawn > 0)
+                                snap.LootLedger.WithdrawnBySlot[slotKey] = withdrawn;
+                        }
+                    }
+                }
+            }
         }
 
         m_coordinator.RestorePersistedState(
@@ -456,8 +548,7 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
             lastCommittedEpoch,
             lastCommittedSlot);
         m_snapshots = std::move(loadedSnapshots);
-        if (!m_snapshots.empty())
-            m_world.GetRfabProgressionService().GetLedger().RestoreSnapshot(m_snapshots.back().Progression);
+        HydratePersistedWorldState();
 
         return true;
     }
@@ -540,6 +631,33 @@ std::optional<SaveSnapshotService::PlayerStateRecord> SaveSnapshotService::Captu
     return rec;
 }
 
+void SaveSnapshotService::HydratePersistedWorldState() noexcept
+{
+    if (m_snapshots.empty())
+        return;
+
+    const auto& latest = m_snapshots.back();
+    if (auto* pProg = m_world.ctx().find<RfabProgressionService>())
+        pProg->GetLedger().RestoreSnapshot(latest.Progression);
+
+    if (auto* pInv = m_world.ctx().find<InventoryService>())
+        pInv->RestoreLootLedgerSnapshot(latest.LootLedger);
+
+    if (auto* pObj = m_world.ctx().find<ObjectService>())
+    {
+        for (const auto& objRec : latest.TrackedObjects)
+        {
+            pObj->UpsertRestoredObject(
+                objRec.Id,
+                objRec.CellId,
+                objRec.WorldSpaceId,
+                objRec.CenterCoords,
+                objRec.CurrentLockData,
+                objRec.CurrentInventory);
+        }
+    }
+}
+
 void SaveSnapshotService::RefreshPlayerJoinBaselines() noexcept
 {
     for (Player* pPlayer : m_world.GetPlayerManager())
@@ -551,7 +669,12 @@ void SaveSnapshotService::RefreshPlayerJoinBaselines() noexcept
             continue;
 
         if (auto captured = CapturePlayerState(pPlayer); captured.has_value() && captured->HasValidTransform)
+        {
+            const std::string identKey = MakePlayerIdentityKey(pPlayer);
+            if (!identKey.empty() && !m_playerJoinBaselinesByIdentityKey.contains(identKey))
+                m_playerJoinBaselinesByIdentityKey[identKey] = *captured;
             m_playerJoinBaselines[pPlayer->GetId()] = std::move(*captured);
+        }
     }
 }
 
@@ -597,16 +720,36 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
     snap.IsAutoCheckpoint = aIsAuto;
     snap.CreatedAtMs = aNowMs;
 
-    // 1. Capture per-player quest logs + authoritative spatial/inventory state
+    // 1. Capture per-player quest logs + authoritative spatial/inventory state (by BOTH stable identity key AND session PlayerId)
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
+        const std::string identKey = MakePlayerIdentityKey(pPlayer);
         const auto& qlog = pPlayer->GetQuestLogComponent().QuestContent;
         snap.QuestLogsByPlayerId[pPlayer->GetId()] = qlog;
+        if (!identKey.empty())
+            snap.QuestLogsByIdentityKey[identKey] = qlog;
 
         if (auto pState = CapturePlayerState(pPlayer); pState.has_value())
+        {
+            if (!identKey.empty())
+                snap.PlayersByIdentityKey[identKey] = *pState;
             snap.PlayersById[pPlayer->GetId()] = std::move(*pState);
+        }
         else if (const auto baseIt = m_playerJoinBaselines.find(pPlayer->GetId()); baseIt != m_playerJoinBaselines.end())
+        {
+            if (!identKey.empty())
+                snap.PlayersByIdentityKey[identKey] = baseIt->second;
             snap.PlayersById[pPlayer->GetId()] = baseIt->second;
+        }
+        else if (!identKey.empty())
+        {
+            if (const auto identBaseIt = m_playerJoinBaselinesByIdentityKey.find(identKey);
+                identBaseIt != m_playerJoinBaselinesByIdentityKey.end())
+            {
+                snap.PlayersByIdentityKey[identKey] = identBaseIt->second;
+                snap.PlayersById[pPlayer->GetId()] = identBaseIt->second;
+            }
+        }
 
         for (const auto& entry : qlog.Entries)
         {
@@ -690,6 +833,9 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
         snap.TrackedObjects.push_back(std::move(objRec));
     }
 
+    // 6. Capture persistent ContainerLootLedger anti-dupe withdrawal history
+    snap.LootLedger = m_world.GetInventoryService().CaptureLootLedgerSnapshot();
+
     return snap;
 }
 
@@ -761,6 +907,17 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         {
             pParty->GetQuestStageDedupHistory().Reset();
             pParty->GetQuestStageDedupHistory().ResetSceneMaster();
+        }
+
+        const std::string identKey = MakePlayerIdentityKey(pPlayer);
+        if (!identKey.empty())
+        {
+            if (const auto identIt = acSnapshot.QuestLogsByIdentityKey.find(identKey);
+                identIt != acSnapshot.QuestLogsByIdentityKey.end())
+            {
+                pPlayer->GetQuestLogComponent().QuestContent = identIt->second;
+                continue;
+            }
         }
 
         if (const auto it = acSnapshot.QuestLogsByPlayerId.find(pPlayer->GetId()); it != acSnapshot.QuestLogsByPlayerId.end())
@@ -871,16 +1028,24 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             {
                 postCheckpointObjects.push_back(entity);
             }
-            else
-            {
-                objectView.get<ObjectComponent>(entity).CurrentLockData = it->CurrentLockData;
-                objectView.get<InventoryComponent>(entity).Content = it->CurrentInventory;
-            }
         }
         for (entt::entity entity : postCheckpointObjects)
         {
             if (m_world.valid(entity))
+            {
+                m_world.GetInventoryService().ForgetContainerForEntity(entity, World::ToInteger(entity));
                 m_world.destroy(entity);
+            }
+        }
+        for (const auto& objRec : acSnapshot.TrackedObjects)
+        {
+            m_world.GetObjectService().UpsertRestoredObject(
+                objRec.Id,
+                objRec.CellId,
+                objRec.WorldSpaceId,
+                objRec.CenterCoords,
+                objRec.CurrentLockData,
+                objRec.CurrentInventory);
         }
     }
 
@@ -889,9 +1054,9 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
     calendar.SetDate(acSnapshot.Calendar.Day, acSnapshot.Calendar.Month, acSnapshot.Calendar.Year);
     calendar.SetTime(acSnapshot.Calendar.Hour, acSnapshot.Calendar.Minute, acSnapshot.Calendar.TimeScale);
 
-    // 5. Clear all downed/revive/wipe states and container anti-dupe markers before clients transition
+    // 5. Clear downed/revive/wipe states and restore container anti-dupe ledger to exact checkpoint epoch
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
-    m_world.GetInventoryService().ResetLootLedger();
+    m_world.GetInventoryService().RestoreLootLedgerSnapshot(acSnapshot.LootLedger);
 
     // 6. Drop snapshots strictly newer than the restored epoch & persist updated store to disk
     while (!m_snapshots.empty() && m_snapshots.back().EpochId > acSnapshot.EpochId)
@@ -907,10 +1072,33 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             continue;
 
         const PlayerStateRecord* pPlayerState = nullptr;
-        if (const auto it = acSnapshot.PlayersById.find(pPlayer->GetId()); it != acSnapshot.PlayersById.end())
-            pPlayerState = &it->second;
-        else if (const auto baseIt = m_playerJoinBaselines.find(pPlayer->GetId()); baseIt != m_playerJoinBaselines.end())
-            pPlayerState = &baseIt->second;
+        const std::string identKey = MakePlayerIdentityKey(pPlayer);
+        if (!identKey.empty())
+        {
+            if (const auto identIt = acSnapshot.PlayersByIdentityKey.find(identKey);
+                identIt != acSnapshot.PlayersByIdentityKey.end())
+            {
+                pPlayerState = &identIt->second;
+            }
+        }
+        if (!pPlayerState)
+        {
+            if (const auto it = acSnapshot.PlayersById.find(pPlayer->GetId()); it != acSnapshot.PlayersById.end())
+                pPlayerState = &it->second;
+        }
+        if (!pPlayerState && !identKey.empty())
+        {
+            if (const auto identBaseIt = m_playerJoinBaselinesByIdentityKey.find(identKey);
+                identBaseIt != m_playerJoinBaselinesByIdentityKey.end())
+            {
+                pPlayerState = &identBaseIt->second;
+            }
+        }
+        if (!pPlayerState)
+        {
+            if (const auto baseIt = m_playerJoinBaselines.find(pPlayer->GetId()); baseIt != m_playerJoinBaselines.end())
+                pPlayerState = &baseIt->second;
+        }
 
         const bool hasTransform = pPlayerState && pPlayerState->HasValidTransform;
         const bool useInSession = CoopCheckpoint::ShouldServerPreferInSessionRollback(aIsPartyWipe, hasTransform, acSnapshot.SlotName);

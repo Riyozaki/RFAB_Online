@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -415,6 +417,262 @@ private:
     std::array<uint32_t, Capacity> m_entries{};
     std::array<bool, Capacity> m_valid{};
     size_t m_cursor{0};
+};
+
+[[nodiscard]] constexpr uint64_t PackGameIdKey(uint32_t aModId, uint32_t aBaseId) noexcept
+{
+    return (static_cast<uint64_t>(aModId) << 32) | static_cast<uint64_t>(aBaseId);
+}
+
+// Deterministic, case-normalized player identity key so server checkpoints survive mid-session
+// reconnects (where ephemeral Player::GetId() increments) and server restarts (where join order changes).
+[[nodiscard]] inline std::string BuildPlayerIdentityKey(
+    uint64_t aDiscordId,
+    std::string_view aUsername,
+    uint32_t aFallbackPlayerId = 0)
+{
+    if (aDiscordId != 0)
+        return "discord:" + std::to_string(aDiscordId);
+
+    size_t first = 0;
+    while (first < aUsername.size() && static_cast<unsigned char>(aUsername[first]) <= 0x20u)
+        ++first;
+
+    size_t last = aUsername.size();
+    while (last > first && static_cast<unsigned char>(aUsername[last - 1]) <= 0x20u)
+        --last;
+
+    if (last > first)
+    {
+        std::string norm;
+        norm.reserve(5 + (last - first));
+        norm.append("name:");
+        for (size_t i = first; i < last; ++i)
+        {
+            const unsigned char ch = static_cast<unsigned char>(aUsername[i]);
+            if (ch >= 'A' && ch <= 'Z')
+                norm.push_back(static_cast<char>(ch + ('a' - 'A')));
+            else
+                norm.push_back(static_cast<char>(ch));
+        }
+        return norm;
+    }
+
+    return "pid:" + std::to_string(aFallbackPlayerId);
+}
+
+// Exact bidirectional O(1) ECS entity index maintaining:
+//   - Actor FormId  <-> Entity
+//   - Object FormId <-> Entity
+//   - ServerId      <-> Entity across overlapping (LocalComponent, RemoteComponent, ObjectComponent) lifecycles.
+// Guarantees that `TakeOwnership` (emplace Local before removing Remote) and `OnNotifyMount` (emplace Remote before
+// removing Local) NEVER drop the live ServerId mapping, and `on_update` ALWAYS erases superseded keys.
+template <class TEntity, TEntity NullEntity>
+class EntityIndexTable
+{
+public:
+    enum ServerBindingKind : uint8_t
+    {
+        kNone = 0,
+        kLocal = 1u << 0,
+        kRemote = 1u << 1,
+        kObject = 1u << 2,
+    };
+
+    void Clear() noexcept
+    {
+        m_actorByFormId.clear();
+        m_objectByFormId.clear();
+        m_formByEntity.clear();
+        m_entityByServerId.clear();
+        m_serverByEntity.clear();
+    }
+
+    void UpsertFormId(TEntity aEntity, uint32_t aFormId, bool aIsObject)
+    {
+        if (aEntity == NullEntity)
+            return;
+
+        EraseFormId(aEntity);
+        if (aFormId == 0)
+            return;
+
+        m_formByEntity[aEntity] = FormReverseEntry{aFormId, aIsObject};
+        if (aIsObject)
+            m_objectByFormId[aFormId] = aEntity;
+        else
+            m_actorByFormId[aFormId] = aEntity;
+    }
+
+    void PromoteFormToObject(TEntity aEntity, uint32_t aFormId)
+    {
+        if (aEntity == NullEntity || aFormId == 0)
+            return;
+        UpsertFormId(aEntity, aFormId, true);
+    }
+
+    void EraseFormId(TEntity aEntity) noexcept
+    {
+        const auto revIt = m_formByEntity.find(aEntity);
+        if (revIt == m_formByEntity.end())
+            return;
+
+        const uint32_t oldFormId = revIt->second.FormId;
+        if (revIt->second.IsObject)
+        {
+            const auto fwdIt = m_objectByFormId.find(oldFormId);
+            if (fwdIt != m_objectByFormId.end() && fwdIt->second == aEntity)
+                m_objectByFormId.erase(fwdIt);
+        }
+        else
+        {
+            const auto fwdIt = m_actorByFormId.find(oldFormId);
+            if (fwdIt != m_actorByFormId.end() && fwdIt->second == aEntity)
+                m_actorByFormId.erase(fwdIt);
+        }
+        m_formByEntity.erase(revIt);
+    }
+
+    void BindServerId(TEntity aEntity, ServerBindingKind aKind, uint32_t aServerId)
+    {
+        if (aEntity == NullEntity || aKind == kNone)
+            return;
+
+        auto& slot = m_serverByEntity[aEntity];
+        uint32_t prevIdForKind = 0;
+        bool hadKind = false;
+        if (aKind == kLocal)
+        {
+            hadKind = (slot.ActiveMask & kLocal) != 0;
+            prevIdForKind = slot.LocalId;
+            slot.LocalId = aServerId;
+        }
+        else if (aKind == kRemote)
+        {
+            hadKind = (slot.ActiveMask & kRemote) != 0;
+            prevIdForKind = slot.RemoteId;
+            slot.RemoteId = aServerId;
+        }
+        else if (aKind == kObject)
+        {
+            hadKind = (slot.ActiveMask & kObject) != 0;
+            prevIdForKind = slot.ObjectId;
+            slot.ObjectId = aServerId;
+        }
+        slot.ActiveMask = static_cast<uint8_t>(slot.ActiveMask | aKind);
+
+        if (hadKind && prevIdForKind != aServerId && !SlotStillReferencesId(slot, prevIdForKind))
+        {
+            const auto oldFwd = m_entityByServerId.find(prevIdForKind);
+            if (oldFwd != m_entityByServerId.end() && oldFwd->second == aEntity)
+                m_entityByServerId.erase(oldFwd);
+        }
+
+        m_entityByServerId[aServerId] = aEntity;
+    }
+
+    void UnbindServerId(TEntity aEntity, ServerBindingKind aKind) noexcept
+    {
+        if (aEntity == NullEntity || aKind == kNone)
+            return;
+
+        const auto revIt = m_serverByEntity.find(aEntity);
+        if (revIt == m_serverByEntity.end())
+            return;
+
+        auto& slot = revIt->second;
+        if ((slot.ActiveMask & aKind) == 0)
+            return;
+
+        uint32_t removedId = 0;
+        if (aKind == kLocal)
+        {
+            removedId = slot.LocalId;
+            slot.LocalId = 0;
+        }
+        else if (aKind == kRemote)
+        {
+            removedId = slot.RemoteId;
+            slot.RemoteId = 0;
+        }
+        else if (aKind == kObject)
+        {
+            removedId = slot.ObjectId;
+            slot.ObjectId = 0;
+        }
+        slot.ActiveMask = static_cast<uint8_t>(slot.ActiveMask & ~aKind);
+
+        if (!SlotStillReferencesId(slot, removedId))
+        {
+            const auto fwdIt = m_entityByServerId.find(removedId);
+            if (fwdIt != m_entityByServerId.end() && fwdIt->second == aEntity)
+                m_entityByServerId.erase(fwdIt);
+        }
+
+        if (slot.ActiveMask == 0)
+            m_serverByEntity.erase(revIt);
+    }
+
+    [[nodiscard]] TEntity FindActorByFormId(uint32_t aFormId) const noexcept
+    {
+        if (aFormId == 0)
+            return NullEntity;
+        const auto it = m_actorByFormId.find(aFormId);
+        return it != m_actorByFormId.end() ? it->second : NullEntity;
+    }
+
+    [[nodiscard]] TEntity FindObjectByFormId(uint32_t aFormId) const noexcept
+    {
+        if (aFormId == 0)
+            return NullEntity;
+        const auto it = m_objectByFormId.find(aFormId);
+        return it != m_objectByFormId.end() ? it->second : NullEntity;
+    }
+
+    [[nodiscard]] TEntity FindAnyByFormId(uint32_t aFormId) const noexcept
+    {
+        if (const TEntity actor = FindActorByFormId(aFormId); actor != NullEntity)
+            return actor;
+        return FindObjectByFormId(aFormId);
+    }
+
+    [[nodiscard]] TEntity FindByServerId(uint32_t aServerId) const noexcept
+    {
+        const auto it = m_entityByServerId.find(aServerId);
+        return it != m_entityByServerId.end() ? it->second : NullEntity;
+    }
+
+private:
+    struct FormReverseEntry
+    {
+        uint32_t FormId{0};
+        bool IsObject{false};
+    };
+
+    struct ServerReverseSlot
+    {
+        uint32_t LocalId{0};
+        uint32_t RemoteId{0};
+        uint32_t ObjectId{0};
+        uint8_t ActiveMask{0};
+    };
+
+    [[nodiscard]] static constexpr bool SlotStillReferencesId(const ServerReverseSlot& acSlot, uint32_t aId) noexcept
+    {
+        if (((acSlot.ActiveMask & kLocal) != 0) && acSlot.LocalId == aId)
+            return true;
+        if (((acSlot.ActiveMask & kRemote) != 0) && acSlot.RemoteId == aId)
+            return true;
+        if (((acSlot.ActiveMask & kObject) != 0) && acSlot.ObjectId == aId)
+            return true;
+        return false;
+    }
+
+    std::unordered_map<uint32_t, TEntity> m_actorByFormId{};
+    std::unordered_map<uint32_t, TEntity> m_objectByFormId{};
+    std::unordered_map<TEntity, FormReverseEntry> m_formByEntity{};
+    std::unordered_map<uint32_t, TEntity> m_entityByServerId{};
+    std::unordered_map<TEntity, ServerReverseSlot> m_serverByEntity{};
 };
 
 } // namespace CoopWorldView

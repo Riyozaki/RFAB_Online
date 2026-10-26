@@ -1,0 +1,41 @@
+{
+  "backup_manifest_version": 1,
+  "protected_release_tag": "v2.0.2-backup",
+  "source_release_tag": "v2.0.2",
+  "release_id": 424319337,
+  "source_tag_commit": "f470d16404789948e9071b928b228edb3a136344",
+  "branch_head_at_audit": "f470d16404789948e9071b928b228edb3a136344",
+  "published_at": "2026-10-26T13:59:41Z",
+  "html_url": "https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup",
+  "policy": "Immutable golden backup of initial RFAB Online v2.0.2 (commit f470d16404789948e9071b928b228edb3a136344) preserved before v2.0.2 architectural stabilization. Must be verified in v2.0.2-backup before any in-place v2.0.2 update and must never be overwritten or deleted.",
+  "assets": [
+    {
+      "id": 678613197,
+      "name": "RFAB_Online_v2.0.2_Full_Installer.zip",
+      "size": 176173699,
+      "sha256": "56215f4288916a62909dc3b934ef5e59273cc1b35e0e24f1ffc966834c22afdf",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2-backup/RFAB_Online_v2.0.2_Full_Installer.zip"
+    },
+    {
+      "id": 678613427,
+      "name": "RFAB_Online_v2.0.2_PDB_Symbols.zip",
+      "size": 86847406,
+      "sha256": "7ac59039ae4146a9fb3c897e893518eab172134bfb5771893799a1211274dce4",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2-backup/RFAB_Online_v2.0.2_PDB_Symbols.zip"
+    },
+    {
+      "id": 678613056,
+      "name": "RFAB_Online_v2.0.2_Quick_Update.zip",
+      "size": 15624025,
+      "sha256": "3110c5876758b2004a8d2b35fc99e2a5fa90548ddd3028895d2eb7c24ea21645",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2-backup/RFAB_Online_v2.0.2_Quick_Update.zip"
+    },
+    {
+      "id": 678613596,
+      "name": "SHA256SUMS.txt",
+      "size": 310,
+      "sha256": "a8b603cfbacd19d93a5053b3510eda1e01aad894a68f5a66c3b0cbe5d95dbbde",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2-backup/SHA256SUMS.txt"
+    }
+  ]
+}

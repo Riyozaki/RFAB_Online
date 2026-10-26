@@ -111,10 +111,10 @@ void TP_MAKE_THISCALL(HookUpdateTarget, CombatController)
     GamePtr<Actor> spCurrentTarget = Actor::LookupByHandle(apThis->targetHandle);
     if (spCurrentTarget && spCurrentTarget->GetExtension() && spCurrentTarget->GetExtension()->IsDownedPlayer())
     {
-        Actor* pReplacement = World::IsConnectedCached()
+        GamePtr<Actor> spReplacement = (World::IsCreated() && World::IsConnectedCached())
             ? World::Get().GetRfabAdapterService().FindBestStandingPlayerTargetFor(spAttacker.Get())
             : nullptr;
-        apThis->SetTarget(pReplacement);
+        apThis->SetTarget(spReplacement.Get());
     }
 }
 

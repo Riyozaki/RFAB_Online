@@ -569,7 +569,7 @@ void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataLis
         {
             modSystem.GetServerModId(pExtraEnchantment->pEnchantment->formID, arEntry.ExtraEnchantId);
 
-            if (pExtraEnchantment->pEnchantment->formID & 0xFF000000)
+            if (pExtraEnchantment->pEnchantment->IsTemporary())
             {
                 for (EffectItem* pEffectItem : pExtraEnchantment->pEnchantment->listOfEffects)
                 {
@@ -654,7 +654,8 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
         EnchantmentItem* pEnchantment = nullptr;
         if (arEntry.ExtraEnchantId.ModId == 0xFFFFFFFF)
         {
-            pEnchantment = EnchantmentItem::Create(arEntry.EnchantData);
+            if (!arEntry.EnchantData.Effects.empty())
+                pEnchantment = EnchantmentItem::Create(arEntry.EnchantData);
         }
         else
         {
@@ -662,7 +663,6 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
             pEnchantment = Cast<EnchantmentItem>(TESForm::GetById(enchantId));
         }
 
-        TP_ASSERT(pEnchantment, "No Enchantment created or found.");
         if (pEnchantment)
             pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
     }
@@ -1222,7 +1222,9 @@ bool TP_MAKE_THISCALL(HookPlayAnimationAndWait, void, uint32_t auiStackID, TESOb
     spdlog::debug("Animation: {}, EventName: {}", animStr ? animStr : "<null>", evtStr ? evtStr : "<null>");
 
 #if OBJECT_ANIM_SYNC
-    if (!s_cancelAnimationWaitEvent &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        !s_cancelAnimationWaitEvent &&
         apSelf &&
         !apSelf->IsTemporary() &&
         apSelf->formType != Actor::Type &&
@@ -1262,7 +1264,9 @@ bool TP_MAKE_THISCALL(HookPlayAnimation, void, uint32_t auiStackID, TESObjectREF
     spdlog::debug("EventName: {}", animStr ? animStr : "<null>");
 
 #if OBJECT_ANIM_SYNC
-    if (!s_cancelAnimationEvent &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        !s_cancelAnimationEvent &&
         apSelf &&
         !apSelf->IsTemporary() &&
         apSelf->formType != Actor::Type &&
@@ -1331,12 +1335,32 @@ bool ShouldAutoUnlockCoopArenaBarrier(TESObjectREFR* apDoor, Actor* apActivator)
 
 bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, uint8_t aUnk1, TESBoundObject* apObjectToGet, int32_t aCount, char aDefaultProcessing)
 {
+    if (!apThis)
+        return false;
+
     Actor* pActivator = Cast<Actor>(apActivator);
+
+    // Block interactive corpse looting on remote player-summoned creatures/reanimations (`0xFFxxxxxx` clones)
+    // so peers cannot farm free Fire Salts / Daedra Hearts / gear from summoned allies.
+    if (pActivator && pActivator == PlayerCharacter::Get())
+    {
+        if (Actor* pTargetActor = Cast<Actor>(apThis); pTargetActor && pTargetActor->IsDead())
+        {
+            if (const auto* pTargetExt = pTargetActor->GetExtension();
+                pTargetExt && pTargetExt->IsRemote() && pTargetExt->IsPlayerSummonFlag())
+            {
+                return false;
+            }
+        }
+    }
 
     // Never echo remote/scripted Activate overrides or activations performed by remote puppet actors.
     const bool shouldSyncActivate =
+        World::IsCreated() &&
+        World::IsConnectedCached() &&
         !ScopedActivateOverride::IsOverriden() &&
         pActivator &&
+        pActivator->GetExtension() &&
         !pActivator->GetExtension()->IsRemote() &&
         apThis->baseForm &&
         apThis->baseForm->formType != FormType::Book;
@@ -1421,8 +1445,8 @@ bool ShouldBlockRemoteActorInventoryHook(TESObjectREFR* apTarget, TESObjectREFR*
         return false;
 
     // Never allow Papyrus scripts on a remote player puppet (e.g. RFAB_ExperienceRing::Break -> RemoveItem)
-    // to emit InventoryChangeEvent and delete items from the real peer player's inventory!
-    if (pExt->IsRemotePlayer())
+    // or corpse transfers on remote player summons to emit InventoryChangeEvent!
+    if (pExt->IsRemotePlayer() || (pExt->IsRemote() && pExt->IsPlayerSummonFlag()))
         return true;
 
     // For remote NPCs (living OR dead), only allow interactive player transfers (ContainerMenu / QuickLoot where
@@ -1460,7 +1484,8 @@ void MarkSharedCoopKeyOrClawAsQuestItem(TESObjectREFR* apOwner, TESForm* apItem,
 
 void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apItem, ExtraDataList* apExtraData, int32_t aCount, TESObjectREFR* apOldOwner)
 {
-    if (World::IsConnectedCached() &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
         !ScopedInventoryOverride::IsOverriden() &&
         apThis &&
         apItem &&
@@ -1488,7 +1513,8 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, TESObjectREFR, TESBoundObject* apIte
 BSPointerHandle<TESObjectREFR>*
 TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObjectREFR>* apResult, TESBoundObject* apItem, int32_t aCount, ITEM_REMOVE_REASON aReason, ExtraDataList* apExtraList, TESObjectREFR* apMoveToRef, const NiPoint3* apDropLoc, const NiPoint3* apRotate)
 {
-    if (World::IsConnectedCached() &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
         !ScopedInventoryOverride::IsOverriden() &&
         apThis &&
         apItem &&
@@ -1607,6 +1633,9 @@ void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
         return;
 
     TiltedPhoques::ThisCall(RealLockChange, apThis);
+    if (!World::IsCreated() || !World::IsConnectedCached())
+        return;
+
     const auto* pLock = apThis->GetLock();
     if(pLock)
         World::Get().GetRunner().Trigger(LockChangeEvent(apThis->formID, pLock->IsLocked(), pLock->lockLevel));

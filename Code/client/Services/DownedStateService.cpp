@@ -93,7 +93,9 @@ DownedStateService::DownedStateService(World& aWorld, entt::dispatcher& aDispatc
 
 bool DownedStateService::IsSystemActive() const noexcept
 {
-    return m_transport.IsConnected() && m_world.GetServerSettings().DownedSystemEnabled;
+    return World::IsCreated() &&
+           World::IsConnectedCached() &&
+           m_downedSystemEnabledCached.load(std::memory_order_acquire);
 }
 
 bool DownedStateService::ShouldBlockPlayerHealthMutation(float aDelta) const noexcept
@@ -592,6 +594,7 @@ void DownedStateService::ResetAllStates() noexcept
 
 void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
 {
+    m_downedSystemEnabledCached.store(m_world.GetServerSettings().DownedSystemEnabled, std::memory_order_release);
     ResetAllStates();
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
         pPlayer->SetPlayerRespawnMode(true);
@@ -599,6 +602,7 @@ void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
 
 void DownedStateService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
+    m_downedSystemEnabledCached.store(false, std::memory_order_release);
     ResetAllStates();
 }
 
@@ -880,6 +884,10 @@ void DownedStateService::SendCombatEncounterReport() noexcept
 
 void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    m_downedSystemEnabledCached.store(
+        m_transport.IsConnected() && m_world.GetServerSettings().DownedSystemEnabled,
+        std::memory_order_release);
+
     if (!IsSystemActive())
         return;
 

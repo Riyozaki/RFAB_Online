@@ -11,6 +11,7 @@
 #include <Messages/RequestEquipmentChanges.h>
 #include <Messages/NotifyEquipmentChanges.h>
 #include <Messages/DrawWeaponRequest.h>
+#include <Messages/NotifyDrawWeapon.h>
 
 #include <Setting.h>
 #include <chrono>
@@ -33,6 +34,36 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher)
     m_inventoryChangeConnection = aDispatcher.sink<PacketEvent<RequestInventoryChanges>>().connect<&InventoryService::OnInventoryChanges>(this);
     m_equipmentChangeConnection = aDispatcher.sink<PacketEvent<RequestEquipmentChanges>>().connect<&InventoryService::OnEquipmentChanges>(this);
     m_drawWeaponConnection = aDispatcher.sink<PacketEvent<DrawWeaponRequest>>().connect<&InventoryService::OnWeaponDrawnRequest>(this);
+}
+
+uint32_t InventoryService::ResolveLootContainerKey(entt::entity aEntity, uint32_t aFallbackServerId) const noexcept
+{
+    if (m_world.valid(aEntity))
+    {
+        if (const auto* pForm = m_world.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != GameId{})
+        {
+            uint64_t h = 14695981039346656037ULL;
+            const uint64_t packed = (static_cast<uint64_t>(pForm->Id.ModId) << 32) | static_cast<uint64_t>(pForm->Id.BaseId);
+            for (int shift = 0; shift < 64; shift += 8)
+            {
+                h ^= (packed >> shift) & 0xFFULL;
+                h *= 1099511628211ULL;
+            }
+            const uint32_t folded = static_cast<uint32_t>((h >> 32) ^ (h & 0xFFFFFFFFULL));
+            return folded | 0x80000000u;
+        }
+    }
+    return aFallbackServerId;
+}
+
+void InventoryService::ForgetContainerForEntity(entt::entity aEntity, uint32_t aFallbackServerId) noexcept
+{
+    if (aFallbackServerId != 0)
+        m_lootLedger.ForgetContainer(aFallbackServerId);
+
+    const uint32_t resolvedKey = ResolveLootContainerKey(aEntity, 0);
+    if (resolvedKey != 0)
+        m_lootLedger.ForgetContainer(resolvedKey);
 }
 
 void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChanges>& acMessage) noexcept
@@ -77,16 +108,17 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
 
         if (isSharedContainerOrNpc)
         {
+            const uint32_t lootContainerKey = ResolveLootContainerKey(*it, message.ServerId);
             if (sanitizedItem.Count > 0)
             {
-                m_lootLedger.RecordDeposit(message.ServerId, sanitizedItem.BaseId);
+                m_lootLedger.RecordDeposit(lootContainerKey, sanitizedItem.BaseId);
             }
             else if (sanitizedItem.Count < 0 && !message.Drop && acMessage.pPlayer)
             {
                 GameId lookupId = sanitizedItem.BaseId;
                 const int32_t availableBefore = inventoryComponent.Content.GetEntryCountById(lookupId);
                 const auto claim = m_lootLedger.EvaluateWithdrawal(
-                    message.ServerId,
+                    lootContainerKey,
                     sanitizedItem.BaseId,
                     acMessage.pPlayer->GetId(),
                     availableBefore,
@@ -199,5 +231,10 @@ void InventoryService::OnWeaponDrawnRequest(const PacketEvent<DrawWeaponRequest>
         auto& characterComponent = characterView.get<CharacterComponent>(*it);
         characterComponent.SetWeaponDrawn(message.IsWeaponDrawn);
         spdlog::debug("Updating weapon drawn state {:x}:{}", message.Id, message.IsWeaponDrawn);
+
+        NotifyDrawWeapon notify{};
+        notify.Id = message.Id;
+        notify.IsWeaponDrawn = message.IsWeaponDrawn;
+        (void)GameServer::Get()->SendToPlayersInRange(notify, *it, acMessage.pPlayer);
     }
 }

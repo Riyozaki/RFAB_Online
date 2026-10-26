@@ -61,7 +61,7 @@ public:
     void ToggleLocalAllyProtection() noexcept;
     void NotifyPartyLeadershipChanged() noexcept;
     void RefreshCoopCombatSnapshot() noexcept;
-    [[nodiscard]] Actor* FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
+    [[nodiscard]] GamePtr<Actor> FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
     void CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept;
     [[nodiscard]] bool IsBossActor(Actor* apActor) const noexcept;
     void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;

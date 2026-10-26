@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
+#include <vector>
 
 namespace CoopLootLedger
 {
@@ -42,19 +43,34 @@ struct ClaimResolution
 
 /**
  * SkyMP-grade server-authoritative container & corpse anti-duplication ledger.
- * Eliminates QuickLootIE / simultaneous ContainerMenu race-condition item duplication across players
- * while remaining 100% transparent to single-looter dynamic/scripted RFAB loot and shared quest items.
+ * Depletion claims persist for the lifetime of the container/corpse (not a short 15s window) so
+ * late-arriving peers cannot re-loot dynamic RFAB boss tokens / death drops minutes later, while
+ * supporting exact checkpoint snapshot capture/restore, explicit deposits, and container respawns.
  */
 class ContainerLootLedger
 {
 public:
-    static constexpr uint64_t kDefaultConflictWindowMs = 15000ULL;
-    static constexpr size_t kMaxTrackedDepletions = 4096;
+    // 0 means container-lifetime persistence (no time-based expiry); finite >0 honors an explicit window.
+    static constexpr uint64_t kPersistentDepletionWindowMs = 0ULL;
+    static constexpr uint64_t kDefaultConflictWindowMs = kPersistentDepletionWindowMs;
+    static constexpr size_t kMaxTrackedDepletions = 32768;
+
+    struct SnapshotEntry
+    {
+        uint32_t ContainerServerId{0};
+        uint32_t ModId{0};
+        uint32_t BaseId{0};
+        uint32_t ClaimantPlayerId{0};
+        uint64_t DepletedAtMs{0};
+    };
+
+    using Snapshot = std::vector<SnapshotEntry>;
 
     void Clear() noexcept
     {
         m_depletions.clear();
         m_fifoOrder.clear();
+        m_nextSequence = 1;
     }
 
     [[nodiscard]] size_t Size() const noexcept
@@ -80,6 +96,53 @@ public:
         RecordDeposit(aContainerServerId, acItemId.ModId, acItemId.BaseId);
     }
 
+    void ForgetContainer(uint32_t aContainerServerId) noexcept
+    {
+        if (aContainerServerId == 0 || m_depletions.empty())
+            return;
+
+        for (auto it = m_depletions.begin(); it != m_depletions.end();)
+        {
+            if (it->first.ContainerServerId == aContainerServerId)
+                it = m_depletions.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    [[nodiscard]] Snapshot CaptureSnapshot() const
+    {
+        Snapshot out;
+        out.reserve(m_depletions.size());
+        for (const auto& fifoItem : m_fifoOrder)
+        {
+            const auto it = m_depletions.find(fifoItem.Key);
+            if (it == m_depletions.end() || it->second.Sequence != fifoItem.Sequence)
+                continue;
+            out.push_back(SnapshotEntry{
+                it->first.ContainerServerId,
+                it->first.ModId,
+                it->first.BaseId,
+                it->second.ClaimantPlayerId,
+                it->second.DepletedAtMs});
+        }
+        return out;
+    }
+
+    void RestoreSnapshot(const Snapshot& acSnapshot)
+    {
+        Clear();
+        for (const auto& entry : acSnapshot)
+        {
+            if (entry.ContainerServerId == 0 || (entry.ModId == 0 && entry.BaseId == 0))
+                continue;
+            RecordDepletion(
+                LootSlotKey{entry.ContainerServerId, entry.ModId, entry.BaseId},
+                entry.ClaimantPlayerId,
+                entry.DepletedAtMs);
+        }
+    }
+
     [[nodiscard]] ClaimResolution EvaluateWithdrawal(
         uint32_t aContainerServerId,
         uint32_t aModId,
@@ -102,7 +165,8 @@ public:
             return res;
         }
 
-        PruneExpired(aNowMs, aConflictWindowMs);
+        if (aConflictWindowMs > 0)
+            PruneExpired(aNowMs, aConflictWindowMs);
 
         const int32_t safeAvailable = std::max(0, aAvailableBefore);
         const LootSlotKey key{aContainerServerId, aModId, aBaseId};
@@ -118,16 +182,17 @@ public:
 
         // Case 2: Requested more than currently tracked in `InventoryComponent`.
         const auto it = m_depletions.find(key);
-        const bool recentlyDepletedByPeer =
+        const bool withinWindow =
+            (aConflictWindowMs == 0) ||
+            (it != m_depletions.end() && aNowMs >= it->second.DepletedAtMs && (aNowMs - it->second.DepletedAtMs) <= aConflictWindowMs);
+        const bool depletedByPeer =
             (it != m_depletions.end()) &&
             (it->second.ClaimantPlayerId != aClaimantPlayerId) &&
-            (aNowMs >= it->second.DepletedAtMs) &&
-            ((aNowMs - it->second.DepletedAtMs) <= aConflictWindowMs);
+            withinWindow;
 
-        if (safeAvailable > 0 || recentlyDepletedByPeer)
+        if (safeAvailable > 0 || depletedByPeer)
         {
-            // Simultaneous multi-player QuickLoot / ContainerMenu race condition detected!
-            // Grant only the remaining server balance (if any) and roll back the overdrawn duplicate on the late peer.
+            // Simultaneous QuickLoot / ContainerMenu race OR late-peer re-loot of an already-depleted slot!
             res.GrantedTake = safeAvailable;
             res.OverdrawnRollback = aRequestedTake - safeAvailable;
             if (safeAvailable > 0)
@@ -136,7 +201,7 @@ public:
         }
 
         // Case 3: `safeAvailable == 0` with no prior peer depletion — dynamic/script-spawned loot not present in initial snapshot.
-        // Allow the first player's claim AND stamp the depletion marker so a second player clicking 30ms later cannot dupe it!
+        // Allow the first player's claim AND stamp the persistent depletion marker so no other peer can dupe it later!
         res.GrantedTake = aRequestedTake;
         res.OverdrawnRollback = 0;
         RecordDepletion(key, aClaimantPlayerId, aNowMs);
@@ -174,34 +239,65 @@ private:
     {
         uint32_t ClaimantPlayerId{0};
         uint64_t DepletedAtMs{0};
+        uint64_t Sequence{0};
     };
+
+    struct FifoItem
+    {
+        LootSlotKey Key{};
+        uint64_t Sequence{0};
+    };
+
+    void EvictDeadFrontEntries() noexcept
+    {
+        while (!m_fifoOrder.empty())
+        {
+            const auto& front = m_fifoOrder.front();
+            const auto it = m_depletions.find(front.Key);
+            if (it == m_depletions.end() || it->second.Sequence != front.Sequence)
+            {
+                m_fifoOrder.pop_front();
+                continue;
+            }
+            break;
+        }
+    }
 
     void RecordDepletion(const LootSlotKey& acKey, uint32_t aPlayerId, uint64_t aNowMs)
     {
+        const uint64_t seq = m_nextSequence++;
         auto it = m_depletions.find(acKey);
         if (it != m_depletions.end())
         {
             it->second.ClaimantPlayerId = aPlayerId;
             it->second.DepletedAtMs = aNowMs;
+            it->second.Sequence = seq;
+            m_fifoOrder.push_back(FifoItem{acKey, seq});
+            if (m_fifoOrder.size() > kMaxTrackedDepletions * 2)
+                EvictDeadFrontEntries();
             return;
         }
 
-        if (m_depletions.size() >= kMaxTrackedDepletions && !m_fifoOrder.empty())
+        while (m_depletions.size() >= kMaxTrackedDepletions)
         {
-            m_depletions.erase(m_fifoOrder.front());
+            EvictDeadFrontEntries();
+            if (m_fifoOrder.empty())
+                break;
+            m_depletions.erase(m_fifoOrder.front().Key);
             m_fifoOrder.pop_front();
         }
 
-        m_depletions.emplace(acKey, DepletionEntry{aPlayerId, aNowMs});
-        m_fifoOrder.push_back(acKey);
+        m_depletions.emplace(acKey, DepletionEntry{aPlayerId, aNowMs, seq});
+        m_fifoOrder.push_back(FifoItem{acKey, seq});
     }
 
     void PruneExpired(uint64_t aNowMs, uint64_t aWindowMs) noexcept
     {
         while (!m_fifoOrder.empty())
         {
-            const auto it = m_depletions.find(m_fifoOrder.front());
-            if (it == m_depletions.end())
+            const auto& front = m_fifoOrder.front();
+            const auto it = m_depletions.find(front.Key);
+            if (it == m_depletions.end() || it->second.Sequence != front.Sequence)
             {
                 m_fifoOrder.pop_front();
                 continue;
@@ -218,6 +314,7 @@ private:
     }
 
     std::unordered_map<LootSlotKey, DepletionEntry, LootSlotKeyHash> m_depletions{};
-    std::deque<LootSlotKey> m_fifoOrder{};
+    std::deque<FifoItem> m_fifoOrder{};
+    uint64_t m_nextSequence{1};
 };
 } // namespace CoopLootLedger

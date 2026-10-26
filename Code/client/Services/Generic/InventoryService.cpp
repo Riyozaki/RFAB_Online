@@ -40,6 +40,7 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     m_equipmentConnection = m_dispatcher.sink<EquipmentChangeEvent>().connect<&InventoryService::OnEquipmentChangeEvent>(this);
     m_inventoryChangeConnection = m_dispatcher.sink<NotifyInventoryChanges>().connect<&InventoryService::OnNotifyInventoryChanges>(this);
     m_equipmentChangeConnection = m_dispatcher.sink<NotifyEquipmentChanges>().connect<&InventoryService::OnNotifyEquipmentChanges>(this);
+    m_drawWeaponChangeConnection = m_dispatcher.sink<NotifyDrawWeapon>().connect<&InventoryService::OnNotifyDrawWeapon>(this);
 }
 
 void InventoryService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
@@ -74,10 +75,11 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
         return;
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    if (m_world.try_get<WaitingForAssignmentComponent>(targetEntity))
+    if (auto* pWaitingAssign = m_world.try_get<WaitingForAssignmentComponent>(targetEntity))
     {
+        pWaitingAssign->DirtyInventory = true;
         spdlog::debug(
-            __FUNCTION__ ": WaitingForAssignment, don't send inventory changes actorId: {:X}, isLeader: {}, item id: {:X}",
+            __FUNCTION__ ": WaitingForAssignment, flagged DirtyInventory actorId: {:X}, isLeader: {}, item id: {:X}",
             acEvent.FormId, isLeader, acEvent.Item.BaseId.LogFormat());
         return;
     }
@@ -122,10 +124,11 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     const char* pActorBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
 
-    if (m_world.try_get<WaitingForAssignmentComponent>(actorEntity))
+    if (auto* pWaitingAssign = m_world.try_get<WaitingForAssignmentComponent>(actorEntity))
     {
+        pWaitingAssign->DirtyInventory = true;
         spdlog::debug(
-            __FUNCTION__ ": WaitingForAssignment, don't send equipment changes actorId: {:X}, isLeader: {}, "
+            __FUNCTION__ ": WaitingForAssignment, flagged DirtyInventory actorId: {:X}, isLeader: {}, "
                          "item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
             acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId,
             pActorBaseName);
@@ -167,14 +170,13 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
 void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& acMessage) noexcept
 {
+    m_world.GetCharacterService().SyncRemoteCachedInventory(acMessage.ServerId, acMessage.Item, acMessage.Drop);
+
     if (acMessage.Drop)
     {
         Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
         if (!pActor)
-        {
-            spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ServerId);
             return;
-        }
 
         ScopedInventoryOverride _;
 
@@ -194,12 +196,11 @@ void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& ac
 
 void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept
 {
+    m_world.GetCharacterService().SyncRemoteCachedEquipment(acMessage);
+
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
     if (!pActor)
-    {
-        spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ServerId);
         return;
-    }
 
     auto& modSystem = World::Get().GetModSystem();
 
@@ -299,6 +300,17 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
         }
 
         pEquipManager->Equip(pActor, pItem, nullptr, acMessage.Count, pEquipSlot, false, true, false, false);
+    }
+}
+
+void InventoryService::OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept
+{
+    m_world.GetCharacterService().SyncRemoteCachedWeaponDraw(acMessage.Id, acMessage.IsWeaponDrawn);
+
+    if (Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id))
+    {
+        if (const auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote() && !pActor->IsDead())
+            pActor->SetWeaponDrawnEx(acMessage.IsWeaponDrawn);
     }
 }
 

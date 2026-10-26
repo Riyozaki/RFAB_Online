@@ -137,6 +137,20 @@ void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
     }
 }
 
+void ObjectService::RefreshCurrentCellObjectsAfterRollback() noexcept
+{
+    auto view = m_world.view<ObjectComponent>();
+    Vector<entt::entity> toDestroy(view.begin(), view.end());
+    for (entt::entity entity : toDestroy)
+    {
+        if (m_world.valid(entity))
+            m_world.destroy(entity);
+    }
+
+    CellChangeEvent refreshEvt{};
+    OnCellChange(refreshEvt);
+}
+
 void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
 {
     if (!m_transport.IsConnected())
@@ -290,8 +304,8 @@ entt::entity ObjectService::CreateObjectEntity(const uint32_t acFormId, const ui
 
     if (matchedEntity != entt::null)
     {
-        m_world.get<FormIdComponent>(matchedEntity).Id = acFormId;
-        m_world.get<ObjectComponent>(matchedEntity).Id = acServerId;
+        m_world.emplace_or_replace<FormIdComponent>(matchedEntity, acFormId);
+        m_world.emplace_or_replace<ObjectComponent>(matchedEntity, acServerId);
         return matchedEntity;
     }
 

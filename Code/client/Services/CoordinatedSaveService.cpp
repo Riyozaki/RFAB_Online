@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <Services/CoordinatedSaveService.h>
+#include <Services/ObjectService.h>
 
 #include <World.h>
 #include <Utils.h>
@@ -743,6 +744,8 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
     downedSvc.RestoreLivingCombatTargetability(pPlayer, true);
     downedSvc.SchedulePostReviveHeadAndCameraSettle(wasFirstPersonBeforeDowned);
     m_world.GetCharacterService().NotifyInSessionRollbackApplied();
+    if (auto* pObjSvc = m_world.ctx().find<ObjectService>())
+        pObjSvc->RefreshCurrentCellObjectsAfterRollback();
 
     spdlog::info(
         "[RFAB SaveLoad] Completed seamless in-session checkpoint rollback (Epoch={}, PartyWipe={}, Transform={})",

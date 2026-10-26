@@ -1,13 +1,42 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v2.0.2` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — актуальная сборка нового поколения (`SkyMP-Grade Server Authority` / `Zero-CTD Core` / `ServerWorldModel + ClientWorldView` / `O(1)` индексы / кросс-версионный бинарный индексатор `.esp/.esl` для **любой** версии RFAB) для **Skyrim SE `1.5.97.0.8` + RFAB**.
-- **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)** и **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — неприкосновенные эталонные бэкапы релиза `2.0.1` (`SHA-256` зафиксированы в `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
+- **[`v2.0.3` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — актуальная сборка глубокой архитектурной стабилизации (`Two-Phase Ownership` / `EntityIndexTable` / `In-Place Leveled Sync` / `Multi-Hop EngineFixes` / `ScriptDamageAuthLedger + ConcentrationSyncLimiter` / персистентный анти-дюп + чекпоинты с устойчивым ID игрока) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.0.2-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup)** и **[`v2.0.2`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — неприкосновенные эталонные бэкапы релиза `2.0.2` (`SHA-256` зафиксированы в `docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
+- **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)** и **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — неприкосновенные эталонные бэкапы релиза `2.0.1` (`SHA-256` зафиксированы в `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`).
 - **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)** — сохранённый эталонный бэкап стабильной ветки `1.2.0`.
 - **[`v1.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)** — сохранённый бэкап стабильного релиза `1.1.0`.
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
 
 > **Чистый переход с версии на версию:** при запуске `INSTALL_RFAB_ONLINE.bat` (или `UPDATE_RFAB_ONLINE.bat` из `Quick_Update.zip`) установщик автоматически останавливает фоновый сервер, **полностью удаляет старые файлы прошлой версии** из `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя ваши настройки `STServer.ini`), очищает возможные остатки в `MO2\overwrite` и устанавливает свежую версию с нуля.
+
+---
+
+## [v2.0.3] — 2026-10-26 *(Deep Architectural Stabilization: WorldView Lifecycle, Multi-Hop EngineFixes, Non-Owner RFAB Combat & Persistent Checkpoints)*
+
+### 🏛️ Фаза 1 — Двухфазное владение (`Two-Phase Ownership`), `EntityIndexTable` и In-Place синхронизация уровневых NPC
+- **Унифицированный двунаправленный индекс `CoopWorldView::EntityIndexTable` (`Code/common/CoopWorldView.h`, `Client::CharacterService`):**
+  - Заменены 3 разрозненные raw-карты на строгую таблицу связей с побитовой маской слотов `(kLocal | kRemote | kObject)`: при передаче владения (`TakeOwnership`) и посадке на лошадь (`OnNotifyMount`) живой `ServerId` никогда не теряется между `on_construct` и `on_destroy`, при замене `ObjectComponent` старый `ServerId` мгновенно вытесняется, а при живом `/disconnect` → `/connect` размещённые `0x00..0xFE` акторы сохраняют привязку `FormIdComponent`.
+- **Двухфазное пробуждение спящих мировых NPC (`PendingOwnershipEpoch` + `WakeDormantCharactersInActiveRanges`):**
+  - Клиент откладывает `TakeOwnership` в `RemoteEntityModel::PendingOwnershipEpoch`, если целевая ячейка ещё догружает 3D, и мгновенно активирует владение при материализации `FormView`; сервер пробуждает спящих `0x00..0xFE` NPC как при `action == kNone`, так и фоновым обходом раз в `1000 мс`.
+- **In-Place синхронизация уровневых NPC (`ReconcilePlacedActorBaseFormInPlace`) вместо `0xFF00xxxx` подмены:**
+  - Полностью ликвидирована подмена размещённых `TESLevCharacter` временными клонами (`m_suppressedPlacedActors`), разрывавшая квестовые алиасы, засады `MasterAmbushScript`, барьеры боссов, `OnDeath` и зачистку локаций в RFAB — базовый шаблон `TESNPC` теперь синхронизируется на месте (`SetBaseForm`) с полным сохранением `0x00..0xFE` `RefID`.
+- **Нулевая потеря пакетов в `WaitingFor3D` и `WaitingForAssignment` (`SyncRemoteCached*`, `DirtyInventory`, `PendingHealthDelta`, `NotifyDrawWeapon`, `kUnreliableNoNagle`):**
+  - Все пакеты инвентаря, экипировки, характеристик, урона, смерти и обнажения оружия во время загрузки 3D синхронно обновляют `m_remoteModels` и `WaitingFor3D::SpawnRequest`; дельты за время `AssignCharacter` RTT досылаются сразу после ответа сервера; сервер ретранслирует `NotifyDrawWeapon` и отправляет чистые пакеты движения через `kUnreliableNoNagle`.
+
+### 🛡️ Фаза 2 — Zero-CTD ядро памяти, многошаговых трамплинов и многопоточности
+- **4-шаговый декодер трамплинов `DecodeHookJumpTargetLive` (`Memory.cpp` + `CoopDamagePipeline.h`):** корректно проходит цепочки `FormAllocate` (`E9 rel32`) → трамплин SKSE (`FF 25 [rip+0]`) → `EngineFixes.dll`, гарантируя выделение полного `sizeof(ExActor)` при включённом `MemoryManager = true`.
+- **Безопасность кучи, ссылок и потоков:** устранена утечка `GameArray<EffectItem>` в `EnchantmentItem::Create` без нарушения x64 ABI движка (`~GameArray() = default`), возвращён удерживающий `GamePtr<Actor>` в `FindBestStandingPlayerTargetFor`, закрыта гонка отложенного удаления актора при диалоге (`SetRemote(true)`), исправлена битовая проверка `IsTemporary()` для ESL (`0xFE00xxxx`) зачарований в `TESObjectREFR.cpp`.
+
+### ⚔️ Фаза 3 — Честный бой и магия RFAB для всех игроков группы (`Non-Owner Parity`)
+- **Полный урон стрелков, магов и криков гостей + `ScriptDamageAuthLedger` + `ConcentrationSyncLimiter`:**
+  - Разрешена отправка попаданий стрел/болтов, заклинаний и криков локального игрока по удалённым NPC даже без владения ИИ цели, а потокобезопасный реестр `ScriptDamageAuthLedger` пропускает скриптовый урон перков и заклинаний RFAB (`RFAB_PapyrusFunctions.ScriptDamage` / `Actor.DamageActorValue`) строго в окне авторского попадания без дублирования мировых скриптов.
+  - Потоковые заклинания (`ConcentrationSyncLimiter`) коалесцируются с `60 Гц` до ~`5.5 Гц`, исправлена детекция двуручного каста (`Dual Cast`), а воскрешение при откате использует `Actor::ResurrectInPlace()` без сброса позиции/инвентаря (`Respawn()`).
+  - При блокировке ложного отхила босса сервер отправляет корректирующий `NotifyHealthChangeBroadcast` владельцу ИИ.
+
+### 🧰 Фаза 4 — Персистентный анти-дюп лута и чекпоинты с устойчивым ID игрока
+- **Бессрочный `ContainerLootLedger` со снапшотами и стабильным ключом `(ModId, BaseId)`:** защита сундуков боссов и тел от повторного лутания работает на протяжении всей сессии (и после перезапуска сервера из `rfab_checkpoints.bin`), сбрасываясь точечно при респавне NPC (`ForgetContainerForEntity`) и точно откатываясь к эпохе чекпоинта (`RestoreLootLedgerSnapshot`).
+- **Устойчивая идентификация игроков (`BuildPlayerIdentityKey` + `kV203IdentityAndLedgerExtMagic`) и обновление сундуков при откате:** квесты, инвентарь и координаты игрока привязаны к `DiscordId` / нормализованному имени (не теряются при переподключении с новым `PlayerId`), при полной совместимости со старыми файлами чекпоинтов `v2.0.1` / `v2.0.2`.
 
 ---
 

@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <Games/Memory.h>
+#include <CoopDamagePipeline.h>
 #include <Games/References.h>
 
 #include <TiltedCore/MimallocAllocator.hpp>
@@ -97,28 +98,44 @@ void Memory::Free(void* apData) noexcept
 
 static bool IsFormAllocateReplacedByEF(TFormAllocate** appOutEngineFixesAlloc) noexcept
 {
+    HMODULE const hEngineFixes = GetModuleHandleW(L"EngineFixes.dll");
+    if (!hEngineFixes || !appOutEngineFixesAlloc)
+        return false;
+
     POINTER_SKYRIMSE(TFormAllocate, s_formAllocate, 66859);
     TFormAllocate* pFormAllocate = s_formAllocate.Get();
+    if (!pFormAllocate || !*pFormAllocate)
+        return false;
 
-    auto opcodeBytes = reinterpret_cast<uint16_t*>(*pFormAllocate);
-    uint8_t shift = 0;
-
-    if (*opcodeBytes == 0x25FF) // 'jmp' opcode 'FF 25' and the 4-byte displacement bytes come before the virtual address we're after
-        shift = 6;
-    else if (*opcodeBytes == 0xB848) // 'mov' opcode '48 B8' comes before the virtual address we're after
-        shift = 2;
-
-    auto possibleEfAllocAddress = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uint8_t*>(*pFormAllocate) + shift);
-
-    MEMORY_BASIC_INFORMATION mbi;
-    if (VirtualQuery((void*)possibleEfAllocAddress, &mbi, sizeof(mbi)) != 0)
+    // Follow up to 4 jump hops so both direct hooks (`FF 25`, `48 B8`) AND two-stage CommonLibSSE / SKSE
+    // `write_branch<5>` trampolines (`E9 rel32` -> trampoline stub -> `FF 25 [rip+0]` -> `EngineFixes.dll`)
+    // are reliably detected and rehooked to allocate `sizeof(ExActor)` instead of vanilla `0x2B0`.
+    uintptr_t cursor = reinterpret_cast<uintptr_t>(*pFormAllocate);
+    for (int hop = 0; hop < 4 && cursor != 0; ++hop)
     {
-        if (mbi.AllocationBase == GetModuleHandleW(L"EngineFixes.dll"))
+        MEMORY_BASIC_INFORMATION codeMbi{};
+        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &codeMbi, sizeof(codeMbi)) == 0 ||
+            codeMbi.State != MEM_COMMIT)
         {
-            *appOutEngineFixesAlloc = reinterpret_cast<TFormAllocate*>(possibleEfAllocAddress);
+            break;
+        }
+
+        const uintptr_t target = CoopDamagePipeline::DecodeHookJumpTargetLive(reinterpret_cast<const void*>(cursor), /*aMaxHops=*/1);
+        if (target == 0 || target == cursor)
+            break;
+
+        MEMORY_BASIC_INFORMATION targetMbi{};
+        if (VirtualQuery(reinterpret_cast<const void*>(target), &targetMbi, sizeof(targetMbi)) != 0 &&
+            targetMbi.State == MEM_COMMIT &&
+            targetMbi.AllocationBase == hEngineFixes)
+        {
+            *appOutEngineFixesAlloc = reinterpret_cast<TFormAllocate*>(target);
             return true;
         }
+
+        cursor = target;
     }
+
     return false;
 }
 

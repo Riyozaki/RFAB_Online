@@ -354,23 +354,25 @@ void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcep
     if (!m_transport.IsConnected())
         return;
 
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto hitteeIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.HitteeId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (hitteeIt == std::end(view))
+    const entt::entity hitteeEntity = m_world.GetCharacterService().FindActorEntityByFormId(acEvent.HitteeId);
+    if (hitteeEntity == entt::null)
     {
         spdlog::debug("Health change event form id component not found, form id: {:X}", acEvent.HitteeId);
         return;
     }
 
-    if (m_world.all_of<WaitingForAssignmentComponent>(*hitteeIt))
+    if (auto* pWaitAssign = m_world.try_get<WaitingForAssignmentComponent>(hitteeEntity))
     {
-        spdlog::debug("{}: actor {:X} still WaitingForAssignment, deferring health delta", __FUNCTION__, acEvent.HitteeId);
+        pWaitAssign->PendingHealthDelta += acEvent.DeltaHealth;
+        spdlog::debug(
+            "{}: actor {:X} still WaitingForAssignment, accumulated deferred health delta {:.2f}",
+            __FUNCTION__,
+            acEvent.HitteeId,
+            pWaitAssign->PendingHealthDelta);
         return;
     }
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*hitteeIt);
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(hitteeEntity);
     if (!serverIdRes.has_value())
     {
         spdlog::debug("{}: skipping health delta on unassigned entity {:X}", __FUNCTION__, acEvent.HitteeId);
@@ -478,12 +480,11 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 
 void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept
 {
+    m_world.GetCharacterService().SyncRemoteCachedHealthDelta(acMessage.Id, acMessage.DeltaHealth);
+
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
     if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
-    {
-        spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.Id);
         return;
-    }
 
     {
         ScopedActorValueOverride avOverride;
@@ -520,20 +521,37 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
 
 void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMessage) const noexcept
 {
-    auto view = m_world.view<FormIdComponent, RemoteComponent>();
+    m_world.GetCharacterService().SyncRemoteCachedActorValues(acMessage.Id, acMessage.Values, /*aIsMaxValues=*/false);
 
-    const auto itor = std::find_if(std::begin(view), std::end(view), [id = acMessage.Id, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == id; });
-
-    if (itor == std::end(view))
+    const entt::entity entity = m_world.GetCharacterService().FindEntityByServerId(acMessage.Id);
+    if (entity == entt::null || !m_world.all_of<FormIdComponent>(entity))
         return;
 
-    auto& formIdComponent = view.get<FormIdComponent>(*itor);
+    const bool isLocalOwner = m_world.all_of<LocalComponent>(entity);
+    const bool isRemoteActor = m_world.all_of<RemoteComponent>(entity);
+    if (!isLocalOwner && !isRemoteActor)
+        return;
+
+    auto& formIdComponent = m_world.get<FormIdComponent>(entity);
     Actor* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
 
-    if (!pActor)
+    if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
 
     ScopedActorValueOverride avOverride;
+
+    // Authoritative server rollback path (`SaveSnapshotService` / false boss-heal rollback) targeting the
+    // owning client of a non-player NPC: apply `kHealth` directly so checkpoint/boss HP rollbacks stick!
+    if (isLocalOwner)
+    {
+        if (const auto* pExt = pActor->GetExtension(); pExt && !pExt->IsPlayer())
+        {
+            const auto hpIt = acMessage.Values.find(ActorValueInfo::kHealth);
+            if (hpIt != acMessage.Values.end())
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, hpIt->second);
+        }
+        return;
+    }
 
     for (const auto& [key, value] : acMessage.Values)
     {
@@ -565,17 +583,16 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
 
 void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges& acMessage) const noexcept
 {
-    auto view = m_world.view<FormIdComponent, RemoteComponent>();
+    m_world.GetCharacterService().SyncRemoteCachedActorValues(acMessage.Id, acMessage.Values, /*aIsMaxValues=*/true);
 
-    const auto it = std::find_if(std::begin(view), std::end(view), [id = acMessage.Id, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == id; });
-
-    if (it == std::end(view))
+    const entt::entity entity = m_world.GetCharacterService().FindEntityByServerId(acMessage.Id);
+    if (entity == entt::null || !m_world.all_of<FormIdComponent, RemoteComponent>(entity))
         return;
 
-    auto& formIdComponent = view.get<FormIdComponent>(*it);
+    auto& formIdComponent = m_world.get<FormIdComponent>(entity);
     Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
 
-    if (!pActor)
+    if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
 
     ScopedActorValueOverride avOverride;
@@ -602,6 +619,8 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
 
 void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessage) const noexcept
 {
+    m_world.GetCharacterService().SyncRemoteCachedDeathState(acMessage.Id, acMessage.IsDead);
+
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);
     if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
@@ -633,12 +652,12 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
         }
         else
         {
-            pActor->Respawn();
-            auto localView = m_world.view<FormIdComponent, LocalComponent>();
-            for (auto entity : localView)
+            pActor->ResurrectInPlace();
+            const entt::entity entity = m_world.GetCharacterService().FindActorEntityByFormId(pActor->formID);
+            if (entity != entt::null)
             {
-                if (localView.get<FormIdComponent>(entity).Id == pActor->formID)
-                    localView.get<LocalComponent>(entity).IsDead = false;
+                if (auto* pLocal = m_world.try_get<LocalComponent>(entity))
+                    pLocal->IsDead = false;
             }
         }
     }

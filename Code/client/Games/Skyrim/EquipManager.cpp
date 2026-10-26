@@ -180,7 +180,7 @@ void* TP_MAKE_THISCALL(EquipHook, EquipManager, Actor* apActor, TESForm* apItem,
     // Consumables are "equipped" as well. We don't want this to sync, for several reasons.
     // The right hand item on the server would be overridden by the consumable.
     // Furthermore, the equip action on the other clients would doubly subtract the consumables.
-    if (World::IsConnectedCached() && pExtension->IsLocal() && apData && !apItem->IsConsumable() && !apData->bQueueEquip)
+    if (World::IsCreated() && World::IsConnectedCached() && pExtension->IsLocal() && apData && !apItem->IsConsumable() && !apData->bQueueEquip)
     {
         EquipmentChangeEvent evt{};
         evt.ActorId = apActor->formID;
@@ -214,7 +214,7 @@ void* TP_MAKE_THISCALL(UnEquipHook, EquipManager, Actor* apActor, TESForm* apIte
             return nullptr;
     }
 
-    if (World::IsConnectedCached() && pExtension->IsLocal() && apData && !ScopedUnequipOverride::IsOverriden() && !apData->bQueueEquip)
+    if (World::IsCreated() && World::IsConnectedCached() && pExtension->IsLocal() && apData && !ScopedUnequipOverride::IsOverriden() && !apData->bQueueEquip)
     {
         EquipmentChangeEvent evt{};
         evt.ActorId = apActor->formID;
@@ -243,7 +243,7 @@ void* TP_MAKE_THISCALL(EquipSpellHook, EquipManager, Actor* apActor, TESForm* ap
     if (pExtension->IsRemote() && !ScopedEquipOverride::IsOverriden())
         return nullptr;
 
-    if (World::IsConnectedCached() && pExtension->IsLocal() && apData && !apData->bQueueEquip)
+    if (World::IsCreated() && World::IsConnectedCached() && pExtension->IsLocal() && apData && !apData->bQueueEquip)
     {
         EquipmentChangeEvent evt{};
         evt.ActorId = apActor->formID;
@@ -270,7 +270,7 @@ void* TP_MAKE_THISCALL(UnEquipSpellHook, EquipManager, Actor* apActor, TESForm* 
     if (pExtension->IsRemote() && !ScopedEquipOverride::IsOverriden())
         return nullptr;
 
-    if (World::IsConnectedCached() && pExtension->IsLocal() && apData && !ScopedUnequipOverride::IsOverriden() && !apData->bQueueEquip)
+    if (World::IsCreated() && World::IsConnectedCached() && pExtension->IsLocal() && apData && !ScopedUnequipOverride::IsOverriden() && !apData->bQueueEquip)
     {
         EquipmentChangeEvent evt{};
         evt.ActorId = apActor->formID;
@@ -297,7 +297,7 @@ void* TP_MAKE_THISCALL(EquipShoutHook, EquipManager, Actor* apActor, TESForm* ap
         return nullptr;
 
     // TODO: queue check?
-    if (World::IsConnectedCached() && pExtension->IsLocal())
+    if (World::IsCreated() && World::IsConnectedCached() && pExtension->IsLocal())
     {
         EquipmentChangeEvent evt{};
         evt.ActorId = apActor->formID;
@@ -324,7 +324,7 @@ void* TP_MAKE_THISCALL(UnEquipShoutHook, EquipManager, Actor* apActor, TESForm* 
         return nullptr;
 
     // TODO: queue check?
-    if (World::IsConnectedCached() && pExtension->IsLocal() && !ScopedUnequipOverride::IsOverriden())
+    if (World::IsCreated() && World::IsConnectedCached() && pExtension->IsLocal() && !ScopedUnequipOverride::IsOverriden())
     {
         EquipmentChangeEvent evt{};
         evt.ActorId = apActor->formID;

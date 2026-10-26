@@ -142,7 +142,9 @@ def main() -> int:
     assert "pPlayer->DispelAllSpells();" not in coord_save_cpp
     assert "MoveToWorldOrCell" in coord_save_cpp
     assert "ownerComponent.SetOwner(nullptr, nowMs)" in srv_char_cpp
-    assert "m_actorEntityByFormId" in (ROOT / "Code" / "client" / "Services" / "CharacterService.h").read_text(encoding="utf-8")
+    cli_char_h = (ROOT / "Code" / "client" / "Services" / "CharacterService.h").read_text(encoding="utf-8")
+    assert "m_entityIndex" in cli_char_h and "ReconcilePlacedActorBaseFormInPlace" in cli_char_h
+    assert "m_suppressedPlacedActors" not in cli_char_h
     assert "class EspEdidIndex" in rfab_compat_h
     assert "ParseActivePluginList" in rfab_compat_h
     assert "ResolveRfabConfigPath" in rfab_compat_h
@@ -168,7 +170,19 @@ def main() -> int:
     assert "m_objectEntityByKey" in srv_obj_cpp
     assert "FindEntityByServerId(acServerId)" in cli_utils_h
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 SkyMP root-cause regression checks passed!")
+    # 12. v2.0.3 Architectural Stabilization (WorldView Two-Phase Ownership, Multi-Hop EngineFixes, RFAB Combat & Checkpoint Identity)
+    v202_backup_manifest = (ROOT / "docs" / "V2.0.2_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    dmg_pipe_h = (ROOT / "Code" / "common" / "CoopDamagePipeline.h").read_text(encoding="utf-8")
+    save_snap_cpp = (ROOT / "Code" / "server" / "Services" / "SaveSnapshotService.cpp").read_text(encoding="utf-8")
+    cli_char_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterService.cpp").read_text(encoding="utf-8")
+    assert '"v2.0.2-backup"' in v202_backup_manifest and "424319337" in v202_backup_manifest
+    assert "DecodeHookJumpTargetLive" in dmg_pipe_h
+    assert "ScriptDamageAuthLedger" in dmg_pipe_h and "ConcentrationSyncLimiter" in dmg_pipe_h
+    assert "kV203IdentityAndLedgerExtMagic" in save_snap_cpp and "HydratePersistedWorldState" in save_snap_cpp
+    assert "PendingOwnershipEpoch" in cli_char_cpp and "SyncRemoteCachedInventory" in cli_char_cpp
+    assert "WakeDormantCharactersInActiveRanges" in srv_char_cpp and "NotifyDrawWeapon" in srv_inv_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 architectural regression checks passed!")
     return 0
 
 

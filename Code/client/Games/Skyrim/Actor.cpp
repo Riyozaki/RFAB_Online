@@ -4,9 +4,12 @@
 #include <Misc/MiddleProcess.h>
 #include <Havok/bhkCharacterController.h>
 #include <CoopOwnership.h>
+#include <CoopDamagePipeline.h>
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
 #include <Forms/TESNPC.h>
+#include <Forms/SpellItem.h>
+#include <Forms/TESShout.h>
 #include <Forms/TESFaction.h>
 #include <Forms/TESQuest.h>
 #include <Components/TESActorBaseData.h>
@@ -520,14 +523,15 @@ uint8_t Actor::GetPerkRank(uint32_t aPerkFormId) const noexcept
 bool TP_MAKE_THISCALL(HookRemoveSpell, Actor, MagicItem* apSpell)
 {
     bool result = TiltedPhoques::ThisCall(RealRemoveSpell, apThis, apSpell);
-    if (apThis->GetExtension()->IsLocalPlayer() && result)
+    if (result && apThis && apSpell && World::IsCreated() && World::IsConnectedCached())
     {
-        //spdlog::info(__FUNCTION__ ": spell: {}, ID: {} from local player", apSpell->GetName() , apSpell->formID);
-       RemoveSpellEvent removalEvent;
-
-        removalEvent.TargetId = apThis->formID;
-        removalEvent.SpellId = apSpell->formID;
-        World::Get().GetRunner().Trigger(removalEvent);
+        if (const auto* pExt = apThis->GetExtension(); pExt && pExt->IsLocalPlayer())
+        {
+            RemoveSpellEvent removalEvent;
+            removalEvent.TargetId = apThis->formID;
+            removalEvent.SpellId = apSpell->formID;
+            World::Get().GetRunner().Trigger(removalEvent);
+        }
     }
 
     return result;
@@ -1023,33 +1027,46 @@ void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
 {
     auto* pEquipManager = EquipManager::Get();
-    if (!pEquipManager)
+    if (!pEquipManager || !World::IsCreated())
         return;
 
+    ScopedEquipOverride equipOverride;
     auto& modSystem = World::Get().GetModSystem();
 
     if (acEquipment.LeftHandSpell)
     {
-        uint32_t mainHandWeaponId = modSystem.GetGameId(acEquipment.LeftHandSpell);
-        spdlog::debug("Setting left hand spell: {:X}", mainHandWeaponId);
-        if (TESForm* pLeftSpell = TESForm::GetById(mainHandWeaponId))
+        const uint32_t leftSpellId = modSystem.GetGameId(acEquipment.LeftHandSpell);
+        spdlog::debug("Setting left hand spell: {:X}", leftSpellId);
+        if (SpellItem* pLeftSpell = Cast<SpellItem>(TESForm::GetById(leftSpellId)))
             pEquipManager->EquipSpell(this, pLeftSpell, 0);
+    }
+    else if (magicItems[0])
+    {
+        pEquipManager->UnEquipSpell(this, magicItems[0], 0);
     }
 
     if (acEquipment.RightHandSpell)
     {
-        uint32_t secondaryHandWeaponId = modSystem.GetGameId(acEquipment.RightHandSpell);
-        spdlog::debug("Setting right hand spell: {:X}", secondaryHandWeaponId);
-        if (TESForm* pRightSpell = TESForm::GetById(secondaryHandWeaponId))
+        const uint32_t rightSpellId = modSystem.GetGameId(acEquipment.RightHandSpell);
+        spdlog::debug("Setting right hand spell: {:X}", rightSpellId);
+        if (SpellItem* pRightSpell = Cast<SpellItem>(TESForm::GetById(rightSpellId)))
             pEquipManager->EquipSpell(this, pRightSpell, 1);
+    }
+    else if (magicItems[1])
+    {
+        pEquipManager->UnEquipSpell(this, magicItems[1], 1);
     }
 
     if (acEquipment.Shout)
     {
-        uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
+        const uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
         spdlog::debug("Setting shout: {:X}", shoutId);
-        if (TESForm* pShout = TESForm::GetById(shoutId))
+        if (TESShout* pShout = Cast<TESShout>(TESForm::GetById(shoutId)))
             pEquipManager->EquipShout(this, pShout);
+    }
+    else if (equippedShout)
+    {
+        pEquipManager->UnEquipShout(this, equippedShout);
     }
 }
 
@@ -1262,6 +1279,52 @@ void Actor::Respawn() noexcept
     Reset();
 }
 
+void Actor::ResurrectInPlace() noexcept
+{
+    // Resurrects the existing placed/dynamic Actor IN PLACE (`aResetInventory = false`) WITHOUT calling
+    // `ObjectReference::Reset()`, avoiding editor-marker teleports, inventory wipes, and `TESLevCharacter`
+    // creature template re-rolls!
+    ScopedInventoryOverride invOverride;
+    ScopedEquipOverride equipOverride;
+    ScopedActorValueOverride avOverride;
+    Resurrect(false);
+}
+
+namespace
+{
+CoopDamagePipeline::ScriptDamageAuthLedger<64> s_scriptDamageAuthLedger{};
+thread_local bool s_inApplyActorEffect = false;
+
+[[nodiscard]] uint64_t NowActorSteadyMs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+struct ScopedApplyActorEffectGuard
+{
+    ScopedApplyActorEffectGuard() noexcept
+        : m_prev(s_inApplyActorEffect)
+    {
+        s_inApplyActorEffect = true;
+    }
+    ~ScopedApplyActorEffectGuard() noexcept { s_inApplyActorEffect = m_prev; }
+    bool m_prev{false};
+};
+} // namespace
+
+void Actor::ArmLocalPlayerScriptDamageWindow(uint32_t aTargetFormId, uint64_t aDurationMs) noexcept
+{
+    s_scriptDamageAuthLedger.ArmWindow(aTargetFormId, NowActorSteadyMs(), aDurationMs);
+}
+
+bool Actor::HasLocalPlayerScriptDamageWindow(uint32_t aTargetFormId) noexcept
+{
+    return s_scriptDamageAuthLedger.IsAuthorized(aTargetFormId, NowActorSteadyMs());
+}
+
 bool Actor::IsVampireLord() const noexcept
 {
     return race && race->formID == 0x200283A;
@@ -1393,6 +1456,12 @@ struct ScopedLethalPlayerDamageIntercept
 // TODO: this is flawed, since it does not account for invulnerable actors
 bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bool aKillMove)
 {
+    if (!apThis)
+        return false;
+
+    if (!World::IsCreated() || !World::IsConnectedCached())
+        return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
+
     const auto coopPolicy =
         (apHitter && apThis) ? World::Get().GetRfabAdapterService().EvaluateCoopAction(apHitter, apThis, false)
                              : RfabCompat::CoopAllyActionPolicy{};
@@ -1517,7 +1586,11 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
             (pExHitter && pExHitter->IsRemote() && apHitter->IsPlayerSummon());
 
         if ((pExHitter && pExHitter->IsLocalPlayer()) || isLocalPlayerSummon)
+        {
+            if (pExHittee->IsRemote() && !pExHittee->IsPlayer())
+                Actor::ArmLocalPlayerScriptDamageWindow(apThis->formID, 3000ULL);
             return applyAuthoritativeDamage();
+        }
         if ((pExHitter && pExHitter->IsRemotePlayer()) || isRemotePlayerSummon)
             return wouldKill;
     }
@@ -1535,6 +1608,10 @@ static TApplyActorEffect* RealApplyActorEffect = nullptr;
 
 void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float aEffectValue, unsigned int unk1)
 {
+    ScopedApplyActorEffectGuard effectScope;
+    if (!World::IsCreated() || !World::IsConnectedCached())
+        return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
+
     const auto* pValueModEffect = Cast<ValueModifierEffect>(apThis);
 
     if (pValueModEffect)
@@ -1573,6 +1650,12 @@ static TRestoreActorValue* RealRestoreActorValue = nullptr;
 // 3. Blocks passive local health regeneration on remote actors without interfering with authoritative damage/sync.
 void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue)
 {
+    if (!World::IsCreated() || !World::IsConnectedCached())
+    {
+        TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+        return;
+    }
+
     if (aMode == ActorValueOwner::ForceMode::DAMAGE && aId == ActorValueInfo::kHealth && apThis)
     {
         if (auto* pExt = apThis->GetExtension())
@@ -1580,7 +1663,39 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
             if (pExt->IsRemote())
             {
                 if (!ScopedActorValueOverride::IsOverriden() && !s_inAuthoritativeDamageHook)
+                {
+                    // Caster-authoritative RFAB `kScript` / `RFAB_PapyrusFunctions.ScriptDamage` / Perk `OnHit` path:
+                    // Only executes when the Local Player (or a Local Player Summon) recently armed an active hit/kScript
+                    // authorization window on this remote non-player NPC, and NEVER inside `HookApplyActorEffect`
+                    // (which is already synced via `AddTargetEvent`), preventing both 2x spell damage and quest-script dupes!
+                    if (!s_inApplyActorEffect &&
+                        !pExt->IsPlayer() &&
+                        !apThis->IsGhost() &&
+                        aValue < -0.05f &&
+                        Actor::HasLocalPlayerScriptDamageWindow(apThis->formID))
+                    {
+                        const float prevInfamy = apThis->GetActorValue(ActorValueInfo::kInfamy);
+                        {
+                            ScopedActorValueOverride avOverride;
+                            apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
+                        }
+
+                        const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
+                        TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+                        const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
+                        const float actualDelta = hpAfter - hpBefore;
+
+                        if (!apThis->IsDead() && hpAfter > 0.0f)
+                        {
+                            ScopedActorValueOverride avOverride;
+                            apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, std::max(0.0f, prevInfamy));
+                        }
+
+                        if (actualDelta < -0.05f)
+                            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+                    }
                     return;
+                }
 
                 TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
                 return;
@@ -1621,16 +1736,22 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
             return;
         }
 
-        // RFAB.dll applies spell/poison/bleed/ScriptDamage directly via RestoreActorValue(DAMAGE, kHealth, -dmg),
-        // bypassing Actor::DamageActor. Broadcast actual negative HP deltas on locally-owned NPCs immediately!
+        // RFAB.dll applies spell/poison/bleed/ScriptDamage AND scripted boss phase/potion heals directly via
+        // RestoreActorValue(DAMAGE, kHealth, delta), bypassing Actor::DamageActor and ValueModifierEffect.
+        // Broadcast actual negative HP deltas AND significant in-combat positive scripted heals on locally-owned NPCs!
         if (auto* pExt = apThis->GetExtension();
-            pExt && pExt->IsLocal() && !s_inAuthoritativeDamageHook && !ScopedActorValueOverride::IsOverriden() && aValue < -0.05f)
+            pExt &&
+            pExt->IsLocal() &&
+            !s_inAuthoritativeDamageHook &&
+            !s_inApplyActorEffect &&
+            !ScopedActorValueOverride::IsOverriden() &&
+            (aValue < -0.05f || (aValue > 1.0f && apThis->IsInCombat())))
         {
             const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
             TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
             const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
             const float actualDelta = hpAfter - hpBefore;
-            if (actualDelta < -0.05f)
+            if (actualDelta < -0.05f || actualDelta > 1.0f)
                 World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
             return;
         }
@@ -1648,9 +1769,11 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
     const bool blockRemote =
         pExt &&
         (pExt->IsRemotePlayer() ||
+         (pExt->IsRemote() && pExt->IsPlayerSummonFlag()) ||
          (pExt->IsRemote() && !isInteractivePlayerTransfer));
 
-    if (World::IsConnectedCached() &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
         !ScopedInventoryOverride::IsOverriden() &&
         apThis &&
         apItem &&
@@ -1682,7 +1805,8 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
 
 void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2)
 {
-    if (World::IsConnectedCached() &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
         !ScopedInventoryOverride::IsOverriden() &&
         apThis &&
         apObject &&

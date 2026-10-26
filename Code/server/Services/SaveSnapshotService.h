@@ -9,6 +9,7 @@
 #include <Structs/QuestLog.h>
 #include <CoopCheckpointStore.h>
 #include <CoopFlightDigest.h>
+#include <common/CoopLootLedger.h>
 
 #include <cstdint>
 #include <deque>
@@ -304,15 +305,20 @@ public:
         uint64_t CreatedAtMs{};
 
         std::unordered_map<uint32_t, QuestLog> QuestLogsByPlayerId{};
+        std::unordered_map<std::string, QuestLog> QuestLogsByIdentityKey{};
         QuestLog SharedPartyQuestLog{};
         std::unordered_map<uint32_t, PlayerStateRecord> PlayersById{};
+        std::unordered_map<std::string, PlayerStateRecord> PlayersByIdentityKey{};
         std::unordered_map<uint32_t, ActorStateRecord> TrackedActors{};
         std::vector<ObjectStateRecord> TrackedObjects{};
+        CoopLootLedger::ContainerLootLedger::Snapshot LootLedger{};
         RfabProgressionLedger::Snapshot Progression{};
         CalendarStateRecord Calendar{};
     };
 
     SaveSnapshotService(World& aWorld, entt::dispatcher& aDispatcher) noexcept;
+
+    void HydratePersistedWorldState() noexcept;
 
     bool TriggerCoordinatedSave(bool aIsAutoCheckpoint, Player* apRequester = nullptr) noexcept;
     bool TriggerRollbackToLatest(bool aIsPartyWipe) noexcept;
@@ -351,6 +357,7 @@ private:
     SaveSnapshotCoordinator m_coordinator;
     std::deque<WorldSnapshot> m_snapshots{};
     std::unordered_map<uint32_t, PlayerStateRecord> m_playerJoinBaselines{};
+    std::unordered_map<std::string, PlayerStateRecord> m_playerJoinBaselinesByIdentityKey{};
     bool m_deferredManualSaveAfterCombat{false};
 
     entt::scoped_connection m_updateConnection;

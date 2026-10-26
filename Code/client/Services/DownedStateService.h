@@ -124,6 +124,7 @@ private:
     std::atomic<bool> m_pendingEnterDownedTransition{false};
     std::atomic<bool> m_allowAuthorizedHeal{false};
     std::atomic<bool> m_isGraceActive{false};
+    std::atomic<bool> m_downedSystemEnabledCached{true};
     bool m_wasFirstPersonBeforeDowned{false};
     bool m_pendingFirstPersonRestore{false};
     uint8_t m_postReviveSettleFrames{0};
