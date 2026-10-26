@@ -20,6 +20,6 @@ struct ActivateRequest final : ClientMessage
 
     GameId Id;
     GameId CellId;
-    uint32_t ActivatorId;
-    uint8_t PreActivationOpenState;
+    uint32_t ActivatorId{};
+    uint8_t PreActivationOpenState{};
 };

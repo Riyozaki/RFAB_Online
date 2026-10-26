@@ -2,6 +2,8 @@
 #include <Games/Skyrim/EquipManager.h>
 #include <AI/AIProcess.h>
 #include <Misc/MiddleProcess.h>
+#include <Havok/bhkCharacterController.h>
+#include <CoopOwnership.h>
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
 #include <Forms/TESNPC.h>
@@ -172,51 +174,64 @@ void Actor::ForcePosition(const NiPoint3& acPosition) noexcept
     SetPosition(acPosition, updateController);
 }
 
+void Actor::ResetTeleportPhysics(float aNewZ) noexcept
+{
+    if (!currentProcess)
+        return;
+
+    if (auto* pController = currentProcess->GetCharController())
+        pController->ResetTeleportPhysicsState(aNewZ);
+}
+
 void Actor::QueueUpdate() noexcept
 {
-    auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
-    const auto originalValue = pSetting->data;
-    pSetting->data = 0;
+    auto* pIniCollection = INISettingCollection::Get();
+    auto* pSetting = pIniCollection ? pIniCollection->GetSetting("bUseFaceGenPreprocessedHeads:General") : nullptr;
+    const auto originalValue = pSetting ? pSetting->data : 0u;
+    if (pSetting)
+        pSetting->data = 0;
 
     TP_THIS_FUNCTION(TQueueUpdate, void, Actor, bool);
     POINTER_SKYRIMSE(TQueueUpdate, QueueUpdate, 39181);
 
     TiltedPhoques::ThisCall(QueueUpdate, this, true);
 
-    pSetting->data = originalValue;
+    if (pSetting)
+        pSetting->data = originalValue;
 }
 
-GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
+GamePtr<Actor> Actor::CreateInCell(
+    TESNPC* apBaseForm,
+    TESObjectCELL* apCell,
+    TESWorldSpace* apWorldSpace,
+    const NiPoint3& acPosition,
+    const NiPoint3& acRotation) noexcept
 {
-    if (!apBaseForm)
-        return nullptr;
-
-    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
-    if (!pPlayer || (!pPlayer->parentCell && !pPlayer->GetWorldSpace()))
+    if (!apBaseForm || !apCell || !apCell->loadedCellData)
         return nullptr;
 
     auto pActor = New();
     if (!pActor)
         return nullptr;
 
-    // Prevent saving
+    if ((apBaseForm->formID & 0xFF000000u) == 0xFF000000u)
+    {
+        apBaseForm->SetSkipSaveFlag(true);
+        apBaseForm->UnsetChanged(0xFFFFFFFF);
+    }
+
     pActor->SetSkipSaveFlag(true);
     pActor->GetExtension()->SetRemote(true);
 
-    auto pCell = pPlayer->parentCell;
-    const auto pWorldSpace = pPlayer->GetWorldSpace();
-
     pActor->SetLevelMod(4);
-    pActor->SetParentCell(pCell);
+    pActor->SetParentCell(apCell);
     pActor->SetBaseForm(apBaseForm);
 
-    auto position = pPlayer->position;
-    auto rotation = pPlayer->rotation;
+    auto position = acPosition;
+    auto rotation = acRotation;
 
-    if (pCell && !(pCell->cellFlags[0] & 1))
-        pCell = nullptr;
-
-    ModManager::Get()->Spawn(position, rotation, pCell, pWorldSpace, pActor);
+    TESObjectCELL* pSpawnCell = (apCell->cellFlags[0] & 1) ? apCell : nullptr;
+    ModManager::Get()->Spawn(position, rotation, pSpawnCell, apWorldSpace, pActor);
 
     pActor->ForcePosition(position);
 
@@ -231,9 +246,23 @@ GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
     return pActor;
 }
 
+GamePtr<Actor> Actor::Create(TESNPC* apBaseForm) noexcept
+{
+    if (!apBaseForm)
+        return nullptr;
+
+    const auto pPlayer = static_cast<Actor*>(GetById(0x14));
+    if (!pPlayer || !pPlayer->parentCell || !pPlayer->parentCell->loadedCellData)
+        return nullptr;
+
+    return CreateInCell(apBaseForm, pPlayer->parentCell, pPlayer->GetWorldSpace(), pPlayer->position, pPlayer->rotation);
+}
+
 GamePtr<Actor> Actor::Spawn(uint32_t aBaseFormId) noexcept
 {
     TESNPC* pNpc = Cast<TESNPC>(TESForm::GetById(aBaseFormId));
+    if (!pNpc)
+        return {};
     return Actor::Create(pNpc);
 }
 
@@ -318,8 +347,8 @@ void Actor::SetPlayerRespawnMode(bool aSet) noexcept
 
     if (formID != 0x14)
     {
-        auto pPlayerFaction = Cast<TESFaction>(TESForm::GetById(0xDB1));
-        SetFactionRank(pPlayerFaction, 1);
+        if (auto* pPlayerFaction = Cast<TESFaction>(TESForm::GetById(0xDB1)))
+            SetFactionRank(pPlayerFaction, 1);
     }
 }
 
@@ -381,7 +410,15 @@ void Actor::StartCombat(Actor* apTarget) noexcept
 void Actor::StopCombat() noexcept
 {
     PAPYRUS_FUNCTION(void, Actor, StopCombat);
-    s_pStopCombat(this);
+    if (s_pStopCombat)
+        s_pStopCombat(this);
+}
+
+void Actor::EvaluatePackage() noexcept
+{
+    PAPYRUS_FUNCTION(void, Actor, EvaluatePackage);
+    if (s_pEvaluatePackage)
+        s_pEvaluatePackage(this);
 }
 
 bool Actor::RemoveSpell(MagicItem* apSpell) noexcept
@@ -687,6 +724,29 @@ Actor* Actor::GetCommandingActor() const noexcept
     return nullptr;
 }
 
+TESObjectREFR* Actor::GetOccupiedFurniture() const noexcept
+{
+    if (currentProcess && currentProcess->middleProcess && currentProcess->middleProcess->occupiedFurniture)
+    {
+        auto handle = currentProcess->middleProcess->occupiedFurniture.handle;
+        return TESObjectREFR::GetByHandle(handle.iBits);
+    }
+
+    return nullptr;
+}
+
+bool Actor::HasValidNearbyFurniture(float aMaxDistance) const noexcept
+{
+    const TESObjectREFR* pFurniture = GetOccupiedFurniture();
+    if (!pFurniture || pFurniture->IsDisabled() || pFurniture->IsDeleted())
+        return false;
+
+    const float dx = pFurniture->position.x - position.x;
+    const float dy = pFurniture->position.y - position.y;
+    const float dz = pFurniture->position.z - position.z;
+    return (dx * dx + dy * dy + dz * dz) <= (aMaxDistance * aMaxDistance);
+}
+
 // Get owner of a summon or raised corpse
 void Actor::SetCommandingActor(BSPointerHandle<TESObjectREFR> aCommandingActor) noexcept
 {
@@ -738,6 +798,9 @@ Factions Actor::GetFactions() const noexcept
 
         for (auto i = 0u; i < factions.length; ++i)
         {
+            if (!factions[i].faction)
+                continue;
+
             Faction faction;
 
             modSystem.GetServerModId(factions[i].faction->formID, faction.Id);
@@ -752,6 +815,9 @@ Factions Actor::GetFactions() const noexcept
     {
         for (auto i = 0u; i < pChanges->entries.length; ++i)
         {
+            if (!pChanges->entries[i].faction)
+                continue;
+
             Faction faction;
 
             modSystem.GetServerModId(pChanges->entries[i].faction->formID, faction.Id);
@@ -865,46 +931,77 @@ int32_t Actor::GetGoldAmount() const noexcept
 
 void Actor::SetActorInventory(const Inventory& acInventory) noexcept
 {
-    spdlog::info("Setting inventory for actor {:X}", formID);
-
-    // The UnEquipAll() that used to be here is redundant,
-    // as RemoveAllItems() unequips every item if needed.
-    // Placing this UnEquipAll() here seems to trigger a Skyrim bug/race.
-
     Inventory currentInventory = GetActorInventory();
+    if (currentInventory == acInventory)
+    {
+        spdlog::debug("Skipping redundant SetActorInventory for actor {:X} (inventory already matches)", formID);
+        return;
+    }
 
-    if (!this->GetExtension()->IsPlayer() && currentInventory.ContainsQuestItems())
+    spdlog::info("Setting inventory differentially for actor {:X}", formID);
+
+    // SkyMP-style differential inventory reconciliation keeps unchanged items and already-worn
+    // Requiem/RFAB Fortify-Health gear untouched in ExtraContainerChanges (no RemoveAllItems() strip
+    // and no +4096 HP spike needed). Preserve relative health ratio only if MaxHealth genuinely changed.
+    const bool wasAlive = !IsDead();
+    const float preHealth = wasAlive ? GetActorValue(ActorValueInfo::kHealth) : 0.0f;
+    const float preMaxHealth = wasAlive ? GetActorPermanentValue(ActorValueInfo::kHealth) : 0.0f;
+    const float preRatio = (wasAlive && preMaxHealth > 0.0f)
+        ? std::clamp(preHealth / preMaxHealth, 0.05f, 1.0f)
+        : 1.0f;
+
+    const auto* pSelfExt = this->GetExtension();
+    if ((!pSelfExt || !pSelfExt->IsPlayer()) && currentInventory.ContainsQuestItems())
         SetInventoryRetainingQuestItems(currentInventory, acInventory);
     else
         SetInventory(acInventory);
 
     SetMagicEquipment(acInventory.CurrentMagicEquipment);
+
+    if (wasAlive && preHealth > 0.0f)
+    {
+        const float postMaxHealth = GetActorPermanentValue(ActorValueInfo::kHealth);
+        if (std::fabs(postMaxHealth - preMaxHealth) > 0.5f || GetActorValue(ActorValueInfo::kHealth) <= 0.0f)
+        {
+            ScopedActorValueOverride avOverride;
+            const float restoredHealth = (postMaxHealth > 0.0f)
+                ? std::max(1.0f, postMaxHealth * preRatio)
+                : std::max(1.0f, preHealth);
+            ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, restoredHealth);
+        }
+    }
 }
 
 void Actor::SetMagicEquipment(const MagicEquipment& acEquipment) noexcept
 {
     auto* pEquipManager = EquipManager::Get();
+    if (!pEquipManager)
+        return;
+
     auto& modSystem = World::Get().GetModSystem();
 
     if (acEquipment.LeftHandSpell)
     {
         uint32_t mainHandWeaponId = modSystem.GetGameId(acEquipment.LeftHandSpell);
         spdlog::debug("Setting left hand spell: {:X}", mainHandWeaponId);
-        pEquipManager->EquipSpell(this, TESForm::GetById(mainHandWeaponId), 0);
+        if (TESForm* pLeftSpell = TESForm::GetById(mainHandWeaponId))
+            pEquipManager->EquipSpell(this, pLeftSpell, 0);
     }
 
     if (acEquipment.RightHandSpell)
     {
         uint32_t secondaryHandWeaponId = modSystem.GetGameId(acEquipment.RightHandSpell);
         spdlog::debug("Setting right hand spell: {:X}", secondaryHandWeaponId);
-        pEquipManager->EquipSpell(this, TESForm::GetById(secondaryHandWeaponId), 1);
+        if (TESForm* pRightSpell = TESForm::GetById(secondaryHandWeaponId))
+            pEquipManager->EquipSpell(this, pRightSpell, 1);
     }
 
     if (acEquipment.Shout)
     {
         uint32_t shoutId = modSystem.GetGameId(acEquipment.Shout);
         spdlog::debug("Setting shout: {:X}", shoutId);
-        pEquipManager->EquipShout(this, TESForm::GetById(shoutId));
+        if (TESForm* pShout = TESForm::GetById(shoutId))
+            pEquipManager->EquipShout(this, pShout);
     }
 }
 
@@ -919,9 +1016,41 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
                aAvId == ActorValueInfo::kInfamy;
     };
 
+    const bool keepAlive = !IsDead();
+    const auto maxHpIt = acActorValues.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+    const auto curHpIt = acActorValues.ActorValuesList.find(ActorValueInfo::kHealth);
+    const bool hasHealthPair = (maxHpIt != acActorValues.ActorMaxValuesList.end() || curHpIt != acActorValues.ActorValuesList.end());
+
+    if (hasHealthPair)
+    {
+        const float currentPermMax = GetActorPermanentValue(ActorValueInfo::kHealth);
+        const float desiredPermMax = (maxHpIt != acActorValues.ActorMaxValuesList.end()) ? maxHpIt->second : currentPermMax;
+        const float desiredCurHp = (curHpIt != acActorValues.ActorValuesList.end()) ? curHpIt->second : GetActorValue(ActorValueInfo::kHealth);
+        const auto hpPlan = CoopOwnership::ComputeSafeHealthStepPlan(
+            currentPermMax,
+            desiredPermMax,
+            desiredCurHp,
+            keepAlive && desiredCurHp > 0.0f);
+
+        if (hpPlan.AdjustDamageBeforePermanent)
+        {
+            if (curHpIt != acActorValues.ActorValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, hpPlan.DamageModeTarget);
+            if (maxHpIt != acActorValues.ActorMaxValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, hpPlan.PermanentModeTarget);
+        }
+        else
+        {
+            if (maxHpIt != acActorValues.ActorMaxValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, hpPlan.PermanentModeTarget);
+            if (curHpIt != acActorValues.ActorValuesList.end())
+                ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, hpPlan.DamageModeTarget);
+        }
+    }
+
     for (auto& value : acActorValues.ActorMaxValuesList)
     {
-        if (isLocallyDerivedSpeedAv(value.first))
+        if (isLocallyDerivedSpeedAv(value.first) || value.first == ActorValueInfo::kHealth)
             continue;
 
         ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, value.first, value.second);
@@ -929,7 +1058,7 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
 
     for (auto& value : acActorValues.ActorValuesList)
     {
-        if (isLocallyDerivedSpeedAv(value.first))
+        if (isLocallyDerivedSpeedAv(value.first) || value.first == ActorValueInfo::kHealth)
             continue;
 
         ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, value.first, value.second);
@@ -1628,7 +1757,10 @@ void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
         auto pTargetActor = Cast<Actor>(pTarget);
         if (pOwnerActor && pTargetActor)
         {
-            if (pOwnerActor->GetExtension()->IsRemotePlayer() && pTargetActor->GetExtension()->IsLocalPlayer())
+            const auto* pOwnerExt = pOwnerActor->GetExtension();
+            const auto* pTargetExt = pTargetActor->GetExtension();
+
+            if (pOwnerExt && pOwnerExt->IsRemotePlayer() && pTargetExt && pTargetExt->IsLocalPlayer())
             {
                 spdlog::debug("Cancelling detection from remote player to local player, owner: {:X}, target: {:X}", pOwner->formID, pTarget->formID);
                 return;
@@ -1637,17 +1769,29 @@ void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
             // Suppress AI detection against downed players (both local 0x14 and downed remote clones) directly on
             // Skyrim's AI worker threads via lock-free atomic ActorExtension::IsDownedPlayer(), preventing enemies
             // from re-detecting / re-aggroing a downed player or ignoring standing teammates.
-            if (pTargetActor->GetExtension() && pTargetActor->GetExtension()->IsDownedPlayer() &&
-                !(pOwnerActor->GetExtension() && pOwnerActor->GetExtension()->IsPlayer()))
+            if (pTargetExt && !(pOwnerExt && pOwnerExt->IsPlayer()))
             {
-                if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object)
+                if (pTargetExt->IsDownedPlayer())
                 {
-                    pDet->level = -1000;
-                    pDet->inLos = 0;
-                    pDet->hasLos = 0;
-                    pDet->unk16 = 0;
+                    if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object)
+                    {
+                        pDet->level = -1000;
+                        pDet->inLos = 0;
+                        pDet->hasLos = 0;
+                        pDet->unk16 = 0;
+                    }
+                    return;
                 }
-                return;
+
+                // Unpoison forced -1000 wipe/downed clamp immediately once the player is alive & standing again
+                // so exterior/interior enemies re-detect both players natively on the very next AI tick!
+                if (pTargetExt->IsPlayer())
+                {
+                    if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object; pDet && pDet->level <= -999)
+                    {
+                        pDet->level = 0;
+                    }
+                }
             }
         }
     }
@@ -1663,17 +1807,19 @@ static TProcessResponse* RealProcessResponse = nullptr;
 
 uint64_t TP_MAKE_THISCALL(HookProcessResponse, void, DialogueItem* apVoice, Actor* apTalkingActor, Actor* apTalkedToActor)
 {
-    if (apTalkingActor)
-    {
-        if (apTalkingActor->GetExtension()->IsRemotePlayer())
-            return 0;  
-    }
+    if (apTalkingActor && apTalkingActor->GetExtension() && apTalkingActor->GetExtension()->IsRemotePlayer())
+        return 0;
+
+    // Never allow guards or NPCs to initiate ForceGreet / arrest / greeting dialogue targeted at a remote player clone!
+    if (apTalkedToActor && apTalkedToActor->GetExtension() && apTalkedToActor->GetExtension()->IsRemotePlayer())
+        return 0;
+
     return TiltedPhoques::ThisCall(RealProcessResponse, apThis, apVoice, apTalkingActor, apTalkedToActor);
 }
 
 bool TP_MAKE_THISCALL(HookInitiateMountPackage, Actor, Actor* apMount)
 {
-    if (apMount && apThis->GetExtension()->IsLocal())
+    if (apThis && apMount && apThis->GetExtension() && apThis->GetExtension()->IsLocal())
         World::Get().GetRunner().Trigger(MountEvent(apThis->formID, apMount->formID));
 
     return TiltedPhoques::ThisCall(RealInitiateMountPackage, apThis, apMount);
@@ -1692,17 +1838,24 @@ static TSpeakSoundFunction* RealSpeakSoundFunction = nullptr;
 
 float TP_MAKE_THISCALL(HookSpeakSoundFunction, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11, bool a12, bool a13, bool a14)
 {
-    // Note most dialogues invoke SpeakSoundFunction twice, an initial call that queues it to an update thread, then a reinvocation.
+    // Guard silent/lip-only guard/NPC topics where apName is null or empty (prevents String(nullptr) strlen crash!).
+    if (apThis && apThis->formID != 0 && apName && apName[0] != '\0')
+    {
+        if (const auto* pExt = apThis->GetExtension(); !pExt || !pExt->IsRemotePlayer())
+        {
+            String safeVoicePath(apName);
+            World::Get().GetRunner().Trigger(DialogueEvent(apThis->formID, std::move(safeVoicePath)));
+        }
+    }
 
-    spdlog::debug("a3: {:X}, a4: {}, a5: {}, a6: {}, a7: {}, a8: {:X}, a9: {:X}, a10: {}, a11: {:X}, a12: {}, a13: {}, a14: {}", (uint64_t)a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
-
-    World::Get().GetRunner().Trigger(DialogueEvent(apThis->formID, apName));
-    
     return TiltedPhoques::ThisCall(RealSpeakSoundFunction, apThis, apName, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
 }
 
 float Actor::SpeakSound(const char* pFile)
 {
+    if (!pFile || pFile[0] == '\0' || !RealSpeakSoundFunction)
+        return 0.0f;
+
     uint32_t handle[3]{};
     handle[0] = -1;
 

@@ -408,7 +408,8 @@ int main()
             assert(faceGenCpp.find("Memory::Free(pClonedMaterial)") == std::string::npos);
 
             const std::string charSvcCpp = readTextFile("Code/client/Services/Generic/CharacterService.cpp");
-            assert(charSvcCpp.find("m_world.remove<FormIdComponent, EarlyAnimationBufferComponent, PlayerComponent>(aEntity)") != std::string::npos);
+            assert(charSvcCpp.find("m_world.remove<PlayerComponent>(aEntity);") != std::string::npos);
+            assert(charSvcCpp.find("m_world.remove<WaitingFor3D, FormIdComponent") != std::string::npos);
             assert(charSvcCpp.find("apActor->Disable();") == std::string::npos);
 
             // Regression audit for all 6 thread-safety / UAF / re-entrancy / null-safety hardening fixes:
@@ -713,7 +714,7 @@ int main()
             {
                 assert(fs::exists("docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json"));
                 assert(fs::exists("docs/V1.1.0_RELEASE_BACKUP_MANIFEST.json"));
-                assert(std::string(RfabCompat::kRfabOnlineVersion) == "1.2.0");
+                assert(std::string(RfabCompat::kRfabOnlineVersion) == "2.0.0");
                 assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.2.0", "v1.2.1-3-gabcdef0"));
                 assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.1.0", "v1.2.0"));
                 assert(!RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0", "v1.2.0"));
@@ -746,7 +747,7 @@ int main()
                 assert(magicTargetCpp.find("isFromRemotePlayerOrSummon") != std::string::npos);
 
                 // (d) Server grid shift wilderness/Dragon range check, cell update ordering, ownership claim reconciliation, and host promotion
-                assert(srvPlayerSvcCpp.find("newlyEnteredWorldRange") != std::string::npos);
+                assert(srvPlayerSvcCpp.find("ReconcileAllEntitiesForObserver(pPlayer)") != std::string::npos);
                 assert(srvCharCpp.find("reconcileNotify.NewActorData = sanitizedData;") != std::string::npos);
                 assert(srvProgCpp.find("BroadcastAllyProtectionState(false);") != std::string::npos);
 
@@ -982,8 +983,130 @@ int main()
             assert(clientCommandCpp.find("CanResolveTeleportDestination") != std::string::npos);
             assert(clientPlayerCpp.find("IsBeastFormRace") != std::string::npos);
             assert(clientWeatherCpp.find("if (Sky* pSky = Sky::Get())") != std::string::npos);
+            assert(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
+            assert(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
+            assert(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
             assert(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
             assert(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
+        }
+
+        // v1.2.0-hotfix.1 Skills-CTD, MO2 gamePath, Render-Thread Snapshot & Cross-Version RFAB tests:
+        {
+            assert(fs::exists("docs/V1.2.0_RELEASE_BACKUP_MANIFEST.json"));
+
+            // 1. SkyrimSoulsRE.ini bStatsMenu = false self-healer
+            std::string soulsStats = "[UNPAUSED_MENUS]\r\nbStatsMenu = true\r\nbCustomMenu = true\r\n[SLOWMOTION]\r\nfSlowMotionMultiplier = 0.5\r\n";
+            assert(RfabCompat::PatchSkyrimSoulsReIniContent(soulsStats));
+            assert(soulsStats.find("bStatsMenu = false") != std::string::npos);
+            assert(soulsStats.find("bCustomMenu = true") != std::string::npos);
+            assert(soulsStats.find("fSlowMotionMultiplier = 1.000000") != std::string::npos);
+            assert(!RfabCompat::PatchSkyrimSoulsReIniContent(soulsStats));
+
+            // 2. MO2 ModOrganizer.ini gamePath= decoder (portable ..\\, clean Skyrim override over stale p4, Cyrillic @ByteArray & \xHHHH, %BASE_DIR%)
+            assert(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(..\\\\)") == "..\\");
+            assert(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(D:\\\\\\xd0\\x98\\xd0\\xb3\\xd1\\x80\\xd1\\x8b\\\\RFAB)") == "D:\\Игры\\RFAB");
+            assert(RfabCompat::DecodeMo2IniValueUtf8("D:/\\x0418\\x0433\\x0440\\x044b/RFAB") == "D:/Игры/RFAB");
+
+            const fs::path tmpMo2Root = fs::temp_directory_path() / "rfab_mo2_gamepath_unit_test";
+            std::error_code ec;
+            fs::remove_all(tmpMo2Root, ec);
+            const fs::path stalePackRoot = tmpMo2Root / "OldRfabPack";
+            const fs::path cleanSkyrimRoot = tmpMo2Root / RfabCompat::Detail::PathFromUtf8Safe("Чистый_Skyrim_1597");
+            const fs::path mo2Dir = stalePackRoot / "MO2";
+            const fs::path launcherSelfDir = mo2Dir / "mods" / "RFAB_Online" / "SkyrimTogetherReborn";
+            fs::create_directories(stalePackRoot / "Data", ec);
+            fs::create_directories(cleanSkyrimRoot / "Data", ec);
+            fs::create_directories(launcherSelfDir, ec);
+            RfabCompat::Detail::WriteTextFile(stalePackRoot / "SkyrimSE.exe", "MZ");
+            RfabCompat::Detail::WriteTextFile(cleanSkyrimRoot / "SkyrimSE.exe", "MZ");
+
+            const std::string cleanUtf8 = RfabCompat::Detail::PathToUtf8Safe(cleanSkyrimRoot);
+            std::string hexEscaped;
+            for (unsigned char ch : cleanUtf8)
+            {
+                if (ch == '\\')
+                    hexEscaped += "\\\\";
+                else if (ch >= 0x80u)
+                {
+                    char b[8]{};
+                    std::snprintf(b, sizeof(b), "\\x%02x", static_cast<unsigned>(ch));
+                    hexEscaped += b;
+                }
+                else
+                    hexEscaped.push_back(static_cast<char>(ch));
+            }
+            RfabCompat::Detail::WriteTextFile(
+                mo2Dir / "ModOrganizer.ini",
+                "[General]\r\ngameName=Skyrim Special Edition\r\ngamePath=@ByteArray(" + hexEscaped + ")\r\n");
+
+            const fs::path resolvedClean = RfabCompat::ResolveMo2ConfiguredGamePath(launcherSelfDir, launcherSelfDir, "SkyrimSE.exe");
+            assert(!resolvedClean.empty());
+            assert(fs::equivalent(resolvedClean, cleanSkyrimRoot, ec));
+
+            // Portable template `gamePath=@ByteArray(..\\)` resolves to stalePackRoot
+            RfabCompat::Detail::WriteTextFile(
+                mo2Dir / "ModOrganizer.ini",
+                "[General]\r\ngamePath=@ByteArray(..\\\\)\r\n");
+            const fs::path resolvedPortable = RfabCompat::ResolveMo2ConfiguredGamePath(launcherSelfDir, launcherSelfDir, "SkyrimSE.exe");
+            assert(!resolvedPortable.empty());
+            assert(fs::equivalent(resolvedPortable, stalePackRoot, ec));
+
+            // Version-agnostic CustomSkills / RFAB VFS detection (v1 NSF, v2/v3 SKSE CustomSkills, PerksPlacement, Extended UI)
+            assert(!RfabCompat::HasCustomSkillsOrRfabFilesUnderData(cleanSkyrimRoot / "Data"));
+            fs::create_directories(cleanSkyrimRoot / "Data" / "SKSE" / "Plugins" / "CustomSkills", ec);
+            assert(RfabCompat::HasCustomSkillsOrRfabFilesUnderData(cleanSkyrimRoot / "Data"));
+            fs::remove_all(tmpMo2Root, ec);
+
+            // 3. Render-thread isolation check on RfabAdapterService::OnDrawTacticalHud()
+            std::string rfabAdapterCpp;
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/RfabAdapterService.cpp", rfabAdapterCpp));
+            const size_t drawPos = rfabAdapterCpp.find("void RfabAdapterService::OnDrawTacticalHud() noexcept");
+            assert(drawPos != std::string::npos);
+            const std::string drawBody = rfabAdapterCpp.substr(drawPos);
+            assert(drawBody.find("m_tacticalHudSnapshotMutex") != std::string::npos);
+            assert(drawBody.find("BSFixedString") == std::string::npos);
+            assert(drawBody.find("GetMenuOpen") == std::string::npos);
+            assert(drawBody.find("m_world.view") == std::string::npos);
+            assert(drawBody.find("TESForm::GetById") == std::string::npos);
+            assert(drawBody.find("WorldPtToScreenPt3") == std::string::npos);
+
+            // 4. UNICODE_STRING byte-length safety in FileMapping.cpp
+            std::string fileMappingCpp;
+            assert(RfabCompat::Detail::ReadTextFile("Code/immersive_launcher/stubs/FileMapping.cpp", fileMappingCpp));
+            assert(fileMappingCpp.find("DllName->Length / sizeof(wchar_t)") != std::string::npos);
+
+            // 5. Live-test Fixes #1, #2, #3 regression guards
+            std::string discoveryCpp;
+            std::string coordSaveCpp2;
+            std::string clientCharCpp;
+            std::string serverCharCpp;
+            std::string cellCpp;
+            std::string skillsMenuCpp;
+            std::string patchSubmodulesPy;
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/DiscoveryService.cpp", discoveryCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/CoordinatedSaveService.cpp", coordSaveCpp2));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CharacterService.cpp", clientCharCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/server/Services/CharacterService.cpp", serverCharCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp", cellCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp", skillsMenuCpp));
+            assert(RfabCompat::Detail::ReadTextFile("Tools/rfab/patch_submodules.py", patchSubmodulesPy));
+
+            assert(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
+            assert(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
+            assert(coordSaveCpp2.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+            assert(coordSaveCpp2.find("pPlayer->parentCell != nullptr") != std::string::npos);
+            assert(coordSaveCpp2.find("m_autoReconnectAttemptsLeft") != std::string::npos);
+            assert(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
+            assert(serverCharCpp.find("otherCell.IsInRange(cellIdComponent, false)") != std::string::npos);
+            assert(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
+
+            assert(clientCharCpp.find("pWorldSpace->LoadCell") == std::string::npos);
+            assert(clientCharCpp.find("GetCellFromCoordinates(coordinates.X, coordinates.Y, pWorldSpace, false)") != std::string::npos);
+            assert(serverCharCpp.find("SendToPlayersInRange(notify, cEntity, acMessage.pPlayer)") != std::string::npos);
+            assert(cellCpp.find("SafeGetWorldSpaceOfExteriorCell") != std::string::npos);
+            assert(cellCpp.find("17859") != std::string::npos);
+
+            assert(skillsMenuCpp.find("ApplyRfabDllPerkPlacementBoundsFixPostSkse") != std::string::npos);
         }
     }
 
@@ -1545,8 +1668,133 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(clientCommandCpp.find("CanResolveTeleportDestination") != std::string::npos);
         REQUIRE(clientPlayerCpp.find("IsBeastFormRace") != std::string::npos);
         REQUIRE(clientWeatherCpp.find("if (Sky* pSky = Sky::Get())") != std::string::npos);
-        REQUIRE(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
+        REQUIRE(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
+        REQUIRE(clientMapCpp.find("if (!pLocation || (!Cast<TESWorldSpace>(pLocation) && !Cast<TESObjectCELL>(pLocation)))") != std::string::npos);
         REQUIRE(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
+
+        // v1.2.0-hotfix.1 Skills-CTD, MO2 gamePath, Render-Thread Snapshot & Cross-Version RFAB tests:
+        REQUIRE(std::filesystem::exists("docs/V1.2.0_RELEASE_BACKUP_MANIFEST.json"));
+
+        std::string soulsStats = "[UNPAUSED_MENUS]\r\nbStatsMenu = true\r\n[SLOWMOTION]\r\nfSlowMotionMultiplier = 0.5\r\n";
+        REQUIRE(RfabCompat::PatchSkyrimSoulsReIniContent(soulsStats));
+        REQUIRE(soulsStats.find("bStatsMenu = false") != std::string::npos);
+        REQUIRE(soulsStats.find("fSlowMotionMultiplier = 1.000000") != std::string::npos);
+
+        REQUIRE(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(..\\\\)") == "..\\");
+        REQUIRE(RfabCompat::DecodeMo2IniValueUtf8("@ByteArray(D:\\\\\\xd0\\x98\\xd0\\xb3\\xd1\\x80\\xd1\\x8b\\\\RFAB)") == "D:\\Игры\\RFAB");
+        REQUIRE(RfabCompat::DecodeMo2IniValueUtf8("D:/\\x0418\\x0433\\x0440\\x044b/RFAB") == "D:/Игры/RFAB");
+
+        std::string rfabAdapterCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/RfabAdapterService.cpp", rfabAdapterCpp));
+        const size_t drawPos = rfabAdapterCpp.find("void RfabAdapterService::OnDrawTacticalHud() noexcept");
+        REQUIRE(drawPos != std::string::npos);
+        const std::string drawBody = rfabAdapterCpp.substr(drawPos);
+        REQUIRE(drawBody.find("m_tacticalHudSnapshotMutex") != std::string::npos);
+        REQUIRE(drawBody.find("BSFixedString") == std::string::npos);
+        REQUIRE(drawBody.find("GetMenuOpen") == std::string::npos);
+        REQUIRE(drawBody.find("m_world.view") == std::string::npos);
+        REQUIRE(drawBody.find("TESForm::GetById") == std::string::npos);
+        REQUIRE(drawBody.find("WorldPtToScreenPt3") == std::string::npos);
+
+        std::string fileMappingCpp;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/immersive_launcher/stubs/FileMapping.cpp", fileMappingCpp));
+        REQUIRE(fileMappingCpp.find("DllName->Length / sizeof(wchar_t)") != std::string::npos);
+
+        // Live-test Fixes #1, #2, #3 regression guards:
+        // 1) Save+Load mutual player visibility, DiscoveryService reset & GNS lingering-handle reconnect guard
+        std::string discoveryCpp;
+        std::string clientCharCpp;
+        std::string serverCharCpp;
+        std::string cellCpp;
+        std::string skillsMenuCpp;
+        std::string patchSubmodulesPy;
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/DiscoveryService.cpp", discoveryCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Services/Generic/CharacterService.cpp", clientCharCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/server/Services/CharacterService.cpp", serverCharCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp", cellCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp", skillsMenuCpp));
+        REQUIRE(RfabCompat::Detail::ReadTextFile("Tools/rfab/patch_submodules.py", patchSubmodulesPy));
+
+        REQUIRE(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
+        REQUIRE(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("pPlayer->parentCell != nullptr") != std::string::npos);
+        REQUIRE(coordSaveCpp.find("m_autoReconnectAttemptsLeft") != std::string::npos);
+        REQUIRE(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
+        REQUIRE(serverCharCpp.find("ReconcileAllEntitiesForObserver(acMessage.pPlayer)") != std::string::npos);
+        REQUIRE(serverCharCpp.find("m_interestRegistry.IsMarkedInRange(acMessage.pPlayer->GetId(), otherServerId)") != std::string::npos);
+        REQUIRE(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
+
+        // 2) SkyrimSE.exe+0x23D000 (SE_ID 17859) Teleport CTD guard: MoveActor never invokes TESWorldSpace::LoadCell
+        REQUIRE(clientCharCpp.find("pWorldSpace->LoadCell") == std::string::npos);
+        REQUIRE(clientCharCpp.find("GetCellFromCoordinates(coordinates.X, coordinates.Y, pWorldSpace, false)") != std::string::npos);
+        REQUIRE(serverCharCpp.find("SendToPlayersInRange(notify, cEntity, acMessage.pPlayer)") != std::string::npos);
+        REQUIRE(cellCpp.find("SafeGetWorldSpaceOfExteriorCell") != std::string::npos);
+        REQUIRE(cellCpp.find("17859") != std::string::npos);
+
+        // 3) Update-resilient RFAB.dll PerkPlacementMenuOpenCloseManager bounds scanner + trampoline builder
+        REQUIRE(skillsMenuCpp.find("ApplyRfabDllPerkPlacementBoundsFixPostSkse") != std::string::npos);
+        {
+            // Exact byte slice of RFAB.dll PerkPlacement loop placed at an arbitrary shifted RVA (+0x1234):
+            std::vector<uint8_t> fakeText(0x2000, 0xCC);
+            const size_t baseOff = 0x1234;
+            const uint8_t unpatchedLoop[] = {
+                0x33, 0xDB,                                     // xor ebx, ebx
+                0x48, 0x8B, 0x90, 0x18, 0x01, 0x00, 0x00,       // mov rdx, [rax+0x118]  (head = baseOff + 2)
+                0x48, 0x85, 0xD2,                               // test rdx, rdx         (resume = head + 7)
+                0x74, 0x1F,                                     // je skip (+0x1F)
+                0x83, 0x7A, 0x20, 0x00,                         // cmp dword ptr [rdx+0x20], 0
+                0x74, 0x19,                                     // je skip
+                // 25 bytes of inner loop body (`lea rcx, [rdx+0x10]; call copy_ctor; ...`)
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+                0x90, 0x90, 0x90, 0x90, 0x90,
+                0x48, 0xFF, 0xC3,                               // inc rbx               (skip = head + 0x2B)
+                0x48, 0x8B, 0x44, 0xDE, 0x08,                   // mov rax, [rsi+rbx*8+8]
+                0x48, 0x85, 0xC0,                               // test rax, rax
+                0x75, 0xC8,                                     // jne head              (exit = skip + 13)
+                0x48, 0x8B, 0x4F, 0x08                          // mov rcx, [rdi+8]
+            };
+            std::memcpy(fakeText.data() + baseOff, unpatchedLoop, sizeof(unpatchedLoop));
+
+            const auto scan = RfabCompat::LocateRfabPerkPlacementLoop(fakeText.data(), fakeText.size());
+            REQUIRE(scan.State == RfabCompat::RfabPerkLoopScanResult::Status::FoundUnpatched);
+            REQUIRE(scan.LoopHeadOffset == baseOff + 2);
+            REQUIRE(scan.ResumeOffset == baseOff + 9);
+            REQUIRE(scan.SkipOffset == baseOff + 2 + 0x2B);
+            REQUIRE(scan.ExitOffset == baseOff + 2 + 0x2B + 13);
+
+            uint8_t cave[RfabCompat::kRfabPerkTrampolineSize]{};
+            const uintptr_t moduleBase = 0x180000000ULL;
+            const uintptr_t caveAddr = 0x180250000ULL;
+            REQUIRE(RfabCompat::BuildRfabPerkPlacementTrampoline(
+                caveAddr,
+                moduleBase + scan.ResumeOffset,
+                moduleBase + scan.SkipOffset,
+                moduleBase + scan.ExitOffset,
+                cave));
+
+            auto readRel32Target = [&](size_t dispOffset, size_t nextIpOffset) -> uintptr_t
+            {
+                int32_t d32 = 0;
+                std::memcpy(&d32, cave + dispOffset, sizeof(d32));
+                return static_cast<uintptr_t>(static_cast<intptr_t>(caveAddr + nextIpOffset) + static_cast<intptr_t>(d32));
+            };
+            REQUIRE(readRel32Target(9,  13) == moduleBase + scan.ExitOffset);
+            REQUIRE(readRel32Target(19, 23) == moduleBase + scan.SkipOffset);
+            REQUIRE(readRel32Target(35, 39) == moduleBase + scan.SkipOffset);
+            REQUIRE(readRel32Target(46, 50) == moduleBase + scan.SkipOffset);
+            REQUIRE(readRel32Target(51, 55) == moduleBase + scan.ResumeOffset);
+
+            // Simulate user's disk-patched RFAB.dll (`E9 <rel32> 90 90` at loopHead) -> must detect AlreadyPatched
+            fakeText[scan.LoopHeadOffset] = 0xE9;
+            fakeText[scan.LoopHeadOffset + 5] = 0x90;
+            fakeText[scan.LoopHeadOffset + 6] = 0x90;
+            const auto scanDiskPatched = RfabCompat::LocateRfabPerkPlacementLoop(fakeText.data(), fakeText.size());
+            REQUIRE(scanDiskPatched.State == RfabCompat::RfabPerkLoopScanResult::Status::AlreadyPatched);
+        }
     }
 }
 #endif

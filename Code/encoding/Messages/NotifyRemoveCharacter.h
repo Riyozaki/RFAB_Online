@@ -18,5 +18,5 @@ struct NotifyRemoveCharacter final : ServerMessage
 
     bool operator==(const NotifyRemoveCharacter& achRhs) const noexcept { return ServerId == achRhs.ServerId && GetOpcode() == achRhs.GetOpcode(); }
 
-    uint32_t ServerId;
+    uint32_t ServerId{};
 };

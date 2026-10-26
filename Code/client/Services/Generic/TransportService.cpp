@@ -21,9 +21,12 @@
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/NotifySettingsChange.h>
 #include <Packet.hpp>
+#include <steam/isteamnetworkingutils.h>
 
 #include <ScriptExtender.h>
 #include <Services/DiscordService.h>
+#include <common/CoopPacketSafety.h>
+#include <Utils.h>
 
 // #include <imgui_internal.h>
 
@@ -65,7 +68,7 @@ TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher)
     };
 }
 
-bool TransportService::Send(const ClientMessage& acMessage) const noexcept
+bool TransportService::Send(const ClientMessage& acMessage, const TiltedPhoques::EPacketFlags aPacketFlags) const noexcept
 {
     static thread_local ScratchAllocator s_allocator(1 << 18);
 
@@ -85,7 +88,7 @@ bool TransportService::Send(const ClientMessage& acMessage) const noexcept
         acMessage.Serialize(writer);
         TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), writer.Size());
 
-        Client::Send(&packet);
+        Client::Send(&packet, aPacketFlags);
 
         return true;
     }
@@ -193,8 +196,16 @@ void TransportService::OnUpdate()
 {
 }
 
+double TransportService::GetMessageReceiveTime() const noexcept
+{
+    return static_cast<double>(GetCurrentMessageReceiveTime()) / 1000.0;
+}
+
 void TransportService::HandleUpdate(const UpdateEvent& acEvent) noexcept
 {
+    if (auto* pUtils = SteamNetworkingUtils())
+        m_lastPollTime = static_cast<double>(pUtils->GetLocalTimestamp()) / 1000.0;
+
     Update();
 }
 
@@ -216,6 +227,41 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
         m_connected = true;
 
         m_world.SetServerSettings(acMessage.Settings);
+
+        if (auto* const cpModManager = ModManager::Get())
+        {
+            std::vector<std::string> serverModNames;
+            serverModNames.reserve(acMessage.UserMods.ModList.size());
+            for (const auto& m : acMessage.UserMods.ModList)
+                serverModNames.emplace_back(m.Filename.c_str(), m.Filename.size());
+
+            std::vector<std::string> clientModNames;
+            for (auto* pMod : cpModManager->mods)
+            {
+                if (pMod && pMod->IsLoaded() && pMod->filename[0] != '\0')
+                    clientModNames.emplace_back(pMod->filename);
+            }
+
+            const auto audit = CoopPacketSafety::AuditModListCompatibility(serverModNames, clientModNames);
+            if (!audit.Compatible)
+            {
+                spdlog::warn("[RFAB LoadOrder] {} (serverRfab={}, clientRfab={}, missingCritical={}, orderMismatches={})",
+                    audit.SummaryRu,
+                    audit.ServerHasRfab,
+                    audit.ClientHasRfab,
+                    audit.MissingCriticalMods.size(),
+                    audit.OrderMismatchCount);
+                if (!audit.SummaryRu.empty())
+                    Utils::ShowHudMessage(String(audit.SummaryRu.c_str()));
+            }
+            else
+            {
+                spdlog::info("[RFAB LoadOrder] Mod list handshake verified cleanly (serverMods={}, clientMods={}, rfabActive={})",
+                    serverModNames.size(),
+                    clientModNames.size(),
+                    audit.ClientHasRfab);
+            }
+        }
 
         m_dispatcher.trigger(acMessage.UserMods);
         m_dispatcher.trigger(acMessage.Settings);

@@ -1,11 +1,13 @@
 #include <TiltedOnlinePCH.h>
 
+#include <common/CoopInventoryDiff.h>
 #include <Games/References.h>
 #include <Games/Overrides.h>
 #include <Games/Skyrim/Interface/UI.h>
 #include <Games/TES.h>
 
 #include <World.h>
+#include <Services/ObjectService.h>
 #include <Services/PapyrusService.h>
 #include <Events/ActivateEvent.h>
 #include <Events/InventoryChangeEvent.h>
@@ -39,6 +41,8 @@
 
 #include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/AnimationVariables.h>
+#include <common/CoopTeleportGuard.h>
+#include <PlayerCharacter.h>
 
 extern const AnimationGraphDescriptor* BehaviorVarPatch(BSAnimationGraphManager* pManager, Actor* pActor);
 
@@ -50,6 +54,7 @@ TP_THIS_FUNCTION(TPlayAnimationAndWait, bool, void, uint32_t auiStackID, TESObje
 TP_THIS_FUNCTION(TPlayAnimation, bool, void, uint32_t auiStackID, TESObjectREFR* apSelf, BSFixedString* apEventName);
 TP_THIS_FUNCTION(TRotate, void, TESObjectREFR, float aAngle);
 TP_THIS_FUNCTION(TLockChange, void, TESObjectREFR);
+TP_THIS_FUNCTION(TInternalMoveTo, bool, TESObjectREFR, uint32_t* apTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation);
 
 static TActivate* RealActivate = nullptr;
 static TAddInventoryItem* RealAddInventoryItem = nullptr;
@@ -60,6 +65,7 @@ static TRotate* RealRotateX = nullptr;
 static TRotate* RealRotateY = nullptr;
 static TRotate* RealRotateZ = nullptr;
 static TLockChange* RealLockChange = nullptr;
+static TInternalMoveTo* RealInternalMoveTo = nullptr;
 
 #ifdef SAVE_STUFF
 
@@ -379,11 +385,22 @@ void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) co
 
     ScopedReferencesOverride recursionGuard;
 
-    TP_THIS_FUNCTION(TInternalMoveTo, bool, const TESObjectREFR, uint32_t*&, TESObjectCELL*, TESWorldSpace*, const NiPoint3&, const NiPoint3&);
+    Actor* pSelfActor = Cast<Actor>(const_cast<TESObjectREFR*>(this));
+    if (pSelfActor)
+        pSelfActor->ResetTeleportPhysics(acPosition.z);
 
-    POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
+    if (RealInternalMoveTo)
+    {
+        TiltedPhoques::ThisCall(RealInternalMoveTo, const_cast<TESObjectREFR*>(this), GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    }
+    else
+    {
+        POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
+        TiltedPhoques::ThisCall(s_internalMoveTo, const_cast<TESObjectREFR*>(this), GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    }
 
-    TiltedPhoques::ThisCall(s_internalMoveTo, this, GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    if (pSelfActor)
+        pSelfActor->ResetTeleportPhysics(acPosition.z);
 }
 
 void TESObjectREFR::PayGold(int32_t aAmount) noexcept
@@ -808,19 +825,97 @@ bool TESObjectREFR::IsItemInInventory(uint32_t aFormID) const noexcept
     return !inventory.Entries.empty();
 }
 
+namespace
+{
+bool ShouldSkipRemoteRingEquip(Actor* apActor, TESBoundObject* apObject, uint32_t aObjectId) noexcept
+{
+    if (!apActor || !apObject || !apActor->GetExtension() || !apActor->GetExtension()->IsRemotePlayer())
+        return false;
+
+    if (const auto* pArmor = Cast<TESObjectARMO>(apObject);
+        pArmor && (pArmor->slotType & (1u << 6u)) != 0)
+    {
+        return true;
+    }
+
+    const auto& rfabAdapter = World::Get().GetRfabAdapterService();
+    const auto& bindings = rfabAdapter.GetBindings();
+    if (TESForm* pAdvRing = rfabAdapter.ResolveFormByEditorIdOrBaseId(
+            bindings.AdventurerRingEditorId, bindings.FallbackAdventurerRingBaseFormId);
+        pAdvRing && pAdvRing->formID == aObjectId)
+    {
+        return true;
+    }
+
+    return (aObjectId & 0x00FFFFFFu) == bindings.FallbackAdventurerRingBaseFormId;
+}
+
+void ApplyDifferentialWornTransitions(
+    Actor* apActor,
+    const std::vector<CoopInventoryDiff::EquipTransition<Inventory::Entry>>& acTransitions) noexcept
+{
+    if (!apActor || acTransitions.empty())
+        return;
+
+    ScopedEquipOverride equipOverride_;
+    ModSystem& modSystem = World::Get().GetModSystem();
+    const auto& dom = DefaultObjectManager::Get();
+
+    for (const auto& tr : acTransitions)
+    {
+        const uint32_t objectId = modSystem.GetGameId(tr.Item.BaseId);
+        TESBoundObject* pObject = Cast<TESBoundObject>(TESForm::GetById(objectId));
+        if (!pObject)
+            continue;
+
+        TESForm* pEquipSlot = nullptr;
+        int32_t equipCount = 1;
+        if (const auto* pWeapon = Cast<TESObjectWEAP>(pObject))
+        {
+            if (pWeapon->UsesSingleHandEquipSlot(dom))
+                pEquipSlot = tr.Item.ExtraWornLeft ? dom.leftEquipSlot : dom.rightEquipSlot;
+        }
+        else if (pObject->formType == FormType::Ammo)
+        {
+            equipCount = std::max(1, tr.Item.Count);
+        }
+
+        if (tr.Action == CoopInventoryDiff::EquipActionKind::Equip)
+        {
+            if (!ShouldSkipRemoteRingEquip(apActor, pObject, objectId))
+                EquipManager::Get()->Equip(apActor, pObject, nullptr, equipCount, pEquipSlot, false, true, false, false);
+        }
+        else if (tr.Action == CoopInventoryDiff::EquipActionKind::Unequip)
+        {
+            EquipManager::Get()->UnEquip(apActor, pObject, nullptr, 1, pEquipSlot, false, true, false, false, nullptr);
+        }
+    }
+}
+} // namespace
+
 void TESObjectREFR::SetInventory(const Inventory& aInventory) noexcept
 {
-    spdlog::debug("Setting inventory for {:X}", formID);
+    spdlog::debug("Setting inventory differentially for {:X}", formID);
 
     ScopedInventoryOverride _;
 
-    RemoveAllItems();
+    const Inventory currentInventory = GetInventory();
+    const auto delta = CoopInventoryDiff::ComputeInventoryDelta<Inventory::Entry>(
+        currentInventory.Entries,
+        aInventory.Entries,
+        false);
 
-    for (const Inventory::Entry& entry : aInventory.Entries)
-    {
-        if (entry.Count > 0)
-            AddOrRemoveItem(entry, true);
-    }
+    if (delta.IsNoOp())
+        return;
+
+    for (const Inventory::Entry& rem : delta.ItemsToRemove)
+        AddOrRemoveItem(rem, true);
+
+    for (const Inventory::Entry& add : delta.ItemsToAdd)
+        AddOrRemoveItem(add, true);
+
+    if (Actor* pActor = Cast<Actor>(this))
+        ApplyDifferentialWornTransitions(pActor, delta.WornStateChanges);
 }
 
 Vector<uint32_t> TESObjectREFR::RemoveNonQuestItems(Inventory& aCurrentInventory) noexcept
@@ -852,25 +947,26 @@ Vector<uint32_t> TESObjectREFR::RemoveNonQuestItems(Inventory& aCurrentInventory
 
 void TESObjectREFR::SetInventoryRetainingQuestItems(Inventory& aCurrentInventory, const Inventory& acSourceInventory) noexcept
 {
-    spdlog::debug("Setting inventory for {:X}", formID);
+    spdlog::debug("Setting inventory differentially (retaining quest items) for {:X}", formID);
 
     ScopedInventoryOverride _;
 
-    // Remove all non-quest items first
-    Vector<uint32_t> questItemIds = RemoveNonQuestItems(aCurrentInventory);
-    auto& modSystem = World::Get().GetModSystem();
+    const auto delta = CoopInventoryDiff::ComputeInventoryDelta<Inventory::Entry>(
+        aCurrentInventory.Entries,
+        acSourceInventory.Entries,
+        true);
 
-    for (const auto& entry : acSourceInventory.Entries)
-    {
-        uint32_t gameId = modSystem.GetGameId(entry.BaseId);
+    if (delta.IsNoOp())
+        return;
 
-        // If the item is not in the list of quest items, add it
-        if (std::find(questItemIds.begin(), questItemIds.end(), gameId) == questItemIds.end())
-        {
-            if (entry.Count > 0)
-                AddOrRemoveItem(entry, true);
-        }
-    }
+    for (const Inventory::Entry& rem : delta.ItemsToRemove)
+        AddOrRemoveItem(rem, true);
+
+    for (const Inventory::Entry& add : delta.ItemsToAdd)
+        AddOrRemoveItem(add, true);
+
+    if (Actor* pActor = Cast<Actor>(this))
+        ApplyDifferentialWornTransitions(pActor, delta.WornStateChanges);
 }
 
 void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSettingInventory) noexcept
@@ -1160,17 +1256,14 @@ bool ShouldAutoUnlockCoopArenaBarrier(TESObjectREFR* apDoor, Actor* apActivator)
         return false;
 
     auto& world = World::Get();
-    if (!world.GetPartyService().IsInParty())
+    TiltedPhoques::Vector<uint32_t> peerFormIds;
+    world.GetRfabAdapterService().CollectPartyPeerActorFormIds(peerFormIds);
+    if (peerFormIds.empty())
         return false;
 
     bool hasPeerInSameCell = false;
-    auto playerView = world.view<FormIdComponent, PlayerComponent>();
-    for (auto entity : playerView)
+    for (const uint32_t formId : peerFormIds)
     {
-        const uint32_t formId = playerView.get<FormIdComponent>(entity).Id;
-        if (formId == 0 || formId == 0x14)
-            continue;
-
         Actor* pPeer = Cast<Actor>(TESForm::GetById(formId));
         if (pPeer && pPeer->parentCell == apDoor->parentCell)
         {
@@ -1182,15 +1275,16 @@ bool ShouldAutoUnlockCoopArenaBarrier(TESObjectREFR* apDoor, Actor* apActivator)
     if (!hasPeerInSameCell)
         return false;
 
-    auto actorView = world.view<FormIdComponent>(entt::exclude<ObjectComponent, PlayerComponent>);
-    for (auto entity : actorView)
-    {
-        const uint32_t formId = actorView.get<FormIdComponent>(entity).Id;
-        if (formId == 0 || formId == 0x14)
-            continue;
+    ProcessLists* const pProcessLists = ProcessLists::Get();
+    if (!pProcessLists)
+        return false;
 
-        Actor* pNpc = Cast<Actor>(TESForm::GetById(formId));
-        if (!pNpc || pNpc->IsDead() || pNpc->parentCell != apDoor->parentCell)
+    for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
+    {
+        Actor* pNpc = Cast<Actor>(TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]));
+        if (!pNpc || pNpc->formID == 0 || pNpc->formID == 0x14 || pNpc->IsDead() || pNpc->parentCell != apDoor->parentCell)
+            continue;
+        if (const auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
             continue;
 
         if (pNpc->IsInCombat() || world.GetRfabAdapterService().IsBossActor(pNpc))
@@ -1273,6 +1367,17 @@ namespace
 {
 bool ShouldBlockRemoteActorInventoryHook(TESObjectREFR* apTarget, TESObjectREFR* apTransferPartner = nullptr) noexcept
 {
+    if (!apTarget)
+        return true;
+
+    // Never emit InventoryChangeEvent for faction evidence / prisoner belongings chests during PayFine / ServeSentence!
+    if (apTarget->baseForm &&
+        apTarget->baseForm->formType == FormType::Container &&
+        ObjectService::IsFactionCrimeContainer(apTarget->formID))
+    {
+        return true;
+    }
+
     Actor* pActor = Cast<Actor>(apTarget);
     if (!pActor)
         return false;
@@ -1371,11 +1476,14 @@ TP_MAKE_THISCALL(HookRemoveInventoryItem, TESObjectREFR, BSPointerHandle<TESObje
 
 void TP_MAKE_THISCALL(HookRotateX, TESObjectREFR, float aAngle)
 {
+    if (!apThis)
+        return;
+
     if (apThis->formType == Actor::Type)
     {
         const auto pActor = static_cast<Actor*>(apThis);
         // We don't allow remotes to move
-        if (pActor->GetExtension()->IsRemote())
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote())
             return;
     }
 
@@ -1384,11 +1492,14 @@ void TP_MAKE_THISCALL(HookRotateX, TESObjectREFR, float aAngle)
 
 void TP_MAKE_THISCALL(HookRotateY, TESObjectREFR, float aAngle)
 {
+    if (!apThis)
+        return;
+
     if (apThis->formType == Actor::Type)
     {
         const auto pActor = static_cast<Actor*>(apThis);
         // We don't allow remotes to move
-        if (pActor->GetExtension()->IsRemote())
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote())
             return;
     }
 
@@ -1397,19 +1508,61 @@ void TP_MAKE_THISCALL(HookRotateY, TESObjectREFR, float aAngle)
 
 void TP_MAKE_THISCALL(HookRotateZ, TESObjectREFR, float aAngle)
 {
+    if (!apThis)
+        return;
+
     if (apThis->formType == Actor::Type)
     {
         const auto pActor = static_cast<Actor*>(apThis);
         // We don't allow remotes to move
-        if (pActor->GetExtension()->IsRemote())
+        if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote())
             return;
     }
 
     return TiltedPhoques::ThisCall(RealRotateZ, apThis, aAngle);
 }
 
+bool TP_MAKE_THISCALL(HookInternalMoveTo, TESObjectREFR, uint32_t* apTargetHandle, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation)
+{
+    if (!apThis)
+        return false;
+
+    if (!ScopedReferencesOverride::IsOverriden())
+    {
+        if (apThis->formID == 0x14 &&
+            CoopTeleportGuard::RemoteQuestMoveToGuard::ShouldBlockUnauthorizedPlayerMoveTo())
+        {
+            spdlog::warn(
+                "[RFAB TeleportGuard] Blocked unauthorized remote-quest PlayerCharacter::MoveTo (targetCell={:X}, worldSpace={:X}, pos=({:.1f}, {:.1f}, {:.1f}))",
+                apTargetCell ? apTargetCell->formID : 0u,
+                apTargetWorldSpace ? apTargetWorldSpace->formID : 0u,
+                acPosition.x,
+                acPosition.y,
+                acPosition.z);
+            return false;
+        }
+
+        if (apThis->formType == Actor::Type)
+        {
+            auto* pActor = static_cast<Actor*>(apThis);
+            if (auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemotePlayer())
+            {
+                spdlog::debug(
+                    "[RFAB TeleportGuard] Blocked unauthorized engine/script MoveTo on remote player {:X}",
+                    apThis->formID);
+                return false;
+            }
+        }
+    }
+
+    return TiltedPhoques::ThisCall(RealInternalMoveTo, apThis, apTargetHandle, apTargetCell, apTargetWorldSpace, acPosition, acRotation);
+}
+
 void TP_MAKE_THISCALL(HookLockChange, TESObjectREFR)
 {
+    if (!apThis)
+        return;
+
     TiltedPhoques::ThisCall(RealLockChange, apThis);
     const auto* pLock = apThis->GetLock();
     if(pLock)
@@ -1430,6 +1583,7 @@ static TiltedPhoques::Initializer s_objectReferencesHooks(
         POINTER_SKYRIMSE(TRemoveInventoryItem, s_removeInventoryItem, 19263);
         POINTER_SKYRIMSE(TPlayAnimationAndWait, s_playAnimationAndWait, 55675);
         POINTER_SKYRIMSE(TPlayAnimation, s_playAnimation, 55674);
+        POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
 
         RealLockChange = s_lockChange.Get();
         RealRotateX = s_rotateX.Get();
@@ -1440,6 +1594,7 @@ static TiltedPhoques::Initializer s_objectReferencesHooks(
         RealRemoveInventoryItem = s_removeInventoryItem.Get();
         RealPlayAnimationAndWait = s_playAnimationAndWait.Get();
         RealPlayAnimation = s_playAnimation.Get();
+        RealInternalMoveTo = s_internalMoveTo.Get();
 
         TP_HOOK(&RealLockChange, HookLockChange);
         TP_HOOK(&RealRotateX, HookRotateX);
@@ -1450,4 +1605,5 @@ static TiltedPhoques::Initializer s_objectReferencesHooks(
         TP_HOOK(&RealRemoveInventoryItem, HookRemoveInventoryItem);
         TP_HOOK(&RealPlayAnimationAndWait, HookPlayAnimationAndWait);
         TP_HOOK(&RealPlayAnimation, HookPlayAnimation);
+        TP_HOOK(&RealInternalMoveTo, HookInternalMoveTo);
     });

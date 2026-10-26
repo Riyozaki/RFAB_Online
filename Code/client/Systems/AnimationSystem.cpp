@@ -19,28 +19,82 @@
 
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
+#include <CoopAnimationState.h>
 
 extern thread_local const char* g_animErrorCode;
+extern thread_local bool g_forceAnimation;
 
 namespace
 {
 constexpr uint32_t kEncodedActorServerIdTag = 0xFF800000u;
 constexpr uint32_t kEncodedActorServerIdMask = 0x007FFFFFu;
+
+void ForceDefaultIdleGraphReset(Actor* apActor, RemoteAnimationComponent& aAnimComp, uint64_t aTick) noexcept
+{
+    if (!apActor || apActor->IsDead())
+        return;
+    if (aAnimComp.LastSitSleepNormalizeTick != 0 && aTick < aAnimComp.LastSitSleepNormalizeTick + 500)
+        return;
+
+    aAnimComp.LastSitSleepNormalizeTick = aTick;
+    aAnimComp.PendingFurnitureGraphExit = false;
+    aAnimComp.InRemoteFurnitureIdle = false;
+
+    const bool prevForce = g_forceAnimation;
+    g_forceAnimation = true;
+    BSFixedString defaultStateEvt("IdleForceDefaultState");
+    apActor->SendAnimationEvent(&defaultStateEvt);
+    g_forceAnimation = prevForce;
+}
 }
 
 void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent, const uint64_t aTick) noexcept
 {
-    auto& actions = aAnimationComponent.TimePoints;
-    if (actions.empty())
-        return;
-
     // Check if animation graph is ready before attempting to play animations
     if (!apActor || !apActor->animationGraphHolder.IsReady())
         return;
 
-    // Drop ancient backlog (>2s stale non-replay actions) if a lag burst queued >16 events, preventing freeze catch-up storms.
+    float horizontalSpeed = 0.0f;
+    {
+        auto interpView = aWorld.view<FormIdComponent, InterpolationComponent>();
+        for (entt::entity e : interpView)
+        {
+            if (interpView.get<FormIdComponent>(e).Id == apActor->formID)
+            {
+                horizontalSpeed = interpView.get<InterpolationComponent>(e).LastHorizontalSpeed;
+                break;
+            }
+        }
+    }
+
+    auto& actions = aAnimationComponent.TimePoints;
+    if (actions.empty())
+    {
+        // Continuous SitSleep/Furniture guard: if a remote bandit replayed a chair/furniture idle on spawn
+        // (or still carries SitSleepState != 0) and is now running/fighting away from any furniture without
+        // having delivered an exit event, snap its ChairRootBehavior back to standing locomotion immediately.
+        const uint32_t curSitSleep = CoopAnimationState::GetSitSleepState(apActor->actorState.flags1);
+        const bool inCombatOrMoving =
+            CoopAnimationState::IsWeaponDrawn(apActor->actorState.flags2) ||
+            CoopAnimationState::GetMeleeAttackState(apActor->actorState.flags1) != 0u ||
+            horizontalSpeed > 65.0f;
+
+        if ((aAnimationComponent.PendingFurnitureGraphExit ||
+             ((curSitSleep != 0u || aAnimationComponent.InRemoteFurnitureIdle) && inCombatOrMoving)) &&
+            !apActor->HasValidNearbyFurniture())
+        {
+            apActor->actorState.flags1 = CoopAnimationState::ClearSitSleepState(apActor->actorState.flags1);
+            ForceDefaultIdleGraphReset(apActor, aAnimationComponent, aTick);
+        }
+        return;
+    }
+
+    // Drop ancient backlog (>2s stale non-replay actions) if a lag burst queued >16 events, preventing freeze catch-up storms,
+    // while latching PendingFurnitureGraphExit if any furniture/idle exit event had to be skipped.
     while (actions.size() > 16 && aAnimationComponent.ReplayCount == 0 && aTick > 2000 && actions.front().Tick + 2000 < aTick)
     {
+        if (CoopAnimationState::IsFurnitureOrIdleExitEvent(actions.front().EventName))
+            aAnimationComponent.PendingFurnitureGraphExit = true;
         actions.pop_front();
     }
 
@@ -53,6 +107,8 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         {
             apActor->animationGraphHolder.RevertAnimationGraphManager();
             aAnimationComponent.ResetAnimationGraphForReplay = false;
+            aAnimationComponent.InRemoteFurnitureIdle = false;
+            aAnimationComponent.PendingFurnitureGraphExit = false;
         }
 
         const auto first = actions.front();
@@ -73,7 +129,17 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
             pTarget = Cast<TESObjectREFR>(TESForm::GetById(targetId));
         }
 
-        apActor->actorState.flags1 = first.State1;
+        const uint32_t prevFlags1 = apActor->actorState.flags1;
+        const bool hasNearbyFurniture = apActor->HasValidNearbyFurniture() || (pTarget != nullptr && CoopAnimationState::IsFurnitureEnterEvent(first.EventName));
+        const auto sitDecision = CoopAnimationState::EvaluateRemoteSitSleepTransition(
+            prevFlags1,
+            first.State1,
+            first.State2,
+            hasNearbyFurniture,
+            first.EventName,
+            horizontalSpeed);
+
+        apActor->actorState.flags1 = sitDecision.NormalizedFlags1;
         if (apActor->GetExtension() && apActor->GetExtension()->IsDownedPlayer() && !apActor->GetExtension()->IsLocalPlayer())
         {
             // Preserve ACTOR_LIFE_STATE::kBleedout (8, bits 21..24) on downed remote player clones so native
@@ -83,6 +149,20 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
             apActor->actorState.flags1 = (apActor->actorState.flags1 & ~kLifeStateMask) | kLifeStateBleedout;
         }
         apActor->actorState.flags2 = first.State2;
+
+        if (CoopAnimationState::IsFurnitureEnterEvent(first.EventName) && hasNearbyFurniture)
+            aAnimationComponent.InRemoteFurnitureIdle = true;
+        else if (CoopAnimationState::IsFurnitureOrIdleExitEvent(first.EventName))
+        {
+            aAnimationComponent.InRemoteFurnitureIdle = false;
+            aAnimationComponent.PendingFurnitureGraphExit = false;
+        }
+
+        if (sitDecision.ForceDefaultIdleGraph || aAnimationComponent.PendingFurnitureGraphExit ||
+            (aAnimationComponent.InRemoteFurnitureIdle && !hasNearbyFurniture && CoopAnimationState::IsWeaponDrawn(first.State2)))
+        {
+            ForceDefaultIdleGraphReset(apActor, aAnimationComponent, aTick);
+        }
 
         apActor->LoadAnimationVariables(first.Variables);
 

@@ -3,6 +3,7 @@
 #include <Services/OverlayService.h>
 
 #include <OverlayApp.hpp>
+#include <include/cef_command_line.h>
 
 #include <D3D11Hook.hpp>
 #include <OverlayRenderHandlerD3D11.hpp>
@@ -140,10 +141,35 @@ OverlayService::~OverlayService() noexcept
 {
 }
 
+struct CoopOverlayApp final : OverlayApp
+{
+    CoopOverlayApp(RenderProvider* apProvider, OverlayClient* apClient)
+        : OverlayApp(apProvider, apClient)
+    {
+    }
+
+    void OnBeforeCommandLineProcessing(const CefString& aProcessType, CefRefPtr<CefCommandLine> aCommandLine) override
+    {
+        OverlayApp::OnBeforeCommandLineProcessing(aProcessType, aCommandLine);
+        if (!aCommandLine)
+            return;
+
+        // Suppress Chromium background subsystems unused by an off-screen HUD overlay
+        // (eliminates gpu_init, usb_descriptors, and media_router spam in cef_debug.log).
+        aCommandLine->AppendSwitch("disable-gpu-shader-disk-cache");
+        aCommandLine->AppendSwitch("disable-usb-keyboard-detect");
+        aCommandLine->AppendSwitch("disable-background-networking");
+        aCommandLine->AppendSwitchWithValue(
+            "disable-features",
+            "MediaRouter,WinUseBrowserSpellChecker,HardwareMediaKeyHandling");
+        aCommandLine->AppendSwitchWithValue("log-severity", "error");
+    }
+};
+
 void OverlayService::Create(RenderSystemD3D11* apRenderSystem) noexcept
 {
     m_pProvider = TiltedPhoques::MakeUnique<D3D11RenderProvider>(apRenderSystem);
-    m_pOverlay = new OverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
+    m_pOverlay = new CoopOverlayApp(m_pProvider.get(), new ::OverlayClient(m_transport, m_pProvider->Create()));
 
     if (!m_pOverlay->Initialize())
     {
@@ -175,14 +201,20 @@ void OverlayService::Render() noexcept
 
 void OverlayService::Reset() const noexcept
 {
+    if (!m_pOverlay || !m_pOverlay->GetClient())
+        return;
+
     m_pOverlay->GetClient()->Reset();
 }
 
 void OverlayService::Reload() noexcept
 {
+    if (!m_pOverlay || !m_pOverlay->GetClient() || !m_pOverlay->GetClient()->GetBrowser())
+        return;
+
     SetInGame(false);
     SetActive(false);
-    GetOverlayApp()->GetClient()->GetBrowser()->Reload();
+    m_pOverlay->GetClient()->GetBrowser()->Reload();
     Initialize();
     SetInGame(true);
     m_pOverlay->ExecuteAsync("enterGame");
@@ -191,12 +223,15 @@ void OverlayService::Reload() noexcept
 
 void OverlayService::Initialize() noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     m_pOverlay->ExecuteAsync("init");
 }
 
 void OverlayService::SetActive(bool aActive) noexcept
 {
-    if (!m_inGame)
+    if (!m_inGame || !m_pOverlay)
         return;
     if (m_active == aActive)
         return;
@@ -213,7 +248,7 @@ bool OverlayService::GetActive() const noexcept
 
 void OverlayService::SetInGame(bool aInGame) noexcept
 {
-    if (m_inGame == aInGame)
+    if (m_inGame == aInGame || !m_pOverlay)
         return;
     m_inGame = aInGame;
 
@@ -260,10 +295,13 @@ void OverlayService::SendSystemMessage(const std::string& acMessage)
 
 void OverlayService::SetPlayerHealthPercentage(uint32_t aFormId) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
     if (!pActor)
     {
-        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, aFormId);
+        spdlog::debug("{}: cannot find actor for form id {:X}", __FUNCTION__, aFormId);
         return;
     }
 
@@ -274,7 +312,7 @@ void OverlayService::SetPlayerHealthPercentage(uint32_t aFormId) const noexcept
 
     if (entityIt == view.end())
     {
-        spdlog::error("{}: cannot find player entity for form id {:X}", __FUNCTION__, aFormId);
+        spdlog::debug("{}: cannot find player entity for form id {:X}", __FUNCTION__, aFormId);
         return;
     }
 
@@ -294,6 +332,9 @@ void OverlayService::OnUpdate(const UpdateEvent&) noexcept
 
 void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     m_pOverlay->ExecuteAsync("connect");
 
     auto pArguments = CefListValue::Create();
@@ -303,21 +344,29 @@ void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
 
 void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     m_pOverlay->ExecuteAsync("disconnect");
 }
 
 void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
     if (!pPlayerComponent)
         return;
 
-    const auto& formIdComponent = m_world.get<FormIdComponent>(aEntity);
+    const auto* pFormIdComponent = m_world.try_get<FormIdComponent>(aEntity);
+    if (!pFormIdComponent)
+        return;
 
-    Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
+    Actor* pActor = Cast<Actor>(TESForm::GetById(pFormIdComponent->Id));
     if (!pActor)
     {
-        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, formIdComponent.Id);
+        spdlog::error("{}: cannot find actor for form id {:X}", __FUNCTION__, pFormIdComponent->Id);
         return;
     }
 
@@ -332,10 +381,15 @@ void OverlayService::OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::enti
 
 void OverlayService::OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
-    const auto& playerComponent = m_world.get<PlayerComponent>(aEntity);
+    if (!m_pOverlay)
+        return;
+
+    const auto* pPlayerComponent = m_world.try_get<PlayerComponent>(aEntity);
+    if (!pPlayerComponent)
+        return;
 
     auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, playerComponent.Id);
+    pArguments->SetInt(0, pPlayerComponent->Id);
 
     m_pOverlay->ExecuteAsync("setPlayer3dUnloaded", pArguments);
 }
@@ -368,6 +422,9 @@ void OverlayService::OnPlayerDialogue(const NotifyPlayerDialogue& acMessage) noe
 
 void OverlayService::OnConnectionError(const ConnectionErrorEvent& acConnectedEvent) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArgs = CefListValue::Create();
     pArgs->SetString(0, acConnectedEvent.ErrorDetail.c_str());
     m_pOverlay->ExecuteAsync("triggerError", pArgs);
@@ -375,6 +432,9 @@ void OverlayService::OnConnectionError(const ConnectionErrorEvent& acConnectedEv
 
 void OverlayService::OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetString(1, acMessage.Username.c_str());
@@ -388,6 +448,9 @@ void OverlayService::OnPlayerJoined(const NotifyPlayerJoined& acMessage) noexcep
 
 void OverlayService::OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetString(1, acMessage.Username.c_str());
@@ -396,6 +459,9 @@ void OverlayService::OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept
 
 void OverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     pArguments->SetInt(1, acMessage.NewLevel);
@@ -404,6 +470,9 @@ void OverlayService::OnPlayerLevel(const NotifyPlayerLevel& acMessage) noexcept
 
 void OverlayService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessage) const noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     auto pArguments = CefListValue::Create();
     pArguments->SetInt(0, acMessage.PlayerId);
     String cellName = GetCellName(acMessage.WorldSpaceId, acMessage.CellId);
@@ -485,6 +554,9 @@ void OverlayService::OnNotifyTeleport(const NotifyTeleport& acMessage) noexcept
 
 void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& acMessage) noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     const float percentage = acMessage.Percentage >= 0.f ? acMessage.Percentage : 0.f;
 
     auto pArguments = CefListValue::Create();
@@ -495,8 +567,8 @@ void OverlayService::OnNotifyPlayerHealthUpdate(const NotifyPlayerHealthUpdate& 
 
 void OverlayService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
 {
-    if (acEvent.IsLeader)
-        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyCreated");
+    if (acEvent.IsLeader && m_pOverlay)
+        m_pOverlay->ExecuteAsync("partyCreated");
 
     if (m_transport.IsConnected())
     {
@@ -511,11 +583,15 @@ void OverlayService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcep
 
 void OverlayService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
 {
-    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyLeft");
+    if (m_pOverlay)
+        m_pOverlay->ExecuteAsync("partyLeft");
 }
 
 void OverlayService::RunDebugDataUpdates() noexcept
 {
+    if (!m_pOverlay)
+        return;
+
     static std::chrono::steady_clock::time_point lastSendTimePoint;
     constexpr auto cDelayBetweenUpdates = 1000ms;
 

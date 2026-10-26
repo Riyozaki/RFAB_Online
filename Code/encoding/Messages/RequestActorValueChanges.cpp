@@ -1,12 +1,18 @@
 #include <Messages/RequestActorValueChanges.h>
+#include <common/CoopPacketSafety.h>
+#include <algorithm>
 
 void RequestActorValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, Id);
 
-    Serialization::WriteVarInt(aWriter, Values.size());
+    const size_t count = std::min(Values.size(), CoopPacketSafety::kMaxActorValues);
+    Serialization::WriteVarInt(aWriter, count);
+    size_t written = 0;
     for (auto& value : Values)
     {
+        if (written++ >= count)
+            break;
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
@@ -18,11 +24,13 @@ void RequestActorValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRe
 
     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
-    auto count = Serialization::ReadVarInt(aReader);
-    for (int i = 0; i < count; i++)
+    const size_t count = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxActorValues);
+    for (size_t i = 0; i < count && !aReader.Eof(); i++)
     {
-        auto key = Serialization::ReadVarInt(aReader);
-        auto value = Serialization::ReadFloat(aReader);
+        const uint32_t key = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+        const float value = Serialization::ReadFloat(aReader);
         Values.insert({key, value});
     }
 }

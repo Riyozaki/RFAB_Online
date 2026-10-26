@@ -13,7 +13,7 @@ MenuTopicManager* MenuTopicManager::Get() noexcept
 
 bool TP_MAKE_THISCALL(HookPlayDialogueOption, MenuTopicManager, int32_t aIndex)
 {
-    if (apThis->pOptions)
+    if (apThis && apThis->pOptions && aIndex >= 0)
     {
         int i = 0;
         const char* pText = nullptr;
@@ -21,14 +21,18 @@ bool TP_MAKE_THISCALL(HookPlayDialogueOption, MenuTopicManager, int32_t aIndex)
         {
             if (i == aIndex)
             {
-                pText = option->text;
+                if (option && option->text && option->text[0] != '\0')
+                    pText = option->text;
                 break;
             }
             i++;
         }
 
         if (pText != nullptr)
-            World::Get().GetRunner().Trigger(PlayerDialogueEvent(pText));
+        {
+            String safeText(pText);
+            World::Get().GetRunner().Trigger(PlayerDialogueEvent(std::move(safeText)));
+        }
     }
 
     return TiltedPhoques::ThisCall(RealPlayDialogueOption, apThis, aIndex);

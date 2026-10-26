@@ -1015,6 +1015,7 @@ foreach ($sf in ($SkyrimSoulsFiles | Select-Object -Unique -Property FullName)) 
     $raw = [System.IO.File]::ReadAllText($sf.FullName, [System.Text.Encoding]::UTF8)
     $updated = [regex]::Replace($raw, '(?mi)^(\s*fSlowMotionMultiplier\s*=\s*)([^\r\n;#]+)(.*)$', '${1}1.000000${3}')
     $updated = [regex]::Replace($updated, '(?mi)^(\s*bEnableSlowMotion[A-Za-z0-9_]*\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
+    $updated = [regex]::Replace($updated, '(?mi)^(\s*bStatsMenu\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
     if ($updated -ne $raw) {
         Backup-Once $sf.FullName
         [System.IO.File]::WriteAllText($sf.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
@@ -1084,6 +1085,8 @@ if (-not (Test-Path -LiteralPath $RegPath)) {
 }
 Set-ItemProperty -LiteralPath $RegPath -Name "TitlePath" -Value $GameRoot -Type String
 Set-ItemProperty -LiteralPath $RegPath -Name "TitleExe" -Value $SkyrimExe -Type String
+Set-ItemProperty -LiteralPath $RegPath -Name "Mo2Path" -Value $Mo2Dir -Type String
+Set-ItemProperty -LiteralPath $RegPath -Name "RfabRoot" -Value $RfabDir -Type String
 Write-Ok "Реестр TiltedEvolution привязан к: $SkyrimExe"
 
 Backup-Once $Mo2Ini

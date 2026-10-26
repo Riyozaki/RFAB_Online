@@ -7,6 +7,7 @@ struct TESObjectCELL;
 struct TESWorldSpace;
 struct NiPoint3;
 struct TESForm;
+struct TESFaction;
 struct TESGlobal;
 struct TESQuest;
 struct BGSListForm;
@@ -116,7 +117,9 @@ struct ModManager
 
     uint8_t pad0[0x0E8];
     GameArray<TESGlobal*> globals;
-    uint8_t pad100[0x748 - 0x100];
+    uint8_t pad100[0x118 - 0x100];
+    GameArray<TESFaction*> factions;
+    uint8_t pad130[0x748 - 0x130];
     GameArray<TESQuest*> quests;
     uint8_t pad760[0x898 - 0x760];
     GameArray<BGSListForm*> formLists;
@@ -125,6 +128,7 @@ struct ModManager
 };
 
 static_assert(offsetof(ModManager, globals) == 0x0E8);
+static_assert(offsetof(ModManager, factions) == 0x118);
 static_assert(offsetof(ModManager, quests) == 0x748);
 static_assert(offsetof(ModManager, formLists) == 0x898);
 static_assert(offsetof(ModManager, mods) == 0xD60);

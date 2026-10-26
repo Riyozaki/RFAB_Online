@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <Services/DiscoveryService.h>
+#include <Services/CharacterService.h>
 #include <Games/TES.h>
 
 #include <Games/References.h>
@@ -19,6 +20,7 @@
 #include <Events/ConnectionErrorEvent.h>
 
 #include <World.h>
+#include <Components.h>
 
 DiscoveryService::DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -214,7 +216,8 @@ void DiscoveryService::VisitForms() noexcept
     }
 
     // Not in actor holder
-    visitor(PlayerCharacter::Get());
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        visitor(pPlayer);
 
     // We dispatch removal events first to prevent needless reallocations
     for (uint32_t formId : s_previousForms)
@@ -227,9 +230,41 @@ void DiscoveryService::VisitForms() noexcept
     m_dispatcher.update<ActorAddedEvent>();
 }
 
+void DiscoveryService::ResetLoadedForms() noexcept
+{
+    m_forms.clear();
+    m_interiorCellId = 0;
+    m_pLocation = nullptr;
+    ResetCachedCellData();
+}
+
+void DiscoveryService::ReconcileMissingWorldEntities() noexcept
+{
+    if (!m_forms.empty())
+    {
+        Set<uint32_t> liveEntityFormIds;
+        auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+        for (entt::entity entity : actorView)
+            liveEntityFormIds.insert(actorView.get<FormIdComponent>(entity).Id);
+
+        for (auto it = m_forms.begin(); it != m_forms.end();)
+        {
+            if (!liveEntityFormIds.count(*it))
+                it = m_forms.erase(it);
+            else
+                ++it;
+        }
+    }
+
+    VisitForms();
+}
+
 void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept
 {
     TP_UNUSED(acUpdateEvent);
+
+    if (m_world.GetCharacterService().IsEngineWorldLoading())
+        return;
 
     VisitCell();
     VisitForms();
@@ -247,12 +282,15 @@ void DiscoveryService::OnConnected(const ConnectedEvent& acEvent) noexcept
         m_world.GetRunner().Trigger(errorEvent);
     }
 
+    // Ensure 0x14 (local PlayerCharacter) and all currently loaded actors have live EnTT entities
+    // even if a save load previously detached all actor entities via DetachAllActorsForEngineLoad().
+    ReconcileMissingWorldEntities();
     VisitCell(true);
 }
 
 BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDispatcher<TESLoadGameEvent>*)
 {
-    spdlog::info("Finished loading, triggering visit cell");
+    spdlog::info("Finished loading, triggering visit cell and fresh actor discovery");
 
     // RFAB Online: RFAB runs hundreds of Requiem/SKSE plugins by design.
     // Only warn if SkyrimTogether.esp itself was not enabled in MO2's load order;
@@ -273,7 +311,11 @@ BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDis
                      pSkyrimTogether->standardId, ModManager::Get()->mods.Size());
     }
 
+    // Clear stale pre-load form IDs (especially 0x14 PlayerCharacter and nearby NPCs destroyed during
+    // DetachAllActorsForEngineLoad) so VisitForms() immediately re-creates their EnTT entities.
+    ResetLoadedForms();
     VisitCell(true);
+    VisitForms();
 
     return BSTEventResult::kOk;
 }

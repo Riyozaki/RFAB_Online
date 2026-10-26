@@ -67,9 +67,9 @@ void DebugService::DisplayEntities() noexcept
         char name[256];
 
         if (!pActor->baseForm)
-            strncpy_s(name, "UNNAMED", sizeof(name));
-
-        sprintf_s(name, std::size(name), "%s (%x)", pActor->baseForm->GetName(), formComponent.Id);
+            sprintf_s(name, std::size(name), "UNNAMED (%x)", formComponent.Id);
+        else
+            sprintf_s(name, std::size(name), "%s (%x)", pActor->baseForm->GetName(), formComponent.Id);
 
         if (ImGui::Selectable(name, m_formId == formComponent.Id))
             m_formId = formComponent.Id;
@@ -169,7 +169,7 @@ void DebugService::DisplayFormComponent(FormIdComponent& aFormComponent) const n
     ImGui::InputFloat3("Rotation", pActor->rotation.AsArray(), "%.3f", ImGuiInputTextFlags_ReadOnly);
     int isDead = int(pActor->IsDead());
     ImGui::InputScalar("Is dead?", ImGuiDataType_U8, &isDead, 0, 0, "%" PRIx8, ImGuiInputTextFlags_ReadOnly);
-    int isRemote = int(pActor->GetExtension()->IsRemote());
+    int isRemote = int(pActor->GetExtension() ? pActor->GetExtension()->IsRemote() : false);
     ImGui::InputScalar("Is remote?", ImGuiDataType_U8, &isRemote, 0, 0, "%" PRIx8, ImGuiInputTextFlags_ReadOnly);
     auto handle = pActor->GetHandle();
     ImGui::InputInt("Handle", (int*)&handle.handle.iBits, 0, 0, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_CharsHexadecimal);

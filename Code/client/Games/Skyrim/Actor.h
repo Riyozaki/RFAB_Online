@@ -32,6 +32,13 @@ struct Actor : TESObjectREFR
     static GamePtr<Actor> New() noexcept;
     // Places a brand new actor in the world
     static GamePtr<Actor> Create(TESNPC* apBaseForm) noexcept;
+    // Places a brand new actor directly into an already-validated loaded target cell & coordinates
+    static GamePtr<Actor> CreateInCell(
+        TESNPC* apBaseForm,
+        TESObjectCELL* apCell,
+        TESWorldSpace* apWorldSpace,
+        const NiPoint3& acPosition,
+        const NiPoint3& acRotation) noexcept;
     static GamePtr<Actor> Spawn(uint32_t aBaseFormId) noexcept;
 
     virtual void sub_9C();
@@ -191,6 +198,8 @@ struct Actor : TESObjectREFR
     TESForm* GetEquippedWeapon(uint32_t aSlotId) const noexcept;
     TESForm* GetEquippedAmmo() const noexcept;
     Actor* GetCommandingActor() const noexcept;
+    TESObjectREFR* GetOccupiedFurniture() const noexcept;
+    [[nodiscard]] bool HasValidNearbyFurniture(float aMaxDistance = 256.0f) const noexcept;
     // in reality this is a BGSLocation
     TESForm* GetCurrentLocation();
     float GetActorValue(uint32_t aId) const noexcept;
@@ -231,6 +240,7 @@ struct Actor : TESObjectREFR
     void SetFactions(const Factions& acFactions) noexcept;
     void SetFactionRank(const TESFaction* apFaction, int8_t aRank) noexcept;
     void ForcePosition(const NiPoint3& acPosition) noexcept;
+    void ResetTeleportPhysics(float aNewZ) noexcept;
     void SetWeaponDrawnEx(bool aDraw) noexcept;
     void SetPackage(TESPackage* apPackage) noexcept;
     void SetActorInventory(const Inventory& aInventory) noexcept;
@@ -258,6 +268,7 @@ struct Actor : TESObjectREFR
     void SetCombatTargetEx(Actor* apTarget) noexcept;
     void StartCombat(Actor* apTarget) noexcept;
     void StopCombat() noexcept;
+    void EvaluatePackage() noexcept;
     bool PlayIdle(TESIdleForm* apIdle) noexcept;
     void FixVampireLordModel() noexcept;
     bool RemoveSpell(MagicItem* apSpell) noexcept;

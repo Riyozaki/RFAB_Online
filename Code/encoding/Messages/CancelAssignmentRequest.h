@@ -18,5 +18,5 @@ struct CancelAssignmentRequest final : ClientMessage
 
     bool operator==(const CancelAssignmentRequest& achRhs) const noexcept { return Cookie == achRhs.Cookie && GetOpcode() == achRhs.GetOpcode(); }
 
-    uint32_t Cookie;
+    uint32_t Cookie{};
 };

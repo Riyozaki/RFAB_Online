@@ -20,6 +20,6 @@ struct LockChangeRequest final : ClientMessage
 
     GameId Id;
     GameId CellId;
-    bool IsLocked;
-    uint8_t LockLevel;
+    bool IsLocked{};
+    uint8_t LockLevel{};
 };

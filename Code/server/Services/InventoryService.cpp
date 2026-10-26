@@ -3,6 +3,7 @@
 #include <Components.h>
 #include <World.h>
 #include <GameServer.h>
+#include <common/CoopPacketSafety.h>
 
 #include <Messages/NotifyObjectInventoryChanges.h>
 #include <Messages/RequestInventoryChanges.h>
@@ -32,6 +33,9 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
     if (!m_world.valid(cOrigin))
         return;
 
+    if (!message.Item.BaseId || message.Item.Count == 0)
+        return;
+
     // Strict player inventory ownership isolation: a peer client's remote puppet scripts must NEVER
     // add or remove items from another player's character inventory!
     if (const auto* pChar = m_world.try_get<CharacterComponent>(cOrigin))
@@ -50,6 +54,11 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
         }
     }
 
+    Inventory::Entry sanitizedItem = message.Item;
+    sanitizedItem.Count = CoopPacketSafety::SanitizeItemCountDelta(sanitizedItem.Count);
+    sanitizedItem.ExtraCharge = CoopPacketSafety::SanitizeFiniteFloat(sanitizedItem.ExtraCharge, 0.0f, 100000.0f, 0.0f);
+    sanitizedItem.ExtraHealth = CoopPacketSafety::SanitizeFiniteFloat(sanitizedItem.ExtraHealth, 0.0f, 100000.0f, 0.0f);
+
     auto view = m_world.view<InventoryComponent>();
 
     const auto it = view.find(cOrigin);
@@ -57,15 +66,15 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
     if (it != view.end())
     {
         auto& inventoryComponent = view.get<InventoryComponent>(*it);
-        inventoryComponent.Content.AddOrRemoveEntry(message.Item);
+        inventoryComponent.Content.AddOrRemoveEntry(sanitizedItem);
     }
 
     if (!message.UpdateClients)
         return;
 
-    NotifyInventoryChanges notify;
+    NotifyInventoryChanges notify{};
     notify.ServerId = message.ServerId;
-    notify.Item = message.Item;
+    notify.Item = std::move(sanitizedItem);
 
     notify.Drop = bEnableItemDrops ? message.Drop : false;
 

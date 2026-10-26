@@ -12,6 +12,7 @@
 #include <Services/RfabAdapterService.h>
 #include <Services/DownedStateService.h>
 #include <Services/CoordinatedSaveService.h>
+#include <Services/DiscoveryService.h>
 
 #include <Systems/ModSystem.h>
 
@@ -46,6 +47,8 @@ struct World : entt::registry
     const DownedStateService& GetDownedStateService() const noexcept { return ctx().at<const DownedStateService>(); }
     CoordinatedSaveService& GetCoordinatedSaveService() noexcept { return ctx().at<CoordinatedSaveService>(); }
     const CoordinatedSaveService& GetCoordinatedSaveService() const noexcept { return ctx().at<const CoordinatedSaveService>(); }
+    DiscoveryService& GetDiscoveryService() noexcept { return ctx().at<DiscoveryService>(); }
+    const DiscoveryService& GetDiscoveryService() const noexcept { return ctx().at<const DiscoveryService>(); }
 
     auto& GetDispatcher() noexcept { return m_dispatcher; }
 

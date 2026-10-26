@@ -21,6 +21,7 @@
 
 #include <PlayerCharacter.h>
 #include <Games/TES.h>
+#include <Forms/TESFaction.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
 #include <Forms/BGSEncounterZone.h>
@@ -65,6 +66,39 @@ bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
     return false;
 }
 
+bool ObjectService::IsFactionCrimeContainer(const uint32_t aFormId) noexcept
+{
+    if (aFormId == 0)
+        return false;
+
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
+        return false;
+
+    for (uint32_t i = 0; i < pModManager->factions.length; ++i)
+    {
+        const TESFaction* pFaction = pModManager->factions[i];
+        if (!pFaction)
+            continue;
+
+        if (pFaction->crimeData.factionPlayerInventoryContainer &&
+            pFaction->crimeData.factionPlayerInventoryContainer->formID == aFormId)
+        {
+            return true;
+        }
+
+        if (pFaction->crimeData.factionStolenContainer &&
+            pFaction->crimeData.factionStolenContainer->formID == aFormId)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+namespace
+{
 bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
 {
     if (!apObject)
@@ -77,9 +111,20 @@ bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
     case 0x3EF03: // ...as well as in the "No One Escapes Cidhna Mine" quest
         return false;
     default:
-        return true;
+        break;
     }
+
+    // Never sync faction prisoner belongings or stolen-goods evidence chests (#893):
+    // otherwise one arrested player's confiscated inventory overwrites teammates' jail chests.
+    if (apObject->baseForm && apObject->baseForm->formType == FormType::Container &&
+        ObjectService::IsFactionCrimeContainer(apObject->formID))
+    {
+        return false;
+    }
+
+    return true;
 }
+} // namespace
 
 void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
 {

@@ -20,6 +20,7 @@
 #include <Games/References.h>
 #include <Forms/TESWorldSpace.h>
 
+#include <Forms/TESFaction.h>
 #include <Forms/TESObjectCELL.h>
 
 #include <ModCompat/BehaviorVar.h>
@@ -31,7 +32,7 @@ TP_THIS_FUNCTION(TPickUpObject, char, PlayerCharacter, TESObjectREFR* apObject, 
 TP_THIS_FUNCTION(TSetBeastForm, void, void, void* apUnk1, void* apUnk2, bool aEntering);
 TP_THIS_FUNCTION(TAddSkillExperience, void, PlayerCharacter, int32_t aSkill, float aExperience);
 TP_THIS_FUNCTION(TCalculateExperience, bool, int32_t, float* aFactor, float* aBonus, float* aUnk1, float* aUnk2);
-TP_THIS_FUNCTION(TSetWaypoint, void, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace);
+TP_THIS_FUNCTION(TSetWaypoint, void, PlayerCharacter, NiPoint3* apPosition, TESForm* apWorldSpaceOrCell);
 TP_THIS_FUNCTION(TRemoveWaypoint, void, PlayerCharacter);
 
 static TPickUpObject* RealPickUpObject = nullptr;
@@ -74,6 +75,9 @@ void PlayerCharacter::SetDifficulty(const int32_t aDifficulty, bool aForceUpdate
 void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noexcept
 {
     Skills::Skill skill = Skills::GetSkillFromActorValue(aSkill);
+    if (!pSkills || !pSkills->data || skill >= Skills::Skill::kTotal || static_cast<int32_t>(skill) < 0)
+        return;
+
     float oldExperience = GetSkillExperience(skill);
 
     ScopedExperienceOverride _;
@@ -103,12 +107,20 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
     {
         // TP to Whiterun temple when killed in world space
         TES* pTes = TES::Get();
-        pCell = ModManager::Get()->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
+        ModManager* pModMgr = ModManager::Get();
+        if (pTes && pModMgr)
+            pCell = pModMgr->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
     }
     else
     {
         // TP to start of cell when killed in an interior
         pCell = GetParentCell();
+    }
+
+    if (!pCell)
+    {
+        SetNoBleedoutRecovery(true);
+        return position;
     }
 
     NiPoint3 pos{};
@@ -125,25 +137,36 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
 
 void PlayerCharacter::PayCrimeGoldToAllFactions() noexcept
 {
-    // Yes, yes, this isn't great, but there's no "pay fines everywhere" function
-    const uint32_t crimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816e, 0x2816C, 0x2816B, 0x267EA, 0x2816F, 0x4018279};
-
-    for (uint32_t crimeFactionId : crimeFactionIds)
+    // Dynamically iterate all loaded crime-tracking factions in ModManager (kTrackCrime == 1 << 6)
+    // so DLC / Requiem / RFAB load-order differences never dereference wrong FormID prefixes or miss crime factions.
+    constexpr uint32_t kFactionFlagTrackCrime = (1u << 6);
+    if (auto* pModManager = ModManager::Get(); pModManager && pModManager->factions.length > 0)
     {
-        TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId));
-        if (!pCrimeFaction)
+        for (uint32_t i = 0; i < pModManager->factions.length; ++i)
         {
-            spdlog::error("This isn't a crime faction! {:X}", crimeFactionId);
-            continue;
-        }
+            TESFaction* pFaction = pModManager->factions[i];
+            if (!pFaction || (pFaction->factionFlags & kFactionFlagTrackCrime) == 0)
+                continue;
 
-        PayFine(pCrimeFaction, false, false);
+            PayFine(pFaction, false, false);
+        }
+        return;
+    }
+
+    const uint32_t vanillaCrimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816E, 0x2816C, 0x2816B, 0x267EA, 0x2816F};
+    for (uint32_t crimeFactionId : vanillaCrimeFactionIds)
+    {
+        if (TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId)))
+            PayFine(pCrimeFaction, false, false);
     }
 }
 
-void PlayerCharacter::SetWaypoint(NiPoint3* apPosition, TESWorldSpace* apWorldSpace) noexcept
+void PlayerCharacter::SetWaypoint(NiPoint3* apPosition, TESForm* apWorldSpaceOrCell) noexcept
 {
-    return TiltedPhoques::ThisCall(RealSetWaypoint, this, apPosition, apWorldSpace);
+    if (!apPosition || !apWorldSpaceOrCell)
+        return;
+
+    return TiltedPhoques::ThisCall(RealSetWaypoint, this, apPosition, apWorldSpaceOrCell);
 }
 
 void PlayerCharacter::RemoveWaypoint() noexcept
@@ -236,19 +259,19 @@ bool TP_MAKE_THISCALL(HookCalculateExperience, int32_t, float* aFactor, float* a
     return result;
 }
 
-void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace)
+void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TESForm* apWorldSpaceOrCell)
 {
-    if (apPosition)
+    if (apPosition && apWorldSpaceOrCell)
     {
         Vector3_NetQuantize position{};
         position.x = apPosition->x;
         position.y = apPosition->y;
         position.z = apPosition->z;
 
-        World::Get().GetRunner().Trigger(SetWaypointEvent(position, apWorldSpace ? apWorldSpace->formID : 0));
+        World::Get().GetRunner().Trigger(SetWaypointEvent(position, apWorldSpaceOrCell->formID));
     }
 
-    return TiltedPhoques::ThisCall(RealSetWaypoint, apThis, apPosition, apWorldSpace);
+    return TiltedPhoques::ThisCall(RealSetWaypoint, apThis, apPosition, apWorldSpaceOrCell);
 }
 
 void TP_MAKE_THISCALL(HookRemoveWaypoint, PlayerCharacter)

@@ -151,6 +151,9 @@ void* EquipManager::UnEquipShout(Actor* apActor, TESForm* apShout)
 
 void EquipManager::UnequipAll(Actor* apActor)
 {
+    if (!apActor)
+        return;
+
     TP_THIS_FUNCTION(TUnEquipAll, void, EquipManager, Actor*);
     POINTER_SKYRIMSE(TUnEquipAll, s_unequipAll, 37943);
 
@@ -165,6 +168,8 @@ void* TP_MAKE_THISCALL(EquipHook, EquipManager, Actor* apActor, TESForm* apItem,
         return nullptr;
 
     const auto pExtension = apActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealEquip, apThis, apActor, apItem, apData);
     if (pExtension->IsRemote())
     {
         spdlog::debug("Actor[{:X}]::Equip(), item form id: {:X}", apActor->formID, apItem->formID);
@@ -198,6 +203,8 @@ void* TP_MAKE_THISCALL(UnEquipHook, EquipManager, Actor* apActor, TESForm* apIte
         return nullptr;
 
     const auto pExtension = apActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealUnEquip, apThis, apActor, apItem, apData);
     if (pExtension->IsRemote())
     {
         spdlog::debug("Actor[{:X}]::Unequip(), item form id: {:X}, IsOverridden, equip: {}, inventory: {}", apActor->formID, apItem->formID, ScopedEquipOverride::IsOverriden(), ScopedInventoryOverride::IsOverriden());
@@ -231,6 +238,8 @@ void* TP_MAKE_THISCALL(EquipSpellHook, EquipManager, Actor* apActor, TESForm* ap
         return nullptr;
 
     const auto pExtension = apActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealEquipSpell, apThis, apActor, apSpell, apData);
     if (pExtension->IsRemote() && !ScopedEquipOverride::IsOverriden())
         return nullptr;
 
@@ -256,6 +265,8 @@ void* TP_MAKE_THISCALL(UnEquipSpellHook, EquipManager, Actor* apActor, TESForm* 
         return nullptr;
 
     const auto pExtension = apActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealUnEquipSpell, apThis, apActor, apSpell, apData);
     if (pExtension->IsRemote() && !ScopedEquipOverride::IsOverriden())
         return nullptr;
 
@@ -280,6 +291,8 @@ void* TP_MAKE_THISCALL(EquipShoutHook, EquipManager, Actor* apActor, TESForm* ap
         return nullptr;
 
     const auto pExtension = apActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealEquipShout, apThis, apActor, apShout, apData);
     if (pExtension->IsRemote() && !ScopedEquipOverride::IsOverriden())
         return nullptr;
 
@@ -305,6 +318,8 @@ void* TP_MAKE_THISCALL(UnEquipShoutHook, EquipManager, Actor* apActor, TESForm* 
         return nullptr;
 
     const auto pExtension = apActor->GetExtension();
+    if (!pExtension)
+        return TiltedPhoques::ThisCall(RealUnEquipShout, apThis, apActor, apShout, apData);
     if (pExtension->IsRemote() && !ScopedEquipOverride::IsOverriden())
         return nullptr;
 

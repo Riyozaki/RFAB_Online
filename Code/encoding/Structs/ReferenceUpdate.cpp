@@ -1,6 +1,7 @@
 #include <Structs/ReferenceUpdate.h>
 #include <TiltedCore/Serialization.hpp>
-#include <stdexcept>
+#include <common/CoopPacketSafety.h>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -18,11 +19,12 @@ void ReferenceUpdate::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const no
 {
     UpdatedMovement.Serialize(aWriter);
 
-    Serialization::WriteVarInt(aWriter, ActionEvents.size());
+    const size_t count = std::min(ActionEvents.size(), CoopPacketSafety::kMaxActionEvents);
+    Serialization::WriteVarInt(aWriter, count);
 
-    for (auto& entry : ActionEvents)
+    for (size_t i = 0; i < count; ++i)
     {
-        entry.GenerateDifferential(ActionEvent{}, aWriter);
+        ActionEvents[i].GenerateDifferential(ActionEvent{}, aWriter);
     }
 }
 
@@ -30,12 +32,17 @@ void ReferenceUpdate::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
 {
     UpdatedMovement.Deserialize(aReader);
 
-    const auto count = Serialization::ReadVarInt(aReader);
+    const size_t count = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxActionEvents);
 
-    ActionEvents.resize(count);
+    ActionEvents.clear();
+    ActionEvents.reserve(count);
 
-    for (auto i = 0u; i < count; ++i)
+    for (size_t i = 0; i < count && !aReader.Eof(); ++i)
     {
-        ActionEvents[i].ApplyDifferential(aReader);
+        ActionEvent ev{};
+        ev.ApplyDifferential(aReader);
+        ActionEvents.push_back(std::move(ev));
     }
 }

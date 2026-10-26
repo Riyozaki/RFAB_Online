@@ -19,14 +19,15 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
     spdlog::debug("HookSpellCast, abSuccess: {}, auiTargetCount: {}, apSpell: {:X}", abSuccess, auiTargetCount, (uint64_t)apSpell);
 
     // Note: these if guards is how the game does it too
-    if (!apThis->pCasterActor)
+    if (!apThis || !apThis->pCasterActor)
         return;
     if (!abSuccess)
         return;
     if (!apSpell && !apThis->pCurrentSpell)
         return;
 
-    if (apThis->pCasterActor->GetExtension()->IsRemote())
+    const ActorExtension* pExtended = apThis->pCasterActor->GetExtension();
+    if (!pExtended || pExtended->IsRemote())
         return;
 
     uint32_t targetFormId = 0;
@@ -40,18 +41,28 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
         }
     }
 
-    if (apSpell)
-        World::Get().GetRunner().Trigger(SpellCastEvent(apThis, apSpell->formID, targetFormId));
+    if (apSpell && apThis->pCasterActor->formID != 0)
+    {
+        World::Get().GetRunner().Trigger(SpellCastEvent(
+            apThis->pCasterActor->formID,
+            apThis->GetCastingSource(),
+            apThis->GetIsDualCasting(),
+            apSpell->formID,
+            targetFormId));
+    }
 
     TiltedPhoques::ThisCall(RealSpellCast, apThis, abSuccess, auiTargetCount, apSpell);
 }
 
 void TP_MAKE_THISCALL(HookInterruptCast, ActorMagicCaster, bool abRefund)
 {
-    ActorExtension* pExtended = apThis->pCasterActor->GetExtension();
-
-    if (pExtended->IsLocal())
-        World::Get().GetRunner().Trigger(InterruptCastEvent(apThis->pCasterActor->formID, apThis->eCastingSource));
+    if (apThis && apThis->pCasterActor && apThis->pCasterActor->formID != 0 && apThis->pCasterActor->GetNiNode())
+    {
+        if (const ActorExtension* pExtended = apThis->pCasterActor->GetExtension(); pExtended && pExtended->IsLocal())
+        {
+            World::Get().GetRunner().Trigger(InterruptCastEvent(apThis->pCasterActor->formID, apThis->eCastingSource));
+        }
+    }
 
     TiltedPhoques::ThisCall(RealInterruptCast, apThis, abRefund);
 }

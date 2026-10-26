@@ -1,6 +1,7 @@
 #include <Structs/Factions.h>
 #include <TiltedCore/Serialization.hpp>
-#include <stdexcept>
+#include <common/CoopPacketSafety.h>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -17,40 +18,42 @@ bool Factions::operator!=(const Factions& acRhs) const noexcept
 void Factions::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     // Limit the number of factions to send
-    Serialization::WriteVarInt(aWriter, NpcFactions.size() & 0x1FF);
+    const size_t npcCount = std::min<size_t>(NpcFactions.size(), 0x1FF);
+    Serialization::WriteVarInt(aWriter, npcCount);
 
-    for (auto& entry : NpcFactions)
+    for (size_t i = 0; i < npcCount; ++i)
     {
-        entry.Serialize(aWriter);
+        NpcFactions[i].Serialize(aWriter);
     }
 
-    Serialization::WriteVarInt(aWriter, ExtraFactions.size() & 0x1FF);
+    const size_t extraCount = std::min<size_t>(ExtraFactions.size(), 0x1FF);
+    Serialization::WriteVarInt(aWriter, extraCount);
 
-    for (auto& entry : ExtraFactions)
+    for (size_t i = 0; i < extraCount; ++i)
     {
-        entry.Serialize(aWriter);
+        ExtraFactions[i].Serialize(aWriter);
     }
 }
 
 void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
 {
-    auto npcCount = Serialization::ReadVarInt(aReader);
-    if (npcCount > 0x1FF)
-        throw std::runtime_error("Too many NPC factions received !");
-
-    NpcFactions.resize(npcCount);
-    for (auto& entry : NpcFactions)
+    const size_t npcCount = CoopPacketSafety::ClampCollectionCount(Serialization::ReadVarInt(aReader), 0x1FF);
+    NpcFactions.clear();
+    NpcFactions.reserve(std::min<size_t>(npcCount, 64));
+    for (size_t i = 0; i < npcCount && !aReader.Eof(); ++i)
     {
+        Faction entry{};
         entry.Deserialize(aReader);
+        NpcFactions.push_back(entry);
     }
 
-    auto extraCount = Serialization::ReadVarInt(aReader) & 0x1FF;
-    if (extraCount > 0x1FF)
-        throw std::runtime_error("Too many extra factions received !");
-
-    ExtraFactions.resize(extraCount);
-    for (auto& entry : ExtraFactions)
+    const size_t extraCount = CoopPacketSafety::ClampCollectionCount(Serialization::ReadVarInt(aReader), 0x1FF);
+    ExtraFactions.clear();
+    ExtraFactions.reserve(std::min<size_t>(extraCount, 64));
+    for (size_t i = 0; i < extraCount && !aReader.Eof(); ++i)
     {
+        Faction entry{};
         entry.Deserialize(aReader);
+        ExtraFactions.push_back(entry);
     }
 }

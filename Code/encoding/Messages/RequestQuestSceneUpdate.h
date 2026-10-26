@@ -22,8 +22,8 @@ struct RequestQuestSceneUpdate final : ClientMessage
 
     GameId SceneId;
     GameId QuestId;
-    uint16_t Stage;
-    uint8_t Status;
-    uint8_t ClientQuestType;
-    uint8_t SceneType; // BEGIN (0) or END (1)
+    uint16_t Stage{};
+    uint8_t Status{};
+    uint8_t ClientQuestType{};
+    uint8_t SceneType{}; // BEGIN (0) or END (1)
 };

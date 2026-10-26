@@ -7,6 +7,11 @@
 #include <Misc/MiddleProcess.h>
 
 #include <Games/References.h>
+#include <Games/TES.h>
+#include <Forms/TESObjectCELL.h>
+#include <Forms/TESWorldSpace.h>
+#include <PlayerCharacter.h>
+#include <Structs/GridCellCoords.h>
 #include <World.h>
 
 void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick, const RemoteAnimationComponent* apAnimComponent) noexcept
@@ -14,12 +19,19 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     auto& movements = aInterpolationComponent.TimePoints;
 
     if (movements.size() < 2)
+    {
+        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
         return;
+    }
+
+    const double renderTick = aInterpolationComponent.Clock.IsRunning()
+        ? aInterpolationComponent.Clock.GetRenderTick()
+        : static_cast<double>(aTick);
 
     while (movements.size() > 2)
     {
         const auto second = *(++movements.begin());
-        if (aTick > second.Tick)
+        if (renderTick > static_cast<double>(second.Tick))
             movements.pop_front();
         else
             break;
@@ -30,10 +42,10 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
 
     // Calculate delta movement since last update
     auto delta = 0.0001f;
-    const auto tickDelta = static_cast<float>(second.Tick - first.Tick);
+    const auto tickDelta = static_cast<float>(second.Tick > first.Tick ? (second.Tick - first.Tick) : 0u);
     if (tickDelta > 0.f)
     {
-        delta = 1.f / tickDelta * static_cast<float>(aTick - first.Tick);
+        delta = static_cast<float>((renderTick - static_cast<double>(first.Tick)) / static_cast<double>(tickDelta));
     }
 
     delta = std::clamp(delta, 0.0f, 1.0f);
@@ -43,6 +55,16 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     const float stepDz = second.Position.z - first.Position.z;
     const float stepDistSq = stepDx * stepDx + stepDy * stepDy + stepDz * stepDz;
     constexpr float kTeleportSnapThresholdSq = 2048.0f * 2048.0f;
+
+    if (tickDelta > 0.f && stepDistSq <= kTeleportSnapThresholdSq)
+    {
+        const float horizDist = std::sqrt(stepDx * stepDx + stepDy * stepDy);
+        aInterpolationComponent.LastHorizontalSpeed = horizDist * (1000.0f / tickDelta);
+    }
+    else
+    {
+        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
+    }
 
     const NiPoint3 position = (stepDistSq > kTeleportSnapThresholdSq)
         ? second.Position
@@ -54,7 +76,32 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     if (!apActor)
         return;
 
-    apActor->ForcePosition(position);
+    bool movedViaCellTransfer = false;
+    if ((apActor->formID & 0xFF000000u) != 0xFF000000u && apActor->formID != 0x14)
+    {
+        PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+        TESWorldSpace* pLocalWs = pLocalPlayer ? pLocalPlayer->GetWorldSpace() : nullptr;
+        const TES* pTes = TES::Get();
+        ModManager* pModMgr = ModManager::Get();
+        if (pLocalWs && pTes && pModMgr && apActor->GetWorldSpace() == pLocalWs)
+        {
+            const GridCellCoords destGrid = GridCellCoords::CalculateGridCellCoords(position.x, position.y);
+            const GridCellCoords centerGrid(pTes->centerGridX, pTes->centerGridY);
+            if (GridCellCoords::IsCellInGridCell(destGrid, centerGrid, false))
+            {
+                TESObjectCELL* pDestCell = pModMgr->GetCellFromCoordinates(destGrid.X, destGrid.Y, pLocalWs, false);
+                if (pDestCell && pDestCell->loadedCellData &&
+                    (stepDistSq > kTeleportSnapThresholdSq || apActor->parentCell != pDestCell || !apActor->GetNiNode()))
+                {
+                    apActor->MoveTo(pDestCell, position);
+                    movedViaCellTransfer = true;
+                }
+            }
+        }
+    }
+
+    if (!movedViaCellTransfer)
+        apActor->ForcePosition(position);
 
     // Causal + smooth animation variable blending:
     // - Use discrete Booleans & Integers from LastRanAction when an ActionEvent ran more recently than first.Tick

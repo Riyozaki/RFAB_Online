@@ -4,12 +4,14 @@
 
 void RequestFactionsChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    assert(Changes.size() < 0x100);
+    const size_t count = Changes.size() > 255 ? 255 : Changes.size();
+    aWriter.WriteBits(count & 0xFF, 8);
 
-    aWriter.WriteBits(Changes.size() & 0xFF, 8);
-
+    size_t written = 0;
     for (auto& change : Changes)
     {
+        if (written++ >= count)
+            break;
         Serialization::WriteVarInt(aWriter, change.first);
         change.second.Serialize(aWriter);
     }
@@ -22,7 +24,7 @@ void RequestFactionsChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRead
     uint64_t count = 0;
     aReader.ReadBits(count, 8);
 
-    for (auto i = 0u; i < count; ++i)
+    for (size_t i = 0; i < (count & 0xFF) && !aReader.Eof(); ++i)
     {
         auto& change = Changes[Serialization::ReadVarInt(aReader) & 0xFFFFFFFF];
         change.Deserialize(aReader);

@@ -192,7 +192,18 @@ bool MagicItem::IsBoundWeaponSpell() noexcept
 {
     for (EffectItem* pEffect : listOfEffects)
     {
-        if (pEffect->pEffectSetting && pEffect->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kBoundWeapon)
+        if (pEffect && pEffect->pEffectSetting && pEffect->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kBoundWeapon)
+            return true;
+    }
+
+    return false;
+}
+
+bool MagicItem::HasSummonEffect() const noexcept
+{
+    for (const EffectItem* pEffect : listOfEffects)
+    {
+        if (pEffect && pEffect->IsSummonEffect())
             return true;
     }
 
@@ -203,7 +214,7 @@ EffectItem* MagicItem::GetEffect(const uint32_t aEffectId) noexcept
 {
     for (EffectItem* pEffect : listOfEffects)
     {
-        if (pEffect->pEffectSetting->formID == aEffectId)
+        if (pEffect && pEffect->pEffectSetting && pEffect->pEffectSetting->formID == aEffectId)
             return pEffect;
     }
 

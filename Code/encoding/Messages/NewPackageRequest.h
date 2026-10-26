@@ -17,6 +17,6 @@ struct NewPackageRequest final : ClientMessage
 
     bool operator==(const NewPackageRequest& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && ActorId == acRhs.ActorId && PackageId == acRhs.PackageId; }
 
-    uint32_t ActorId;
+    uint32_t ActorId{};
     GameId PackageId{};
 };

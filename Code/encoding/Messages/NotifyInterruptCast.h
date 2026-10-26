@@ -16,6 +16,6 @@ struct NotifyInterruptCast final : ServerMessage
 
     bool operator==(const NotifyInterruptCast& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && CasterId == acRhs.CasterId && CastingSource == acRhs.CastingSource; }
 
-    uint32_t CasterId;
-    int32_t CastingSource;
+    uint32_t CasterId{};
+    int32_t CastingSource{};
 };

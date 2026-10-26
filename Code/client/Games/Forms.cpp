@@ -70,6 +70,7 @@ void TESNPC::Deserialize(const String& acBuffer, uint32_t aChangeFlags) noexcept
     Load(&loadBuffer);
 
     loadBuffer.buffer = nullptr;
+    overlayRace = nullptr;
 
     if (const uint32_t cRemoved = spellList.RemoveNullEntries())
         spdlog::warn("Removed {} unresolved spell/shout entries from NPC {:X}", cRemoved, formID);
@@ -77,14 +78,23 @@ void TESNPC::Deserialize(const String& acBuffer, uint32_t aChangeFlags) noexcept
 
 void TESNPC::Initialize() noexcept
 {
-    auto pPlayerBaseForm = Cast<TESNPC>(PlayerCharacter::Get()->baseForm);
+    auto pPlayerBaseForm = PlayerCharacter::Get() ? Cast<TESNPC>(PlayerCharacter::Get()->baseForm) : nullptr;
+    if (!pPlayerBaseForm)
+    {
+        flags |= 0x200000;
+        return;
+    }
 
     // These values are all defaulted, if the other actor did not modify them they won't be loaded, therefore we need to force them before load
     attackDataForm.attackDataMap = pPlayerBaseForm->attackDataForm.attackDataMap;
     npcClass = pPlayerBaseForm->npcClass;
     combatStyle = pPlayerBaseForm->combatStyle;
     raceForm.race = pPlayerBaseForm->raceForm.race;
+    overlayRace = nullptr;
     outfits[0] = pPlayerBaseForm->outfits[0];
+    // Preserve gender bit (kFemale == 1 << 0) baseline until kBaseData (0x2) deserializes, and mark essential
+    // so Skyrim SE natively blocks decapitation kill-moves against co-op player clones!
+    actorData.flags = (pPlayerBaseForm->actorData.flags & 1u) | TESActorBaseData::BaseFlags::IS_ESSENTIAL;
     spellList.Initialize();
     // End defaults
 
@@ -141,6 +151,7 @@ TESNPC* TESNPC::Create(const String& acBuffer, const uint32_t aChangeFlags) noex
 
     pNpc->Initialize();
     pNpc->Deserialize(acBuffer, aChangeFlags);
+    pNpc->SetSkipSaveFlag(true);
     pNpc->UnsetChanged(0xFFFFFFFF);
 
     // This forces facegen for some reason

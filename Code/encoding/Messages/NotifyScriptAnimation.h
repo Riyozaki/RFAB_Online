@@ -17,7 +17,7 @@ struct NotifyScriptAnimation final : ServerMessage
 
     bool operator==(const NotifyScriptAnimation& acRhs) const noexcept { return FormID == acRhs.FormID && Animation == acRhs.Animation && EventName == acRhs.EventName && GetOpcode() == acRhs.GetOpcode(); }
 
-    uint32_t FormID;
+    uint32_t FormID{};
     CachedString Animation;
     CachedString EventName;
 };

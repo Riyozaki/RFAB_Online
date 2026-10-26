@@ -1,5 +1,7 @@
 #pragma once
 
+#include <common/CoopTeleportGuard.h>
+
 struct World;
 struct TransportService;
 
@@ -66,7 +68,8 @@ private:
     float m_previousWorldEncounters = 1.0f;
     bool m_hasCachedRfabBaseline = false;
 
-    bool m_isDeathSystemEnabled = true;
+    bool m_isDeathSystemEnabled = false;
+    CoopTeleportGuard::LatchedDownedRespawnGuard m_respawnTeleportGuard{};
 
     bool m_knockdownStart = false;
     double m_knockdownTimer = 0.0;

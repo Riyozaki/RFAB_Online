@@ -26,7 +26,7 @@ struct TransportService : Client
 
     TP_NOCOPYMOVE(TransportService);
 
-    bool Send(const ClientMessage& acMessage) const noexcept;
+    bool Send(const ClientMessage& acMessage, TiltedPhoques::EPacketFlags aPacketFlags = TiltedPhoques::kReliable) const noexcept;
 
     void OnConsume(const void* apData, uint32_t aSize) override;
     void OnConnected() override;
@@ -39,12 +39,18 @@ struct TransportService : Client
         m_serverPassword = acPassword;
         m_lastServerPassword = acPassword;
     }
+    bool Connect(const std::string& acEndpoint) noexcept
+    {
+        if (!acEndpoint.empty())
+            m_lastServerEndpoint = acEndpoint;
+        return Client::Connect(acEndpoint);
+    }
     bool ConnectToServer(const std::string& acEndpoint, const std::string& acPassword = "") noexcept
     {
         m_lastServerEndpoint = acEndpoint;
         m_lastServerPassword = acPassword;
         m_serverPassword = acPassword;
-        return Connect(acEndpoint);
+        return Client::Connect(acEndpoint);
     }
     [[nodiscard]] bool HasLastServerEndpoint() const noexcept { return !m_lastServerEndpoint.empty(); }
     bool ReconnectToLastServer() noexcept
@@ -52,9 +58,12 @@ struct TransportService : Client
         if (m_lastServerEndpoint.empty())
             return false;
         m_serverPassword = m_lastServerPassword;
-        return Connect(m_lastServerEndpoint);
+        return Client::Connect(m_lastServerEndpoint);
     }
     const uint32_t& GetLocalPlayerId() const noexcept { return m_localPlayerId; }
+
+    [[nodiscard]] double GetMessageReceiveTime() const noexcept;
+    [[nodiscard]] double GetLastPollTime() const noexcept { return m_lastPollTime; }
 
 protected:
     // Event handlers
@@ -74,6 +83,7 @@ private:
     std::string m_lastServerEndpoint{};
     std::string m_lastServerPassword{};
     uint32_t m_localPlayerId;
+    double m_lastPollTime{};
 
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_sendServerMessageConnection;

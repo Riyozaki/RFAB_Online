@@ -62,8 +62,21 @@ void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
     RunBeastFormDetection();
 }
 
+namespace
+{
+uint64_t NowSteadyMsForPlayerService() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+} // namespace
+
 void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
+    m_respawnTeleportGuard.NotifyConnected(NowSteadyMsForPlayerService());
+
     if (!m_hasCachedRfabBaseline)
     {
         if (float* greetDistance = Settings::GetGreetDistance())
@@ -84,6 +97,11 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
+    m_respawnTeleportGuard.NotifyDisconnected(NowSteadyMsForPlayerService());
+    m_respawnTimer = 0.0;
+    m_knockdownStart = false;
+    m_godmodeStart = false;
+
     if (!Settings::IsRfabModpackActive() && m_previousDifficulty >= 0 && m_previousDifficulty <= 5)
     {
         if (auto* pPlayer = PlayerCharacter::Get())
@@ -141,7 +159,8 @@ void PlayerService::OnServerSettingsReceived(const ServerSettings& acSettings) n
         }
     }
 
-    ToggleDeathSystem(acSettings.DeathSystemEnabled);
+    m_respawnTeleportGuard.NotifyServerSettings(acSettings.DeathSystemEnabled, acSettings.DownedSystemEnabled);
+    ToggleDeathSystem(acSettings.DeathSystemEnabled && !acSettings.DownedSystemEnabled);
 }
 
 void PlayerService::OnNotifyPlayerRespawn(const NotifyPlayerRespawn& acMessage) const noexcept
@@ -252,10 +271,15 @@ void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
 
 void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 {
-    if (!m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled)
-        return;
-
     static bool s_startTimer = false;
+
+    if (!m_transport.IsConnected() || !m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled ||
+        m_respawnTeleportGuard.ShouldSuppressLegacyRespawnTeleport(NowSteadyMsForPlayerService()))
+    {
+        s_startTimer = false;
+        m_respawnTimer = 0.0;
+        return;
+    }
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
     if (!pPlayer)
@@ -298,24 +322,28 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 
         s_startTimer = false;
 
-        auto* pEquipManager = EquipManager::Get();
-        TESForm* pSpell = TESForm::GetById(m_cachedMainSpellId);
-        if (pSpell)
-            pEquipManager->EquipSpell(pPlayer, pSpell, 0);
-        pSpell = TESForm::GetById(m_cachedSecondarySpellId);
-        if (pSpell)
-            pEquipManager->EquipSpell(pPlayer, pSpell, 1);
-        pSpell = TESForm::GetById(m_cachedPowerId);
-        if (pSpell)
-            pEquipManager->EquipShout(pPlayer, pSpell);
+        if (auto* pEquipManager = EquipManager::Get())
+        {
+            if (TESForm* pSpell = TESForm::GetById(m_cachedMainSpellId))
+                pEquipManager->EquipSpell(pPlayer, pSpell, 0);
+            if (TESForm* pSpell = TESForm::GetById(m_cachedSecondarySpellId))
+                pEquipManager->EquipSpell(pPlayer, pSpell, 1);
+            if (TESForm* pSpell = TESForm::GetById(m_cachedPowerId))
+                pEquipManager->EquipShout(pPlayer, pSpell);
+        }
     }
 }
 
 // Doesn't seem to respawn quite yet
 void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
 {
-    if (!m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled)
+    if (!m_transport.IsConnected() || !m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled ||
+        m_respawnTeleportGuard.ShouldSuppressLegacyRespawnTeleport(NowSteadyMsForPlayerService()))
+    {
+        m_knockdownStart = false;
+        m_godmodeStart = false;
         return;
+    }
 
     // If a player dies in ragdoll, it gets stuck.
     // This code ragdolls the player again upon respawning.

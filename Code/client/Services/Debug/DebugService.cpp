@@ -179,7 +179,7 @@ void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 
             static char s_address[256] = "127.0.0.1:10578";
             if (!m_transport.IsOnline())
-                m_transport.Connect(s_address);
+                m_transport.ConnectToServer(s_address);
             else
                 m_transport.Close();
         }
@@ -253,8 +253,7 @@ void DebugService::DrawServerView() noexcept
     {
         if (ImGui::Button("Connect"))
         {
-            m_transport.SetServerPassword(s_password);
-            m_transport.Connect(s_address);
+            m_transport.ConnectToServer(s_address, s_password);
         }
     }
 
@@ -295,9 +294,20 @@ void DebugService::OnDraw() noexcept
 
         if (ImGui::Button("Clear stuck screen effects"))
         {
-            for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
+            if (TES* pTes = TES::Get())
             {
-                ImageSpaceModifierInstance::Stop(modifier.object);
+                TiltedPhoques::Vector<NiPointer<ImageSpaceModifierInstance>> activeModifiers;
+                for (const auto& modifier : pTes->activeImageSpaceModifiers)
+                {
+                    if (modifier.object)
+                        activeModifiers.push_back(modifier);
+                }
+
+                for (const auto& modifier : activeModifiers)
+                {
+                    if (modifier.object)
+                        ImageSpaceModifierInstance::Stop(modifier.object);
+                }
             }
         }
         ImGui::EndMenu();

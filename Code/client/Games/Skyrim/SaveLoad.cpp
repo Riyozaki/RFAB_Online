@@ -404,40 +404,49 @@ bool BGSSaveLoadManager::VerifySavedSlotOnDisk(const char* acpFileName) noexcept
     if (stem.empty())
         return false;
 
-    const std::filesystem::path savesDir = ResolveLocalSavesDirectory();
-    if (savesDir.empty())
-        return true;
-
-    std::error_code ec;
-    if (!std::filesystem::exists(savesDir, ec) || ec)
-        return true;
-
-    const std::string targetNorm = RfabCompat::Detail::NormalizeSaveSlotStem(stem);
-    const std::filesystem::path directCandidate = savesDir / (stem + ".ess");
-    if (std::filesystem::exists(directCandidate, ec) && !ec)
-        return RfabCompat::Detail::IsValidEssFileOnDisk(directCandidate);
-
-    for (const auto& entry : std::filesystem::directory_iterator(savesDir, ec))
+    try
     {
-        if (ec)
-            break;
+        const std::filesystem::path savesDir = ResolveLocalSavesDirectory();
+        if (savesDir.empty())
+            return true;
 
-        std::error_code entryEc;
-        if (entry.is_regular_file(entryEc) && !entryEc)
+        std::error_code ec;
+        if (!std::filesystem::exists(savesDir, ec) || ec)
+            return true;
+
+        const std::string targetNorm = RfabCompat::Detail::NormalizeSaveSlotStem(stem);
+        const std::wstring wStem(stem.begin(), stem.end());
+        const std::filesystem::path directCandidate = savesDir / (wStem + L".ess");
+        if (std::filesystem::exists(directCandidate, ec) && !ec)
+            return RfabCompat::Detail::IsValidEssFileOnDisk(directCandidate);
+
+        for (const auto& entry : std::filesystem::directory_iterator(savesDir, ec))
         {
-            const std::string fn = entry.path().filename().string();
-            if (RfabCompat::Detail::EndsWithIgnoreCase(fn, ".ess") &&
-                RfabCompat::Detail::NormalizeSaveSlotStem(fn) == targetNorm)
+            if (ec)
+                break;
+
+            std::error_code entryEc;
+            if (entry.is_regular_file(entryEc) && !entryEc)
             {
-                return RfabCompat::Detail::IsValidEssFileOnDisk(entry.path());
+                const auto u8Name = entry.path().filename().u8string();
+                const std::string fn(reinterpret_cast<const char*>(u8Name.data()), u8Name.size());
+                if (RfabCompat::Detail::EndsWithIgnoreCase(fn, ".ess") &&
+                    RfabCompat::Detail::NormalizeSaveSlotStem(fn) == targetNorm)
+                {
+                    return RfabCompat::Detail::IsValidEssFileOnDisk(entry.path());
+                }
+            }
+            else if (entry.is_directory(entryEc) && !entryEc)
+            {
+                const std::filesystem::path subCandidate = entry.path() / (wStem + L".ess");
+                if (std::filesystem::exists(subCandidate, entryEc) && !entryEc)
+                    return RfabCompat::Detail::IsValidEssFileOnDisk(subCandidate);
             }
         }
-        else if (entry.is_directory(entryEc) && !entryEc)
-        {
-            const std::filesystem::path subCandidate = entry.path() / (stem + ".ess");
-            if (std::filesystem::exists(subCandidate, entryEc) && !entryEc)
-                return RfabCompat::Detail::IsValidEssFileOnDisk(subCandidate);
-        }
+    }
+    catch (...)
+    {
+        return false;
     }
 
     return false;
@@ -449,32 +458,41 @@ size_t BGSSaveLoadManager::QuarantineCorruptSavesOnce() noexcept
     if (!s_quarantinedOnce.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
         return 0;
 
-    const std::filesystem::path savesDir = ResolveLocalSavesDirectory();
-    if (savesDir.empty())
-        return 0;
-
-    size_t quarantined = RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(savesDir);
-    std::error_code ec;
-    for (const auto& entry : std::filesystem::directory_iterator(savesDir, ec))
+    try
     {
-        if (ec)
-            break;
+        const std::filesystem::path savesDir = ResolveLocalSavesDirectory();
+        if (savesDir.empty())
+            return 0;
 
-        std::error_code subEc;
-        if (!entry.is_directory(subEc) || subEc)
-            continue;
+        size_t quarantined = RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(savesDir);
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(savesDir, ec))
+        {
+            if (ec)
+                break;
 
-        const std::string dirName = RfabCompat::Detail::ToLowerAscii(entry.path().filename().string());
-        if (dirName == "quarantined_corrupt_v100" || dirName == "_rfab_corruptquarantine")
-            continue;
+            std::error_code subEc;
+            if (!entry.is_directory(subEc) || subEc)
+                continue;
 
-        quarantined += RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(entry.path());
+            const auto u8Dir = entry.path().filename().u8string();
+            const std::string dirName = RfabCompat::Detail::ToLowerAscii(
+                std::string_view(reinterpret_cast<const char*>(u8Dir.data()), u8Dir.size()));
+            if (dirName == "quarantined_corrupt_v100" || dirName == "_rfab_corruptquarantine")
+                continue;
+
+            quarantined += RfabCompat::Detail::QuarantineCorruptEssFilesInDirectory(entry.path());
+        }
+
+        if (quarantined > 0)
+            spdlog::warn("[RFAB SaveLoad] Quarantined {} corrupt/truncated .ess save file(s) into _RFAB_CorruptQuarantine", quarantined);
+
+        return quarantined;
     }
-
-    if (quarantined > 0)
-        spdlog::warn("[RFAB SaveLoad] Quarantined {} corrupt/truncated .ess save file(s) into _RFAB_CorruptQuarantine", quarantined);
-
-    return quarantined;
+    catch (...)
+    {
+        return 0;
+    }
 }
 
 void BGSSaveLoadManager::InstallUniversalPostSkseHooks() noexcept

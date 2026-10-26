@@ -8,6 +8,7 @@
 
 #include "TargetConfig.h"
 #include "launcher.h"
+#include <common/RfabModpackCompat.h>
 
 #include "utils/ComUtils.h"
 #include "utils/Registry.h"
@@ -82,46 +83,66 @@ bool SelectInstall(bool aForceSelect)
 
     const std::filesystem::path selfDir = TiltedPhoques::GetPath();
 
-    // Auto-discover standalone RFAB / MO2 SkyrimSE.exe relative to working directory or launcher folder
-    // before falling back to old registry entries or showing a manual file picker!
+    // Priority 1: If launched from inside a Mod Organizer 2 tree (<MO2>/mods/RFAB_Online/SkyrimTogetherReborn),
+    // read MO2's active `ModOrganizer.ini` (`gamePath=` / `%BASE_DIR%`) FIRST so LC->gamePath and CWD ALWAYS match
+    // MO2's USVFS-virtualized Data directory even after reinstalling clean Skyrim to a new path or copying a friend's mod archive.
     if (!aForceSelect)
     {
         std::error_code ec;
         const std::filesystem::path cwd = std::filesystem::current_path(ec);
-        const std::filesystem::path p1 = selfDir.parent_path();
-        const std::filesystem::path p2 = p1.parent_path();
-        const std::filesystem::path p3 = p2.parent_path();
-        const std::filesystem::path p4 = p3.parent_path();
 
-        for (const auto& candidateRoot : {cwd, p1, p2, p3, p4})
+        std::filesystem::path mo2GameRoot = RfabCompat::ResolveMo2ConfiguredGamePath(selfDir, selfDir, TARGET_NAME_A ".exe");
+        if (mo2GameRoot.empty() && !cwd.empty())
+            mo2GameRoot = RfabCompat::ResolveMo2ConfiguredGamePath(cwd, selfDir, TARGET_NAME_A ".exe");
+
+        if (!mo2GameRoot.empty())
         {
-            if (candidateRoot.empty())
-                continue;
+            const std::filesystem::path mo2Exe = mo2GameRoot / (TARGET_NAME L".exe");
+            titlePath = mo2GameRoot.wstring();
+            exePath = mo2Exe.wstring();
+            Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitlePath", titlePath);
+            Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitleExe", exePath);
+        }
+        else
+        {
+            // Priority 2: Standalone portable RFAB / MO2 root relative to working directory or launcher folder
+            const std::filesystem::path p1 = selfDir.parent_path();
+            const std::filesystem::path p2 = p1.parent_path();
+            const std::filesystem::path p3 = p2.parent_path();
+            const std::filesystem::path p4 = p3.parent_path();
 
-            ec.clear();
-            if (std::filesystem::exists(selfDir, ec) &&
-                std::filesystem::exists(candidateRoot, ec) &&
-                std::filesystem::equivalent(candidateRoot, selfDir, ec))
+            for (const auto& candidateRoot : {cwd, p1, p2, p3, p4})
             {
-                continue;
-            }
+                if (candidateRoot.empty())
+                    continue;
 
-            const std::filesystem::path candidateExe = candidateRoot / (TARGET_NAME L".exe");
-            const std::filesystem::path candidateData = candidateRoot / L"Data";
-            ec.clear();
-            if (std::filesystem::exists(candidateExe, ec) && std::filesystem::exists(candidateData, ec))
-            {
-                titlePath = candidateRoot.wstring();
-                exePath = candidateExe.wstring();
-                Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitlePath", titlePath);
-                Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitleExe", exePath);
-                break;
+                ec.clear();
+                if (std::filesystem::exists(selfDir, ec) &&
+                    std::filesystem::exists(candidateRoot, ec) &&
+                    std::filesystem::equivalent(candidateRoot, selfDir, ec))
+                {
+                    continue;
+                }
+
+                const std::filesystem::path candidateExe = candidateRoot / (TARGET_NAME L".exe");
+                const std::filesystem::path candidateData = candidateRoot / L"Data";
+                ec.clear();
+                if (std::filesystem::exists(candidateExe, ec) && std::filesystem::exists(candidateData, ec))
+                {
+                    titlePath = candidateRoot.wstring();
+                    exePath = candidateExe.wstring();
+                    Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitlePath", titlePath);
+                    Registry::WriteString(HKEY_CURRENT_USER, kTiltedRegistryPath, L"TitleExe", exePath);
+                    break;
+                }
             }
         }
     }
 
     bool result = true;
-    if (!std::filesystem::exists(titlePath) || !std::filesystem::exists(exePath) || aForceSelect)
+    std::error_code existsEc1;
+    std::error_code existsEc2;
+    if (titlePath.empty() || exePath.empty() || !std::filesystem::exists(titlePath, existsEc1) || !std::filesystem::exists(exePath, existsEc2) || aForceSelect)
     {
         constexpr int kSelectionAttempts = 3;
 

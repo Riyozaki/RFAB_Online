@@ -16,11 +16,12 @@ bool Mods::operator!=(const Mods& acRhs) const noexcept
 
 void Mods::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    const uint16_t modCount = std::min(ModList.size(), size_t(4096)) & 0xFFFF;
-    aWriter.WriteBits(modCount, 13);
+    const size_t modCount = std::min(ModList.size(), size_t(4096));
+    aWriter.WriteBits(modCount & 0x1FFF, 13);
 
-    for (auto& entry : ModList)
+    for (size_t i = 0; i < modCount; ++i)
     {
+        const auto& entry = ModList[i];
         aWriter.WriteBits(entry.Id, 16);
         Serialization::WriteBool(aWriter, entry.IsLite);
         Serialization::WriteString(aWriter, entry.Filename);
@@ -32,13 +33,17 @@ void Mods::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
     uint64_t data = 0;
     aReader.ReadBits(data, 13);
 
-    const size_t modCount = data & 0xFFFF;
-    ModList.resize(modCount);
-    for (size_t i = 0; i < modCount; ++i)
+    const size_t modCount = std::min<size_t>(data & 0x1FFF, 4096);
+    ModList.clear();
+    ModList.reserve(std::min<size_t>(modCount, 256));
+    for (size_t i = 0; i < modCount && !aReader.Eof(); ++i)
     {
-        aReader.ReadBits(data, 16);
-        ModList[i].Id = data & 0xFFFF;
-        ModList[i].IsLite = Serialization::ReadBool(aReader);
-        ModList[i].Filename = Serialization::ReadString(aReader);
+        uint64_t idData = 0;
+        aReader.ReadBits(idData, 16);
+        Entry entry{};
+        entry.Id = idData & 0xFFFF;
+        entry.IsLite = Serialization::ReadBool(aReader);
+        entry.Filename = Serialization::ReadString(aReader);
+        ModList.push_back(std::move(entry));
     }
 }

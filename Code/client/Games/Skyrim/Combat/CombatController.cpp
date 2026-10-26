@@ -47,12 +47,10 @@ void CombatController::UpdateTarget()
         }
     }
 
-    // If CombatComponent is attached, don't try to fetch a new target.
+    // Thread-safe AI worker guard: check lock-free atomic ActorExtension::HasCombatTargetLock() instead of touching EnTT views!
     if (Actor* pAttacker = Cast<Actor>(TESObjectREFR::GetByHandle(attackerHandle)))
     {
-        const auto view = World::Get().view<FormIdComponent, CombatComponent>();
-        const auto it = std::find_if(view.begin(), view.end(), [view, pAttacker](auto entity) { return view.get<FormIdComponent>(entity).Id == pAttacker->formID; });
-        if (it != view.end())
+        if (const auto* pExt = pAttacker->GetExtension(); pExt && pExt->HasCombatTargetLock())
             return;
     }
 

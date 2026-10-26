@@ -16,6 +16,6 @@ struct NotifyActorValueChanges final : ServerMessage
 
     bool operator==(const NotifyActorValueChanges& acRhs) const noexcept { return Id == acRhs.Id && Values == acRhs.Values && GetOpcode() == acRhs.GetOpcode(); }
 
-    uint32_t Id;
+    uint32_t Id{};
     TiltedPhoques::Map<uint32_t, float> Values;
 };

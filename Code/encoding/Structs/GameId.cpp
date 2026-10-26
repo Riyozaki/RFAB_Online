@@ -4,8 +4,8 @@
 using TiltedPhoques::Serialization;
 
 GameId::GameId(uint32_t aModId, uint32_t aBaseId) noexcept
-    : ModId(aModId)
-    , BaseId(aBaseId)
+    : BaseId(aBaseId)
+    , ModId(aModId)
 {
 }
 

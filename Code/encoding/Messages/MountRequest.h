@@ -16,6 +16,6 @@ struct MountRequest final : ClientMessage
 
     bool operator==(const MountRequest& acRhs) const noexcept { return GetOpcode() == acRhs.GetOpcode() && RiderId == acRhs.RiderId && MountId == acRhs.MountId; }
 
-    uint32_t RiderId;
-    uint32_t MountId;
+    uint32_t RiderId{};
+    uint32_t MountId{};
 };

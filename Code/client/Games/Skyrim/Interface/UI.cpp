@@ -106,15 +106,7 @@ bool IsSkyrimSoulsRuntimeActive() noexcept
 
 bool ShouldKeepStatsMenuPaused() noexcept
 {
-    static int s_cachedStatsCheck = -1;
-    if (s_cachedStatsCheck < 0)
-    {
-        const bool hasCustomSkillsOrRfab =
-            GetModuleHandleW(L"CustomSkills.dll") != nullptr || GetModuleHandleW(L"RFAB.dll") != nullptr;
-        s_cachedStatsCheck = hasCustomSkillsOrRfab ? 1 : 0;
-    }
-
-    return s_cachedStatsCheck == 1;
+    return ShouldKeepStatsMenuPausedRuntime();
 }
 
 template <size_t Index>

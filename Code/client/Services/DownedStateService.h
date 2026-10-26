@@ -70,9 +70,22 @@ public:
     // Applies or clears kneeling bleedout posture on a remote player's Actor instance.
     void ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept;
 
+    // Clears stuck kEssentialDown(7)/kBleedout(8)/kDying(1) lifeState & knock/stagger flags on local/remote players
+    // and optionally prompts nearby high-process NPCs to re-evaluate combat/guard packages after wipe/revive.
+    void RestoreLivingCombatTargetability(Actor* apActor, bool aRefreshNearbyAiPackages = false) noexcept;
+
+    [[nodiscard]] bool ConsumeSavedFirstPersonBeforeDowned() noexcept
+    {
+        const bool saved = m_wasFirstPersonBeforeDowned;
+        m_wasFirstPersonBeforeDowned = false;
+        return saved;
+    }
+    void SchedulePostReviveHeadAndCameraSettle(bool aRestoreFirstPerson) noexcept;
+
     void EnterLocalDownedState() noexcept;
     void ApplyAuthoritativeRevive(float aHealthFraction, float aGraceSec, bool aShowPostCombatNotice) noexcept;
     void ResetAllStates() noexcept;
+    [[nodiscard]] std::atomic<bool>& GetAuthorizedHealFlag() noexcept { return m_allowAuthorizedHeal; }
 
 private:
     struct SavedControlFlags
@@ -112,6 +125,8 @@ private:
     std::atomic<bool> m_allowAuthorizedHeal{false};
     std::atomic<bool> m_isGraceActive{false};
     bool m_wasFirstPersonBeforeDowned{false};
+    bool m_pendingFirstPersonRestore{false};
+    uint8_t m_postReviveSettleFrames{0};
     double m_graceRemainingSec{0.0};
     double m_reportTimerSec{0.0};
     double m_bleedoutReassertTimerSec{0.0};

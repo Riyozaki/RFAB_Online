@@ -127,7 +127,7 @@ struct PlayerCharacter : Actor
 
     void PayCrimeGoldToAllFactions() noexcept;
 
-    void SetWaypoint(NiPoint3* apPosition, TESWorldSpace* apWorldSpace) noexcept;
+    void SetWaypoint(NiPoint3* apPosition, TESForm* apWorldSpaceOrCell) noexcept;
     void RemoveWaypoint() noexcept;
 
     struct Objective

@@ -3,6 +3,7 @@
 #include "Structs/ActorData.h"
 #include <Messages/CharacterSpawnRequest.h>
 #include <CoopOwnership.h>
+#include <CoopWorldView.h>
 
 struct ActorAddedEvent;
 struct ActorRemovedEvent;
@@ -17,6 +18,8 @@ struct CharacterSpawnRequest;
 struct ServerReferencesMoveRequest;
 struct NotifyInventoryChanges;
 struct NotifyFactionsChanges;
+struct NotifyPlayerCellChanged;
+struct NotifyPlayerLeft;
 struct NotifyRemoveCharacter;
 struct NotifySpawnData;
 struct NotifyOwnershipTransfer;
@@ -46,6 +49,8 @@ struct NotifyRelinquishControl;
 struct PartyJoinedEvent;
 
 struct Actor;
+struct TESObjectCELL;
+struct TESWorldSpace;
 struct World;
 struct TransportService;
 
@@ -76,6 +81,8 @@ struct CharacterService
     void OnFactionsChanges(const NotifyFactionsChanges& acEvent) const noexcept;
     void OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) const noexcept;
     void OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept;
+    void OnPlayerCellChanged(const NotifyPlayerCellChanged& acMessage) noexcept;
+    void OnPlayerLeft(const NotifyPlayerLeft& acMessage) noexcept;
     void OnRemoteSpawnDataReceived(const NotifySpawnData& acEvent) noexcept;
     void OnMountEvent(const MountEvent& acEvent) const noexcept;
     void OnNotifyMount(const NotifyMount& acMessage) const noexcept;
@@ -98,6 +105,7 @@ struct CharacterService
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
     void ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlayerId) noexcept;
     void NotifySaveLoadReset() noexcept;
+    void NotifyInSessionRollbackApplied() noexcept;
     void PreSavePurgeDynamicActors() noexcept;
     void SchedulePostSaveRemoteRestore() noexcept;
     [[nodiscard]] bool IsSavePurgeActive() const noexcept { return m_savePurgeActive; }
@@ -108,11 +116,41 @@ struct CharacterService
     [[nodiscard]] bool IsEngineWorldLoading() const noexcept { return m_engineWorldLoadInProgress; }
 
 private:
+    struct RemoteEntityModel
+    {
+        CharacterSpawnRequest SpawnRequest{};
+        CoopWorldView::WorldOrCell Location{};
+        Vector3_NetQuantize LatestPosition{};
+        Rotator2_NetQuantize LatestRotation{};
+        uint64_t DematerializeGraceUntilMs{0};
+        bool IsMaterialized{false};
+    };
+
+    struct PendingMountAttach
+    {
+        uint32_t MountServerId{0};
+        uint64_t ExpiresAtMs{0};
+    };
+
+    struct PendingLocalMountRequest
+    {
+        uint32_t RiderFormId{0};
+        uint32_t MountFormId{0};
+        uint64_t ExpiresAtMs{0};
+    };
+
+    void EnsureLocalPlayerRegistered() noexcept;
     void DetachAllActorsForEngineLoad() noexcept;
     void PurgeNetworkActorsOnLiveDisconnect() noexcept;
-    void MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
+    bool MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
+    [[nodiscard]] CoopWorldView::ObserverState BuildLocalObserverState() const noexcept;
+    [[nodiscard]] TESObjectCELL* ResolveCompatibleTargetCell(const CoopWorldView::WorldOrCell& acTargetLoc, TESWorldSpace*& apOutWorldSpace, bool aAllowDistantWorldSpaceAnchor = false) const noexcept;
+    void DematerializeRemoteView(entt::entity aEntity, RemoteEntityModel* apModel) const noexcept;
+    Actor* MaterializeRemoteView(entt::entity aEntity, RemoteEntityModel& aModel, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace) const noexcept;
+    void ReconcileRemoteWorldViews() const noexcept;
 
-    void RequestServerAssignment(entt::entity aEntity) const noexcept;
+    bool RequestServerAssignment(entt::entity aEntity) const noexcept;
+    void CleanupUnassignedActorEntity(entt::entity aEntity) const noexcept;
     void CancelServerAssignment(entt::entity aEntity, uint32_t aFormId) const noexcept;
     void DeleteRemoteEntityComponents(entt::entity aEntity) const noexcept;
 
@@ -140,8 +178,15 @@ private:
     std::chrono::steady_clock::time_point m_lastAppliedRemoteXpTime{};
     int32_t m_creditToRefundOnLocalQuestXp = 0;
     mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
+    mutable CoopWorldView::CancelledCookieTracker<64> m_cancelledCookies{};
     mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
+    mutable Map<uint32_t, RemoteEntityModel> m_remoteModels{};
+    mutable Map<uint32_t, uint32_t> m_playerServerIds{};
+    mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
+    mutable Set<uint32_t> m_createdNetworkFormIds{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};
+    mutable Map<uint32_t, PendingMountAttach> m_pendingRemoteMounts{};
+    mutable PendingLocalMountRequest m_pendingLocalMount{};
     bool m_pendingPostSaveRemoteRestore{false};
     bool m_savePurgeActive{false};
     bool m_engineWorldLoadInProgress{false};
@@ -160,7 +205,7 @@ private:
         bool m_isFirstPass = true;
     };
 
-    Map<uint32_t, WeaponDrawData> m_weaponDrawUpdates{};
+    mutable Map<uint32_t, WeaponDrawData> m_weaponDrawUpdates{};
 
     entt::scoped_connection m_referenceAddedConnection;
     entt::scoped_connection m_referenceRemovedConnection;
@@ -191,4 +236,6 @@ private:
     entt::scoped_connection m_actorTeleportConnection;
     entt::scoped_connection m_relinquishConnection;
     entt::scoped_connection m_partyJoinedConnection;
+    entt::scoped_connection m_playerCellChangedConnection;
+    entt::scoped_connection m_playerLeftConnection;
 };

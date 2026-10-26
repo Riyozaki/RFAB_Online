@@ -95,6 +95,12 @@ bool TP_MAKE_THISCALL(BGSLoadFormBuffer_LoadFormId, BGSLoadFormBuffer, uint32_t&
         return TiltedPhoques::ThisCall(RealBGSLoadFormBuffer_ReadFormId, apThis, aFormId);
     }
 
+    if (!apThis->buffer || apThis->position >= apThis->capacity)
+    {
+        aFormId = 0;
+        return false;
+    }
+
     uint8_t* pReadLocation = (uint8_t*)(apThis->buffer + apThis->position);
 
     ViewBuffer buffer(pReadLocation, apThis->capacity - apThis->position);

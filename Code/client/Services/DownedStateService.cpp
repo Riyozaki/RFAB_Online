@@ -4,7 +4,9 @@
 
 #include <World.h>
 #include <Utils.h>
+#include <common/CoopAnimationState.h>
 #include <common/RfabModpackCompat.h>
+#include <Games/TES.h>
 #include <Components.h>
 #include <Events/ConnectedEvent.h>
 #include <Events/DisconnectedEvent.h>
@@ -30,6 +32,7 @@
 #include <Services/TransportService.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -40,18 +43,33 @@ constexpr float kClientRevivePromptMeters = 3.0f;
 constexpr float kHostileScanRadiusMeters = 55.0f;
 constexpr float kRfabBossMaxHealthThreshold = 1200.0f;
 
+struct CachedReviveBlockedMenus
+{
+    std::array<BSFixedString, 11> Names{
+        BSFixedString("Console"),
+        BSFixedString("StatsMenu"),
+        BSFixedString("CustomMenu"),
+        BSFixedString("TweenMenu"),
+        BSFixedString("MapMenu"),
+        BSFixedString("Journal Menu"),
+        BSFixedString("InventoryMenu"),
+        BSFixedString("MagicMenu"),
+        BSFixedString("Dialogue Menu"),
+        BSFixedString("ContainerMenu"),
+        BSFixedString("Loading Menu"),
+    };
+};
+
 bool IsHoldReviveKeyPressed() noexcept
 {
 #ifdef _WIN32
     if (auto* pUi = UI::Get())
     {
-        if (pUi->GetMenuOpen(BSFixedString("Console")) ||
-            pUi->GetMenuOpen(BSFixedString("Journal Menu")) ||
-            pUi->GetMenuOpen(BSFixedString("InventoryMenu")) ||
-            pUi->GetMenuOpen(BSFixedString("MagicMenu")) ||
-            pUi->GetMenuOpen(BSFixedString("Loading Menu")))
+        static const CachedReviveBlockedMenus* s_pMenus = new CachedReviveBlockedMenus();
+        for (const auto& menuName : s_pMenus->Names)
         {
-            return false;
+            if (pUi->GetMenuOpen(menuName))
+                return false;
         }
     }
     return (GetAsyncKeyState('E') & 0x8000) != 0;
@@ -205,15 +223,17 @@ void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, boo
         pExt->SetDownedPlayer(aIsDowned);
         if (!pExt->IsLocalPlayer())
         {
-            constexpr uint32_t kLifeStateMask = 0xFu << 21;
-            constexpr uint32_t kLifeStateBleedout = 8u << 21;
             if (aIsDowned)
             {
-                apRemoteActor->actorState.flags1 = (apRemoteActor->actorState.flags1 & ~kLifeStateMask) | kLifeStateBleedout;
+                apRemoteActor->actorState.flags1 =
+                    (apRemoteActor->actorState.flags1 & ~CoopAnimationState::kLifeStateMask) |
+                    (CoopAnimationState::kLifeStateBleedout << CoopAnimationState::kLifeStateShift);
             }
-            else if (((apRemoteActor->actorState.flags1 & kLifeStateMask) >> 21) == 8u)
+            else
             {
-                apRemoteActor->actorState.flags1 &= ~kLifeStateMask;
+                (void)CoopAnimationState::NormalizePostReviveActorState(
+                    apRemoteActor->actorState.flags1,
+                    apRemoteActor->actorState.flags2);
             }
         }
     }
@@ -391,6 +411,72 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
     Utils::ShowHudMessage(String("Вы тяжело ранены (0 HP) — ждите помощи союзника [E] или конца боя"));
 }
 
+void DownedStateService::SchedulePostReviveHeadAndCameraSettle(bool aRestoreFirstPerson) noexcept
+{
+    m_pendingFirstPersonRestore = m_pendingFirstPersonRestore || aRestoreFirstPerson;
+    m_postReviveSettleFrames = std::max<uint8_t>(m_postReviveSettleFrames, 2u);
+}
+
+void DownedStateService::RestoreLivingCombatTargetability(Actor* apActor, bool aRefreshNearbyAiPackages) noexcept
+{
+    if (!apActor)
+        return;
+
+    if (auto* pExt = apActor->GetExtension())
+        pExt->SetDownedPlayer(false);
+
+    const bool hadDownedPosture = CoopAnimationState::NormalizePostReviveActorState(
+        apActor->actorState.flags1,
+        apActor->actorState.flags2);
+
+    if (apActor == PlayerCharacter::Get())
+    {
+        apActor->SetNoBleedoutRecovery(false);
+        apActor->SetPlayerRespawnMode(true);
+    }
+    else
+    {
+        apActor->SetNoBleedoutRecovery(false);
+    }
+
+    if (hadDownedPosture)
+    {
+        BSFixedString bleedoutStopLower("bleedoutStop");
+        apActor->SendAnimationEvent(&bleedoutStopLower);
+        BSFixedString bleedoutStop("BleedoutStop");
+        apActor->SendAnimationEvent(&bleedoutStop);
+    }
+
+    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
+
+    if (!aRefreshNearbyAiPackages)
+        return;
+
+    ProcessLists* const pProcessLists = ProcessLists::Get();
+    if (!pProcessLists)
+        return;
+
+    const float wakeRadiusUnits = RfabCompat::MetersToSkyrimUnits(85.0f);
+    const float wakeRadiusUnitsSq = wakeRadiusUnits * wakeRadiusUnits;
+
+    for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
+    {
+        Actor* pNpc = Cast<Actor>(TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]));
+        if (!pNpc || pNpc == apActor || pNpc->IsDead() || pNpc->IsInCombat())
+            continue;
+        if (const auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
+            continue;
+
+        const float dx = pNpc->position.x - apActor->position.x;
+        const float dy = pNpc->position.y - apActor->position.y;
+        const float dz = pNpc->position.z - apActor->position.z;
+        if ((dx * dx + dy * dy + dz * dz) <= wakeRadiusUnitsSq)
+        {
+            pNpc->EvaluatePackage();
+        }
+    }
+}
+
 void DownedStateService::ApplyAuthoritativeRevive(
     float aHealthFraction,
     float aGraceSec,
@@ -400,13 +486,13 @@ void DownedStateService::ApplyAuthoritativeRevive(
     if (!pPlayer)
         return;
 
+    const bool restoreFirstPerson = m_wasFirstPersonBeforeDowned;
+    m_wasFirstPersonBeforeDowned = false;
+
     m_pendingEnterDownedTransition.store(false, std::memory_order_release);
     m_isLocalDowned.store(false, std::memory_order_release);
-    if (auto* pExt = pPlayer->GetExtension())
-        pExt->SetDownedPlayer(false);
     m_graceRemainingSec = std::clamp(static_cast<double>(aGraceSec), 0.0, 15.0);
     m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
-    m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
@@ -427,20 +513,17 @@ void DownedStateService::ApplyAuthoritativeRevive(
     if (aShowPostCombatNotice)
         m_encounterHostileFormIds.clear();
 
-    pPlayer->SetNoBleedoutRecovery(false);
     SetDownedControlLock(false);
+    RestoreLivingCombatTargetability(pPlayer, true);
 
     BSFixedString bleedoutStopLower("bleedoutStop");
     pPlayer->SendAnimationEvent(&bleedoutStopLower);
     BSFixedString bleedoutStop("BleedoutStop");
     pPlayer->SendAnimationEvent(&bleedoutStop);
 
-    if (m_wasFirstPersonBeforeDowned)
-    {
-        m_wasFirstPersonBeforeDowned = false;
-        if (auto* pCam = PlayerCamera::Get())
-            pCam->ForceFirstPerson();
-    }
+    // Defer QueueUpdate() (frame +1) and ForceFirstPerson() (frame +2) so SetActorInventory() & MoveTo()
+    // never execute while 3rd-person BSFaceGenNiNode/hair geometry is culled by 1st-person camera transition!
+    SchedulePostReviveHeadAndCameraSettle(restoreFirstPerson);
 
     SyncPlayerDownedState syncUp{};
     syncUp.IsDowned = false;
@@ -485,11 +568,7 @@ void DownedStateService::ResetAllStates() noexcept
             continue;
         if (Actor* pRemote = Cast<Actor>(TESForm::GetById(fid)))
         {
-            if (auto* pExt = pRemote->GetExtension())
-                pExt->SetDownedPlayer(false);
-            constexpr uint32_t kLifeStateMask = 0xFu << 21;
-            if (((pRemote->actorState.flags1 & kLifeStateMask) >> 21) == 8u)
-                pRemote->actorState.flags1 &= ~kLifeStateMask;
+            RestoreLivingCombatTargetability(pRemote, false);
         }
     }
 
@@ -497,20 +576,14 @@ void DownedStateService::ResetAllStates() noexcept
 
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
     {
-        if (auto* pExt = pPlayer->GetExtension())
-            pExt->SetDownedPlayer(false);
-        pPlayer->SetNoBleedoutRecovery(false);
+        RestoreLivingCombatTargetability(pPlayer, wasLocalDowned);
         if (wasLocalDowned)
         {
             BSFixedString bleedoutStopLower("bleedoutStop");
             pPlayer->SendAnimationEvent(&bleedoutStopLower);
             BSFixedString bleedoutStop("BleedoutStop");
             pPlayer->SendAnimationEvent(&bleedoutStop);
-            if (restoreFirstPerson)
-            {
-                if (auto* pCam = PlayerCamera::Get())
-                    pCam->ForceFirstPerson();
-            }
+            SchedulePostReviveHeadAndCameraSettle(restoreFirstPerson);
         }
     }
 
@@ -869,6 +942,26 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
     }
     else
     {
+        if (m_postReviveSettleFrames > 0)
+        {
+            if (m_postReviveSettleFrames >= 2u)
+            {
+                if (pPlayer && pPlayer->GetNiNode())
+                    pPlayer->QueueUpdate();
+                m_postReviveSettleFrames = 1u;
+            }
+            else
+            {
+                if (m_pendingFirstPersonRestore)
+                {
+                    if (auto* pCam = PlayerCamera::Get())
+                        pCam->ForceFirstPerson();
+                }
+                m_pendingFirstPersonRestore = false;
+                m_postReviveSettleFrames = 0u;
+            }
+        }
+
         UpdateInteractiveReviveInput(acEvent.Delta);
     }
 

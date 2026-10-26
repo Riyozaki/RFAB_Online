@@ -16,6 +16,6 @@ struct RequestDeathStateChange final : ClientMessage
 
     bool operator==(const RequestDeathStateChange& acRhs) const noexcept { return Id == acRhs.Id && IsDead == acRhs.IsDead && GetOpcode() == acRhs.GetOpcode(); }
 
-    uint32_t Id;
-    bool IsDead;
+    uint32_t Id{};
+    bool IsDead{};
 };

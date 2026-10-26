@@ -178,24 +178,72 @@ void DecodeCppExceptionAndStackPod(PEXCEPTION_POINTERS apInfo, char* apCppBuf, s
 
         if (apInfo->ContextRecord)
         {
-            const auto* sp = reinterpret_cast<const uintptr_t*>(apInfo->ContextRecord->Rsp);
             size_t pos = 0;
-            int found = 0;
-            for (int slot = 0; slot < 96 && found < 10 && pos + 96 < aStackSz; ++slot)
+            int unwound = 0;
+
+            CONTEXT unwindCtx = *apInfo->ContextRecord;
+            for (int depth = 0; depth < 16 && pos + 112 < aStackSz; ++depth)
             {
-                const uintptr_t cand = sp[slot];
-                HMODULE hCand = nullptr;
-                if (cand >= 0x10000 &&
-                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                       reinterpret_cast<LPCSTR>(cand), &hCand) &&
-                    hCand != nullptr)
+                const DWORD64 pc = unwindCtx.Rip;
+                if (pc < 0x10000)
+                    break;
+
+                char frameDesc[160]{};
+                FormatAddrWithModulePod(static_cast<uintptr_t>(pc), frameDesc, sizeof(frameDesc));
+                const int n = std::snprintf(apStackBuf + pos, aStackSz - pos, "\r\n    [unwind #%d] %s", unwound, frameDesc);
+                if (n > 0)
+                    pos += static_cast<size_t>(n);
+                ++unwound;
+
+                DWORD64 imageBase = 0;
+                PRUNTIME_FUNCTION pRuntimeFn = RtlLookupFunctionEntry(pc, &imageBase, nullptr);
+                if (!pRuntimeFn)
                 {
-                    char frameDesc[160]{};
-                    FormatAddrWithModulePod(cand, frameDesc, sizeof(frameDesc));
-                    const int n = std::snprintf(apStackBuf + pos, aStackSz - pos, "\r\n    [stack #%d] %s", found, frameDesc);
-                    if (n > 0)
-                        pos += static_cast<size_t>(n);
-                    ++found;
+                    if (depth == 0 && unwindCtx.Rsp >= 0x10000)
+                    {
+                        unwindCtx.Rip = *reinterpret_cast<const DWORD64*>(unwindCtx.Rsp);
+                        unwindCtx.Rsp += 8;
+                        continue;
+                    }
+                    break;
+                }
+
+                PVOID handlerData = nullptr;
+                DWORD64 establisherFrame = 0;
+                RtlVirtualUnwind(
+                    UNW_FLAG_NHANDLER,
+                    imageBase,
+                    pc,
+                    pRuntimeFn,
+                    &unwindCtx,
+                    &handlerData,
+                    &establisherFrame,
+                    nullptr);
+
+                if (unwindCtx.Rip == 0 || unwindCtx.Rsp == 0)
+                    break;
+            }
+
+            if (unwound < 3)
+            {
+                const auto* sp = reinterpret_cast<const uintptr_t*>(apInfo->ContextRecord->Rsp);
+                int found = 0;
+                for (int slot = 0; slot < 96 && found < 8 && pos + 96 < aStackSz; ++slot)
+                {
+                    const uintptr_t cand = sp[slot];
+                    HMODULE hCand = nullptr;
+                    if (cand >= 0x10000 &&
+                        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                           reinterpret_cast<LPCSTR>(cand), &hCand) &&
+                        hCand != nullptr)
+                    {
+                        char frameDesc[160]{};
+                        FormatAddrWithModulePod(cand, frameDesc, sizeof(frameDesc));
+                        const int n = std::snprintf(apStackBuf + pos, aStackSz - pos, "\r\n    [stack #%d] %s", found, frameDesc);
+                        if (n > 0)
+                            pos += static_cast<size_t>(n);
+                        ++found;
+                    }
                 }
             }
         }
@@ -268,23 +316,59 @@ void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
     char stackInfo[2048]{};
     DecodeCppExceptionAndStackPod(apInfo, cppInfo, sizeof(cppInfo), stackInfo, sizeof(stackInfo));
 
-    char crashBuf[4096];
+    SYSTEMTIME stLocal{};
+    GetLocalTime(&stLocal);
+    const DWORD tid = GetCurrentThreadId();
+    const CONTEXT* ctx = apInfo->ContextRecord;
+
+    char crashBuf[4608];
     std::snprintf(crashBuf, sizeof(crashBuf),
-                  "[UNHANDLED_CRASH] Code=0x%08lX RIP=0x%llX FaultAddr=0x%llX Module='%s' Base=0x%llX RVA=+0x%llX RSP=0x%llX RAX=0x%llX RCX=0x%llX RDX=0x%llX Bytes=[%s]%s%s",
+                  "[%04u-%02u-%02u %02u:%02u:%02u.%03u] [UNHANDLED_CRASH] TID=%lu Code=0x%08lX RIP=0x%llX FaultAddr=0x%llX Module='%s' Base=0x%llX RVA=+0x%llX "
+                  "RSP=0x%llX RBP=0x%llX RAX=0x%llX RBX=0x%llX RCX=0x%llX RDX=0x%llX RSI=0x%llX RDI=0x%llX "
+                  "R8=0x%llX R9=0x%llX R10=0x%llX R11=0x%llX R12=0x%llX R13=0x%llX R14=0x%llX R15=0x%llX Bytes=[%s]%s%s",
+                  static_cast<unsigned>(stLocal.wYear),
+                  static_cast<unsigned>(stLocal.wMonth),
+                  static_cast<unsigned>(stLocal.wDay),
+                  static_cast<unsigned>(stLocal.wHour),
+                  static_cast<unsigned>(stLocal.wMinute),
+                  static_cast<unsigned>(stLocal.wSecond),
+                  static_cast<unsigned>(stLocal.wMilliseconds),
+                  static_cast<unsigned long>(tid),
                   static_cast<unsigned long>(code),
                   static_cast<unsigned long long>(rip),
                   static_cast<unsigned long long>(faultAddr),
                   modUtf8,
                   static_cast<unsigned long long>(modBase),
                   static_cast<unsigned long long>(modBase ? (rip - modBase) : rip),
-                  static_cast<unsigned long long>(apInfo->ContextRecord->Rsp),
-                  static_cast<unsigned long long>(apInfo->ContextRecord->Rax),
-                  static_cast<unsigned long long>(apInfo->ContextRecord->Rcx),
-                  static_cast<unsigned long long>(apInfo->ContextRecord->Rdx),
+                  static_cast<unsigned long long>(ctx->Rsp),
+                  static_cast<unsigned long long>(ctx->Rbp),
+                  static_cast<unsigned long long>(ctx->Rax),
+                  static_cast<unsigned long long>(ctx->Rbx),
+                  static_cast<unsigned long long>(ctx->Rcx),
+                  static_cast<unsigned long long>(ctx->Rdx),
+                  static_cast<unsigned long long>(ctx->Rsi),
+                  static_cast<unsigned long long>(ctx->Rdi),
+                  static_cast<unsigned long long>(ctx->R8),
+                  static_cast<unsigned long long>(ctx->R9),
+                  static_cast<unsigned long long>(ctx->R10),
+                  static_cast<unsigned long long>(ctx->R11),
+                  static_cast<unsigned long long>(ctx->R12),
+                  static_cast<unsigned long long>(ctx->R13),
+                  static_cast<unsigned long long>(ctx->R14),
+                  static_cast<unsigned long long>(ctx->R15),
                   hexBytes,
                   cppInfo,
                   stackInfo);
     WriteBootTrace(crashBuf, false);
+
+    // Also persist to append-only RFAB_Online_Crash.log so restarting Skyrim never overwrites prior crash records!
+    const wchar_t* pClientDir = GetTiltedClientDirW();
+    const std::filesystem::path clientPath = (pClientDir && *pClientDir)
+                                                 ? std::filesystem::path(pClientDir)
+                                                 : TiltedPhoques::GetPath();
+    WriteBootTraceRaw(clientPath / L"RFAB_Online_Crash.log", crashBuf, false);
+    if (!s_pendingGamePath.empty() && s_pendingGamePath != clientPath)
+        WriteBootTraceRaw(s_pendingGamePath / L"RFAB_Online_Crash.log", crashBuf, false);
 
     s_inCrashLogger = false;
 }
