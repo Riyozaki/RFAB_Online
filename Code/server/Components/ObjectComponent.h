@@ -5,6 +5,7 @@
 #endif
 
 #include <Structs/LockData.h>
+#include <Game/Player.h>
 
 struct ObjectComponent
 {
