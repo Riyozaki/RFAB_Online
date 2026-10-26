@@ -112,7 +112,10 @@ struct ActorExtension
 
         auto& shard = GetAnimationShard(aActorFormId);
         std::lock_guard<std::mutex> lock(shard.mutex);
-        shard.entries.erase(aActorFormId);
+        if (shard.entries.erase(aActorFormId) > 0)
+        {
+            std::erase(shard.order, aActorFormId);
+        }
     }
 
     static void ClearAllLatestAnimations() noexcept

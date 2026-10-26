@@ -12,6 +12,7 @@
 #include <Services/SaveSnapshotService.h>
 #include <Services/EncounterService.h>
 #include <Services/InventoryService.h>
+#include <Services/ObjectService.h>
 
 #include "Game/PlayerManager.h"
 
@@ -47,6 +48,8 @@ struct World : entt::registry
     const EncounterService& GetEncounterService() const noexcept { return ctx().at<const EncounterService>(); }
     InventoryService& GetInventoryService() noexcept { return ctx().at<InventoryService>(); }
     const InventoryService& GetInventoryService() const noexcept { return ctx().at<const InventoryService>(); }
+    ObjectService& GetObjectService() noexcept { return ctx().at<ObjectService>(); }
+    const ObjectService& GetObjectService() const noexcept { return ctx().at<const ObjectService>(); }
     PlayerManager& GetPlayerManager() noexcept { return m_playerManager; }
     const PlayerManager& GetPlayerManager() const noexcept { return m_playerManager; }
     ScriptService& GetScriptService() const noexcept { return *m_pScriptService; }

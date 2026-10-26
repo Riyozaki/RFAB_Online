@@ -43,6 +43,7 @@ struct CharacterService
     void ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept;
     void ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept;
     void ForceResyncObserverAfterRollback(Player* apObserver) const noexcept;
+    [[nodiscard]] entt::entity FindPersistentCharacterByFormId(const GameId& acFormId) const noexcept;
 
 protected:
     void OnUpdate(const UpdateEvent& acEvent) const noexcept;
@@ -73,12 +74,21 @@ protected:
 
     void ProcessFactionsChanges() const noexcept;
     void ProcessMovementChanges() const noexcept;
+    void WakeDormantCharactersInActiveRanges() const noexcept;
     void PruneExcessDormantCharacters() const noexcept;
+
+    void OnCharacterIndexConstructed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnCharacterIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnFormIdIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
 
 private:
     World& m_world;
     mutable CoopWorldView::ServerInterestRegistry m_interestRegistry{};
+    mutable std::unordered_map<uint64_t, entt::entity> m_characterByFormKey{};
 
+    entt::scoped_connection m_charIndexConstructConn;
+    entt::scoped_connection m_charIndexDestroyConn;
+    entt::scoped_connection m_formIndexDestroyConn;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_playerLeaveConnection;
     entt::scoped_connection m_exteriorCellChangeEventConnection;

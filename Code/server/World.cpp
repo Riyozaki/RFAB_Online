@@ -45,6 +45,8 @@ World::World()
     ctx().emplace<WeatherService>(*this, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher);
 
+    GetSaveSnapshotService().HydratePersistedWorldState();
+
     ESLoader::ESLoader loader;
     // emplace loaded mods into modscomponent.
     m_recordCollection = loader.BuildRecordCollection();

@@ -91,10 +91,10 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
                     maxHp,
                     sanitized))
             {
-                NotifyActorValueChanges rollbackOwnerHp{};
+                NotifyHealthChangeBroadcast rollbackOwnerHp{};
                 rollbackOwnerHp.Id = message.Id;
-                rollbackOwnerHp.Values[kHealthActorValueIndex] = currentHp;
-                if (acMessage.pPlayer)
+                rollbackOwnerHp.DeltaHealth = currentHp - sanitized;
+                if (acMessage.pPlayer && rollbackOwnerHp.DeltaHealth < -0.05f)
                     acMessage.pPlayer->Send(rollbackOwnerHp);
                 continue;
             }
@@ -228,9 +228,9 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
                 maxHealth,
                 updatedHealth))
         {
-            NotifyActorValueChanges rollbackOwnerHp{};
+            NotifyHealthChangeBroadcast rollbackOwnerHp{};
             rollbackOwnerHp.Id = message.Id;
-            rollbackOwnerHp.Values[kHealthActorValueIndex] = currentHealth;
+            rollbackOwnerHp.DeltaHealth = -sanitizedDelta;
             if (acMessage.pPlayer)
                 acMessage.pPlayer->Send(rollbackOwnerHp);
             return;

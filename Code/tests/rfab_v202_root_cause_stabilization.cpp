@@ -111,7 +111,9 @@ TEST_CASE("Stage 0: Immutable v2.0.1-backup manifest and CI release protection",
     REQUIRE(static_cast<unsigned char>(ps1[2]) == 0xBF);
     REQUIRE(ps1.find("\"v2.0.1-backup\"") != std::string::npos);
     REQUIRE(ps1.find("\"v2.0.1\"") != std::string::npos);
-    REQUIRE(ps1.find("[string]$VersionTag = \"v2.0.2\"") != std::string::npos);
+    REQUIRE(ps1.find("\"v2.0.2-backup\"") != std::string::npos);
+    REQUIRE(ps1.find("\"v2.0.2\"") != std::string::npos);
+    REQUIRE(ps1.find("[string]$VersionTag = \"v2.0.3\"") != std::string::npos);
     REQUIRE(ps1.find("[switch]$SkipPublish") != std::string::npos);
 }
 
@@ -165,14 +167,14 @@ TEST_CASE("Stage 1 & 2: Zero-CTD Core, Persistent ServerWorldModel, and O(1) Cli
         REQUIRE(gameServerCpp.find("pCharComp->IsPlayerSummon()") != std::string::npos);
 
         const std::string clientCharH = LoadRepoFileText(root, "Code/client/Services/CharacterService.h");
-        REQUIRE(clientCharH.find("m_actorEntityByFormId") != std::string::npos);
-        REQUIRE(clientCharH.find("m_entityByServerId") != std::string::npos);
-        REQUIRE(clientCharH.find("m_suppressedPlacedActors") != std::string::npos);
+        REQUIRE(clientCharH.find("m_entityIndex") != std::string::npos);
+        REQUIRE(clientCharH.find("ReconcilePlacedActorBaseFormInPlace") != std::string::npos);
+        REQUIRE(clientCharH.find("m_suppressedPlacedActors") == std::string::npos);
 
         const std::string clientCharCpp = LoadRepoFileText(root, "Code/client/Services/Generic/CharacterService.cpp");
         REQUIRE(clientCharCpp.find("(pNpc->formID & 0xFF000000u) == 0xFF000000u") != std::string::npos);
-        REQUIRE(clientCharCpp.find("for (const uint32_t suppressedId : m_suppressedPlacedActors)") != std::string::npos);
-        REQUIRE(clientCharCpp.find("m_suppressedPlacedActors.insert(cActorId)") != std::string::npos);
+        REQUIRE(clientCharCpp.find("CharacterService::ReconcilePlacedActorBaseFormInPlace") != std::string::npos);
+        REQUIRE(clientCharCpp.find("m_suppressedPlacedActors") == std::string::npos);
 
         const std::string interpCpp = LoadRepoFileText(root, "Code/client/Systems/InterpolationSystem.cpp");
         REQUIRE(interpCpp.find("(apActor->formID & 0xFF000000u) == 0xFF000000u") != std::string::npos);

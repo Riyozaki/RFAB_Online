@@ -42,6 +42,57 @@ void ObjectService::OnObjectComponentRemoved(entt::registry& aRegistry, entt::en
     }
 }
 
+void ObjectService::UpsertRestoredObject(
+    const GameId& acId,
+    const GameId& acCellId,
+    const GameId& acWorldSpaceId,
+    const GridCellCoords& acCoords,
+    const LockData& acLockData,
+    const Inventory& acInventory) noexcept
+{
+    if (!acId || acId.ModId == 0xFFFFFFFFu)
+        return;
+
+    const uint64_t key = PackGameIdKey(acId);
+    auto mapIt = m_objectEntityByKey.find(key);
+    entt::entity entity = entt::null;
+    if (mapIt != m_objectEntityByKey.end() &&
+        m_world.valid(mapIt->second) &&
+        m_world.all_of<FormIdComponent, ObjectComponent, InventoryComponent>(mapIt->second))
+    {
+        entity = mapIt->second;
+    }
+
+    if (entity == entt::null)
+    {
+        entity = m_world.create();
+        m_world.emplace<FormIdComponent>(entity, acId);
+        auto& objComp = m_world.emplace<ObjectComponent>(entity);
+        objComp.CurrentLockData = acLockData;
+        objComp.HasAuthoritativeMutation = true;
+        m_world.emplace<CellIdComponent>(entity, acCellId, acWorldSpaceId, acCoords);
+        auto& invComp = m_world.emplace<InventoryComponent>(entity);
+        invComp.Content = acInventory;
+        m_objectEntityByKey[key] = entity;
+        return;
+    }
+
+    auto& objComp = m_world.get<ObjectComponent>(entity);
+    objComp.CurrentLockData = acLockData;
+    objComp.HasAuthoritativeMutation = true;
+    m_world.get<InventoryComponent>(entity).Content = acInventory;
+    if (auto* pCellComp = m_world.try_get<CellIdComponent>(entity))
+    {
+        if (acCellId)
+            pCellComp->Cell = acCellId;
+        if (acWorldSpaceId)
+        {
+            pCellComp->WorldSpaceId = acWorldSpaceId;
+            pCellComp->CenterCoords = acCoords;
+        }
+    }
+}
+
 void ObjectService::PruneExcessUntouchedObjects() noexcept
 {
     if (m_objectEntityByKey.size() <= kMaxUntouchedCachedObjects)

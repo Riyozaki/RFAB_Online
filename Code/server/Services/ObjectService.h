@@ -2,6 +2,9 @@
 
 #include <Events/PacketEvent.h>
 #include <Structs/GameId.h>
+#include <Structs/GridCellCoords.h>
+#include <Structs/Inventory.h>
+#include <Structs/LockData.h>
 #include <TiltedCore/Stl.hpp>
 
 struct World;
@@ -18,6 +21,14 @@ class ObjectService
 {
 public:
     ObjectService(World& aWorld, entt::dispatcher& aDispatcher);
+
+    void UpsertRestoredObject(
+        const GameId& acId,
+        const GameId& acCellId,
+        const GameId& acWorldSpaceId,
+        const GridCellCoords& acCoords,
+        const LockData& acLockData,
+        const Inventory& acInventory) noexcept;
 
 private:
     static constexpr uint64_t PackGameIdKey(const GameId& acId) noexcept

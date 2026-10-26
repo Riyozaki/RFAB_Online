@@ -93,7 +93,9 @@ DownedStateService::DownedStateService(World& aWorld, entt::dispatcher& aDispatc
 
 bool DownedStateService::IsSystemActive() const noexcept
 {
-    return m_transport.IsConnected() && m_world.GetServerSettings().DownedSystemEnabled;
+    return World::IsCreated() &&
+           World::IsConnectedCached() &&
+           m_downedSystemEnabledCached.load(std::memory_order_acquire);
 }
 
 bool DownedStateService::ShouldBlockPlayerHealthMutation(float aDelta) const noexcept
@@ -210,7 +212,13 @@ void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealth
 
     bool expected = false;
     if (m_isLocalDowned.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+    {
         m_pendingEnterDownedTransition.store(true, std::memory_order_release);
+        spdlog::info(
+            "Local player entered downed state (hp {:.1f}, cell {:X}) - AI targetability locked off until revive",
+            apPlayer->GetActorValue(ActorValueInfo::kHealth),
+            apPlayer->parentCell ? apPlayer->parentCell->formID : 0u);
+    }
 }
 
 void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept
@@ -516,6 +524,12 @@ void DownedStateService::ApplyAuthoritativeRevive(
     SetDownedControlLock(false);
     RestoreLivingCombatTargetability(pPlayer, true);
 
+    spdlog::info(
+        "Local player revived (fraction {:.2f}, grace {:.1f}s, hp {:.1f}) - AI targetability restored",
+        aHealthFraction,
+        aGraceSec,
+        pPlayer->GetActorValue(ActorValueInfo::kHealth));
+
     BSFixedString bleedoutStopLower("bleedoutStop");
     pPlayer->SendAnimationEvent(&bleedoutStopLower);
     BSFixedString bleedoutStop("BleedoutStop");
@@ -592,6 +606,7 @@ void DownedStateService::ResetAllStates() noexcept
 
 void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
 {
+    m_downedSystemEnabledCached.store(m_world.GetServerSettings().DownedSystemEnabled, std::memory_order_release);
     ResetAllStates();
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
         pPlayer->SetPlayerRespawnMode(true);
@@ -599,6 +614,7 @@ void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
 
 void DownedStateService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
+    m_downedSystemEnabledCached.store(false, std::memory_order_release);
     ResetAllStates();
 }
 
@@ -880,6 +896,10 @@ void DownedStateService::SendCombatEncounterReport() noexcept
 
 void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    m_downedSystemEnabledCached.store(
+        m_transport.IsConnected() && m_world.GetServerSettings().DownedSystemEnabled,
+        std::memory_order_release);
+
     if (!IsSystemActive())
         return;
 
@@ -978,6 +998,14 @@ void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState
     m_remoteDownedByPlayerId[acMessage.PlayerId] = acMessage.IsDowned;
     if (!acMessage.IsDowned)
         m_playersBeingRevived.erase(acMessage.PlayerId);
+
+    spdlog::info(
+        "Peer {} downed state -> {} (position {:.0f}, {:.0f}, {:.0f})",
+        acMessage.PlayerId,
+        acMessage.IsDowned ? "downed" : "standing",
+        acMessage.PositionX,
+        acMessage.PositionY,
+        acMessage.PositionZ);
 
     Actor* pDownedRemoteActor = nullptr;
     auto playerView = m_world.view<FormIdComponent, PlayerComponent>();

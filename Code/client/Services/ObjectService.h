@@ -24,6 +24,7 @@ class ObjectService final : public BSTEventSink<TESActivateEvent>
 public:
     ObjectService(World&, entt::dispatcher&, TransportService&);
     [[nodiscard]] static bool IsFactionCrimeContainer(uint32_t aFormId) noexcept;
+    void RefreshCurrentCellObjectsAfterRollback() noexcept;
 
 private:
     void OnDisconnected(const DisconnectedEvent&) noexcept;

@@ -5,13 +5,13 @@
 ### 🎮 Кооперативный мультиплеер для Skyrim SE `1.5.97.0.8` + [Requiem for a Balance (RFAB)](https://github.com/drake1ch/RFAB)
 
 [![Build & Release](https://github.com/Riyozaki/RFAB_Online/actions/workflows/release.yml/badge.svg)](https://github.com/Riyozaki/RFAB_Online/actions/workflows/release.yml)
-[![Latest Release](https://img.shields.io/github/v/release/Riyozaki/RFAB_Online?label=актуальный%20релиз&color=brightgreen)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)
-[![Game Version](https://img.shields.io/badge/Skyrim%20SE-1.5.97.0.8-2a2a3a)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)
-[![SKSE64](https://img.shields.io/badge/SKSE64-2.0.20-blue)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)
+[![Latest Release](https://img.shields.io/github/v/release/Riyozaki/RFAB_Online?label=актуальный%20релиз&color=brightgreen)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)
+[![Game Version](https://img.shields.io/badge/Skyrim%20SE-1.5.97.0.8-2a2a3a)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)
+[![SKSE64](https://img.shields.io/badge/SKSE64-2.0.20-blue)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)
 
 *Проходите Requiem for a Balance вдвоём–вчетвером без потери механик RFAB: собственные сложности («Странник», «Довакин», «Легенда», «Проклятый»), режим «Единство в битве» без урона по союзникам, общие квесты и опыт, «Downed-on-Knee» вместо мгновенной смерти и синхронные сохранения всей группы.*
 
-[**📥 Скачать v2.0.2**](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2) · [**⚡ Установка и обновление**](#-быстрый-старт-и-обновление) · [**🎮 Управление (Хост и Гости)**](#-управление-и-права-хоста) · [**📋 Changelog**](./CHANGELOG.md) · [**📚 Документация**](#-документация-и-инженерные-артефакты)
+[**📥 Скачать v2.0.3**](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3) · [**⚡ Установка и обновление**](#-быстрый-старт-и-обновление) · [**🎮 Управление (Хост и Гости)**](#-управление-и-права-хоста) · [**📋 Changelog**](./CHANGELOG.md) · [**📚 Документация**](#-документация-и-инженерные-артефакты)
 
 </div>
 
@@ -23,21 +23,21 @@
 
 - **0 перезаписей баланса и контента RFAB:** плагины коопа полностью очищены от ванильных оверрайдов (всего 5 собственных форм в `SkyrimTogether.esp`), сохраняя 100% перков, алтарей, заклинаний, колец, призывов, камер и интерфейса RFAB при любом порядке загрузки (в том числе когда `RFAB.esp` помечен ESM-флагом на слоте `07` в **RFAB Respect Edition**) за счёт встроенного бинарного индексатора `.esm/.esp/.esl` (`EspEdidIndex`).
 - **Установка и обновление в 2 клика:** готовый нативный лаунчер `SkyrimSE.exe`, клиент под **Mod Organizer 2**, русский оверлей и выделенный сервер ставятся автоматически без `git`, консольных команд и ручного копирования файлов.
-- **Чёткая политика версий:** в разделе [Releases](https://github.com/Riyozaki/RFAB_Online/releases) доступен актуальный релиз **[`v2.0.2` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** и неприкосновенные архивные бэкапы всех стабильных веток (**[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)**, **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)**, **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)**, **[`v1.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)**, **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)**).
+- **Чёткая политика версий:** в разделе [Releases](https://github.com/Riyozaki/RFAB_Online/releases) доступен актуальный релиз **[`v2.0.3` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** и неприкосновенные архивные бэкапы всех стабильных веток (**[`v2.0.2-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup)**, **[`v2.0.2`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)**, **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)**, **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)**, **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)**, **[`v1.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)**, **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)**).
 
 ---
 
 ## 📦 Быстрый старт и обновление
 
-| Архив в релизе [`v2.0.2` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2) | Назначение |
+| Архив в релизе [`v2.0.3` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3) | Назначение |
 |---|---|
-| **[`RFAB_Online_v2.0.2_Full_Installer.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2/RFAB_Online_v2.0.2_Full_Installer.zip)** | **Полная установка с нуля или чистое обновление** (`INSTALL_RFAB_ONLINE.bat`): клиент MO2 + UI + выделенный сервер + автонастройка конфигов |
-| **[`RFAB_Online_v2.0.2_Quick_Update.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2/RFAB_Online_v2.0.2_Quick_Update.zip)** | **Быстрое обновление за 10 секунд** (`UPDATE_RFAB_ONLINE.bat`, ≈15 МБ): обновляет все `.exe`/`.dll`/`.esp`, `UI` и сервер поверх установленного мода |
-| **[`RFAB_Online_v2.0.2_PDB_Symbols.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2/RFAB_Online_v2.0.2_PDB_Symbols.zip)** | Отладочные символы `.pdb` и [`SHA256SUMS.txt`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.2/SHA256SUMS.txt) |
+| **[`RFAB_Online_v2.0.3_Full_Installer.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/RFAB_Online_v2.0.3_Full_Installer.zip)** | **Полная установка с нуля или чистое обновление** (`INSTALL_RFAB_ONLINE.bat`): клиент MO2 + UI + выделенный сервер + автонастройка конфигов |
+| **[`RFAB_Online_v2.0.3_Quick_Update.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/RFAB_Online_v2.0.3_Quick_Update.zip)** | **Быстрое обновление за 10 секунд** (`UPDATE_RFAB_ONLINE.bat`, ≈15 МБ): обновляет все `.exe`/`.dll`/`.esp`, `UI` и сервер поверх установленного мода |
+| **[`RFAB_Online_v2.0.3_PDB_Symbols.zip`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/RFAB_Online_v2.0.3_PDB_Symbols.zip)** | Отладочные символы `.pdb` и [`SHA256SUMS.txt`](https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.3/SHA256SUMS.txt) |
 
 ### 1. Чистая установка (одинаково для Хоста и Друзей)
 
-1. Скачайте **[`RFAB_Online_v2.0.2_Full_Installer.zip`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** и распакуйте архив в любую временную папку.
+1. Скачайте **[`RFAB_Online_v2.0.3_Full_Installer.zip`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** и распакуйте архив в любую временную папку.
 2. Закройте игру и **Mod Organizer 2**, затем запустите **`INSTALL_RFAB_ONLINE.bat`**:
    - откроется удобное окно выбора папки сборки RFAB (автоматически находит `ModOrganizer.exe` на дисках и считывает точный путь к `SkyrimSE.exe 1.5.97` из `ModOrganizer.ini`);
    - установщик автоматически закрывает фоновый сервер, **полностью удаляет любые старые файлы прошлых версий** в `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя ваши настройки `STServer.ini`), очищает устаревшие хвосты в `MO2\overwrite` и ставит новую версию начисто;
@@ -111,8 +111,8 @@
 
 ## 📚 Документация и инженерные артефакты
 
-- **[`CHANGELOG.md`](./CHANGELOG.md)** — подробный журнал изменений по всем релизам (`v2.0.2`, `v2.0.1`, `v1.2.0`, `v1.1.0`, `v1.0.0`).
-- **[`docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`](./docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json)** и **[`docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json`](./docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json)** — криптографические манифесты (`SHA-256`) неприкосновенных резервных релизов `v2.0.1-backup` и `v1.0.0`.
+- **[`CHANGELOG.md`](./CHANGELOG.md)** — подробный журнал изменений по всем релизам (`v2.0.3`, `v2.0.2`, `v2.0.1`, `v1.2.0`, `v1.1.0`, `v1.0.0`).
+- **[`docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json`](./docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json)**, **[`docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`](./docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json)** и **[`docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json`](./docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json)** — криптографические манифесты (`SHA-256`) неприкосновенных резервных релизов `v2.0.2-backup`, `v2.0.1-backup` и `v1.0.0`.
 - **[`docs/RFAB_ADAPTATION_SPEC.md`](./docs/RFAB_ADAPTATION_SPEC.md)** — спецификация интеграции механик RFAB и кросс-версионной совместимости с будущими обновлениями `drake1ch/RFAB` (`EspEdidIndex`, рекурсивное обнаружение конфигов, плагин-привязанные идентификаторы боссов и квестов).
 - **[`docs/PLAYTEST_SIX_ISSUES_ROOT_CAUSE_AND_FIX_SPEC_2026_10_24.md`](./docs/PLAYTEST_SIX_ISSUES_ROOT_CAUSE_AND_FIX_SPEC_2026_10_24.md)** — полный бинарный разбор и архитектурная спецификация исправлений 6 багов кооп-плейтеста (`+0x6EDFC2` при загрузке сейва, `StatsMenu` / `Tab`, агро на раненого, невидимые бессмертные враги и боевой ИИ / скорость атак NPC).
 - **[`docs/THREAD_SAFETY_AND_REENTRANCY_HARDENING.md`](./docs/THREAD_SAFETY_AND_REENTRANCY_HARDENING.md)** — аудит потокобезопасности, защиты от `Use-After-Free` и реентерабельности всех сервисов клиента.

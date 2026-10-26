@@ -9,6 +9,7 @@ struct NotifyInventoryChanges;
 struct InventoryChangeEvent;
 struct EquipmentChangeEvent;
 struct NotifyEquipmentChanges;
+struct NotifyDrawWeapon;
 
 /**
  * @brief Manages inventories of actors and containers.
@@ -49,6 +50,7 @@ struct InventoryService
      * @brief Applies equipment changes sent by the server.
      */
     void OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept;
+    void OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept;
 
 private:
     /**
@@ -71,4 +73,5 @@ private:
     entt::scoped_connection m_equipmentConnection;
     entt::scoped_connection m_inventoryChangeConnection;
     entt::scoped_connection m_equipmentChangeConnection;
+    entt::scoped_connection m_drawWeaponChangeConnection;
 };

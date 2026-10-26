@@ -1,5 +1,8 @@
 #include "MagicTarget.h"
 
+#include <algorithm>
+#include <chrono>
+
 #include <Actor.h>
 #include <World.h>
 #include "EffectItem.h"
@@ -14,6 +17,7 @@
 #include <Games/Overrides.h>
 #include <Games/References.h>
 #include <PlayerCharacter.h>
+#include <CoopDamagePipeline.h>
 #include <RfabModpackCompat.h>
 #include <Services/RfabAdapterService.h>
 
@@ -118,15 +122,19 @@ bool MagicTarget::AddTargetData::ShouldSync()
             return false;
     }
 
-    // Never sync SELF-delivered kScript effects cast by a player onto themselves (e.g. RFAB Spirit Toggle summons,
-    // Mirel_REUS Summon-Token scripts, RFAB_Script_SummonSpirit, RFAB_ToggleAbility / Stance / Aura).
-    // Running those Papyrus ActiveMagicEffect scripts on a remote player puppet corrupts summon tokens,
-    // spawns duplicate unsynced local summons, and triggers HUD/RemoveSpell echoes on peer clients!
+    // Never sync player-cast `kScript` ActiveMagicEffects unless they are friendly non-SELF party support spells:
+    //   1. SELF-delivered `kScript` effects (Spirit Toggle summons, Mirel_REUS tokens, Stances/Auras) corrupt puppets.
+    //   2. Hostile targeted/aimed/cloak `kScript` effects (`RFAB_PapyrusFunctions.ScriptDamage`, custom RFAB procs)
+    //      rely on `akCaster == Game.GetPlayer()` (`0x14`) perks, skills, and equipped items — they execute
+    //      authoritatively on the casting player's own client via `ScriptDamageAuthLedger` and sync exact HP deltas!
     if (pEffectItem->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kScript &&
-        pEffectItem->pEffectSetting->deliveryType == static_cast<uint32_t>(MagicSystem::Delivery::SELF) &&
         pCaster && pCaster->GetExtension() && pCaster->GetExtension()->IsPlayer())
     {
-        return false;
+        const bool isFriendlyPartySupport =
+            (pEffectItem->pEffectSetting->deliveryType != static_cast<uint32_t>(MagicSystem::Delivery::SELF)) &&
+            (pSpell->IsHealingSpell() || pSpell->IsBuffSpell());
+        if (!isFriendlyPartySupport)
+            return false;
     }
 
     return !pEffectItem->IsSummonEffect() && !pSpell->IsInvisibilitySpell() && !pSpell->IsWardSpell();
@@ -148,8 +156,24 @@ Actor* MagicTarget::GetTargetAsActor()
     return TiltedPhoques::ThisCall(getTargetAsActor, this);
 }
 
+namespace
+{
+CoopDamagePipeline::ConcentrationSyncLimiter<64> s_concentrationSyncLimiter{};
+
+[[nodiscard]] uint64_t NowMagicSteadyMs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+} // namespace
+
 bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& arData)
 {
+    if (!World::IsCreated() || !World::IsConnectedCached())
+        return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+
     Actor* pTargetActor = apThis->GetTargetAsActor();
     if (!pTargetActor || !arData.pEffectItem || !arData.pEffectItem->pEffectSetting || !arData.pSpell ||
         arData.IsForbiddenEffect(pTargetActor))
@@ -306,9 +330,28 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
             }
 
+            if (!isFriendlySupport &&
+                pTargetActorEx->IsRemote() &&
+                !pTargetActorEx->IsPlayer())
+            {
+                const int32_t effectDurationSec = arData.pEffectItem ? arData.pEffectItem->data.iDuration : 0;
+                const uint64_t durationMs =
+                    static_cast<uint64_t>(std::max<int32_t>(0, effectDurationSec)) * 1000ULL + 2000ULL;
+                Actor::ArmLocalPlayerScriptDamageWindow(pTargetActor->formID, durationMs);
+            }
+
             bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
             if (result && (!isFriendlySupport || !isConcentration) && arData.ShouldSync())
-                World::Get().GetRunner().Trigger(addTargetEvent);
+            {
+                const bool allowPacket = !isConcentration ||
+                    s_concentrationSyncLimiter.ShouldAllowSend(
+                        addTargetEvent.CasterID,
+                        addTargetEvent.TargetID,
+                        addTargetEvent.EffectID,
+                        NowMagicSteadyMs());
+                if (allowPacket)
+                    World::Get().GetRunner().Trigger(addTargetEvent);
+            }
             return result;
         }
         else if (isRemotePlayerOrSummon)

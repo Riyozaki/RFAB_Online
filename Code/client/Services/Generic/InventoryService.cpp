@@ -27,6 +27,7 @@
 #include <Forms/TESNPC.h>
 #include <Forms/BGSOutfit.h>
 #include <Forms/TESObjectARMO.h>
+#include <Forms/TESObjectWEAP.h>
 #include <DefaultObjectManager.h>
 #include <Services/RfabAdapterService.h>
 
@@ -40,6 +41,7 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     m_equipmentConnection = m_dispatcher.sink<EquipmentChangeEvent>().connect<&InventoryService::OnEquipmentChangeEvent>(this);
     m_inventoryChangeConnection = m_dispatcher.sink<NotifyInventoryChanges>().connect<&InventoryService::OnNotifyInventoryChanges>(this);
     m_equipmentChangeConnection = m_dispatcher.sink<NotifyEquipmentChanges>().connect<&InventoryService::OnNotifyEquipmentChanges>(this);
+    m_drawWeaponChangeConnection = m_dispatcher.sink<NotifyDrawWeapon>().connect<&InventoryService::OnNotifyDrawWeapon>(this);
 }
 
 void InventoryService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
@@ -74,10 +76,11 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
         return;
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    if (m_world.try_get<WaitingForAssignmentComponent>(targetEntity))
+    if (auto* pWaitingAssign = m_world.try_get<WaitingForAssignmentComponent>(targetEntity))
     {
+        pWaitingAssign->DirtyInventory = true;
         spdlog::debug(
-            __FUNCTION__ ": WaitingForAssignment, don't send inventory changes actorId: {:X}, isLeader: {}, item id: {:X}",
+            __FUNCTION__ ": WaitingForAssignment, flagged DirtyInventory actorId: {:X}, isLeader: {}, item id: {:X}",
             acEvent.FormId, isLeader, acEvent.Item.BaseId.LogFormat());
         return;
     }
@@ -122,10 +125,11 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     const char* pActorBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
 
-    if (m_world.try_get<WaitingForAssignmentComponent>(actorEntity))
+    if (auto* pWaitingAssign = m_world.try_get<WaitingForAssignmentComponent>(actorEntity))
     {
+        pWaitingAssign->DirtyInventory = true;
         spdlog::debug(
-            __FUNCTION__ ": WaitingForAssignment, don't send equipment changes actorId: {:X}, isLeader: {}, "
+            __FUNCTION__ ": WaitingForAssignment, flagged DirtyInventory actorId: {:X}, isLeader: {}, "
                          "item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
             acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId,
             pActorBaseName);
@@ -167,14 +171,13 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
 void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& acMessage) noexcept
 {
+    m_world.GetCharacterService().SyncRemoteCachedInventory(acMessage.ServerId, acMessage.Item, acMessage.Drop);
+
     if (acMessage.Drop)
     {
         Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
         if (!pActor)
-        {
-            spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ServerId);
             return;
-        }
 
         ScopedInventoryOverride _;
 
@@ -194,12 +197,11 @@ void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& ac
 
 void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept
 {
+    m_world.GetCharacterService().SyncRemoteCachedEquipment(acMessage);
+
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
     if (!pActor)
-    {
-        spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ServerId);
         return;
-    }
 
     auto& modSystem = World::Get().GetModSystem();
 
@@ -302,6 +304,17 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
     }
 }
 
+void InventoryService::OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept
+{
+    m_world.GetCharacterService().SyncRemoteCachedWeaponDraw(acMessage.Id, acMessage.IsWeaponDrawn);
+
+    if (Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id))
+    {
+        if (const auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote() && !pActor->IsDead())
+            pActor->SetWeaponDrawnEx(acMessage.IsWeaponDrawn);
+    }
+}
+
 void InventoryService::RunWeaponStateUpdates() noexcept
 {
     if (!m_transport.IsConnected())
@@ -380,6 +393,25 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
             pActorExt->nakedDeadline = cNoDeadline;
             spdlog::debug(__FUNCTION__ ": actorId {:X} naked check is irrelevant {}", pActor->formID, pBaseName);
             continue; 
+        }
+
+        // NEVER re-dress an actor that is fighting or already holding a weapon.
+        // `EquipOutfit()` equips the *whole* default outfit, and Skyrim outfits may contain weapons: on RFAB
+        // bosses whose weapon is granted by script (not by the base outfit) this replaced the real main-hand
+        // weapon with the template one, so the NPC swung a "non-primary" weapon right after a takeover/reload.
+        // The naked check exists purely for appearance after a respawn/re-materialisation, so a fighting or
+        // armed actor must be left alone.
+        const bool holdsRealWeapon =
+            Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0)) != nullptr ||
+            Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(1)) != nullptr;
+        if (pActor->IsInCombat() || holdsRealWeapon)
+        {
+            pActorExt->nakedDeadline = cNoDeadline;
+            spdlog::debug(
+                __FUNCTION__ ": actorId {:X} naked check skipped (in combat or armed) {}",
+                pActor->formID,
+                pBaseName);
+            continue;
         }
 
         if (now < pActorExt->nakedDeadline + cDelayAfterAssignment)
