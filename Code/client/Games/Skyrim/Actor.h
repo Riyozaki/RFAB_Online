@@ -268,6 +268,7 @@ struct Actor : TESObjectREFR
     void SetCombatTargetEx(Actor* apTarget) noexcept;
     void StartCombat(Actor* apTarget) noexcept;
     void StopCombat() noexcept;
+    void EvaluatePackage() noexcept;
     bool PlayIdle(TESIdleForm* apIdle) noexcept;
     void FixVampireLordModel() noexcept;
     bool RemoveSpell(MagicItem* apSpell) noexcept;

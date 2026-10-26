@@ -66,7 +66,7 @@ bool IsPlayerHome(const TESObjectCELL* pCell) noexcept
     return false;
 }
 
-bool IsFactionCrimeContainer(const uint32_t aFormId) noexcept
+bool ObjectService::IsFactionCrimeContainer(const uint32_t aFormId) noexcept
 {
     if (aFormId == 0)
         return false;
@@ -97,6 +97,8 @@ bool IsFactionCrimeContainer(const uint32_t aFormId) noexcept
     return false;
 }
 
+namespace
+{
 bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
 {
     if (!apObject)
@@ -115,13 +117,14 @@ bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
     // Never sync faction prisoner belongings or stolen-goods evidence chests (#893):
     // otherwise one arrested player's confiscated inventory overwrites teammates' jail chests.
     if (apObject->baseForm && apObject->baseForm->formType == FormType::Container &&
-        IsFactionCrimeContainer(apObject->formID))
+        ObjectService::IsFactionCrimeContainer(apObject->formID))
     {
         return false;
     }
 
     return true;
 }
+} // namespace
 
 void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
 {

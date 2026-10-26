@@ -3,6 +3,7 @@
 #include <Structs/GameId.h>
 #include <Structs/GridCellCoords.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -21,6 +22,10 @@ constexpr float kExteriorEntryMarginUnits = 384.0f;
 
 // Teleport snap threshold (~29m) matching InterpolationSystem.
 constexpr float kCrossPositionSnapDistSq = 2048.0f * 2048.0f;
+
+// Short grace hold when an already-materialized remote human player crosses a load door right ahead of us,
+// preventing 1-ms Delete() + CreateInCell() FormView churn when party teammates enter/exit doors together.
+constexpr uint64_t kRemotePlayerDoorTransitionGraceMs = 350ULL;
 
 struct WorldOrCell
 {
@@ -141,6 +146,8 @@ struct RemoteViewQuery
     bool IsPlayer{false};
     bool CurrentlyMaterialized{false};
     bool TargetCellLoadedInEngine{false};
+    uint64_t NowSteadyMs{0};
+    uint64_t DematerializeGraceUntilMs{0};
 };
 
 enum class ViewDecision : uint8_t
@@ -186,11 +193,23 @@ enum class ViewDecision : uint8_t
         return dematerializeOrStay();
 
     // Hard topological barrier:
-    // - Exterior entities NEVER materialize or stay alive inside interiors (prevents Mammoth/Giant in bandit forts).
+    // - Exterior entities NEVER materialize inside interiors (prevents Mammoth/Giant in bandit forts).
     // - Interior entities NEVER materialize in exteriors or other interiors.
     // - Entities from another WorldSpace (e.g. Tamriel 0:3C vs WhiterunWorld 0:1A26F) NEVER leak across worldspaces.
+    // Exception: an ALREADY-materialized remote human player crossing a load door holds its existing FormView
+    // for up to 350ms while our local cell remains live, avoiding 1-ms Delete()+CreateInCell() churn when teammates
+    // step through the same door together.
     if (!acObserver.Location.IsSameSpace(acQuery.Location))
+    {
+        if (acQuery.CurrentlyMaterialized &&
+            acQuery.IsPlayer &&
+            acQuery.NowSteadyMs != 0 &&
+            acQuery.NowSteadyMs < acQuery.DematerializeGraceUntilMs)
+        {
+            return ViewDecision::kKeepMaterialized;
+        }
         return dematerializeOrStay();
+    }
 
     // Never materialize or keep an actor in an engine cell whose loadedCellData is null (prevents +0x23D000 crash).
     if (!acQuery.TargetCellLoadedInEngine)
@@ -353,6 +372,44 @@ public:
 
 private:
     std::unordered_map<uint32_t, std::unordered_set<uint32_t>> m_inRangeByObserver{};
+};
+
+// Fixed-capacity ring buffer tracking recently cancelled AssignCharacterRequest cookies so
+// in-flight AssignCharacterResponse packets arriving 1 RTT after cancellation are cleanly absorbed.
+template <size_t Capacity = 64>
+class CancelledCookieTracker
+{
+public:
+    void RecordCancelled(uint32_t aCookie) noexcept
+    {
+        m_entries[m_cursor % Capacity] = aCookie;
+        m_valid[m_cursor % Capacity] = true;
+        ++m_cursor;
+    }
+
+    [[nodiscard]] bool ConsumeIfCancelled(uint32_t aCookie) noexcept
+    {
+        for (size_t i = 0; i < Capacity; ++i)
+        {
+            if (m_valid[i] && m_entries[i] == aCookie)
+            {
+                m_valid[i] = false;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void Clear() noexcept
+    {
+        m_valid.fill(false);
+        m_cursor = 0;
+    }
+
+private:
+    std::array<uint32_t, Capacity> m_entries{};
+    std::array<bool, Capacity> m_valid{};
+    size_t m_cursor{0};
 };
 
 } // namespace CoopWorldView

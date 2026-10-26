@@ -566,6 +566,22 @@ Actor* RfabAdapterService::FindBestStandingPlayerTargetFor(Actor* apAttacker) co
     return pReplacement;
 }
 
+void RfabAdapterService::CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept
+{
+    aOutFormIds.clear();
+    std::lock_guard<std::mutex> lock(m_coopSnapshotMutex);
+    if (!m_coopCombatSnapshot.Connected || !m_coopCombatSnapshot.InParty)
+        return;
+
+    for (const auto& [formId, playerId] : m_coopCombatSnapshot.FormIdToPlayerId)
+    {
+        if (formId == 0 || formId == 0x14)
+            continue;
+        if (m_coopCombatSnapshot.PartyMemberIds.contains(playerId))
+            aOutFormIds.push_back(formId);
+    }
+}
+
 void RfabAdapterService::SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification) noexcept
 {
     if (!m_transport.IsConnected())

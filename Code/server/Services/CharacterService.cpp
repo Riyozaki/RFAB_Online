@@ -292,6 +292,35 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
     }
 }
 
+void CharacterService::ForceResyncObserverAfterRollback(Player* apObserver) const noexcept
+{
+    if (!apObserver)
+        return;
+
+    // Clear stale pre-rollback interest marks for this observer so ReconcileAllEntitiesForObserver
+    // emits fresh CharacterSpawnRequest packets with post-rollback coordinates & health for ALL
+    // in-range NPCs (e.g. surviving Fort Greymoor exterior bandits) and party teammates!
+    m_interestRegistry.RemoveObserver(apObserver->GetId());
+    ReconcileAllEntitiesForObserver(apObserver);
+
+    auto existingPlayersView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
+    for (auto otherEntity : existingPlayersView)
+    {
+        const auto& otherChar = existingPlayersView.get<CharacterComponent>(otherEntity);
+        const auto& otherOwner = existingPlayersView.get<OwnerComponent>(otherEntity);
+        if (!otherChar.IsPlayer() || otherOwner.GetOwner() == apObserver)
+            continue;
+
+        const uint32_t otherServerId = World::ToInteger(otherEntity);
+        if (!m_interestRegistry.IsMarkedInRange(apObserver->GetId(), otherServerId))
+        {
+            CharacterSpawnRequest spawnMessage{};
+            Serialize(m_world, otherEntity, &spawnMessage);
+            apObserver->Send(spawnMessage);
+        }
+    }
+}
+
 void CharacterService::OnUpdate(const UpdateEvent&) const noexcept
 {
     ProcessFactionsChanges();
@@ -955,14 +984,42 @@ void CharacterService::OnFactionsChanges(const PacketEvent<RequestFactionsChange
 
 void CharacterService::OnMountRequest(const PacketEvent<MountRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     auto& message = acMessage.Packet;
+
+    const entt::entity riderEntity = static_cast<entt::entity>(message.RiderId);
+    const entt::entity mountEntity = static_cast<entt::entity>(message.MountId);
+    if (!m_world.valid(riderEntity) || !m_world.valid(mountEntity))
+        return;
+
+    // Verify that the sender actually owns the rider entity, then atomically transfer mount ownership
+    // to the rider so horse movement updates belong to the player physically riding the mount!
+    const auto* pRiderOwner = m_world.try_get<OwnerComponent>(riderEntity);
+    if (pRiderOwner && pRiderOwner->GetOwner() != acMessage.pPlayer)
+        return;
+
+    if (auto* pMountOwner = m_world.try_get<OwnerComponent>(mountEntity))
+    {
+        const auto* pMountChar = m_world.try_get<CharacterComponent>(mountEntity);
+        if (pMountChar && !pMountChar->IsPlayer() && pMountOwner->GetOwner() != acMessage.pPlayer)
+        {
+            const ActorData mountData = BuildActorData(mountEntity);
+            TransferOwnership(acMessage.pPlayer, message.MountId, mountData);
+
+            NotifyOwnershipTransfer grant{};
+            grant.ServerId = message.MountId;
+            grant.OwnershipEpoch = pMountOwner->Epoch;
+            acMessage.pPlayer->Send(grant);
+        }
+    }
 
     NotifyMount notify;
     notify.RiderId = message.RiderId;
     notify.MountId = message.MountId;
 
-    const entt::entity cEntity = static_cast<entt::entity>(message.MountId);
-    if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.GetSender()))
+    if (!GameServer::Get()->SendToPlayersInRange(notify, mountEntity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }
 

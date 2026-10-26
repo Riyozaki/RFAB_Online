@@ -80,7 +80,50 @@ def main() -> int:
     assert "bCustomMenu = true" in patched_souls
     assert "fSlowMotionMultiplier = 1.000000" in patched_souls
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 regression checks passed!")
+    # 6. v2.0.1 Pillar 1: GamePtr<T> uninitialized m_pPointer / move-assignment Release() fix (all 4 0x65D2CB CTDs)
+    primitives_h = (ROOT / "Code" / "client" / "Games" / "Primitives.h").read_text(encoding="utf-8")
+    assert "T* m_pPointer{nullptr};" in primitives_h
+    assert "GamePtr(std::nullptr_t) noexcept" in primitives_h
+    assert "m_pPointer(aRhs.m_pPointer)" in primitives_h
+
+    # 7. v2.0.1 Pillar 2: Fort Greymoor post-wipe AI & WorldView rollback synchronization
+    downed_cpp = (ROOT / "Code" / "client" / "Services" / "DownedStateService.cpp").read_text(encoding="utf-8")
+    coord_save_cpp = (ROOT / "Code" / "client" / "Services" / "CoordinatedSaveService.cpp").read_text(encoding="utf-8")
+    snap_cpp = (ROOT / "Code" / "server" / "Services" / "SaveSnapshotService.cpp").read_text(encoding="utf-8")
+    srv_char_cpp = (ROOT / "Code" / "server" / "Services" / "CharacterService.cpp").read_text(encoding="utf-8")
+    assert "RestoreLivingCombatTargetability" in downed_cpp
+    assert "NormalizePostReviveActorState" in downed_cpp
+    assert "SchedulePostReviveHeadAndCameraSettle" in coord_save_cpp
+    assert "NotifyInSessionRollbackApplied" in coord_save_cpp
+    assert "kNpcSpatialExtMagic" in snap_cpp
+    assert "ForceResyncObserverAfterRollback" in snap_cpp
+    assert "ForceResyncObserverAfterRollback" in srv_char_cpp
+
+    # 8. v2.0.1 Pillar 3: Multi-threaded engine hook isolation (zero raw EnTT views on worker threads)
+    combat_ctrl_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Combat" / "CombatController.cpp").read_text(encoding="utf-8")
+    magic_target_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Magic" / "MagicTarget.cpp").read_text(encoding="utf-8")
+    refr_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "TESObjectREFR.cpp").read_text(encoding="utf-8")
+    spell_evt_h = (ROOT / "Code" / "client" / "Events" / "SpellCastEvent.h").read_text(encoding="utf-8")
+    assert "HasCombatTargetLock()" in combat_ctrl_cpp
+    assert "GetCombatService()" not in combat_ctrl_cpp
+    assert "CollectPartyPeerActorFormIds" in magic_target_cpp
+    assert "world.view" not in magic_target_cpp
+    assert "IsFactionCrimeContainer" in refr_cpp
+    assert "ActorMagicCaster* pCaster" not in spell_evt_h and "CasterFormId" in spell_evt_h
+
+    # 9. v2.0.1 Pillars 4-8: Dynamic crime factions, 0x3000802 FaceGen flags, crash unwinder, CEF overlay
+    player_char_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "PlayerCharacter.cpp").read_text(encoding="utf-8")
+    cli_char_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterService.cpp").read_text(encoding="utf-8")
+    main_cpp = (ROOT / "Code" / "client" / "main.cpp").read_text(encoding="utf-8")
+    overlay_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "OverlayService.cpp").read_text(encoding="utf-8")
+    assert "pModManager->factions" in player_char_cpp
+    assert "0x3000802u" in cli_char_cpp
+    assert "CleanupUnassignedActorEntity" in cli_char_cpp
+    assert "RtlVirtualUnwind" in main_cpp
+    assert "RFAB_Online_Crash.log" in main_cpp
+    assert "CoopOverlayApp" in overlay_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 architectural regression checks passed!")
     return 0
 
 

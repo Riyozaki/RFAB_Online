@@ -37,20 +37,10 @@ struct ScopedCoopPartyTeammateFlags
             return;
 
         auto& world = World::Get();
-        if (!world.GetPartyService().IsInParty())
-            return;
-
-        auto playerView = world.view<FormIdComponent, PlayerComponent>();
-        for (auto entity : playerView)
+        TiltedPhoques::Vector<uint32_t> peerFormIds;
+        world.GetRfabAdapterService().CollectPartyPeerActorFormIds(peerFormIds);
+        for (const uint32_t formId : peerFormIds)
         {
-            const uint32_t formId = playerView.get<FormIdComponent>(entity).Id;
-            if (formId == 0 || formId == 0x14)
-                continue;
-
-            const uint32_t peerPlayerId = playerView.get<PlayerComponent>(entity).Id;
-            if (!world.GetPartyService().IsPlayerInParty(peerPlayerId))
-                continue;
-
             Actor* pPeerActor = Cast<Actor>(TESForm::GetById(formId));
             if (!pPeerActor || (pPeerActor->flags1 & Actor::ActorBoolBits::kPlayerTeammate) != 0)
                 continue;

@@ -136,19 +136,27 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
 
 void PlayerCharacter::PayCrimeGoldToAllFactions() noexcept
 {
-    // Yes, yes, this isn't great, but there's no "pay fines everywhere" function
-    const uint32_t crimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816e, 0x2816C, 0x2816B, 0x267EA, 0x2816F, 0x4018279};
-
-    for (uint32_t crimeFactionId : crimeFactionIds)
+    // Dynamically iterate all loaded crime-tracking factions in ModManager (kTrackCrime == 1 << 6)
+    // so DLC / Requiem / RFAB load-order differences never dereference wrong FormID prefixes or miss crime factions.
+    constexpr uint32_t kFactionFlagTrackCrime = (1u << 6);
+    if (auto* pModManager = ModManager::Get(); pModManager && pModManager->factions.length > 0)
     {
-        TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId));
-        if (!pCrimeFaction)
+        for (uint32_t i = 0; i < pModManager->factions.length; ++i)
         {
-            spdlog::error("This isn't a crime faction! {:X}", crimeFactionId);
-            continue;
-        }
+            TESFaction* pFaction = pModManager->factions[i];
+            if (!pFaction || (pFaction->factionFlags & kFactionFlagTrackCrime) == 0)
+                continue;
 
-        PayFine(pCrimeFaction, false, false);
+            PayFine(pFaction, false, false);
+        }
+        return;
+    }
+
+    const uint32_t vanillaCrimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816E, 0x2816C, 0x2816B, 0x267EA, 0x2816F};
+    for (uint32_t crimeFactionId : vanillaCrimeFactionIds)
+    {
+        if (TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId)))
+            PayFine(pCrimeFaction, false, false);
     }
 }
 

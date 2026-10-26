@@ -42,6 +42,7 @@ struct CharacterService
 
     void ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept;
     void ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept;
+    void ForceResyncObserverAfterRollback(Player* apObserver) const noexcept;
 
 protected:
     void OnUpdate(const UpdateEvent& acEvent) const noexcept;

@@ -7,6 +7,7 @@
 #include <Events/UpdateEvent.h>
 #include <GameServer.h>
 #include <Messages/CoordinatedSaveAck.h>
+#include <Messages/NotifyActorTeleport.h>
 #include <Messages/NotifyActorValueChanges.h>
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/NotifyCommitSave.h>
@@ -277,6 +278,36 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
             Serialization::WriteFloat(writer, snap.Calendar.Year);
         }
 
+        // Trailing v2.1+ NPC spatial extension block (100% backwards-compatible with v2.0 checkpoint files!)
+        constexpr uint64_t kNpcSpatialExtMagic = 0x53504154323031ULL;
+        Serialization::WriteVarInt(writer, kNpcSpatialExtMagic);
+        Serialization::WriteVarInt(writer, m_snapshots.size());
+        for (const auto& snap : m_snapshots)
+        {
+            size_t spatialCount = 0;
+            for (const auto& [_, aRec] : snap.TrackedActors)
+            {
+                if (aRec.HasSpatialState)
+                    ++spatialCount;
+            }
+            Serialization::WriteVarInt(writer, spatialCount);
+            for (const auto& [entId, aRec] : snap.TrackedActors)
+            {
+                if (!aRec.HasSpatialState)
+                    continue;
+                Serialization::WriteVarInt(writer, entId);
+                aRec.CellId.Serialize(writer);
+                aRec.WorldSpaceId.Serialize(writer);
+                aRec.CenterCoords.Serialize(writer);
+                Serialization::WriteFloat(writer, aRec.Position.x);
+                Serialization::WriteFloat(writer, aRec.Position.y);
+                Serialization::WriteFloat(writer, aRec.Position.z);
+                Serialization::WriteFloat(writer, aRec.Rotation.x);
+                Serialization::WriteFloat(writer, aRec.Rotation.y);
+                Serialization::WriteFloat(writer, aRec.Rotation.z);
+            }
+        }
+
         return CoopCheckpoint::WriteAtomicCheckpointFile(acPath, rawBuffer.GetWriteData(), writer.Size());
     }
     catch (...)
@@ -370,6 +401,50 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
             snap.Calendar.Year = Serialization::ReadFloat(reader);
 
             loadedSnapshots.push_back(std::move(snap));
+        }
+
+        if (!reader.Eof())
+        {
+            constexpr uint64_t kNpcSpatialExtMagic = 0x53504154323031ULL;
+            const uint64_t extMagic = Serialization::ReadVarInt(reader);
+            if (extMagic == kNpcSpatialExtMagic)
+            {
+                const uint64_t extSnapCount = std::min<uint64_t>(Serialization::ReadVarInt(reader), loadedSnapshots.size());
+                for (uint64_t sIdx = 0; sIdx < extSnapCount; ++sIdx)
+                {
+                    auto& snap = loadedSnapshots[static_cast<size_t>(sIdx)];
+                    const uint64_t spatialCount = std::min<uint64_t>(Serialization::ReadVarInt(reader), 65536ULL);
+                    for (uint64_t i = 0; i < spatialCount; ++i)
+                    {
+                        const uint32_t entId = static_cast<uint32_t>(Serialization::ReadVarInt(reader));
+                        GameId cellId{};
+                        GameId wsId{};
+                        GridCellCoords coords{};
+                        cellId.Deserialize(reader);
+                        wsId.Deserialize(reader);
+                        coords.Deserialize(reader);
+                        glm::vec3 pos{};
+                        glm::vec3 rot{};
+                        pos.x = Serialization::ReadFloat(reader);
+                        pos.y = Serialization::ReadFloat(reader);
+                        pos.z = Serialization::ReadFloat(reader);
+                        rot.x = Serialization::ReadFloat(reader);
+                        rot.y = Serialization::ReadFloat(reader);
+                        rot.z = Serialization::ReadFloat(reader);
+
+                        auto actorIt = snap.TrackedActors.find(entId);
+                        if (actorIt != snap.TrackedActors.end())
+                        {
+                            actorIt->second.HasSpatialState = true;
+                            actorIt->second.CellId = cellId;
+                            actorIt->second.WorldSpaceId = wsId;
+                            actorIt->second.CenterCoords = coords;
+                            actorIt->second.Position = pos;
+                            actorIt->second.Rotation = rot;
+                        }
+                    }
+                }
+            }
         }
 
         m_coordinator.RestorePersistedState(
@@ -570,6 +645,17 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
                 rec.MaxHealth = maxIt->second;
             }
         }
+        const auto* pMov = m_world.try_get<MovementComponent>(entity);
+        const auto* pCell = m_world.try_get<CellIdComponent>(entity);
+        if (pMov && pCell && pCell->IsValid())
+        {
+            rec.HasSpatialState = true;
+            rec.CellId = pCell->Cell;
+            rec.WorldSpaceId = pCell->WorldSpaceId;
+            rec.CenterCoords = pCell->CenterCoords;
+            rec.Position = pMov->Position;
+            rec.Rotation = pMov->Rotation;
+        }
         snap.TrackedActors[World::ToInteger(entity)] = rec;
     }
 
@@ -683,7 +769,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             pPlayer->GetQuestLogComponent().QuestContent = acSnapshot.SharedPartyQuestLog;
     }
 
-    // 3. Restore tracked NPC/boss alive/dead state & health on the server + broadcast live resync for seamless rollback!
+    // 3. Restore tracked NPC/boss alive/dead state, spatial coordinates & health on the server + broadcast live resync!
     for (const auto& [serverEntityId, savedState] : acSnapshot.TrackedActors)
     {
         const entt::entity entity = static_cast<entt::entity>(serverEntityId);
@@ -695,6 +781,32 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         {
             deathChanged = (pChar->IsDead() != savedState.IsDead);
             pChar->SetDead(savedState.IsDead);
+        }
+
+        bool spatialChanged = false;
+        if (savedState.HasSpatialState)
+        {
+            if (auto* pMov = m_world.try_get<MovementComponent>(entity))
+            {
+                const float dx = pMov->Position.x - savedState.Position.x;
+                const float dy = pMov->Position.y - savedState.Position.y;
+                const float dz = pMov->Position.z - savedState.Position.z;
+                if ((dx * dx + dy * dy + dz * dz) > (64.0f * 64.0f))
+                    spatialChanged = true;
+
+                pMov->Position = savedState.Position;
+                pMov->Rotation = savedState.Rotation;
+                pMov->Sent = false;
+            }
+            if (auto* pCell = m_world.try_get<CellIdComponent>(entity))
+            {
+                if (pCell->Cell != savedState.CellId || pCell->WorldSpaceId != savedState.WorldSpaceId)
+                    spatialChanged = true;
+
+                pCell->Cell = savedState.CellId;
+                pCell->WorldSpaceId = savedState.WorldSpaceId;
+                pCell->CenterCoords = savedState.CenterCoords;
+            }
         }
 
         bool hpChanged = false;
@@ -716,7 +828,21 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             deathNotify.IsDead = savedState.IsDead;
             if (auto* pServer = GameServer::Get())
                 pServer->SendToPlayers(deathNotify, nullptr);
-            m_world.GetCharacterService().ReconcileEntityForAllObservers(entity);
+        }
+
+        if (spatialChanged && !savedState.IsDead)
+        {
+            if (const auto* pFormComp = m_world.try_get<FormIdComponent>(entity);
+                pFormComp && static_cast<bool>(pFormComp->Id) && pFormComp->Id.ModId != 0xFFFFFFFFu)
+            {
+                NotifyActorTeleport teleportNotify{};
+                teleportNotify.FormId = pFormComp->Id;
+                teleportNotify.WorldSpaceId = savedState.WorldSpaceId;
+                teleportNotify.CellId = savedState.CellId;
+                teleportNotify.Position = savedState.Position;
+                if (auto* pServer = GameServer::Get())
+                    pServer->SendToPlayers(teleportNotify, nullptr);
+            }
         }
 
         if (hpChanged && !savedState.IsDead)
@@ -771,7 +897,9 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         m_snapshots.pop_back();
     (void)SaveCheckpointsToDisk(GetDefaultCheckpointStorePath());
 
-    // 7. Restore each player's server state & dispatch tailored NotifyExecuteLoad (seamless in-session on PartyWipe!)
+    // 7a. Restore EVERY player's server state & dispatch NotifyExecuteLoad FIRST so clients teleport to
+    // checkpoint coordinates and flush pre-rollback interpolation BEFORE receiving fresh observer spawns!
+    std::vector<Player*> inSessionPlayers;
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
         if (!pPlayer)
@@ -808,8 +936,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
                     if (auto* pInv = m_world.try_get<InventoryComponent>(charEntity))
                         pInv->Content = pPlayerState->CurrentInventory;
                 }
-                m_world.GetCharacterService().ReconcileEntityForAllObservers(charEntity);
-                m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
+                inSessionPlayers.push_back(pPlayer);
             }
         }
 
@@ -842,6 +969,14 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
                 : String("RFAB Online: Синхронная загрузка чекпоинта группы"));
 
         pPlayer->Send(loadCmd);
+    }
+
+    // 7b. Now that ALL players' checkpoint CellIdComponents & MovementComponents are updated and NotifyExecuteLoad
+    // is ahead in each peer's reliable stream, force full observer interest resync so surviving NPCs & peers
+    // re-replicate with authoritative post-rollback coordinates!
+    for (Player* pPlayer : inSessionPlayers)
+    {
+        m_world.GetCharacterService().ForceResyncObserverAfterRollback(pPlayer);
     }
 
     // Broadcast monotonic WorldGeneration marker & authoritative RFAB globals
@@ -910,6 +1045,7 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         }
     }
 
+    std::vector<Player*> baselinePlayers;
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
         if (!pPlayer)
@@ -938,8 +1074,7 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
                     if (auto* pInv = m_world.try_get<InventoryComponent>(charEntity))
                         pInv->Content = pBaseline->CurrentInventory;
                 }
-                m_world.GetCharacterService().ReconcileEntityForAllObservers(charEntity);
-                m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
+                baselinePlayers.push_back(pPlayer);
             }
         }
 
@@ -967,6 +1102,11 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         }
         fallbackLoad.Message = String("RFAB Online: Отряд пал — возврат к стартовой точке сессии");
         pPlayer->Send(fallbackLoad);
+    }
+
+    for (Player* pPlayer : baselinePlayers)
+    {
+        m_world.GetCharacterService().ForceResyncObserverAfterRollback(pPlayer);
     }
 
     if (auto* pServer = GameServer::Get())

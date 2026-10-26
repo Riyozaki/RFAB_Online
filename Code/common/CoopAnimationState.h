@@ -12,7 +12,12 @@ namespace CoopAnimationState
 constexpr uint32_t kSitSleepShift = 14u;
 constexpr uint32_t kSitSleepMask = 0xFu << kSitSleepShift;      // bits 14..17 (0 = kNormal, 1..4 = Sit, 5..8 = Sleep)
 constexpr uint32_t kLifeStateShift = 21u;
-constexpr uint32_t kLifeStateMask = 0xFu << kLifeStateShift;    // bits 21..24 (8 = kBleedout)
+constexpr uint32_t kLifeStateMask = 0xFu << kLifeStateShift;    // bits 21..24 (0 = kAlive, 1 = kDying, 2 = kDead, 7 = kEssentialDown, 8 = kBleedout)
+constexpr uint32_t kLifeStateAlive = 0u;
+constexpr uint32_t kLifeStateDying = 1u;
+constexpr uint32_t kLifeStateDead = 2u;
+constexpr uint32_t kLifeStateEssentialDown = 7u;
+constexpr uint32_t kLifeStateBleedout = 8u;
 constexpr uint32_t kKnockStateShift = 25u;
 constexpr uint32_t kKnockStateMask = 0x7u << kKnockStateShift;  // bits 25..27
 constexpr uint32_t kMeleeAttackShift = 28u;
@@ -22,6 +27,35 @@ constexpr uint32_t kWeaponStateShift = 5u;
 constexpr uint32_t kWeaponStateMask = 0x7u << kWeaponStateShift; // flags2 bits 5..7 (3 = Drawn)
 constexpr uint32_t kRecoilMask = 0x3u << 10u;                    // flags2 bits 10..11
 constexpr uint32_t kStaggeredMask = 0x1u << 13u;                 // flags2 bit 13
+
+[[nodiscard]] constexpr uint32_t GetLifeState(uint32_t aFlags1) noexcept
+{
+    return (aFlags1 & kLifeStateMask) >> kLifeStateShift;
+}
+
+// Skyrim's CombatTargetSelector refuses to target actors in kDying (1), kEssentialDown (7), or kBleedout (8).
+// Co-op players run with SetEssentialEx(true) + SetNoBleedoutRecovery(true), so lethal hits place them into
+// kEssentialDown (7) or kBleedout (8) (or briefly kDying (1)). All three must be recognized and cleared on revive/rollback!
+[[nodiscard]] constexpr bool IsDownedOrBleedoutLifeState(uint32_t aFlags1) noexcept
+{
+    const uint32_t lifeState = GetLifeState(aFlags1);
+    return lifeState == kLifeStateDying ||
+           lifeState == kLifeStateEssentialDown ||
+           lifeState == kLifeStateBleedout;
+}
+
+[[nodiscard]] constexpr bool NormalizePostReviveActorState(uint32_t& aInOutFlags1, uint32_t& aInOutFlags2) noexcept
+{
+    const bool wasDownedLifeState = IsDownedOrBleedoutLifeState(aInOutFlags1);
+    const bool hadKnockOrStagger = (aInOutFlags1 & kKnockStateMask) != 0u ||
+                                   (aInOutFlags2 & (kRecoilMask | kStaggeredMask)) != 0u;
+    if (wasDownedLifeState)
+        aInOutFlags1 &= ~kLifeStateMask; // kAlive == 0
+
+    aInOutFlags1 &= ~kKnockStateMask;
+    aInOutFlags2 &= ~(kRecoilMask | kStaggeredMask);
+    return wasDownedLifeState || hadKnockOrStagger;
+}
 
 [[nodiscard]] constexpr uint32_t GetSitSleepState(uint32_t aFlags1) noexcept
 {

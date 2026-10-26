@@ -660,10 +660,12 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
     if (!pPlayer)
         return;
 
-    // 1. Clear downed/bleedout posture, drop active combat, and grant post-rollback invulnerability + full recovery
+    // 1. Preserve 1st-person POV flag BEFORE ResetAllStates(), then clear downed/bleedout posture & grant recovery
+    auto& downedSvc = m_world.GetDownedStateService();
+    const bool wasFirstPersonBeforeDowned = downedSvc.ConsumeSavedFirstPersonBeforeDowned();
     const float restoreFrac = std::clamp(acMessage.RestoreHealthFraction, 0.30f, 1.0f);
-    m_world.GetDownedStateService().ResetAllStates();
-    m_world.GetDownedStateService().ApplyAuthoritativeRevive(restoreFrac, 5.0f, false);
+    downedSvc.ResetAllStates();
+    downedSvc.ApplyAuthoritativeRevive(restoreFrac, 5.0f, false);
 
     if (pPlayer->IsInCombat())
         pPlayer->StopCombat();
@@ -722,12 +724,16 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
         pPlayer->ResetTeleportPhysics(targetPos.z);
     }
 
-    // Re-restore full HP/Stamina/Magicka AFTER SetActorInventory so Fortify-Health gear scales cleanly!
+    // 4. Re-restore full HP AFTER SetActorInventory, re-normalize lifeState + wake nearby destination NPC AI packages,
+    // schedule 2-frame unculled FaceGen QueueUpdate() + 1st-person POV restore, and flush stale interpolation views!
     {
-        DownedStateService::ScopedReviveHealAllowance allowHeal(m_world.GetDownedStateService().GetAuthorizedHealFlag());
+        DownedStateService::ScopedReviveHealAllowance allowHeal(downedSvc.GetAuthorizedHealFlag());
         const float maxHp = std::max(1.0f, pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth));
         pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, maxHp * restoreFrac);
     }
+    downedSvc.RestoreLivingCombatTargetability(pPlayer, true);
+    downedSvc.SchedulePostReviveHeadAndCameraSettle(wasFirstPersonBeforeDowned);
+    m_world.GetCharacterService().NotifyInSessionRollbackApplied();
 
     spdlog::info(
         "[RFAB SaveLoad] Completed seamless in-session checkpoint rollback (Epoch={}, PartyWipe={}, Transform={})",

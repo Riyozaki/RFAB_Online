@@ -27,6 +27,7 @@ CombatService::CombatService(World& aWorld, TransportService& aTransport, entt::
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CombatService::OnUpdate>(this);
     m_hitConnection = aDispatcher.sink<HitEvent>().connect<&CombatService::OnHitEvent>(this);
     m_localComponentRemoved = m_world.on_destroy<LocalComponent>().connect<&CombatService::OnLocalComponentRemoved>(this);
+    m_combatComponentRemoved = m_world.on_destroy<CombatComponent>().connect<&CombatService::OnCombatComponentRemoved>(this);
     m_projectileLaunchedConnection = aDispatcher.sink<ProjectileLaunchedEvent>().connect<&CombatService::OnProjectileLaunchedEvent>(this);
     m_projectileLaunchConnection = aDispatcher.sink<NotifyProjectileLaunch>().connect<&CombatService::OnNotifyProjectileLaunch>(this);
 }
@@ -39,6 +40,18 @@ void CombatService::OnUpdate(const UpdateEvent& acEvent) const noexcept
 void CombatService::OnLocalComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
 {
     m_world.remove<CombatComponent>(aEntity);
+}
+
+void CombatService::OnCombatComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept
+{
+    if (const auto* pFormComp = aRegistry.try_get<FormIdComponent>(aEntity); pFormComp && pFormComp->Id != 0)
+    {
+        if (Actor* pActor = Cast<Actor>(TESForm::GetById(pFormComp->Id)))
+        {
+            if (auto* pExt = pActor->GetExtension())
+                pExt->SetCombatTargetLock(false);
+        }
+    }
 }
 
 void CombatService::OnProjectileLaunchedEvent(const ProjectileLaunchedEvent& acEvent) const noexcept
@@ -286,6 +299,8 @@ void CombatService::OnHitEvent(const HitEvent& acEvent) const noexcept
 
     auto& combatComp = m_world.emplace_or_replace<CombatComponent>(*hitteeIt, acEvent.HitterId);
     combatComp.Timer = 4.0f;
+    if (auto* pExt = pHittee->GetExtension())
+        pExt->SetCombatTargetLock(true);
 
     pHittee->SetCombatTargetEx(pHitter);
     if (!pHittee->IsInCombat())

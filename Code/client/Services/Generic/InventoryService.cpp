@@ -77,20 +77,20 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
         return;
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
-    if (!serverIdRes.has_value())
-    {
-        spdlog::error(
-            __FUNCTION__ ": failed to find server id, target form id: {:X}, isLeader: {}, item id: {:X}, count: {}", acEvent.FormId,
-            isLeader, acEvent.Item.BaseId.LogFormat(), acEvent.Item.Count);
-        return;
-    }
-
     if (m_world.try_get<WaitingForAssignmentComponent>(*iter))
     {
         spdlog::debug(
-            __FUNCTION__ ": WaitingForAssignment, don't send inventory changes actorId: {:X}, serverId {:X}, isLeader: {}, item id: {:X}",
-            acEvent.FormId, serverIdRes.value(), isLeader, acEvent.Item.BaseId.LogFormat());
+            __FUNCTION__ ": WaitingForAssignment, don't send inventory changes actorId: {:X}, isLeader: {}, item id: {:X}",
+            acEvent.FormId, isLeader, acEvent.Item.BaseId.LogFormat());
+        return;
+    }
+
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
+    if (!serverIdRes.has_value())
+    {
+        spdlog::debug(
+            __FUNCTION__ ": skipping inventory change for unassigned form id: {:X}, isLeader: {}, item id: {:X}, count: {}", acEvent.FormId,
+            isLeader, acEvent.Item.BaseId.LogFormat(), acEvent.Item.Count);
         return;
     }
 
@@ -128,22 +128,22 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     const char* pActorBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
-    if (!serverIdRes.has_value())
-    {
-        spdlog::error(
-            __FUNCTION__ ": failed to find server id, actorId: {:X}, isLeader: {}, item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
-            acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId, pActorBaseName);
-        return;
-    }
-
     if (m_world.try_get<WaitingForAssignmentComponent>(*iter))
     {
         spdlog::debug(
-            __FUNCTION__ ": WaitingForAssignment, don't send equipment changes actorId: {:X}, serverId {:X}, isLeader: {}, "
+            __FUNCTION__ ": WaitingForAssignment, don't send equipment changes actorId: {:X}, isLeader: {}, "
                          "item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
-            acEvent.ActorId, serverIdRes.value(), isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId,
+            acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId,
             pActorBaseName);
+        return;
+    }
+
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
+    if (!serverIdRes.has_value())
+    {
+        spdlog::debug(
+            __FUNCTION__ ": skipping equipment change on unassigned actorId: {:X}, isLeader: {}, item id: {:X}, isAmmo: {}, unequip: {}, slot: {:X}, name: {}",
+            acEvent.ActorId, isLeader, acEvent.ItemId, acEvent.IsAmmo, acEvent.Unequip, acEvent.EquipSlotId, pActorBaseName);
         return;
     }
 
@@ -421,9 +421,11 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
 
         // Dress both local and remote humanoid NPCs whose body outfit was stripped during initial sync.
         TESNPC* pBase = Cast<TESNPC>(pActor->baseForm);
-        if (!pActor->IsWearingBodyPiece() && pBase)
+        if (!pActor->IsWearingBodyPiece() && pBase && pBase->outfits[0] != nullptr)
         {
-            spdlog::warn(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pBaseName);
+            spdlog::debug(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pBaseName);
+            ScopedEquipOverride equipGuard;
+            ScopedInventoryOverride invGuard;
             pActor->EquipOutfit();
         }
     }

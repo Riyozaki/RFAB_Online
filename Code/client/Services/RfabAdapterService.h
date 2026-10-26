@@ -62,6 +62,7 @@ public:
     void NotifyPartyLeadershipChanged() noexcept;
     void RefreshCoopCombatSnapshot() noexcept;
     [[nodiscard]] Actor* FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
+    void CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept;
     [[nodiscard]] bool IsBossActor(Actor* apActor) const noexcept;
     void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;
     void TriggerContextualTacticalPing(bool aForceDanger, const std::string& acCustomLabel = "") noexcept;

@@ -256,6 +256,12 @@ public:
         float CurrentHealth{};
         float MaxHealth{};
         bool IsDead{false};
+        bool HasSpatialState{false};
+        GameId CellId{};
+        GameId WorldSpaceId{};
+        GridCellCoords CenterCoords{};
+        glm::vec3 Position{0.0f, 0.0f, 0.0f};
+        glm::vec3 Rotation{0.0f, 0.0f, 0.0f};
     };
 
     struct PlayerStateRecord

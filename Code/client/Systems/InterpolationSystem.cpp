@@ -7,6 +7,11 @@
 #include <Misc/MiddleProcess.h>
 
 #include <Games/References.h>
+#include <Games/TES.h>
+#include <Forms/TESObjectCELL.h>
+#include <Forms/TESWorldSpace.h>
+#include <PlayerCharacter.h>
+#include <Structs/GridCellCoords.h>
 #include <World.h>
 
 void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick, const RemoteAnimationComponent* apAnimComponent) noexcept
@@ -71,7 +76,32 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     if (!apActor)
         return;
 
-    apActor->ForcePosition(position);
+    bool movedViaCellTransfer = false;
+    if ((apActor->formID & 0xFF000000u) != 0xFF000000u && apActor->formID != 0x14)
+    {
+        PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+        TESWorldSpace* pLocalWs = pLocalPlayer ? pLocalPlayer->GetWorldSpace() : nullptr;
+        const TES* pTes = TES::Get();
+        ModManager* pModMgr = ModManager::Get();
+        if (pLocalWs && pTes && pModMgr && apActor->GetWorldSpace() == pLocalWs)
+        {
+            const GridCellCoords destGrid = GridCellCoords::CalculateGridCellCoords(position.x, position.y);
+            const GridCellCoords centerGrid(pTes->centerGridX, pTes->centerGridY);
+            if (GridCellCoords::IsCellInGridCell(destGrid, centerGrid, false))
+            {
+                TESObjectCELL* pDestCell = pModMgr->GetCellFromCoordinates(destGrid.X, destGrid.Y, pLocalWs, false);
+                if (pDestCell && pDestCell->loadedCellData &&
+                    (stepDistSq > kTeleportSnapThresholdSq || apActor->parentCell != pDestCell || !apActor->GetNiNode()))
+                {
+                    apActor->MoveTo(pDestCell, position);
+                    movedViaCellTransfer = true;
+                }
+            }
+        }
+    }
+
+    if (!movedViaCellTransfer)
+        apActor->ForcePosition(position);
 
     // Causal + smooth animation variable blending:
     // - Use discrete Booleans & Integers from LastRanAction when an ActionEvent ran more recently than first.Tick

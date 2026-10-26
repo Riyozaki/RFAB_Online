@@ -134,6 +134,12 @@ void FlushDeferredDialogueDeletes() noexcept
     }
 }
 
+uint64_t NowSteadyWorldViewMs() noexcept
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 void PurgeDynamicActorCleanly(Actor* apActor) noexcept
 {
     if (!apActor || apActor->formID == 0x14)
@@ -160,8 +166,8 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
     if ((apActor->formID & 0xFF000000u) == 0xFF000000u)
     {
         // SkyMP worldCleanerService guard: calling Delete() on a dynamic Actor while Dialogue Menu is open
-        // can crash MenuTopicManager in SkyrimSE.exe. Defer the final Delete() until dialogue closes.
-        if (IsDialogueMenuCurrentlyOpen())
+        // or while the actor is mid-voice-line can crash MenuTopicManager / BSSoundHandle. Defer cleanly.
+        if (IsDialogueMenuCurrentlyOpen() || apActor->IsTalking())
         {
             auto& deferred = GetDeferredDialogueDeletes();
             if (std::find(deferred.begin(), deferred.end(), apActor->formID) == deferred.end())
@@ -967,6 +973,25 @@ void CharacterService::NotifySaveLoadReset() noexcept
     m_lastAppliedRemoteXpAmount = 0;
     m_creditToRefundOnLocalQuestXp = 0;
     m_ownershipEpochTracker.Clear();
+    m_cancelledCookies.Clear();
+    m_pendingRemoteMounts.clear();
+    m_pendingLocalMount = {};
+}
+
+void CharacterService::NotifyInSessionRollbackApplied() noexcept
+{
+    auto interpView = m_world.view<InterpolationComponent>();
+    for (const entt::entity entity : interpView)
+    {
+        auto& interp = interpView.get<InterpolationComponent>(entity);
+        interp.TimePoints.clear();
+        interp.Clock.Reset();
+    }
+
+    for (auto it = m_remoteModels.begin(); it != m_remoteModels.end(); ++it)
+        it.value().DematerializeGraceUntilMs = 0;
+
+    ReconcileRemoteWorldViews();
 }
 
 void CharacterService::NotifyRemoteQuestStageApplied() noexcept
@@ -990,7 +1015,10 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
     if (itor == std::end(view))
     {
-        spdlog::warn("Never found requested cookie: {}", acMessage.Cookie);
+        if (m_cancelledCookies.ConsumeIfCancelled(acMessage.Cookie))
+            spdlog::debug("Ignored AssignCharacterResponse for cancelled cookie {:X} (server id {:X})", acMessage.Cookie, acMessage.ServerId);
+        else
+            spdlog::warn("Never found requested cookie: {}", acMessage.Cookie);
         return;
     }
 
@@ -1267,10 +1295,16 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     // If FormView is already materialized, reconcile in-place without Delete()/Create() churn!
     if (const auto* pFormComp = m_world.try_get<FormIdComponent>(entity))
     {
+        const uint64_t nowMs = NowSteadyWorldViewMs();
+        if (acMessage.IsPlayer && hadPreviousLoc && !previousLoc.IsSameSpace(incomingLoc))
+            model.DematerializeGraceUntilMs = nowMs + CoopWorldView::kRemotePlayerDoorTransitionGraceMs;
+
         Actor* pLiveActor = Cast<Actor>(TESForm::GetById(pFormComp->Id));
         const auto obs = BuildLocalObserverState();
         TESWorldSpace* pTargetWs = nullptr;
-        TESObjectCELL* pTargetCell = obs.EngineReady ? ResolveCompatibleTargetCell(model.Location, pTargetWs) : nullptr;
+        TESObjectCELL* pTargetCell = obs.EngineReady
+            ? ResolveCompatibleTargetCell(model.Location, pTargetWs, acMessage.IsDragon)
+            : nullptr;
 
         CoopWorldView::RemoteViewQuery query{};
         query.Location = model.Location;
@@ -1280,6 +1314,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         query.IsPlayer = acMessage.IsPlayer;
         query.CurrentlyMaterialized = (pLiveActor != nullptr);
         query.TargetCellLoadedInEngine = (pTargetCell != nullptr);
+        query.NowSteadyMs = nowMs;
+        query.DematerializeGraceUntilMs = model.DematerializeGraceUntilMs;
 
         if (!pLiveActor || CoopWorldView::EvaluateViewDecision(obs, query) != CoopWorldView::ViewDecision::kKeepMaterialized)
         {
@@ -1292,8 +1328,16 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
                 if (TESNPC* pBaseNpc = Cast<TESNPC>(pLiveActor->baseForm))
                 {
                     pBaseNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+                    pBaseNpc->overlayRace = nullptr;
+                    pBaseNpc->actorData.SetEssential(true);
                     pBaseNpc->SetSkipSaveFlag(true);
                     pBaseNpc->UnsetChanged(0xFFFFFFFF);
+                    if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(entity))
+                    {
+                        pFaceGen->Generated = false;
+                        pFaceGen->LastFaceNode = nullptr;
+                    }
+                    pLiveActor->QueueUpdate();
                 }
             }
 
@@ -1416,6 +1460,7 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
         if (auto modelIt = m_remoteModels.find(serverId); modelIt != m_remoteModels.end())
         {
             auto& model = modelIt.value();
+            const bool spaceWasDifferent = model.Location.IsValid() && incomingLoc.IsValid() && !model.Location.IsSameSpace(incomingLoc);
             const auto transition = CoopWorldView::EvaluateMovementTransition(
                 obs,
                 model.Location,
@@ -1429,6 +1474,9 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 
             if (transition.HasAuthoritativeLocation)
             {
+                if (spaceWasDifferent && model.SpawnRequest.IsPlayer && m_world.all_of<FormIdComponent>(*itor))
+                    model.DematerializeGraceUntilMs = NowSteadyWorldViewMs() + CoopWorldView::kRemotePlayerDoorTransitionGraceMs;
+
                 model.Location = incomingLoc;
                 model.SpawnRequest.WorldSpaceId = movement.WorldSpaceId;
                 model.SpawnRequest.CellId = movement.CellId;
@@ -1451,7 +1499,11 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
                 interpolationComponent.Clock.Reset();
             }
 
-            if (!transition.CompatibleWithObserver && m_world.all_of<FormIdComponent>(*itor))
+            const uint64_t nowMs = NowSteadyWorldViewMs();
+            const bool withinDoorGrace = model.SpawnRequest.IsPlayer &&
+                                         model.DematerializeGraceUntilMs > 0 &&
+                                         nowMs < model.DematerializeGraceUntilMs;
+            if (!transition.CompatibleWithObserver && !withinDoorGrace && m_world.all_of<FormIdComponent>(*itor))
             {
                 DematerializeRemoteView(*itor, &model);
             }
@@ -1656,6 +1708,8 @@ void CharacterService::OnPlayerCellChanged(const NotifyPlayerCellChanged& acMess
 
     if (remoteIt != remoteView.end() && spaceChanged)
     {
+        if (m_world.all_of<FormIdComponent>(*remoteIt))
+            model.DematerializeGraceUntilMs = NowSteadyWorldViewMs() + CoopWorldView::kRemotePlayerDoorTransitionGraceMs;
         if (auto* pInterp = m_world.try_get<InterpolationComponent>(*remoteIt))
             pInterp->TimePoints.clear();
     }
@@ -1744,49 +1798,42 @@ void CharacterService::OnBeastFormChange(const BeastFormChangeEvent& acEvent) co
         return;
     }
 
+    pNpc->MarkChanged(0x3000802u);
     pNpc->Serialize(&request.AppearanceBuffer);
     request.ChangeFlags = pNpc->GetChangeFlags();
+    if ((pNpc->formID & 0xFF000000u) != 0xFF000000u && pActor->formID != 0x14)
+        pNpc->UnsetChanged(0x3000802u);
 
     m_transport.Send(request);
 }
 
 void CharacterService::OnMountEvent(const MountEvent& acEvent) const noexcept
 {
-    auto view = m_world.view<FormIdComponent>();
+    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
 
     const auto riderIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.RiderID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
+    const auto mountIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.MountID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
 
-    if (riderIt == std::end(view))
+    if (riderIt == std::end(view) || mountIt == std::end(view))
     {
-        spdlog::warn("Rider not found, form id: {:X}", acEvent.RiderID);
+        m_pendingLocalMount = {acEvent.RiderID, acEvent.MountID, NowSteadyWorldViewMs() + 3000ULL};
+        spdlog::debug("OnMountEvent: queued pending local mount {:X} -> {:X} while entities register", acEvent.RiderID, acEvent.MountID);
         return;
     }
 
     const entt::entity cRiderEntity = *riderIt;
-
-    std::optional<uint32_t> riderServerIdRes = Utils::GetServerId(cRiderEntity);
-    if (!riderServerIdRes.has_value())
-    {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
-        return;
-    }
-
-    const auto mountIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.MountID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (mountIt == std::end(view))
-    {
-        spdlog::warn("Mount not found, form id: {:X}", acEvent.MountID);
-        return;
-    }
-
     const entt::entity cMountEntity = *mountIt;
 
+    std::optional<uint32_t> riderServerIdRes = Utils::GetServerId(cRiderEntity);
     std::optional<uint32_t> mountServerIdRes = Utils::GetServerId(cMountEntity);
-    if (!mountServerIdRes.has_value())
+    if (!riderServerIdRes.has_value() || !mountServerIdRes.has_value())
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
+        m_pendingLocalMount = {acEvent.RiderID, acEvent.MountID, NowSteadyWorldViewMs() + 3000ULL};
+        spdlog::debug("OnMountEvent: waiting for server assignment on rider {:X} or mount {:X}", acEvent.RiderID, acEvent.MountID);
         return;
     }
+
+    m_pendingLocalMount = {};
 
     if (m_world.try_get<RemoteComponent>(cMountEntity))
         TakeOwnership(acEvent.MountID, *mountServerIdRes, cMountEntity);
@@ -1804,57 +1851,50 @@ void CharacterService::OnNotifyMount(const NotifyMount& acMessage) const noexcep
 
     const auto riderIt = std::find_if(std::begin(remoteView), std::end(remoteView), [remoteView, Id = acMessage.RiderId](auto entity) { return remoteView.get<RemoteComponent>(entity).Id == Id; });
 
-    if (riderIt == std::end(remoteView))
+    Actor* pRider = nullptr;
+    if (riderIt != std::end(remoteView))
     {
-        spdlog::warn("Rider with remote id {:X} not found.", acMessage.RiderId);
-        return;
+        const auto& riderFormIdComponent = remoteView.get<FormIdComponent>(*riderIt);
+        pRider = Cast<Actor>(TESForm::GetById(riderFormIdComponent.Id));
     }
 
-    auto& riderFormIdComponent = remoteView.get<FormIdComponent>(*riderIt);
-    TESForm* pRiderForm = TESForm::GetById(riderFormIdComponent.Id);
-    Actor* pRider = Cast<Actor>(pRiderForm);
-
     Actor* pMount = nullptr;
-
-    auto formView = m_world.view<FormIdComponent>();
+    auto formView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     Vector<entt::entity> entities(formView.begin(), formView.end());
 
-    // TODO(cosideci): remove this, cause of NotifyRelinquishControl?
     for (auto entity : entities)
     {
         std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
-        if (!serverIdRes.has_value())
-        {
-            spdlog::error("{}: failed to find server id", __FUNCTION__);
+        if (!serverIdRes.has_value() || serverIdRes.value() != acMessage.MountId)
             continue;
-        }
 
-        uint32_t serverId = serverIdRes.value();
+        auto& mountFormIdComponent = m_world.get<FormIdComponent>(entity);
 
-        if (serverId == acMessage.MountId)
+        if (m_world.all_of<LocalComponent>(entity))
         {
-            auto& mountFormIdComponent = m_world.get<FormIdComponent>(entity);
-
-            if (m_world.all_of<LocalComponent>(entity))
-            {
-                m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
-                m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.MountId, mountFormIdComponent.Id);
-            }
-
-            TESForm* pMountForm = TESForm::GetById(mountFormIdComponent.Id);
-            pMount = Cast<Actor>(pMountForm);
-            if (pMount && pMount->GetExtension())
-                pMount->GetExtension()->SetRemote(true);
-
-            InterpolationSystem::Setup(m_world, entity);
-            AnimationSystem::Setup(m_world, entity);
-
-            break;
+            m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
+            m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.MountId, mountFormIdComponent.Id);
         }
+
+        pMount = Cast<Actor>(TESForm::GetById(mountFormIdComponent.Id));
+        if (pMount && pMount->GetExtension())
+            pMount->GetExtension()->SetRemote(true);
+
+        InterpolationSystem::Setup(m_world, entity);
+        AnimationSystem::Setup(m_world, entity);
+        break;
     }
 
-    if (pRider && pMount)
+    if (pRider && pMount && pRider->GetNiNode() && pMount->GetNiNode())
+    {
+        m_pendingRemoteMounts.erase(acMessage.RiderId);
         pRider->InitiateMountPackage(pMount);
+    }
+    else
+    {
+        m_pendingRemoteMounts[acMessage.RiderId] = {acMessage.MountId, NowSteadyWorldViewMs() + 5000ULL};
+        spdlog::debug("Queued pending remote mount attachment rider {:X} -> mount {:X} until 3D materializes", acMessage.RiderId, acMessage.MountId);
+    }
 }
 
 void CharacterService::OnInitPackageEvent(const InitPackageEvent& acEvent) const noexcept
@@ -1871,10 +1911,13 @@ void CharacterService::OnInitPackageEvent(const InitPackageEvent& acEvent) const
 
     const entt::entity cActorEntity = *actorIt;
 
+    if (!m_world.any_of<LocalComponent, RemoteComponent>(cActorEntity))
+        return;
+
     std::optional<uint32_t> actorServerIdRes = Utils::GetServerId(cActorEntity);
     if (!actorServerIdRes.has_value())
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
+        spdlog::debug("{}: failed to find server id", __FUNCTION__);
         return;
     }
 
@@ -2043,7 +2086,7 @@ void CharacterService::OnDialogueEvent(const DialogueEvent& acEvent) noexcept
     }
     
     Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.ActorID));
-    if (!pActor)
+    if (!pActor || pActor->IsDisabled() || pActor->IsDeleted() || !pActor->GetNiNode() || !pActor->GetExtension())
         return;
 
     bool isLocal = pActor->GetExtension()->IsLocal();
@@ -2123,7 +2166,7 @@ void CharacterService::OnSubtitleEvent(const SubtitleEvent& acEvent) noexcept
     }
 
     Actor* pActor = Cast<Actor>(TESForm::GetById(acEvent.SpeakerID));
-    if (!pActor)
+    if (!pActor || pActor->IsDisabled() || pActor->IsDeleted() || !pActor->GetNiNode() || !pActor->GetExtension())
         return;
 
     bool isLocal = pActor->GetExtension()->IsLocal();
@@ -2409,6 +2452,23 @@ bool CharacterService::MoveActor(const Actor* apActor, const GameId& acWorldSpac
     return true;
 }
 
+void CharacterService::CleanupUnassignedActorEntity(entt::entity aEntity) const noexcept
+{
+    if (!m_world.valid(aEntity))
+        return;
+
+    m_pendingLocalTempSpawns.erase(aEntity);
+    if (m_world.any_of<LocalComponent, RemoteComponent, WaitingForAssignmentComponent, ObjectComponent>(aEntity))
+        return;
+
+    if (const auto* pFormComp = m_world.try_get<FormIdComponent>(aEntity); pFormComp && pFormComp->Id == 0x14)
+        return;
+
+    m_world.remove<EarlyAnimationBufferComponent, CacheComponent, FormIdComponent>(aEntity);
+    if (m_world.orphan(aEntity))
+        m_world.destroy(aEntity);
+}
+
 void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 {
     if (!m_transport.IsOnline())
@@ -2420,6 +2480,7 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
     if (!pActor)
     {
         spdlog::warn(__FUNCTION__ ": actor for new entity not found, form id: {:X}", formIdComponent.Id);
+        CleanupUnassignedActorEntity(aEntity);
         return;
     }
 
@@ -2447,13 +2508,16 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 
     CacheSystem::Setup(World::Get(), aEntity, pActor);
 
-    RequestServerAssignment(aEntity);
+    if (!RequestServerAssignment(aEntity))
+    {
+        CleanupUnassignedActorEntity(aEntity);
+    }
 }
 
-void CharacterService::RequestServerAssignment(const entt::entity aEntity) const noexcept
+bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const noexcept
 {
     if (!m_transport.IsOnline())
-        return;
+        return false;
 
     static uint32_t sCookieSeed = 0;
 
@@ -2461,11 +2525,11 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 
     auto* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
     if (!pActor)
-        return;
+        return false;
 
     TESNPC* pNpc = Cast<TESNPC>(pActor->baseForm);
     if (!pNpc)
-        return;
+        return false;
 
     AssignCharacterRequest message{};
 
@@ -2473,20 +2537,20 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 
     if (!m_world.GetModSystem().GetServerModId(formIdComponent.Id, message.ReferenceId))
     {
-        spdlog::error("Server reference id not found for form id {:X}", formIdComponent.Id);
-        return;
+        spdlog::debug("Server reference id not found for non-synced form id {:X}", formIdComponent.Id);
+        return false;
     }
 
     if (!pActor->parentCell || !m_world.GetModSystem().GetServerModId(pActor->parentCell->formID, message.CellId))
     {
-        spdlog::error("Server cell id not found for cell id {:X}", pActor->parentCell ? pActor->parentCell->formID : 0u);
-        return;
+        spdlog::debug("Server cell id not found for cell id {:X}", pActor->parentCell ? pActor->parentCell->formID : 0u);
+        return false;
     }
 
     if (const auto pWorldSpace = pActor->GetWorldSpace())
     {
         if (!m_world.GetModSystem().GetServerModId(pWorldSpace->formID, message.WorldSpaceId))
-            return;
+            return false;
     }
 
     message.Position = pActor->position;
@@ -2499,7 +2563,9 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 
     if (isPlayer)
     {
-        pNpc->MarkChanged(0x2000800);
+        // Include kBaseData (0x2 = female/male bit), kRace (0x1000000), and kFaceGen (0x2000800)
+        // so cross-gender & cross-race BGSHeadPart / morph sync never leaves remote clones headless!
+        pNpc->MarkChanged(0x3000802u);
     }
 
     const auto changeFlags = pNpc->GetChangeFlags();
@@ -2590,8 +2656,8 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
     {
         if (pNpc && !m_world.GetModSystem().GetServerModId(pNpc->formID, message.FormId))
         {
-            spdlog::error("Server NPC form id not found for form id {:X}", pNpc->formID);
-            return;
+            spdlog::debug("Server NPC form id not found for non-synced temporary base {:X}", pNpc->formID);
+            return false;
         }
     }
 
@@ -2609,7 +2675,10 @@ void CharacterService::RequestServerAssignment(const entt::entity aEntity) const
         m_world.emplace<WaitingForAssignmentComponent>(aEntity, sCookieSeed);
 
         sCookieSeed++;
+        return true;
     }
+
+    return false;
 }
 
 void CharacterService::CancelServerAssignment(const entt::entity aEntity, const uint32_t aFormId) const noexcept
@@ -2648,6 +2717,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
     if (m_world.all_of<WaitingForAssignmentComponent>(aEntity))
     {
         auto& waitingComponent = m_world.get<WaitingForAssignmentComponent>(aEntity);
+        m_cancelledCookies.RecordCancelled(waitingComponent.Cookie);
 
         CancelAssignmentRequest message;
         message.Cookie = waitingComponent.Cookie;
@@ -2751,7 +2821,8 @@ CoopWorldView::ObserverState CharacterService::BuildLocalObserverState() const n
 
 TESObjectCELL* CharacterService::ResolveCompatibleTargetCell(
     const CoopWorldView::WorldOrCell& acTargetLoc,
-    TESWorldSpace*& apOutWorldSpace) const noexcept
+    TESWorldSpace*& apOutWorldSpace,
+    bool aAllowDistantWorldSpaceAnchor) const noexcept
 {
     apOutWorldSpace = nullptr;
 
@@ -2787,8 +2858,8 @@ TESObjectCELL* CharacterService::ResolveCompatibleTargetCell(
 
     apOutWorldSpace = pLocalWs;
 
-    // Prefer exact loaded cell from ModManager 5x5 grid; fall back to local player's loaded exterior cell
-    // inside the same validated TESWorldSpace when spawning a dragon / edge-grid actor.
+    // Prefer exact loaded cell from ModManager 5x5 grid; only allow distant same-WorldSpace fallback
+    // for flying dragons (never for pre-placed persistent world NPCs outside the 5x5 grid!).
     if (ModManager* pModMgr = ModManager::Get())
     {
         if (TESObjectCELL* pGridCell = pModMgr->GetCellFromCoordinates(
@@ -2806,7 +2877,7 @@ TESObjectCELL* CharacterService::ResolveCompatibleTargetCell(
     if (GridCellCoords::IsCellInGridCell(acTargetLoc.GridCoords, centerGrid, false))
         return nullptr; // Within 5x5 grid, wait until TES finishes streaming that grid cell's loadedCellData!
 
-    return pLocalPlayer->parentCell;
+    return aAllowDistantWorldSpaceAnchor ? pLocalPlayer->parentCell : nullptr;
 }
 
 void CharacterService::DematerializeRemoteView(entt::entity aEntity, RemoteEntityModel* apModel) const noexcept
@@ -2919,6 +2990,7 @@ Actor* CharacterService::MaterializeRemoteView(
                         if (!acMessage.AppearanceBuffer.empty())
                             pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
                         pNpc->overlayRace = nullptr;
+                        pNpc->actorData.SetEssential(true);
                         pNpc->SetSkipSaveFlag(true);
                         pNpc->UnsetChanged(0xFFFFFFFF);
                     }
@@ -2930,6 +3002,8 @@ Actor* CharacterService::MaterializeRemoteView(
                 pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
                 if (pNpc)
                 {
+                    pNpc->overlayRace = nullptr;
+                    pNpc->actorData.SetEssential(true);
                     m_createdNetworkFormIds.insert(pNpc->formID);
                     if (acMessage.IsPlayer && acMessage.PlayerId != 0)
                         m_playerBaseNpcPool[acMessage.PlayerId] = pNpc->formID;
@@ -2937,6 +3011,11 @@ Actor* CharacterService::MaterializeRemoteView(
             }
 
             FaceGenSystem::Setup(m_world, aEntity, acMessage.FaceTints);
+            if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(aEntity))
+            {
+                pFaceGen->Generated = false;
+                pFaceGen->LastFaceNode = nullptr;
+            }
         }
 
         auto pCreated = Actor::CreateInCell(pNpc, apTargetCell, apTargetWorldSpace, spawnPos, spawnRot);
@@ -2969,6 +3048,7 @@ Actor* CharacterService::MaterializeRemoteView(
 
             if (auto* pWaitAssign = m_world.try_get<WaitingForAssignmentComponent>(other))
             {
+                m_cancelledCookies.RecordCancelled(pWaitAssign->Cookie);
                 CancelAssignmentRequest cancelMsg{};
                 cancelMsg.Cookie = pWaitAssign->Cookie;
                 m_transport.Send(cancelMsg);
@@ -2978,7 +3058,33 @@ Actor* CharacterService::MaterializeRemoteView(
             break;
         }
 
-        if (pActor->IsDisabled())
+        // Leveled-creature reconciliation (e.g. TESLevCharacter marker rolling Wolf locally while party leader rolled Restless Draugr):
+        // disable the mismatched local leveled ref and spawn an authoritative 0xFF00xxxx FormView from acMessage.BaseId!
+        const uint32_t expectedBaseId = acMessage.BaseId != GameId{} ? m_world.GetModSystem().GetGameId(acMessage.BaseId) : 0u;
+        bool spawnedAuthoritativeLeveledClone = false;
+        if (expectedBaseId != 0 && pActor->baseForm && pActor->baseForm->formID != expectedBaseId)
+        {
+            if (TESNPC* pExpectedNpc = Cast<TESNPC>(TESForm::GetById(expectedBaseId)))
+            {
+                if (!acMessage.IsDead)
+                {
+                    if (!pActor->IsDisabled())
+                        pActor->DisableImpl();
+
+                    auto pCreated = Actor::CreateInCell(pExpectedNpc, apTargetCell, apTargetWorldSpace, spawnPos, spawnRot);
+                    pActor = pCreated;
+                    if (pActor)
+                    {
+                        spawnedAuthoritativeLeveledClone = true;
+                        m_createdNetworkFormIds.insert(pActor->formID);
+                        if (pActor->GetExtension())
+                            pActor->GetExtension()->SetCreatedByNetwork(true);
+                    }
+                }
+            }
+        }
+
+        if (pActor && !spawnedAuthoritativeLeveledClone && pActor->IsDisabled())
             pActor->EnableImpl();
     }
 
@@ -2989,21 +3095,28 @@ Actor* CharacterService::MaterializeRemoteView(
     remoteComponent.CachedRefId = pActor->formID;
     m_world.emplace_or_replace<FormIdComponent>(aEntity, pActor->formID);
     aModel.IsMaterialized = true;
+    aModel.DematerializeGraceUntilMs = 0;
 
     pActor->GetExtension()->SetRemote(true);
     pActor->GetExtension()->SetPlayer(acMessage.IsPlayer);
     pActor->rotation.x = aModel.LatestRotation.x;
     pActor->rotation.z = aModel.LatestRotation.y;
 
-    if (acMessage.FormId != GameId{})
+    if (acMessage.FormId != GameId{} && !IsNetworkCreatedActor(pActor))
         pActor->MoveTo(apTargetCell, spawnPos);
     else
         pActor->ForcePosition(spawnPos);
 
     if (auto* pInterp = m_world.try_get<InterpolationComponent>(aEntity))
+    {
+        pInterp->TimePoints.clear();
         pInterp->Position = spawnPos;
+        pInterp->Clock.Reset();
+    }
     else
+    {
         InterpolationSystem::Setup(m_world, aEntity).Position = spawnPos;
+    }
 
     if (!m_world.all_of<RemoteAnimationComponent>(aEntity))
         AnimationSystem::Setup(m_world, aEntity);
@@ -3069,6 +3182,7 @@ void CharacterService::ReconcileRemoteWorldViews() const noexcept
     size_t nonPrioritySpawnsThisFrame = 0;
 
     const CoopWorldView::ObserverState obs = BuildLocalObserverState();
+    const uint64_t nowMs = NowSteadyWorldViewMs();
 
     auto remoteView = m_world.view<RemoteComponent>();
     Vector<entt::entity> entities(remoteView.begin(), remoteView.end());
@@ -3086,14 +3200,23 @@ void CharacterService::ReconcileRemoteWorldViews() const noexcept
         auto& model = modelIt.value();
         const auto* pFormComp = m_world.try_get<FormIdComponent>(entity);
         Actor* pLiveActor = pFormComp ? Cast<Actor>(TESForm::GetById(pFormComp->Id)) : nullptr;
-        const bool isMaterialized = (pFormComp != nullptr && pLiveActor != nullptr);
 
-        // Clean up stale FormIdComponent if engine natively unloaded the underlying TESForm
-        if (pFormComp != nullptr && pLiveActor == nullptr)
+        // Persistent pre-placed world refs (e.g. Skyrim.esm exterior bandits E5F72-E5F77) stay in TESForm::GetById
+        // even when their cell unloads! Treat non-network, non-dragon refs as unmaterialized if parentCell unloaded.
+        const bool requiresLoadedParentCell =
+            pLiveActor && !IsNetworkCreatedActor(pLiveActor) && !model.SpawnRequest.IsDragon;
+        const bool cellActuallyLoaded = !requiresLoadedParentCell ||
+            (pLiveActor->parentCell != nullptr && pLiveActor->parentCell->loadedCellData != nullptr);
+        const bool isMaterialized = (pFormComp != nullptr && pLiveActor != nullptr && cellActuallyLoaded);
+
+        // Clean up stale FormIdComponent if engine natively unloaded the underlying TESForm or cell
+        if (pFormComp != nullptr && !isMaterialized)
             DematerializeRemoteView(entity, &model);
 
         TESWorldSpace* pTargetWs = nullptr;
-        TESObjectCELL* pTargetCell = obs.EngineReady ? ResolveCompatibleTargetCell(model.Location, pTargetWs) : nullptr;
+        TESObjectCELL* pTargetCell = obs.EngineReady
+            ? ResolveCompatibleTargetCell(model.Location, pTargetWs, model.SpawnRequest.IsDragon)
+            : nullptr;
 
         CoopWorldView::RemoteViewQuery query{};
         query.Location = model.Location;
@@ -3103,6 +3226,8 @@ void CharacterService::ReconcileRemoteWorldViews() const noexcept
         query.IsPlayer = model.SpawnRequest.IsPlayer;
         query.CurrentlyMaterialized = isMaterialized;
         query.TargetCellLoadedInEngine = (pTargetCell != nullptr);
+        query.NowSteadyMs = nowMs;
+        query.DematerializeGraceUntilMs = model.DematerializeGraceUntilMs;
 
         const auto decision = CoopWorldView::EvaluateViewDecision(obs, query);
         switch (decision)
@@ -3139,7 +3264,10 @@ Actor* CharacterService::CreateCharacterForEntity(entt::entity aEntity) const no
         return nullptr;
 
     TESWorldSpace* pTargetWs = nullptr;
-    TESObjectCELL* pTargetCell = ResolveCompatibleTargetCell(modelIt->second.Location, pTargetWs);
+    TESObjectCELL* pTargetCell = ResolveCompatibleTargetCell(
+        modelIt->second.Location,
+        pTargetWs,
+        modelIt->second.SpawnRequest.IsDragon);
     if (!pTargetCell)
         return nullptr;
 
@@ -3324,6 +3452,58 @@ void CharacterService::RunRemoteUpdates() noexcept
 
     for (auto entity : toRemove)
         m_world.remove<WaitingFor3D>(entity);
+
+    // Retry deferred local/remote mount handshakes once server IDs & 3D NiNodes have materialized
+    const uint64_t nowMountMs = NowSteadyWorldViewMs();
+    if (m_pendingLocalMount.RiderFormId != 0 && m_pendingLocalMount.MountFormId != 0)
+    {
+        if (nowMountMs >= m_pendingLocalMount.ExpiresAtMs)
+        {
+            m_pendingLocalMount = {};
+        }
+        else
+        {
+            const PendingLocalMountRequest pendingLocal = m_pendingLocalMount;
+            OnMountEvent(MountEvent(pendingLocal.RiderFormId, pendingLocal.MountFormId));
+        }
+    }
+
+    if (!m_pendingRemoteMounts.empty())
+    {
+        Vector<uint32_t> resolvedRemoteRiders;
+        for (const auto& [riderServerId, pending] : m_pendingRemoteMounts)
+        {
+            if (nowMountMs >= pending.ExpiresAtMs)
+            {
+                resolvedRemoteRiders.push_back(riderServerId);
+                continue;
+            }
+
+            Actor* pRider = nullptr;
+            Actor* pMount = nullptr;
+            auto mountActorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+            for (const entt::entity entity : mountActorView)
+            {
+                const auto sid = Utils::GetServerId(entity);
+                if (!sid.has_value())
+                    continue;
+
+                if (*sid == riderServerId && m_world.all_of<RemoteComponent>(entity))
+                    pRider = Cast<Actor>(TESForm::GetById(mountActorView.get<FormIdComponent>(entity).Id));
+                else if (*sid == pending.MountServerId)
+                    pMount = Cast<Actor>(TESForm::GetById(mountActorView.get<FormIdComponent>(entity).Id));
+            }
+
+            if (pRider && pMount && pRider->GetNiNode() && pMount->GetNiNode())
+            {
+                pRider->InitiateMountPackage(pMount);
+                resolvedRemoteRiders.push_back(riderServerId);
+            }
+        }
+
+        for (const uint32_t riderId : resolvedRemoteRiders)
+            m_pendingRemoteMounts.erase(riderId);
+    }
 }
 
 void CharacterService::RunFactionsUpdates() const noexcept

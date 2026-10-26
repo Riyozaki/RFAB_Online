@@ -340,76 +340,99 @@ private:
 
 template <class T> struct GamePtr
 {
-    GamePtr()
+    GamePtr() noexcept
         : m_pPointer(nullptr)
     {
     }
 
-    GamePtr(T* apPointer)
+    GamePtr(std::nullptr_t) noexcept
+        : m_pPointer(nullptr)
+    {
+    }
+
+    GamePtr(T* apPointer) noexcept
         : m_pPointer(apPointer)
     {
         if (m_pPointer)
             m_pPointer->handleRefObject.IncRef();
     }
 
-    GamePtr(const GamePtr<T>& acRhs)
+    GamePtr(const GamePtr<T>& acRhs) noexcept
         : m_pPointer(acRhs.m_pPointer)
     {
         if (m_pPointer)
             m_pPointer->handleRefObject.IncRef();
     }
 
-    GamePtr(GamePtr<T>&& aRhs) { std::swap(m_pPointer, aRhs.m_pPointer); }
+    GamePtr(GamePtr<T>&& aRhs) noexcept
+        : m_pPointer(aRhs.m_pPointer)
+    {
+        aRhs.m_pPointer = nullptr;
+    }
 
-    GamePtr& operator=(const GamePtr<T>& acRhs)
+    GamePtr& operator=(const GamePtr<T>& acRhs) noexcept
+    {
+        if (this != &acRhs && m_pPointer != acRhs.m_pPointer)
+        {
+            T* const pNew = acRhs.m_pPointer;
+            if (pNew)
+                pNew->handleRefObject.IncRef();
+            Release();
+            m_pPointer = pNew;
+        }
+
+        return *this;
+    }
+
+    GamePtr& operator=(T* apPointer) noexcept
+    {
+        if (m_pPointer != apPointer)
+        {
+            if (apPointer)
+                apPointer->handleRefObject.IncRef();
+            Release();
+            m_pPointer = apPointer;
+        }
+
+        return *this;
+    }
+
+    GamePtr& operator=(std::nullptr_t) noexcept
     {
         Release();
+        return *this;
+    }
 
-        m_pPointer = acRhs.m_pPointer;
-
-        if (m_pPointer)
-            m_pPointer->handleRefObject.IncRef();
+    GamePtr& operator=(GamePtr<T>&& aRhs) noexcept
+    {
+        if (this != &aRhs)
+        {
+            Release();
+            m_pPointer = aRhs.m_pPointer;
+            aRhs.m_pPointer = nullptr;
+        }
 
         return *this;
     }
 
-    GamePtr& operator=(T* apPointer)
+    T* Get() const noexcept { return m_pPointer; }
+    T* operator->() const noexcept { return m_pPointer; }
+    T* operator*() const noexcept { return m_pPointer; }
+    operator T*() const noexcept { return m_pPointer; }
+    explicit operator bool() const noexcept { return m_pPointer != nullptr; }
+
+    ~GamePtr() noexcept { Release(); }
+
+    void Release() noexcept
     {
-        Release();
-
-        m_pPointer = apPointer;
-
-        if (m_pPointer)
-            m_pPointer->handleRefObject.IncRef();
-
-        return *this;
-    }
-
-    GamePtr& operator=(GamePtr<T>&& aRhs)
-    {
-        std::swap(m_pPointer, aRhs.m_pPointer);
-
-        return *this;
-    }
-
-    T* operator->() { return m_pPointer; }
-
-    T* operator*() { return m_pPointer; }
-
-    operator T*() { return m_pPointer; }
-
-    ~GamePtr() { Release(); }
-
-    void Release()
-    {
-        if (m_pPointer)
-            m_pPointer->handleRefObject.DecRefHandle();
-
+        T* const pOld = m_pPointer;
         m_pPointer = nullptr;
+        if (pOld)
+            pOld->handleRefObject.DecRefHandle();
     }
 
 private:
-    T* m_pPointer;
+    T* m_pPointer{nullptr};
 };
 
 enum ETiltedFlags : uint8_t

@@ -185,16 +185,19 @@ void Actor::ResetTeleportPhysics(float aNewZ) noexcept
 
 void Actor::QueueUpdate() noexcept
 {
-    auto* pSetting = INISettingCollection::Get()->GetSetting("bUseFaceGenPreprocessedHeads:General");
-    const auto originalValue = pSetting->data;
-    pSetting->data = 0;
+    auto* pIniCollection = INISettingCollection::Get();
+    auto* pSetting = pIniCollection ? pIniCollection->GetSetting("bUseFaceGenPreprocessedHeads:General") : nullptr;
+    const auto originalValue = pSetting ? pSetting->data : 0u;
+    if (pSetting)
+        pSetting->data = 0;
 
     TP_THIS_FUNCTION(TQueueUpdate, void, Actor, bool);
     POINTER_SKYRIMSE(TQueueUpdate, QueueUpdate, 39181);
 
     TiltedPhoques::ThisCall(QueueUpdate, this, true);
 
-    pSetting->data = originalValue;
+    if (pSetting)
+        pSetting->data = originalValue;
 }
 
 GamePtr<Actor> Actor::CreateInCell(
@@ -407,7 +410,15 @@ void Actor::StartCombat(Actor* apTarget) noexcept
 void Actor::StopCombat() noexcept
 {
     PAPYRUS_FUNCTION(void, Actor, StopCombat);
-    s_pStopCombat(this);
+    if (s_pStopCombat)
+        s_pStopCombat(this);
+}
+
+void Actor::EvaluatePackage() noexcept
+{
+    PAPYRUS_FUNCTION(void, Actor, EvaluatePackage);
+    if (s_pEvaluatePackage)
+        s_pEvaluatePackage(this);
 }
 
 bool Actor::RemoveSpell(MagicItem* apSpell) noexcept
@@ -787,6 +798,9 @@ Factions Actor::GetFactions() const noexcept
 
         for (auto i = 0u; i < factions.length; ++i)
         {
+            if (!factions[i].faction)
+                continue;
+
             Faction faction;
 
             modSystem.GetServerModId(factions[i].faction->formID, faction.Id);
@@ -801,6 +815,9 @@ Factions Actor::GetFactions() const noexcept
     {
         for (auto i = 0u; i < pChanges->entries.length; ++i)
         {
+            if (!pChanges->entries[i].faction)
+                continue;
+
             Faction faction;
 
             modSystem.GetServerModId(pChanges->entries[i].faction->formID, faction.Id);
@@ -1740,7 +1757,10 @@ void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
         auto pTargetActor = Cast<Actor>(pTarget);
         if (pOwnerActor && pTargetActor)
         {
-            if (pOwnerActor->GetExtension()->IsRemotePlayer() && pTargetActor->GetExtension()->IsLocalPlayer())
+            const auto* pOwnerExt = pOwnerActor->GetExtension();
+            const auto* pTargetExt = pTargetActor->GetExtension();
+
+            if (pOwnerExt && pOwnerExt->IsRemotePlayer() && pTargetExt && pTargetExt->IsLocalPlayer())
             {
                 spdlog::debug("Cancelling detection from remote player to local player, owner: {:X}, target: {:X}", pOwner->formID, pTarget->formID);
                 return;
@@ -1749,17 +1769,29 @@ void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
             // Suppress AI detection against downed players (both local 0x14 and downed remote clones) directly on
             // Skyrim's AI worker threads via lock-free atomic ActorExtension::IsDownedPlayer(), preventing enemies
             // from re-detecting / re-aggroing a downed player or ignoring standing teammates.
-            if (pTargetActor->GetExtension() && pTargetActor->GetExtension()->IsDownedPlayer() &&
-                !(pOwnerActor->GetExtension() && pOwnerActor->GetExtension()->IsPlayer()))
+            if (pTargetExt && !(pOwnerExt && pOwnerExt->IsPlayer()))
             {
-                if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object)
+                if (pTargetExt->IsDownedPlayer())
                 {
-                    pDet->level = -1000;
-                    pDet->inLos = 0;
-                    pDet->hasLos = 0;
-                    pDet->unk16 = 0;
+                    if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object)
+                    {
+                        pDet->level = -1000;
+                        pDet->inLos = 0;
+                        pDet->hasLos = 0;
+                        pDet->unk16 = 0;
+                    }
+                    return;
                 }
-                return;
+
+                // Unpoison forced -1000 wipe/downed clamp immediately once the player is alive & standing again
+                // so exterior/interior enemies re-detect both players natively on the very next AI tick!
+                if (pTargetExt->IsPlayer())
+                {
+                    if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object; pDet && pDet->level <= -999)
+                    {
+                        pDet->level = 0;
+                    }
+                }
             }
         }
     }
@@ -1775,17 +1807,19 @@ static TProcessResponse* RealProcessResponse = nullptr;
 
 uint64_t TP_MAKE_THISCALL(HookProcessResponse, void, DialogueItem* apVoice, Actor* apTalkingActor, Actor* apTalkedToActor)
 {
-    if (apTalkingActor)
-    {
-        if (apTalkingActor->GetExtension()->IsRemotePlayer())
-            return 0;  
-    }
+    if (apTalkingActor && apTalkingActor->GetExtension() && apTalkingActor->GetExtension()->IsRemotePlayer())
+        return 0;
+
+    // Never allow guards or NPCs to initiate ForceGreet / arrest / greeting dialogue targeted at a remote player clone!
+    if (apTalkedToActor && apTalkedToActor->GetExtension() && apTalkedToActor->GetExtension()->IsRemotePlayer())
+        return 0;
+
     return TiltedPhoques::ThisCall(RealProcessResponse, apThis, apVoice, apTalkingActor, apTalkedToActor);
 }
 
 bool TP_MAKE_THISCALL(HookInitiateMountPackage, Actor, Actor* apMount)
 {
-    if (apMount && apThis->GetExtension()->IsLocal())
+    if (apThis && apMount && apThis->GetExtension() && apThis->GetExtension()->IsLocal())
         World::Get().GetRunner().Trigger(MountEvent(apThis->formID, apMount->formID));
 
     return TiltedPhoques::ThisCall(RealInitiateMountPackage, apThis, apMount);
@@ -1804,17 +1838,24 @@ static TSpeakSoundFunction* RealSpeakSoundFunction = nullptr;
 
 float TP_MAKE_THISCALL(HookSpeakSoundFunction, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11, bool a12, bool a13, bool a14)
 {
-    // Note most dialogues invoke SpeakSoundFunction twice, an initial call that queues it to an update thread, then a reinvocation.
+    // Guard silent/lip-only guard/NPC topics where apName is null or empty (prevents String(nullptr) strlen crash!).
+    if (apThis && apThis->formID != 0 && apName && apName[0] != '\0')
+    {
+        if (const auto* pExt = apThis->GetExtension(); !pExt || !pExt->IsRemotePlayer())
+        {
+            String safeVoicePath(apName);
+            World::Get().GetRunner().Trigger(DialogueEvent(apThis->formID, std::move(safeVoicePath)));
+        }
+    }
 
-    spdlog::debug("a3: {:X}, a4: {}, a5: {}, a6: {}, a7: {}, a8: {:X}, a9: {:X}, a10: {}, a11: {:X}, a12: {}, a13: {}, a14: {}", (uint64_t)a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
-
-    World::Get().GetRunner().Trigger(DialogueEvent(apThis->formID, apName));
-    
     return TiltedPhoques::ThisCall(RealSpeakSoundFunction, apThis, apName, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
 }
 
 float Actor::SpeakSound(const char* pFile)
 {
+    if (!pFile || pFile[0] == '\0' || !RealSpeakSoundFunction)
+        return 0.0f;
+
     uint32_t handle[3]{};
     handle[0] = -1;
 

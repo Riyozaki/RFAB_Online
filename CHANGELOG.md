@@ -9,6 +9,21 @@
 
 ---
 
+## [v2.0.1] — 2026-10-26 *(Архитектурная стабилизация `v2.0.x` по итогам живого кооп-плейтеста)*
+
+### 🛡️ Исправлено на архитектурном уровне (`под корень`)
+- **`GamePtr<T>` (`Code/client/Games/Primitives.h`):** инициализация `m_pPointer{nullptr}`, явный конструктор `GamePtr(std::nullptr_t)`, обнуляющий перемещающий конструктор и вызов `Release()` в `operator=(GamePtr&&)` — полностью устранён краш `SkyrimTogetherClient.dll+0x65D2CB` (`DecRefHandle` по стековому мусору при non-NRVO возврате из `Actor::CreateInCell`).
+- **Пост-вайп синхронизация ИИ и `WorldView` в открытом мире (Форт Греймур):**
+  - `CoopAnimationState::NormalizePostReviveActorState` + `DownedStateService::RestoreLivingCombatTargetability` сбрасывают все неживые биты `actorState.flags1` (`kEssentialDown = 7`, `kBleedout = 8`, `kDying = 1`), снимают `knock/recoil/stagger` и вызывают `EvaluatePackage()` у окрестных NPC после подъёма и `MoveTo`, а `HookUpdateDetectionState` мгновенно снимает зажатый `-1000` уровень обнаружения у живых игроков.
+  - `SaveSnapshotService` сохраняет и восстанавливает пространственное состояние живых NPC (`kNpcSpatialExtMagic`), рассылает `NotifyActorTeleport`, выполняет двухфазный откат (`NotifyExecuteLoad` до `ForceResyncObserverAfterRollback`), а клиент сбрасывает устаревшие `InterpolationComponent::TimePoints` и проверяет `parentCell->loadedCellData != nullptr` у пре-размещённых экстерьерных NPC.
+- **Межпоточная изоляция движковых хуков:** убраны обращения рабочих потоков Skyrim к `entt::registry` в `CombatController::UpdateTarget` (`ActorExtension::HasCombatTargetLock`), `MagicTarget` (`CollectPartyPeerActorFormIds`), `TESObjectREFR` (`ProcessLists` + `ObjectService::IsFactionCrimeContainer`), `QuestService::OnEvent` (захват по значению без чтения сервисов вне `RunnerService`) и `SpellCastEvent` (скалярные поля вместо сырого `ActorMagicCaster*`).
+- **Диалоги со стражей, штрафы и криминальные сундуки:** защита от пустых `apName` в `HookSpeakSoundFunction`, защита `MenuTopicManager`/`SubtitleManager`, блокировка ForceGreet/ареста удалённых клонов в `HookProcessResponse`, динамический обход криминальных фракций через `ModManager::Get()->factions` (`kTrackCrime`) в `PayCrimeGoldToAllFactions` и игнорирование сундуков улик/вещей заключённого в `ShouldBlockRemoteActorInventoryHook`.
+- **Голова и `FaceGen` игроков (`0x14` и `0xFF00xxxx`):** сохранение `ConsumeSavedFirstPersonBeforeDowned()` до `ResetAllStates()`, двухкадровое восстановление `QueueUpdate()` → `ForceFirstPerson()`, сериализация `TESNPC` с флагами `0x3000802` (`kBaseData | kRace | kFaceGen`), сброс `overlayRace` и флаг `IS_ESSENTIAL` против обезглавливания.
+- **Уровневые существа, лошади, двери и чистота ECS:** автозамена несовпадающих `TESLevCharacter` по серверному `BaseId`, передача владения лошадью всаднику в `Server::CharacterService::OnMountRequest` + клиентская очередь ожидания 3D, 350 мс окно удержания `FormView` игрока при переходе через дверь, `CancelledCookieTracker<64>` и мгновенное удаление несопоставленных сущностей (`CleanupUnassignedActorEntity`).
+- **Диагностика крашей и CEF:** постоянный append-лог `RFAB_Online_Crash.log` с полным дампом 16 регистров x64 и раскруткой стека `RtlLookupFunctionEntry`/`RtlVirtualUnwind`, ротация `tp_client.log` `10 МБ × 5` + `flush_on(err)` и `CoopOverlayApp` с подавлением фонового шума Chromium в `cef_debug.log`.
+
+---
+
 ## [v1.2.0] — 2026-10-25 *(В разработке / Актуальная ветка 1.2.0)*
 
 ### ✨ Добавлено

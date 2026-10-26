@@ -47,7 +47,7 @@ std::shared_ptr<spdlog::sinks::rotating_file_sink_mt> CreateClientLogSink(const 
             filename = fmt::format("tp_client_instance_{}.log", instance);
         break;
     }
-    return std::make_shared<spdlog::sinks::rotating_file_sink_mt>(acLogPath / filename, 1048576 * 5, 3);
+    return std::make_shared<spdlog::sinks::rotating_file_sink_mt>(acLogPath / filename, 1048576 * 10, 5);
 }
 } // namespace
 
@@ -69,6 +69,7 @@ TiltedOnlineApp::TiltedOnlineApp()
     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     auto logger = std::make_shared<spdlog::logger>("", spdlog::sinks_init_list{console, rotatingLogger});
     logger->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t] %$ %v");
+    logger->flush_on(spdlog::level::err);
     spdlog::flush_every(std::chrono::seconds(1));
     set_default_logger(logger);
 }

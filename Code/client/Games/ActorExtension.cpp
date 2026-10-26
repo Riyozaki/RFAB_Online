@@ -44,6 +44,11 @@ bool ActorExtension::IsPlayerSummonFlag() const noexcept
     return (onlineFlags.load(std::memory_order_relaxed) & kPlayerSummon) != 0;
 }
 
+bool ActorExtension::HasCombatTargetLock() const noexcept
+{
+    return (onlineFlags.load(std::memory_order_relaxed) & kCombatTargetLocked) != 0;
+}
+
 void ActorExtension::SetRemote(bool aSet) noexcept
 {
     if (aSet)
@@ -82,4 +87,12 @@ void ActorExtension::SetPlayerSummonFlag(bool aSet) noexcept
         onlineFlags.fetch_or(kPlayerSummon, std::memory_order_relaxed);
     else
         onlineFlags.fetch_and(~kPlayerSummon, std::memory_order_relaxed);
+}
+
+void ActorExtension::SetCombatTargetLock(bool aSet) noexcept
+{
+    if (aSet)
+        onlineFlags.fetch_or(kCombatTargetLocked, std::memory_order_relaxed);
+    else
+        onlineFlags.fetch_and(~kCombatTargetLocked, std::memory_order_relaxed);
 }

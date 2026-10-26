@@ -7,6 +7,7 @@
 #include <Games/TES.h>
 
 #include <World.h>
+#include <Services/ObjectService.h>
 #include <Services/PapyrusService.h>
 #include <Events/ActivateEvent.h>
 #include <Events/InventoryChangeEvent.h>
@@ -1255,17 +1256,14 @@ bool ShouldAutoUnlockCoopArenaBarrier(TESObjectREFR* apDoor, Actor* apActivator)
         return false;
 
     auto& world = World::Get();
-    if (!world.GetPartyService().IsInParty())
+    TiltedPhoques::Vector<uint32_t> peerFormIds;
+    world.GetRfabAdapterService().CollectPartyPeerActorFormIds(peerFormIds);
+    if (peerFormIds.empty())
         return false;
 
     bool hasPeerInSameCell = false;
-    auto playerView = world.view<FormIdComponent, PlayerComponent>();
-    for (auto entity : playerView)
+    for (const uint32_t formId : peerFormIds)
     {
-        const uint32_t formId = playerView.get<FormIdComponent>(entity).Id;
-        if (formId == 0 || formId == 0x14)
-            continue;
-
         Actor* pPeer = Cast<Actor>(TESForm::GetById(formId));
         if (pPeer && pPeer->parentCell == apDoor->parentCell)
         {
@@ -1277,15 +1275,16 @@ bool ShouldAutoUnlockCoopArenaBarrier(TESObjectREFR* apDoor, Actor* apActivator)
     if (!hasPeerInSameCell)
         return false;
 
-    auto actorView = world.view<FormIdComponent>(entt::exclude<ObjectComponent, PlayerComponent>);
-    for (auto entity : actorView)
-    {
-        const uint32_t formId = actorView.get<FormIdComponent>(entity).Id;
-        if (formId == 0 || formId == 0x14)
-            continue;
+    ProcessLists* const pProcessLists = ProcessLists::Get();
+    if (!pProcessLists)
+        return false;
 
-        Actor* pNpc = Cast<Actor>(TESForm::GetById(formId));
-        if (!pNpc || pNpc->IsDead() || pNpc->parentCell != apDoor->parentCell)
+    for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
+    {
+        Actor* pNpc = Cast<Actor>(TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]));
+        if (!pNpc || pNpc->formID == 0 || pNpc->formID == 0x14 || pNpc->IsDead() || pNpc->parentCell != apDoor->parentCell)
+            continue;
+        if (const auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
             continue;
 
         if (pNpc->IsInCombat() || world.GetRfabAdapterService().IsBossActor(pNpc))
@@ -1368,6 +1367,17 @@ namespace
 {
 bool ShouldBlockRemoteActorInventoryHook(TESObjectREFR* apTarget, TESObjectREFR* apTransferPartner = nullptr) noexcept
 {
+    if (!apTarget)
+        return true;
+
+    // Never emit InventoryChangeEvent for faction evidence / prisoner belongings chests during PayFine / ServeSentence!
+    if (apTarget->baseForm &&
+        apTarget->baseForm->formType == FormType::Container &&
+        ObjectService::IsFactionCrimeContainer(apTarget->formID))
+    {
+        return true;
+    }
+
     Actor* pActor = Cast<Actor>(apTarget);
     if (!pActor)
         return false;

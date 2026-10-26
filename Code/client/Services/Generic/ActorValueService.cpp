@@ -360,14 +360,20 @@ void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcep
 
     if (hitteeIt == std::end(view))
     {
-        spdlog::warn("Health change event form id component not found, form id: {:X}", acEvent.HitteeId);
+        spdlog::debug("Health change event form id component not found, form id: {:X}", acEvent.HitteeId);
+        return;
+    }
+
+    if (m_world.all_of<WaitingForAssignmentComponent>(*hitteeIt))
+    {
+        spdlog::debug("{}: actor {:X} still WaitingForAssignment, deferring health delta", __FUNCTION__, acEvent.HitteeId);
         return;
     }
 
     std::optional<uint32_t> serverIdRes = Utils::GetServerId(*hitteeIt);
     if (!serverIdRes.has_value())
     {
-        spdlog::error("{}: failed to find server id", __FUNCTION__);
+        spdlog::debug("{}: skipping health delta on unassigned entity {:X}", __FUNCTION__, acEvent.HitteeId);
         return;
     }
 
