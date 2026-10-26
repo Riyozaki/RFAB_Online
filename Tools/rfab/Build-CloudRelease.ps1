@@ -48,16 +48,38 @@ function Ensure-ImmutableBackupRelease([string]$SrcTag, [string]$DstTag, [string
             & cmd.exe /d /s /c "gh release download $SrcTag -D `"$bakDir`" --clobber"
             if ($LASTEXITCODE -ne 0) { throw "could not download $SrcTag assets" }
 
-            $sumsPath = Join-Path $bakDir "SHA256SUMS.txt"
-            if (-not (Test-Path -LiteralPath $sumsPath)) { throw "SHA256SUMS.txt missing in $SrcTag" }
-            foreach ($line in [System.IO.File]::ReadAllLines($sumsPath)) {
-                $t = $line.Trim()
-                if (-not $t) { continue }
-                $parts = $t -split '\s+', 2
-                $f = Join-Path $bakDir $parts[1].TrimStart('*')
-                if (-not (Test-Path -LiteralPath $f)) { throw "Missing asset $($parts[1])" }
+            # Integrity source of truth = GitHub's server-side asset digests (sha256 of the uploaded bytes).
+            # The published SHA256SUMS.txt is NOT trusted: concurrent CI runs used to clobber v2.0.1 assets
+            # from different builds, so SHA256SUMS.txt may describe another build than the zip next to it.
+            $relJson = (& gh api "repos/{owner}/{repo}/releases/tags/$SrcTag") | Out-String | ConvertFrom-Json
+            $digestLines = New-Object System.Collections.Generic.List[string]
+            foreach ($asset in $relJson.assets) {
+                $f = Join-Path $bakDir $asset.name
+                if (-not (Test-Path -LiteralPath $f)) { throw "Missing downloaded asset $($asset.name)" }
                 $actual = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant()
-                if ($actual -ne $parts[0].ToLowerInvariant()) { throw "SHA256 mismatch on $($parts[1])" }
+                if ($asset.digest) {
+                    $expected = ($asset.digest -replace '^sha256:', '').ToLowerInvariant()
+                    if ($actual -ne $expected) { throw "Download corrupted: $($asset.name) does not match GitHub digest" }
+                }
+                $digestLines.Add("$actual  $($asset.name)")
+            }
+
+            $sumsNote = ""
+            $sumsPath = Join-Path $bakDir "SHA256SUMS.txt"
+            if (Test-Path -LiteralPath $sumsPath) {
+                foreach ($line in [System.IO.File]::ReadAllLines($sumsPath)) {
+                    $t = $line.Trim()
+                    if (-not $t) { continue }
+                    $parts = $t -split '\s+', 2
+                    $name = $parts[1].TrimStart('*')
+                    $f = Join-Path $bakDir $name
+                    if (Test-Path -LiteralPath $f) {
+                        $actual = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant()
+                        if ($actual -ne $parts[0].ToLowerInvariant()) {
+                            $sumsNote += "- WARNING: published SHA256SUMS.txt does not match ``$name`` (assets were clobbered by concurrent CI runs). Use the digests below.`r`n"
+                        }
+                    }
+                }
             }
 
             $tagSha = (& gh api "repos/{owner}/{repo}/git/ref/tags/$SrcTag" -q .object.sha 2>$null)
@@ -65,15 +87,18 @@ function Ensure-ImmutableBackupRelease([string]$SrcTag, [string]$DstTag, [string
             $bakText = "Immutable backup mirror of stable release **$SrcTag**.`r`n`r`n" +
                        "- Assets were built from commit ``$SrcCommit``.`r`n" +
                        "- Git tag ``$SrcTag`` points to ``$tagSha``.`r`n" +
-                       "- Every asset was verified against SHA256SUMS.txt before mirroring.`r`n"
+                       "- Every asset was verified against GitHub's server-side sha256 digest before mirroring.`r`n" +
+                       $sumsNote + "`r`nActual SHA256 of the mirrored assets:`r`n``````text`r`n" + ($digestLines -join "`r`n") + "`r`n```````r`n"
             [System.IO.File]::WriteAllText($bakNotes, $bakText, (New-Object System.Text.UTF8Encoding($false)))
 
-            & cmd.exe /d /s /c "gh release create $DstTag --target $SrcCommit --title `"RFAB Online $SrcTag (Immutable Backup Archive)`" --notes-file `"$bakNotes`" --prerelease"
-            if ($LASTEXITCODE -ne 0) { throw "gh release create $DstTag failed" }
+            # Create the release together with all assets in one call, so a half-uploaded backup is never left behind.
+            $assetArgs = (Get-ChildItem -LiteralPath $bakDir -File | ForEach-Object { "`"$($_.FullName)`"" }) -join " "
+            & cmd.exe /d /s /c "gh release create $DstTag $assetArgs --target $SrcCommit --title `"RFAB Online $SrcTag (Immutable Backup Archive)`" --notes-file `"$bakNotes`" --prerelease"
+            $createCode = $LASTEXITCODE
             Remove-Item -LiteralPath $bakNotes -Force -ErrorAction SilentlyContinue
-            Get-ChildItem -LiteralPath $bakDir -File | ForEach-Object {
-                & cmd.exe /d /s /c "gh release upload $DstTag `"$($_.FullName)`" --clobber"
-                if ($LASTEXITCODE -ne 0) { throw "upload of $($_.Name) to $DstTag failed" }
+            if ($createCode -ne 0) {
+                & cmd.exe /d /s /c "gh release delete $DstTag --yes --cleanup-tag >nul 2>&1"
+                throw "gh release create $DstTag failed (exit $createCode); partial backup removed"
             }
             Write-Host "[BACKUP] Created verified GitHub backup release $DstTag!" -ForegroundColor Green
         } finally {
