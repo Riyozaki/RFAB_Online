@@ -359,7 +359,9 @@ TEST_CASE("v2.0.3 playtest hardening: level-sync must never demolish a live acto
         // equipment was rebuilt from stale spawn data ("attacked with a non-primary weapon").
         const size_t reconcileStart = clientCharCpp.find("bool CharacterService::ReconcilePlacedActorBaseFormInPlace");
         REQUIRE(reconcileStart != std::string::npos);
-        const size_t reconcileEnd = clientCharCpp.find("\n}\n", reconcileStart);
+        // NOTE: CI checks out with CRLF and the file is read in binary mode, so anchor on "\n}" (a closing brace
+        // in column 0) instead of "\n}\n": indented braces never match, and CRLF keeps the leading "\n" intact.
+        const size_t reconcileEnd = clientCharCpp.find("\n}", reconcileStart);
         REQUIRE(reconcileEnd != std::string::npos);
         const std::string body = clientCharCpp.substr(reconcileStart, reconcileEnd - reconcileStart);
 
@@ -392,7 +394,7 @@ TEST_CASE("v2.0.3 playtest hardening: level-sync must never demolish a live acto
         const std::string clientCharCpp = LoadV203RepoFile(root, "Code/client/Services/Generic/CharacterService.cpp");
         const size_t fnStart = clientCharCpp.find("void CharacterService::OnNotifyRelinquishControl");
         REQUIRE(fnStart != std::string::npos);
-        const size_t fnEnd = clientCharCpp.find("\n}\n", fnStart);
+        const size_t fnEnd = clientCharCpp.find("\n}", fnStart);
         REQUIRE(fnEnd != std::string::npos);
         const std::string body = clientCharCpp.substr(fnStart, fnEnd - fnStart);
 
