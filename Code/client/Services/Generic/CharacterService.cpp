@@ -1472,8 +1472,10 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             // `CancelServerAssignment()` -> ownership transfer to the server -> the NPC lost its local AI
             // (it "ignored" the player) and had its equipment re-applied from stale spawn data (it fought
             // with a non-primary weapon) until the next assignment round.
-            // The owner client is authoritative for its own actors: keep the live base form and publish it
-            // upwards through `RequestOwnershipClaim` (`ActorData::BaseId`) instead.
+            // The owner client is authoritative for its own actors: keep the live base form. The wire format is
+            // deliberately left untouched (`ActorData` carries no base id), because RFAB's leveled templates live
+            // in the dynamic `0xFF00xxxx` range and `ModSystem::GetServerModId` would map them onto an unrelated
+            // static form on the receiving side. Full template parity for peers is the v2.0.4 backlog item.
             const uint32_t cExpectedBaseId = m_world.GetModSystem().GetGameId(modelIt->second.SpawnRequest.BaseId);
             if (cExpectedBaseId != 0 && pActor->baseForm && pActor->baseForm->formID != cExpectedBaseId)
             {
