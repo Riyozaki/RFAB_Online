@@ -334,8 +334,9 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 pTargetActorEx->IsRemote() &&
                 !pTargetActorEx->IsPlayer())
             {
+                const int32_t effectDurationSec = arData.pEffectItem ? arData.pEffectItem->data.iDuration : 0;
                 const uint64_t durationMs =
-                    static_cast<uint64_t>(std::max(0.0f, arData.fDuration) * 1000.0f) + 2000ULL;
+                    static_cast<uint64_t>(std::max<int32_t>(0, effectDurationSec)) * 1000ULL + 2000ULL;
                 Actor::ArmLocalPlayerScriptDamageWindow(pTargetActor->formID, durationMs);
             }
 
