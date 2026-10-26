@@ -1,5 +1,6 @@
 #pragma once
 
+#include <TiltedCore/Buffer.hpp>
 #include <Structs/GameId.h>
 #include <Structs/GridCellCoords.h>
 
