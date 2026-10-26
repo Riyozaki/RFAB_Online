@@ -200,7 +200,7 @@ try {
     $PdbZip       = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_PDB_Symbols.zip"
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
-    $RelFlags     = if ($IsPrereleaseTag) { "--prerelease" } else { "--prerelease=false --latest" }
+    $RelFlags     = if ($IsPrereleaseTag) { "--prerelease" } else { '"--prerelease=false" --latest' }
     $CreateFlags  = if ($IsPrereleaseTag) { "--prerelease" } else { "--latest" }
 
     if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
