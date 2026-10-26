@@ -123,7 +123,52 @@ def main() -> int:
     assert "RFAB_Online_Crash.log" in main_cpp
     assert "CoopOverlayApp" in overlay_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 architectural regression checks passed!")
+    # 10. Stages 0-3 SkyMP-grade Root-Cause Stabilization & Cross-Version RFAB Compatibility
+    backup_manifest = (ROOT / "docs" / "V2.0.1_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    actor_ext_h = (ROOT / "Code" / "client" / "Games" / "ActorExtension.h").read_text(encoding="utf-8")
+    memory_cpp = (ROOT / "Code" / "client" / "Games" / "Memory.cpp").read_text(encoding="utf-8")
+    ni_ptr_h = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "NetImmerse" / "NiPointer.h").read_text(encoding="utf-8")
+    actor_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Actor.cpp").read_text(encoding="utf-8")
+    rfab_compat_h = (ROOT / "Code" / "common" / "RfabModpackCompat.h").read_text(encoding="utf-8")
+    rfab_adapter_cpp = (ROOT / "Code" / "client" / "Services" / "RfabAdapterService.cpp").read_text(encoding="utf-8")
+    assert '"v2.0.1-backup"' in backup_manifest
+    assert "std::is_trivially_destructible_v<ActorExtension>" in actor_ext_h
+    assert "kActorValueListByteSize = 0x528" in memory_cpp
+    assert "TP_HOOK_IAT(_recalloc, cHeapModule)" in memory_cpp
+    assert "~NiPointer() noexcept" in ni_ptr_h
+    assert "ScopedLethalPlayerDamageIntercept" in actor_cpp
+    assert "65536.0f" not in actor_cpp
+    assert "pPlayer->DispelHostileEffects();" in coord_save_cpp
+    assert "pPlayer->DispelAllSpells();" not in coord_save_cpp
+    assert "MoveToWorldOrCell" in coord_save_cpp
+    assert "ownerComponent.SetOwner(nullptr, nowMs)" in srv_char_cpp
+    assert "m_actorEntityByFormId" in (ROOT / "Code" / "client" / "Services" / "CharacterService.h").read_text(encoding="utf-8")
+    assert "class EspEdidIndex" in rfab_compat_h
+    assert "ParseActivePluginList" in rfab_compat_h
+    assert "ResolveRfabConfigPath" in rfab_compat_h
+    assert "m_espEdidIndex.IndexRfabPluginsInDataDir" in rfab_adapter_cpp
+
+    # 11. v2.0.2 SkyMP-Grade Server Authority, Anti-Dupe Ledger, Zero-Spoof Security & O(1) Indexing
+    loot_ledger_h = (ROOT / "Code" / "common" / "CoopLootLedger.h").read_text(encoding="utf-8")
+    srv_inv_cpp = (ROOT / "Code" / "server" / "Services" / "InventoryService.cpp").read_text(encoding="utf-8")
+    srv_av_cpp = (ROOT / "Code" / "server" / "Services" / "ActorValueService.cpp").read_text(encoding="utf-8")
+    srv_magic_cpp = (ROOT / "Code" / "server" / "Services" / "MagicService.cpp").read_text(encoding="utf-8")
+    srv_mods_cpp = (ROOT / "Code" / "server" / "Components" / "ModsComponent.cpp").read_text(encoding="utf-8")
+    srv_game_cpp = (ROOT / "Code" / "server" / "GameServer.cpp").read_text(encoding="utf-8")
+    srv_party_cpp = (ROOT / "Code" / "server" / "Services" / "PartyService.cpp").read_text(encoding="utf-8")
+    srv_obj_cpp = (ROOT / "Code" / "server" / "Services" / "ObjectService.cpp").read_text(encoding="utf-8")
+    cli_utils_h = (ROOT / "Code" / "client" / "Utils.h").read_text(encoding="utf-8")
+    assert "class ContainerLootLedger" in loot_ledger_h
+    assert "m_lootLedger.EvaluateWithdrawal" in srv_inv_cpp and "OverdrawnRollback" in srv_inv_cpp
+    assert "kExternalDamageReconcileWindowMs" in srv_av_cpp and "IsBossGhost(message.Id)" in srv_av_cpp
+    assert "senderAuthorized" in srv_magic_cpp
+    assert "NormalizeModFilenameKey" in srv_mods_cpp
+    assert "Duplicate AuthenticationRequest" in srv_game_cpp
+    assert "m_world.view<PartyComponent>()" not in srv_party_cpp
+    assert "m_objectEntityByKey" in srv_obj_cpp
+    assert "FindEntityByServerId(acServerId)" in cli_utils_h
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 SkyMP root-cause regression checks passed!")
     return 0
 
 

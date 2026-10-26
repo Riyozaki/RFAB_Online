@@ -47,18 +47,18 @@ void CombatController::UpdateTarget()
         }
     }
 
-    // Thread-safe AI worker guard: check lock-free atomic ActorExtension::HasCombatTargetLock() instead of touching EnTT views!
-    if (Actor* pAttacker = Cast<Actor>(TESObjectREFR::GetByHandle(attackerHandle)))
+    // Thread-safe AI worker guard: hold owning GamePtr and check lock-free atomic ActorExtension::HasCombatTargetLock().
+    if (GamePtr<Actor> spAttacker = Actor::LookupByHandle(attackerHandle))
     {
-        if (const auto* pExt = pAttacker->GetExtension(); pExt && pExt->HasCombatTargetLock())
+        if (const auto* pExt = spAttacker->GetExtension(); pExt && (pExt->IsRemote() || pExt->HasCombatTargetLock()))
             return;
     }
 
     if (newTarget.handle.iBits == targetHandle)
         return;
 
-    Actor* pNewTarget = Cast<Actor>(TESObjectREFR::GetByHandle(newTarget.handle.iBits));
-    SetTarget(pNewTarget);
+    GamePtr<Actor> spNewTarget = Actor::LookupByHandle(newTarget.handle.iBits);
+    SetTarget(spNewTarget.Get());
 }
 
 TP_THIS_FUNCTION(TUpdateTarget, void, CombatController);
@@ -66,20 +66,54 @@ static TUpdateTarget* RealUpdateTarget = nullptr;
 
 void TP_MAKE_THISCALL(HookUpdateTarget, CombatController)
 {
+    if (!apThis)
+        return;
+
+    // Hold owning handle reference across the entire AI worker-thread hook so main-thread actor
+    // cleanup cannot free the Actor mid-execution.
+    GamePtr<Actor> spAttacker = apThis->attackerHandle ? Actor::LookupByHandle(apThis->attackerHandle) : nullptr;
+    if (spAttacker)
+    {
+        if (auto* pAttackerExt = spAttacker->GetExtension())
+        {
+            // Never let Skyrim's local AI target selector overwrite a remote-owned actor's combat target.
+            if (pAttackerExt->IsRemote())
+                return;
+
+            // Enforce authoritative boss/aggro target lock directly inside the active AI hook (SE 32489),
+            // releasing the lock automatically if the locked target died or entered downed state.
+            if (pAttackerExt->HasCombatTargetLock())
+            {
+                GamePtr<Actor> spLockedTarget = apThis->targetHandle ? Actor::LookupByHandle(apThis->targetHandle) : nullptr;
+                const auto* pLockedExt = spLockedTarget ? spLockedTarget->GetExtension() : nullptr;
+                if (spLockedTarget &&
+                    spLockedTarget->formID != 0 &&
+                    !spLockedTarget->IsDead() &&
+                    !(pLockedExt && pLockedExt->IsDownedPlayer()))
+                {
+                    return;
+                }
+
+                pAttackerExt->SetCombatTargetLock(false);
+            }
+        }
+    }
+
     TiltedPhoques::ThisCall(RealUpdateTarget, apThis);
 
-    if (!apThis || apThis->targetHandle == 0)
+    if (apThis->targetHandle == 0)
         return;
 
     // Thread-safe AI worker guard: never touch EnTT views here!
     // Check atomic ActorExtension::IsDownedPlayer() on the selected target; if the AI picked a downed player
     // (local 0x14 or remote clone), seamlessly retarget onto the nearest standing player via mutex-protected
     // CoopCombatSnapshot (or clear target to nullptr if all players in range are downed).
-    Actor* pCurrentTarget = Cast<Actor>(TESObjectREFR::GetByHandle(apThis->targetHandle));
-    if (pCurrentTarget && pCurrentTarget->GetExtension() && pCurrentTarget->GetExtension()->IsDownedPlayer())
+    GamePtr<Actor> spCurrentTarget = Actor::LookupByHandle(apThis->targetHandle);
+    if (spCurrentTarget && spCurrentTarget->GetExtension() && spCurrentTarget->GetExtension()->IsDownedPlayer())
     {
-        Actor* pAttacker = apThis->attackerHandle ? Cast<Actor>(TESObjectREFR::GetByHandle(apThis->attackerHandle)) : nullptr;
-        Actor* pReplacement = World::Get().GetRfabAdapterService().FindBestStandingPlayerTargetFor(pAttacker);
+        Actor* pReplacement = World::IsConnectedCached()
+            ? World::Get().GetRfabAdapterService().FindBestStandingPlayerTargetFor(spAttacker.Get())
+            : nullptr;
         apThis->SetTarget(pReplacement);
     }
 }
@@ -100,4 +134,3 @@ static TiltedPhoques::Initializer s_combatControllerHooks(
 
         TP_HOOK(&RealUpdateTarget, HookUpdateTarget);
     });
-

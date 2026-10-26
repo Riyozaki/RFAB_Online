@@ -433,17 +433,15 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
 
     // Because it takes time to create Actors, the Caster or Target may not
     // exist on the server yet, or server may not have told us yet. Have to queue to compensate.
-    auto view = m_world.view<FormIdComponent>();
-    const auto it = std::find_if(std::begin(view), std::end(view), [id = acEvent.TargetID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-    if (it == std::end(view))
+    const entt::entity targetEntity = m_world.GetCharacterService().FindActorEntityByFormId(acEvent.TargetID);
+    if (targetEntity == entt::null)
     {
         MagicQueue::Spdlog("{}: server entity for target formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.TargetID);
         m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
         return;
     }
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(targetEntity);
     if (!serverIdRes.has_value())
     {
         MagicQueue::Spdlog("{}: server ID for target formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.TargetID);
@@ -455,16 +453,15 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
 
     if (acEvent.CasterID)
     {
-        const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = acEvent.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-        if (casterIt == std::end(view))
+        const entt::entity casterEntity = m_world.GetCharacterService().FindActorEntityByFormId(acEvent.CasterID);
+        if (casterEntity == entt::null)
         {
             MagicQueue::Spdlog("{}: server entity for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
-            m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));  
+            m_queuedEffects.push(MagicAddTargetEventQueue(acEvent));
             return;
         }
 
-        serverIdRes = Utils::GetServerId(*casterIt);
+        serverIdRes = Utils::GetServerId(casterEntity);
         if (!serverIdRes.has_value())
         {
             MagicQueue::Spdlog("{}: server ID for caster formID not found, formID: {:X}, queueing", __FUNCTION__, acEvent.CasterID);
@@ -601,18 +598,14 @@ void MagicService::OnRemoveSpellEvent(const RemoveSpellEvent& acEvent) noexcept
         return;
     }
 
-    auto view = m_world.view<FormIdComponent>();
-    const auto it = std::find_if(std::begin(view), std::end(view), [id = acEvent.TargetId, view](auto entity) {
-        return view.get<FormIdComponent>(entity).Id == id;
-    });
-
-    if (it == std::end(view))
+    const entt::entity targetEntity = m_world.GetCharacterService().FindActorEntityByFormId(acEvent.TargetId);
+    if (targetEntity == entt::null)
     {
         spdlog::warn("Form id not found for magic remove target, form id: {:X}", acEvent.TargetId);
         return;
     }
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*it);
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(targetEntity);
     if (!serverIdRes.has_value())
     {
         spdlog::warn("Server id not found for magic remove target, form id: {:X}", acEvent.TargetId);
@@ -672,8 +665,8 @@ void MagicService::ApplyQueuedEffects() noexcept
     while (!m_queuedEffects.empty())
     {
         AddTargetEvent target = m_queuedEffects.front().Target();
-        Actor* pCaster = Cast<Actor>(TESForm::GetById(target.CasterID));
-        Actor* pTarget = Cast<Actor>(TESForm::GetById(target.TargetID));
+        Actor* pCaster = target.CasterID ? Cast<Actor>(TESForm::GetById(target.CasterID)) : nullptr;
+        Actor* pTarget = target.TargetID ? Cast<Actor>(TESForm::GetById(target.TargetID)) : nullptr;
         auto pTargetName = (!pTarget || !pTarget->baseForm) ? "" : pTarget->baseForm->GetName();
         auto pCasterName = (!pCaster || !pCaster->baseForm) ? "" : pCaster->baseForm->GetName();
 
@@ -683,19 +676,14 @@ void MagicService::ApplyQueuedEffects() noexcept
                                __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
         else
         {
-            // Process queued target events. If caster and target now have server IDs, this should work.
-            // If they don't, stop processing the list until next iteration.
-            auto view = m_world.view<FormIdComponent>();
-            const auto it = std::find_if(std::begin(view), std::end(view), [id = target.TargetID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-            if (it == std::end(view))
+            const entt::entity entity = m_world.GetCharacterService().FindActorEntityByFormId(target.TargetID);
+            if (entity == entt::null)
             {
                 spdlog::debug("{}: server entity for AddTargetEvent target formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
                               __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
                 break;
             }
 
-            entt::entity entity = *it;
             std::optional<uint32_t> serverIdRes = Utils::GetServerId(entity);
             if (!serverIdRes.has_value())
             {
@@ -706,16 +694,15 @@ void MagicService::ApplyQueuedEffects() noexcept
 
             if (target.CasterID)
             {
-                const auto casterIt = std::find_if(std::begin(view), std::end(view), [id = target.CasterID, view](auto entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-                if (casterIt == std::end(view))
+                const entt::entity casterEntity = m_world.GetCharacterService().FindActorEntityByFormId(target.CasterID);
+                if (casterEntity == entt::null)
                 {
                     spdlog::debug("{}: serverID for AddTargetEvent caster formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",
                                   __FUNCTION__, pCasterName, target.CasterID, target.SpellID, target.EffectID, pTargetName, target.TargetID);
                     break;
                 }
 
-                serverIdRes = Utils::GetServerId(*casterIt);
+                serverIdRes = Utils::GetServerId(casterEntity);
                 if (!serverIdRes.has_value())
                 {
                     spdlog::debug("{}: serverID for AddTargetEvent caster formID still not found: caster {}({:X}), spell {:X}, effect {:X}, target {}({:X})",

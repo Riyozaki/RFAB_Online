@@ -180,6 +180,9 @@ bool ApplyRfabDllPerkPlacementBoundsFixPostSkse() noexcept
         s_result = true;
         return true;
     }
+
+    spdlog::info(
+        "[RFAB SkillsMenu] RFAB.dll PerkPlacement loop signature not matched (likely updated RFAB.dll); relying on HookFormAllocate ActorValueList zero-sentinel tail.");
 #endif
     return false;
 }

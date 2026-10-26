@@ -8,11 +8,11 @@
 
 struct MovementComponent
 {
-    uint64_t Tick;
-    glm::vec3 Position;
-    glm::vec3 Rotation;
-    AnimationVariables Variables;
-    float Direction;
+    uint64_t Tick{0};
+    glm::vec3 Position{};
+    glm::vec3 Rotation{};
+    AnimationVariables Variables{};
+    float Direction{0.f};
 
-    bool Sent;
+    bool Sent{true};
 };

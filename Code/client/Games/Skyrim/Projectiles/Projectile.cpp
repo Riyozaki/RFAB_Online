@@ -46,8 +46,8 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
         return nullptr;
     }
 
-    TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
-    Projectile* pProjectile = Cast<Projectile>(pObject);
+    GamePtr<TESObjectREFR> spObject = TESObjectREFR::LookupByHandle(result->handle.iBits);
+    Projectile* pProjectile = Cast<Projectile>(spObject.Get());
 
     if (!pProjectile)
     {
@@ -125,13 +125,14 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
         return nullptr;
     }
 
-    TESObjectREFR* pObject = TESObjectREFR::GetByHandle(result->handle.iBits);
-    Projectile* pProjectile = Cast<Projectile>(pObject);
+    GamePtr<TESObjectREFR> spObject = TESObjectREFR::LookupByHandle(result->handle.iBits);
+    Projectile* pProjectile = Cast<Projectile>(spObject.Get());
 
     if (pProjectile)
         Event.Power = pProjectile->fPower;
 
-    World::Get().GetRunner().Trigger(Event);
+    if (World::IsConnectedCached())
+        World::Get().GetRunner().Trigger(Event);
 
     return result;
 }

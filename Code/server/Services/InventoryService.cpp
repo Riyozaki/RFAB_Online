@@ -13,9 +13,18 @@
 #include <Messages/DrawWeaponRequest.h>
 
 #include <Setting.h>
+#include <chrono>
 namespace
 {
 Console::Setting bEnableItemDrops{"Gameplay:bEnableItemDrops", "Syncs dropped items in the 3D world across players", true};
+
+uint64_t SteadyInventoryNowMs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 }
 
 InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher)
@@ -38,19 +47,17 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
 
     // Strict player inventory ownership isolation: a peer client's remote puppet scripts must NEVER
     // add or remove items from another player's character inventory!
-    if (const auto* pChar = m_world.try_get<CharacterComponent>(cOrigin))
+    const auto* pChar = m_world.try_get<CharacterComponent>(cOrigin);
+    if (pChar && pChar->IsPlayer())
     {
-        if (pChar->IsPlayer())
+        const auto* pOwner = m_world.try_get<OwnerComponent>(cOrigin);
+        if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
         {
-            const auto* pOwner = m_world.try_get<OwnerComponent>(cOrigin);
-            if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
-            {
-                spdlog::warn(
-                    "Rejected cross-client inventory mutation on player entity {:X} from sender {:X}",
-                    message.ServerId,
-                    acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0);
-                return;
-            }
+            spdlog::warn(
+                "Rejected cross-client inventory mutation on player entity {:X} from sender {:X}",
+                message.ServerId,
+                acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0);
+            return;
         }
     }
 
@@ -62,11 +69,70 @@ void InventoryService::OnInventoryChanges(const PacketEvent<RequestInventoryChan
     auto view = m_world.view<InventoryComponent>();
 
     const auto it = view.find(cOrigin);
+    const bool isSharedContainerOrNpc = (!pChar || !pChar->IsPlayer());
 
     if (it != view.end())
     {
         auto& inventoryComponent = view.get<InventoryComponent>(*it);
+
+        if (isSharedContainerOrNpc)
+        {
+            if (sanitizedItem.Count > 0)
+            {
+                m_lootLedger.RecordDeposit(message.ServerId, sanitizedItem.BaseId);
+            }
+            else if (sanitizedItem.Count < 0 && !message.Drop && acMessage.pPlayer)
+            {
+                GameId lookupId = sanitizedItem.BaseId;
+                const int32_t availableBefore = inventoryComponent.Content.GetEntryCountById(lookupId);
+                const auto claim = m_lootLedger.EvaluateWithdrawal(
+                    message.ServerId,
+                    sanitizedItem.BaseId,
+                    acMessage.pPlayer->GetId(),
+                    availableBefore,
+                    -sanitizedItem.Count,
+                    sanitizedItem.IsQuestItem,
+                    SteadyInventoryNowMs());
+
+                if (claim.OverdrawnRollback > 0)
+                {
+                    if (const auto senderCharOpt = acMessage.pPlayer->GetCharacter();
+                        senderCharOpt.has_value() && m_world.valid(*senderCharOpt))
+                    {
+                        Inventory::Entry rollbackEntry = sanitizedItem;
+                        rollbackEntry.Count = -claim.OverdrawnRollback;
+                        rollbackEntry.ExtraWorn = false;
+                        rollbackEntry.ExtraWornLeft = false;
+
+                        if (auto* pSenderInv = m_world.try_get<InventoryComponent>(*senderCharOpt))
+                            pSenderInv->Content.AddOrRemoveEntry(rollbackEntry);
+
+                        NotifyInventoryChanges rollbackNotify{};
+                        rollbackNotify.ServerId = World::ToInteger(*senderCharOpt);
+                        rollbackNotify.Item = std::move(rollbackEntry);
+                        rollbackNotify.Drop = false;
+                        acMessage.pPlayer->Send(rollbackNotify);
+
+                        spdlog::info(
+                            "[RFAB AntiDupe] Rolled back {}x overdrawn item {:X}:{:X} from container {:X} on player {}",
+                            claim.OverdrawnRollback,
+                            sanitizedItem.BaseId.ModId,
+                            sanitizedItem.BaseId.BaseId,
+                            message.ServerId,
+                            acMessage.pPlayer->GetId());
+                    }
+                }
+
+                if (claim.GrantedTake <= 0)
+                    return;
+
+                sanitizedItem.Count = -claim.GrantedTake;
+            }
+        }
+
         inventoryComponent.Content.AddOrRemoveEntry(sanitizedItem);
+        if (auto* pObjComp = m_world.try_get<ObjectComponent>(*it))
+            pObjComp->HasAuthoritativeMutation = true;
     }
 
     if (!message.UpdateClients)

@@ -1,12 +1,15 @@
 ﻿param(
-    [string]$VersionTag = "v2.0.1",
-    [string]$BuildMode = "releasedbg"
+    [string]$VersionTag = "v2.0.2",
+    [string]$BuildMode = "releasedbg",
+    [bool]$PublishRelease = $true,
+    [switch]$SkipPublish
 )
+if ($SkipPublish) { $PublishRelease = $false }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup")
 if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v2.0.1' (previous releases are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v2.0.1"
+    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v2.0.2' (previous releases are preserved untouched)." -ForegroundColor Yellow
+    $VersionTag = "v2.0.2"
 }
 if ($VersionTag -in $ProtectedTags) {
     throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"
@@ -78,8 +81,18 @@ function Ensure-V120BackupRelease([string]$RepoRootPath) {
     }
 }
 
+function Write-StepSummary([string]$MarkdownText) {
+    try {
+        if ($env:GITHUB_STEP_SUMMARY) {
+            [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, ($MarkdownText + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+        }
+    } catch {}
+}
+
 function Update-ReleaseTelemetry([string]$StateTitle, [string]$BodyText) {
     try {
+        Write-StepSummary $BodyText
+        if (-not $PublishRelease) { return }
         if ($VersionTag -in $ProtectedTags) { return }
         if ($StateTitle.Length -gt 200) { $StateTitle = $StateTitle.Substring(0, 200) }
         if ($BodyText.Length -gt 60000) {
@@ -134,7 +147,7 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
             $compactTail = @($tailShow | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             $script:LastDiagTail = ($compactTail -join "`r`n")
             Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n")
-            if ($VersionTag -notin $ProtectedTags) {
+            if ($PublishRelease -and ($VersionTag -notin $ProtectedTags)) {
                 $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
                 Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
                 & cmd.exe /d /s /c "gh release upload $VersionTag `"$failLogAsset`" --clobber >nul 2>&1"
@@ -187,45 +200,52 @@ try {
     $PdbZip       = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_PDB_Symbols.zip"
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
     $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
-    $RelFlags     = if ($IsPrereleaseTag) { "--prerelease" } else { "--prerelease=false --latest" }
+    $RelFlags     = if ($IsPrereleaseTag) { "--prerelease" } else { '"--prerelease=false" --latest' }
     $CreateFlags  = if ($IsPrereleaseTag) { "--prerelease" } else { "--latest" }
-
-    & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
-    if ($LASTEXITCODE -ne 0) {
-        Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
-            "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $CreateFlags"
-    } else {
-        Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
-            "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
-    }
-
-    foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {
-        $assetName = Split-Path -Leaf $assetPath
-        $uploadedOk = $false
-        for ($attempt = 1; $attempt -le 4; $attempt++) {
-            Write-Host "::group::Upload $assetName (attempt $attempt/4)"
-            & cmd.exe /d /s /c "gh release upload $VersionTag `"$assetPath`" --clobber 2>&1"
-            $upCode = $LASTEXITCODE
-            Write-Host "::endgroup::"
-            if ($upCode -eq 0) {
-                Emit-Annotation "notice" "RFAB_UPLOAD" "OK: Uploaded $assetName (attempt $attempt)"
-                $uploadedOk = $true
-                break
-            }
-            Write-Warning "Transient upload failure for $assetName (attempt $attempt/4, exit $upCode); retrying in 4s..."
-            Start-Sleep -Seconds 4
-        }
-        if (-not $uploadedOk) {
-            throw "[7/7] Failed to upload $assetName after 4 attempts"
-        }
-    }
 
     if (Test-Path -LiteralPath (Split-Path -Parent $CacheMarker)) {
         [System.IO.File]::WriteAllText($CacheMarker, "ok")
     }
-    & cmd.exe /d /s /c "gh release delete-asset $VersionTag build_step_log.txt --yes >nul 2>&1"
-    & cmd.exe /d /s /c "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
-    Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/Riyozaki/RFAB_Online/releases/tag/$VersionTag"
+
+    if (-not $PublishRelease) {
+        Write-Host "`n==> [7/7] Skipping GitHub Release upload (PublishRelease=false; verified bundles saved in release_artifacts\)" -ForegroundColor Green
+        Write-StepSummary "## CI Build & Bundle Verification Passed ($CommitSha)`r`n`r`nGitHub Release $VersionTag and protected backup tags were left untouched (PublishRelease=false)."
+        Emit-Annotation "notice" "BUILD_VERIFIED" "Verified build + tests + clean bundles for $CommitSha (GitHub Release untouched)"
+    } else {
+        & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
+                "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $CreateFlags"
+        } else {
+            Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
+                "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
+        }
+
+        foreach ($assetPath in @($QuickUpdZip, $InstallerZip, $PdbZip, $ShaFile)) {
+            $assetName = Split-Path -Leaf $assetPath
+            $uploadedOk = $false
+            for ($attempt = 1; $attempt -le 4; $attempt++) {
+                Write-Host "::group::Upload $assetName (attempt $attempt/4)"
+                & cmd.exe /d /s /c "gh release upload $VersionTag `"$assetPath`" --clobber 2>&1"
+                $upCode = $LASTEXITCODE
+                Write-Host "::endgroup::"
+                if ($upCode -eq 0) {
+                    Emit-Annotation "notice" "RFAB_UPLOAD" "OK: Uploaded $assetName (attempt $attempt)"
+                    $uploadedOk = $true
+                    break
+                }
+                Write-Warning "Transient upload failure for $assetName (attempt $attempt/4, exit $upCode); retrying in 4s..."
+                Start-Sleep -Seconds 4
+            }
+            if (-not $uploadedOk) {
+                throw "[7/7] Failed to upload $assetName after 4 attempts"
+            }
+        }
+
+        & cmd.exe /d /s /c "gh release delete-asset $VersionTag build_step_log.txt --yes >nul 2>&1"
+        & cmd.exe /d /s /c "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
+        Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/Riyozaki/RFAB_Online/releases/tag/$VersionTag"
+    }
     $global:LASTEXITCODE = 0
     exit 0
 } catch {

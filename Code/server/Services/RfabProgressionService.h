@@ -201,6 +201,12 @@ public:
         m_bossGhostStates.erase(aServerEntityId);
     }
 
+    [[nodiscard]] bool IsBossGhost(uint32_t aServerEntityId) const noexcept
+    {
+        const auto it = m_bossGhostStates.find(aServerEntityId);
+        return it != m_bossGhostStates.end() && it->second;
+    }
+
     [[nodiscard]] Snapshot CaptureSnapshot() const
     {
         return Snapshot{

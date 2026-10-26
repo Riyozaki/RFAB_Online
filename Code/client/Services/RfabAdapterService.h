@@ -121,6 +121,7 @@ private:
 
     RfabCompat::RfabBindingsConfig m_bindings{};
     RfabCompat::RfabLiveXpTable m_liveXpTable{};
+    RfabCompat::EspEdidIndex m_espEdidIndex{};
 
     TESGlobal* m_pCachedXpGlobal{nullptr};
     TESGlobal* m_pCachedXpMultiplierGlobal{nullptr};

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <shared_mutex>
+
 struct Mods;
 struct GameId;
 
@@ -28,6 +30,7 @@ private:
         bool isLite;
     };
 
+    mutable std::shared_mutex m_mutex;
     entt::scoped_connection m_modsConnection;
     Map<uint16_t, uint32_t> m_liteToServer;
     Map<uint32_t, GameMod> m_serverToGame;

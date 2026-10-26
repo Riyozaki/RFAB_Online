@@ -120,6 +120,17 @@ struct RfabLiveXpTable
     std::unordered_map<std::string, float> XpMultipliers{};
     std::unordered_set<std::string> BossEditorIds{};
     std::unordered_set<uint32_t> BossBaseFormIds{};
+    std::unordered_set<std::string> BossPluginFormKeys{};
+    std::unordered_set<uint32_t> UnscopedBossBaseFormIds{};
+
+    [[nodiscard]] static std::string FormatPluginFormKey(std::string_view aLowerPluginName, uint32_t aLocalFormId)
+    {
+        char buf[32]{};
+        std::snprintf(buf, sizeof(buf), "|%06X", aLocalFormId & 0x00FFFFFFu);
+        std::string out(aLowerPluginName);
+        out.append(buf);
+        return out;
+    }
 
     [[nodiscard]] int32_t GetThresholdForLevel(uint32_t aLevel) const noexcept
     {
@@ -132,6 +143,26 @@ struct RfabLiveXpTable
     {
         const uint32_t baseId = aFormId & 0x00FFFFFFu;
         return baseId != 0 && BossBaseFormIds.find(baseId) != BossBaseFormIds.end();
+    }
+
+    [[nodiscard]] bool ContainsBossForm(std::string_view aPluginName, uint32_t aLocalFormId) const noexcept
+    {
+        const uint32_t baseId = aLocalFormId & 0x00FFFFFFu;
+        if (baseId == 0)
+            return false;
+
+        if (!aPluginName.empty())
+        {
+            std::string lowerPlugin(aPluginName);
+            std::transform(lowerPlugin.begin(), lowerPlugin.end(), lowerPlugin.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (BossPluginFormKeys.find(FormatPluginFormKey(lowerPlugin, baseId)) != BossPluginFormKeys.end())
+                return true;
+            return UnscopedBossBaseFormIds.find(baseId) != UnscopedBossBaseFormIds.end();
+        }
+
+        return ContainsBossBaseFormId(baseId);
     }
 };
 
@@ -710,15 +741,34 @@ inline void ParseExperienceIni(std::string_view aContent, RfabLiveXpTable& aTabl
 
         if (currentSection.find("boss") != std::string::npos)
         {
-            if (const size_t hexPos = Detail::ToLowerAscii(lhs).find("0x"); hexPos != std::string::npos)
+            const std::string lowerLhs = Detail::ToLowerAscii(lhs);
+            if (const size_t hexPos = lowerLhs.find("0x"); hexPos != std::string::npos)
             {
-                const uint32_t formId = static_cast<uint32_t>(std::strtoul(lhs.c_str() + hexPos, nullptr, 16)) & 0x00FFFFFFu;
+                const uint32_t formId = static_cast<uint32_t>(std::strtoul(lowerLhs.c_str() + hexPos, nullptr, 16)) & 0x00FFFFFFu;
                 if (formId != 0)
+                {
                     aTable.BossBaseFormIds.insert(formId);
+                    std::string pluginPart = Detail::Trim(std::string_view(lowerLhs).substr(0, hexPos));
+                    if (!pluginPart.empty() && (pluginPart.back() == '|' || pluginPart.back() == ':'))
+                        pluginPart.pop_back();
+                    if (const size_t sep = pluginPart.rfind('|'); sep != std::string::npos)
+                        pluginPart = Detail::Trim(std::string_view(pluginPart).substr(sep + 1));
+                    if (!pluginPart.empty() &&
+                        (Detail::EndsWithIgnoreCase(pluginPart, ".esp") ||
+                         Detail::EndsWithIgnoreCase(pluginPart, ".esm") ||
+                         Detail::EndsWithIgnoreCase(pluginPart, ".esl")))
+                    {
+                        aTable.BossPluginFormKeys.insert(RfabLiveXpTable::FormatPluginFormKey(pluginPart, formId));
+                    }
+                    else
+                    {
+                        aTable.UnscopedBossBaseFormIds.insert(formId);
+                    }
+                }
             }
             else
             {
-                aTable.BossEditorIds.insert(Detail::ToLowerAscii(lhs));
+                aTable.BossEditorIds.insert(lowerLhs);
             }
             continue;
         }
@@ -777,9 +827,29 @@ inline void ParseBossListJson(std::string_view aJson, RfabLiveXpTable& aTable)
         {
             const uint32_t baseId = static_cast<uint32_t>(std::strtoul(lower.c_str() + hexPos, nullptr, 16)) & 0x00FFFFFFu;
             if (baseId != 0)
+            {
                 aTable.BossBaseFormIds.insert(baseId);
+                std::string pluginPart = Detail::Trim(std::string_view(lower).substr(0, hexPos));
+                if (!pluginPart.empty() && (pluginPart.back() == '|' || pluginPart.back() == ':'))
+                    pluginPart.pop_back();
+                if (const size_t sep = pluginPart.rfind('|'); sep != std::string::npos)
+                    pluginPart = Detail::Trim(std::string_view(pluginPart).substr(sep + 1));
+                if (!pluginPart.empty() &&
+                    (Detail::EndsWithIgnoreCase(pluginPart, ".esp") ||
+                     Detail::EndsWithIgnoreCase(pluginPart, ".esm") ||
+                     Detail::EndsWithIgnoreCase(pluginPart, ".esl")))
+                {
+                    aTable.BossPluginFormKeys.insert(RfabLiveXpTable::FormatPluginFormKey(pluginPart, baseId));
+                }
+                else
+                {
+                    aTable.UnscopedBossBaseFormIds.insert(baseId);
+                }
+            }
         }
-        else if (lower.find(".esp") == std::string::npos && lower.find(".esm") == std::string::npos)
+        else if (lower.find(".esp") == std::string::npos &&
+                 lower.find(".esm") == std::string::npos &&
+                 lower.find(".esl") == std::string::npos)
         {
             aTable.BossEditorIds.insert(lower);
         }
@@ -1734,21 +1804,35 @@ struct CoopAllyActionPolicy
     std::string_view aEditorId,
     uint32_t aFormId) noexcept
 {
-    const uint32_t baseId = aFormId & 0x00FFFFFFu;
-    switch (baseId)
-    {
-    case 0x02BA16u: // PlayerWerewolfQuest
-    case 0x0071D0u: // DLC1PlayerVampireQuest
-    case 0x03AC44u: // MS13BleakFallsBarrowLeverScene
-    case 0x0F2593u: // SkillExperienceQuest
-        return true;
-    default:
-        break;
-    }
-
     const std::string lower = Detail::ToLowerAscii(Detail::Trim(aEditorId));
     if (lower.empty())
+    {
+        // Only fall back to 24-bit base FormID when EditorID is unavailable AND the form is NOT an ESL light record
+        // (`0xFExxxxxx`), preventing cross-mod 24-bit collisions when a story quest provides a real EditorID!
+        if ((aFormId & 0xFF000000u) != 0xFE000000u)
+        {
+            const uint32_t baseId = aFormId & 0x00FFFFFFu;
+            switch (baseId)
+            {
+            case 0x02BA16u: // PlayerWerewolfQuest
+            case 0x0071D0u: // DLC1PlayerVampireQuest
+            case 0x03AC44u: // MS13BleakFallsBarrowLeverScene
+            case 0x0F2593u: // SkillExperienceQuest
+                return true;
+            default:
+                break;
+            }
+        }
         return false;
+    }
+
+    if (lower == "playerwerewolfquest" ||
+        lower == "dlc1playervampirequest" ||
+        lower == "ms13bleakfallsbarrowleverscene" ||
+        lower == "skillexperiencequest")
+    {
+        return true;
+    }
 
     static constexpr std::string_view kBlockedPrefixes[] = {
         "ski_",
@@ -3313,5 +3397,556 @@ inline constexpr size_t kRfabPerkTrampolineSize = 55;
 
     return true;
 }
+
+// ============================================================================
+// Stage 3.3: Cross-Version RFAB Compatibility Suite
+//   1. Canonical SSE `plugins.txt` (`*Active.esp` vs disabled lines) & `loadorder.txt` parser
+//   2. Recursive `Data/SKSE/Plugins/` config discovery when RFAB relocates INI/JSON files
+//   3. Zero-dependency TES4 `.esm/.esp/.esl` binary `EDID <-> (PluginName, LocalFormId)` indexer
+//      (resolves BGSListForm, BGSPerk, TESNPC, TESObjectARMO, etc. whose runtime EDIDs Skyrim SE strips!)
+// ============================================================================
+
+[[nodiscard]] inline bool IsImplicitSseBaseMaster(std::string_view aFilename) noexcept
+{
+    const std::string lower = Detail::ToLowerAscii(Detail::Trim(aFilename));
+    return lower == "skyrim.esm" ||
+           lower == "update.esm" ||
+           lower == "dawnguard.esm" ||
+           lower == "hearthfires.esm" ||
+           lower == "dragonborn.esm";
+}
+
+[[nodiscard]] inline std::vector<std::string> ParseActivePluginList(
+    std::string_view aContent,
+    bool aInjectMissingBaseMastersInPluginsTxt = false)
+{
+    struct RawEntry
+    {
+        std::string Name{};
+        bool HasStar{false};
+    };
+
+    std::vector<RawEntry> entries;
+    bool anyStarLine = false;
+    bool anyStarredNonBaseLine = false;
+    bool firstLine = true;
+
+    std::istringstream iss{std::string(aContent)};
+    std::string line;
+    while (std::getline(iss, line))
+    {
+        if (firstLine)
+        {
+            firstLine = false;
+            if (line.size() >= 3 &&
+                static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF)
+            {
+                line.erase(0, 3);
+            }
+        }
+
+        line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+        std::string trimmed = Detail::Trim(line);
+        if (trimmed.empty() || trimmed.front() == '#')
+            continue;
+
+        bool hasStar = false;
+        if (trimmed.front() == '*')
+        {
+            hasStar = true;
+            anyStarLine = true;
+            trimmed = Detail::Trim(std::string_view(trimmed).substr(1));
+        }
+
+        if (trimmed.empty())
+            continue;
+
+        if (hasStar && !IsImplicitSseBaseMaster(trimmed))
+            anyStarredNonBaseLine = true;
+
+        entries.push_back(RawEntry{std::move(trimmed), hasStar});
+    }
+
+    const bool filterUnstarred = aInjectMissingBaseMastersInPluginsTxt ? anyStarLine : anyStarredNonBaseLine;
+
+    std::vector<std::string> active;
+    std::unordered_set<std::string> seenLower;
+
+    auto appendUnique = [&](const std::string& name)
+    {
+        const std::string lower = Detail::ToLowerAscii(name);
+        if (!lower.empty() && seenLower.insert(lower).second)
+            active.push_back(name);
+    };
+
+    if (filterUnstarred && aInjectMissingBaseMastersInPluginsTxt)
+    {
+        static constexpr std::string_view kBaseMasters[] = {
+            "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"
+        };
+        for (const auto& baseMaster : kBaseMasters)
+            appendUnique(std::string(baseMaster));
+    }
+
+    for (const auto& entry : entries)
+    {
+        if (filterUnstarred)
+        {
+            // SSE `plugins.txt` mode: lines without `*` are disabled plugins in the user's MO2/Vortex profile,
+            // except implicit SSE base masters which vanilla Skyrim SE may omit `*` on.
+            if (!entry.HasStar && !IsImplicitSseBaseMaster(entry.Name))
+                continue;
+        }
+        appendUnique(entry.Name);
+    }
+
+    return active;
+}
+
+[[nodiscard]] inline std::filesystem::path ResolveRfabConfigPath(
+    const std::filesystem::path& acGameRoot,
+    std::string_view aPreferredRelPath,
+    std::initializer_list<std::string_view> aCandidateFilenames) noexcept
+{
+    std::error_code ec;
+    if (acGameRoot.empty())
+        return {};
+
+    if (!aPreferredRelPath.empty())
+    {
+        const std::filesystem::path directPath = acGameRoot / std::filesystem::path(aPreferredRelPath);
+        if (std::filesystem::is_regular_file(directPath, ec) && !ec)
+            return directPath;
+    }
+
+    std::vector<std::string> lowerCandidates;
+    if (!aPreferredRelPath.empty())
+    {
+        const std::string preferredFilename = Detail::ToLowerAscii(
+            Detail::PathToUtf8Safe(std::filesystem::path(aPreferredRelPath).filename()));
+        if (!preferredFilename.empty())
+            lowerCandidates.push_back(preferredFilename);
+    }
+    for (std::string_view cand : aCandidateFilenames)
+    {
+        const std::string lower = Detail::ToLowerAscii(Detail::Trim(cand));
+        if (!lower.empty() && std::find(lowerCandidates.begin(), lowerCandidates.end(), lower) == lowerCandidates.end())
+            lowerCandidates.push_back(lower);
+    }
+    if (lowerCandidates.empty())
+        return {};
+
+    const std::filesystem::path sksePluginsDir = acGameRoot / "Data" / "SKSE" / "Plugins";
+    ec.clear();
+    if (!std::filesystem::is_directory(sksePluginsDir, ec) || ec)
+        return {};
+
+    std::filesystem::recursive_directory_iterator it(
+        sksePluginsDir,
+        std::filesystem::directory_options::skip_permission_denied,
+        ec);
+    const std::filesystem::recursive_directory_iterator end;
+
+    std::filesystem::path bestMatch{};
+    int bestRank = 9999;
+
+    while (!ec && it != end)
+    {
+        if (it.depth() > 4)
+        {
+            it.disable_recursion_pending();
+        }
+
+        std::error_code entryEc;
+        if (it->is_regular_file(entryEc) && !entryEc)
+        {
+            const std::string fname = Detail::ToLowerAscii(Detail::PathToUtf8Safe(it->path().filename()));
+            for (size_t idx = 0; idx < lowerCandidates.size(); ++idx)
+            {
+                if (fname == lowerCandidates[idx] && static_cast<int>(idx) < bestRank)
+                {
+                    bestRank = static_cast<int>(idx);
+                    bestMatch = it->path();
+                    if (bestRank == 0)
+                        return bestMatch;
+                }
+            }
+        }
+
+        it.increment(ec);
+    }
+
+    return bestMatch;
+}
+
+struct EspFormRef
+{
+    std::string PluginName{};
+    uint32_t LocalFormId{0};
+    char RecordType[5]{};
+    bool IsSelfLite{false};
+};
+
+class EspEdidIndex
+{
+public:
+    void Clear() noexcept
+    {
+        m_edidToRef.clear();
+        m_refToEdid.clear();
+        m_indexedPluginsLower.clear();
+    }
+
+    [[nodiscard]] size_t Size() const noexcept { return m_edidToRef.size(); }
+    [[nodiscard]] size_t IndexedPluginCount() const noexcept { return m_indexedPluginsLower.size(); }
+
+    [[nodiscard]] const EspFormRef* LookupByEditorId(std::string_view aEditorId) const noexcept
+    {
+        if (aEditorId.empty())
+            return nullptr;
+        const std::string lower = Detail::ToLowerAscii(Detail::Trim(aEditorId));
+        const auto it = m_edidToRef.find(lower);
+        return it != m_edidToRef.end() ? &it->second : nullptr;
+    }
+
+    [[nodiscard]] std::string LookupEditorId(std::string_view aPluginName, uint32_t aLocalFormId) const
+    {
+        if (aPluginName.empty() || (aLocalFormId & 0x00FFFFFFu) == 0)
+            return {};
+        const std::string lowerPlugin = Detail::ToLowerAscii(Detail::Trim(aPluginName));
+        const auto it = m_refToEdid.find(RfabLiveXpTable::FormatPluginFormKey(lowerPlugin, aLocalFormId));
+        return it != m_refToEdid.end() ? it->second : std::string{};
+    }
+
+    bool IndexPluginBuffer(std::string_view aPluginFilename, const uint8_t* apData, size_t aSize)
+    {
+        if (aPluginFilename.empty() || !apData || aSize < 24)
+            return false;
+
+        if (std::memcmp(apData, "TES4", 4) != 0)
+            return false;
+
+        uint32_t tes4DataSize = 0;
+        uint32_t tes4Flags = 0;
+        std::memcpy(&tes4DataSize, apData + 4, sizeof(uint32_t));
+        std::memcpy(&tes4Flags, apData + 8, sizeof(uint32_t));
+
+        const size_t tes4End = 24ull + static_cast<size_t>(tes4DataSize);
+        if (tes4End > aSize)
+            return false;
+
+        const bool isSelfLite = Detail::EndsWithIgnoreCase(aPluginFilename, ".esl") || ((tes4Flags & 0x00000200u) != 0);
+        std::vector<std::string> masters;
+
+        // Parse MAST subrecords inside TES4 header to resolve master-owned vs self-defined records accurately.
+        {
+            size_t subPos = 24;
+            uint32_t extendedSubSize = 0;
+            while (subPos + 6 <= tes4End)
+            {
+                char subType[4]{};
+                uint16_t subSize16 = 0;
+                std::memcpy(subType, apData + subPos, 4);
+                std::memcpy(&subSize16, apData + subPos + 4, 2);
+                subPos += 6;
+
+                uint32_t subSize = extendedSubSize != 0 ? extendedSubSize : static_cast<uint32_t>(subSize16);
+                extendedSubSize = 0;
+
+                if (std::memcmp(subType, "XXXX", 4) == 0 && subSize == 4 && subPos + 4 <= tes4End)
+                {
+                    std::memcpy(&extendedSubSize, apData + subPos, 4);
+                    subPos += 4;
+                    continue;
+                }
+
+                if (subPos + subSize > tes4End)
+                    break;
+
+                if (std::memcmp(subType, "MAST", 4) == 0 && subSize > 0)
+                {
+                    size_t strLen = subSize;
+                    while (strLen > 0 && apData[subPos + strLen - 1] == 0)
+                        --strLen;
+                    if (strLen > 0)
+                    {
+                        masters.emplace_back(reinterpret_cast<const char*>(apData + subPos), strLen);
+                    }
+                }
+
+                subPos += subSize;
+            }
+        }
+
+        m_indexedPluginsLower.insert(Detail::ToLowerAscii(aPluginFilename));
+
+        // Walk top-level and nested GRUPs iteratively; skip heavy spatial/dialogue top-level groups (WRLD, CELL, DIAL, NAVM, LAND)
+        // in O(1) so indexing an entire RFAB plugin suite takes a few milliseconds.
+        size_t pos = tes4End;
+        while (pos + 24 <= aSize)
+        {
+            char recType[5]{};
+            std::memcpy(recType, apData + pos, 4);
+            recType[4] = '\0';
+
+            uint32_t fieldSize = 0;
+            std::memcpy(&fieldSize, apData + pos + 4, sizeof(uint32_t));
+
+            if (std::memcmp(recType, "GRUP", 4) == 0)
+            {
+                if (fieldSize < 24 || pos + fieldSize > aSize)
+                    break;
+
+                uint32_t groupType = 0;
+                std::memcpy(&groupType, apData + pos + 12, sizeof(uint32_t));
+                if (groupType == 0)
+                {
+                    const char* label = reinterpret_cast<const char*>(apData + pos + 8);
+                    if (std::memcmp(label, "WRLD", 4) == 0 ||
+                        std::memcmp(label, "CELL", 4) == 0 ||
+                        std::memcmp(label, "DIAL", 4) == 0 ||
+                        std::memcmp(label, "NAVM", 4) == 0 ||
+                        std::memcmp(label, "LAND", 4) == 0)
+                    {
+                        pos += fieldSize;
+                        continue;
+                    }
+                }
+
+                // Step into the GRUP header (24 bytes); inner records end naturally inside `aSize`.
+                pos += 24;
+                continue;
+            }
+
+            const size_t recEnd = pos + 24ull + static_cast<size_t>(fieldSize);
+            if (recEnd > aSize)
+                break;
+
+            uint32_t recFlags = 0;
+            uint32_t rawFormId = 0;
+            std::memcpy(&recFlags, apData + pos + 8, sizeof(uint32_t));
+            std::memcpy(&rawFormId, apData + pos + 12, sizeof(uint32_t));
+
+            // Uncompressed record (`0x00040000` == compressed): inspect subrecords for `EDID`.
+            if ((recFlags & 0x00040000u) == 0 && rawFormId != 0 && fieldSize >= 6)
+            {
+                size_t subPos = pos + 24;
+                uint32_t extendedSubSize = 0;
+                while (subPos + 6 <= recEnd)
+                {
+                    char subType[4]{};
+                    uint16_t subSize16 = 0;
+                    std::memcpy(subType, apData + subPos, 4);
+                    std::memcpy(&subSize16, apData + subPos + 4, 2);
+                    subPos += 6;
+
+                    uint32_t subSize = extendedSubSize != 0 ? extendedSubSize : static_cast<uint32_t>(subSize16);
+                    extendedSubSize = 0;
+
+                    if (std::memcmp(subType, "XXXX", 4) == 0 && subSize == 4 && subPos + 4 <= recEnd)
+                    {
+                        std::memcpy(&extendedSubSize, apData + subPos, 4);
+                        subPos += 4;
+                        continue;
+                    }
+
+                    if (subPos + subSize > recEnd)
+                        break;
+
+                    if (std::memcmp(subType, "EDID", 4) == 0)
+                    {
+                        size_t strLen = subSize;
+                        while (strLen > 0 && apData[subPos + strLen - 1] == 0)
+                            --strLen;
+                        if (strLen > 0)
+                        {
+                            std::string edid(reinterpret_cast<const char*>(apData + subPos), strLen);
+                            const uint32_t modIdx = (rawFormId >> 24) & 0xFFu;
+                            const bool ownedByMaster = modIdx < masters.size();
+                            const std::string& ownerPlugin = ownedByMaster ? masters[modIdx] : std::string(aPluginFilename);
+                            const bool ownerIsSelfLite = !ownedByMaster && isSelfLite;
+                            const uint32_t localId = ownerIsSelfLite
+                                ? (rawFormId & 0x00000FFFu)
+                                : (rawFormId & 0x00FFFFFFu);
+
+                            if (localId != 0)
+                            {
+                                EspFormRef ref{};
+                                ref.PluginName = ownerPlugin;
+                                ref.LocalFormId = localId;
+                                std::memcpy(ref.RecordType, recType, 5);
+                                ref.IsSelfLite = ownerIsSelfLite;
+
+                                const std::string lowerEdid = Detail::ToLowerAscii(edid);
+                                const std::string lowerOwner = Detail::ToLowerAscii(ownerPlugin);
+                                m_edidToRef[lowerEdid] = std::move(ref);
+                                m_refToEdid[RfabLiveXpTable::FormatPluginFormKey(lowerOwner, localId)] = std::move(edid);
+                            }
+                        }
+                        break; // EDID appears at most once per TES4 record
+                    }
+
+                    // Optimization: in TES4 format EDID is always the very first subrecord (or second after XXXX);
+                    // stop scanning large subrecord bodies once non-EDID data starts.
+                    break;
+                }
+            }
+
+            pos = recEnd;
+        }
+
+        return true;
+    }
+
+    bool IndexPluginFile(const std::filesystem::path& acPluginPath)
+    {
+        std::error_code ec;
+        if (acPluginPath.empty() || !std::filesystem::is_regular_file(acPluginPath, ec) || ec)
+            return false;
+
+        const std::string pluginFilename = Detail::PathToUtf8Safe(acPluginPath.filename());
+        if (pluginFilename.empty())
+            return false;
+
+        std::ifstream file(acPluginPath, std::ios::binary);
+        if (!file.is_open())
+            return false;
+
+        // Stream top-level TES4 + GRUP chunks rather than reading multi-hundred-MB spatial groups into RAM!
+        char hdr[24]{};
+        if (!file.read(hdr, 24) || std::memcmp(hdr, "TES4", 4) != 0)
+            return false;
+
+        uint32_t tes4DataSize = 0;
+        std::memcpy(&tes4DataSize, hdr + 4, sizeof(uint32_t));
+        if (tes4DataSize > (64u * 1024u * 1024u))
+            return false;
+
+        std::vector<uint8_t> compactBuf(24ull + tes4DataSize);
+        std::memcpy(compactBuf.data(), hdr, 24);
+        if (tes4DataSize > 0 && !file.read(reinterpret_cast<char*>(compactBuf.data() + 24), tes4DataSize))
+            return false;
+
+        while (file.read(hdr, 24))
+        {
+            uint32_t fieldSize = 0;
+            std::memcpy(&fieldSize, hdr + 4, sizeof(uint32_t));
+            if (std::memcmp(hdr, "GRUP", 4) == 0)
+            {
+                if (fieldSize < 24)
+                    break;
+                uint32_t groupType = 0;
+                std::memcpy(&groupType, hdr + 12, sizeof(uint32_t));
+                if (groupType == 0)
+                {
+                    const char* label = hdr + 8;
+                    if (std::memcmp(label, "WRLD", 4) == 0 ||
+                        std::memcmp(label, "CELL", 4) == 0 ||
+                        std::memcmp(label, "DIAL", 4) == 0 ||
+                        std::memcmp(label, "NAVM", 4) == 0 ||
+                        std::memcmp(label, "LAND", 4) == 0)
+                    {
+                        file.seekg(static_cast<std::streamoff>(fieldSize - 24), std::ios::cur);
+                        if (!file.good())
+                            break;
+                        continue;
+                    }
+                }
+
+                const uint32_t payloadBytes = fieldSize - 24;
+                if (payloadBytes > (128u * 1024u * 1024u))
+                    break;
+                const size_t oldSize = compactBuf.size();
+                compactBuf.resize(oldSize + fieldSize);
+                std::memcpy(compactBuf.data() + oldSize, hdr, 24);
+                if (payloadBytes > 0 && !file.read(reinterpret_cast<char*>(compactBuf.data() + oldSize + 24), payloadBytes))
+                {
+                    compactBuf.resize(oldSize);
+                    break;
+                }
+            }
+            else
+            {
+                if (fieldSize > (64u * 1024u * 1024u))
+                    break;
+                const size_t oldSize = compactBuf.size();
+                compactBuf.resize(oldSize + 24ull + fieldSize);
+                std::memcpy(compactBuf.data() + oldSize, hdr, 24);
+                if (fieldSize > 0 && !file.read(reinterpret_cast<char*>(compactBuf.data() + oldSize + 24), fieldSize))
+                {
+                    compactBuf.resize(oldSize);
+                    break;
+                }
+            }
+        }
+
+        return IndexPluginBuffer(pluginFilename, compactBuf.data(), compactBuf.size());
+    }
+
+    size_t IndexRfabPluginsInDataDir(const std::filesystem::path& acDataDir, const RfabBindingsConfig& acBindings)
+    {
+        std::error_code ec;
+        if (acDataDir.empty() || !std::filesystem::is_directory(acDataDir, ec) || ec)
+            return 0;
+
+        size_t indexed = 0;
+        std::unordered_set<std::string> visitedLower;
+
+        auto tryIndexByName = [&](const std::string& pluginName)
+        {
+            if (pluginName.empty())
+                return;
+            const std::string lower = Detail::ToLowerAscii(pluginName);
+            if (!visitedLower.insert(lower).second)
+                return;
+            if (IndexPluginFile(acDataDir / pluginName))
+                ++indexed;
+        };
+
+        // 1.Configured primary & secondary RFAB / Requiem plugin names
+        tryIndexByName(acBindings.PluginName);
+        for (const auto& sec : acBindings.SecondaryPluginNames)
+            tryIndexByName(sec);
+
+        // 2. Auto-discover any RFAB / Requiem / SkyrimTogether plugins in Data/ regardless of future version renames
+        //    (e.g. `RFAB_Core.esp`, `RFAB_Perks.esp`, `RFAB_Bosses.esp`, `Requiem for the Indifferent.esp`, etc.)
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 acDataDir, std::filesystem::directory_options::skip_permission_denied, ec))
+        {
+            if (ec)
+                break;
+            std::error_code fEc;
+            if (!entry.is_regular_file(fEc) || fEc)
+                continue;
+
+            const std::string fname = Detail::PathToUtf8Safe(entry.path().filename());
+            const std::string lower = Detail::ToLowerAscii(fname);
+            if (!Detail::EndsWithIgnoreCase(lower, ".esp") &&
+                !Detail::EndsWithIgnoreCase(lower, ".esm") &&
+                !Detail::EndsWithIgnoreCase(lower, ".esl"))
+            {
+                continue;
+            }
+
+            if (lower.find("rfab") != std::string::npos ||
+                lower.find("requiem") != std::string::npos ||
+                lower.find("skyrimtogether") != std::string::npos ||
+                lower.find("fomod") != std::string::npos)
+            {
+                if (visitedLower.insert(lower).second && IndexPluginFile(entry.path()))
+                    ++indexed;
+            }
+        }
+
+        return indexed;
+    }
+
+private:
+    std::unordered_map<std::string, EspFormRef> m_edidToRef{};
+    std::unordered_map<std::string, std::string> m_refToEdid{};
+    std::unordered_set<std::string> m_indexedPluginsLower{};
+};
 
 } // namespace RfabCompat

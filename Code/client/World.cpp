@@ -25,6 +25,8 @@
 #include <Events/PreUpdateEvent.h>
 #include <Events/UpdateEvent.h>
 
+#include <Games/Skyrim/Interface/UI.h>
+#include <Misc/BSFixedString.h>
 #include <ModCompat/BehaviorVar.h>  
 
 World::World()
@@ -61,10 +63,28 @@ World::World()
     BehaviorVar::Get()->Init();
 }
 
-World::~World() = default;
+World::~World()
+{
+    s_isConnectedCached.store(false, std::memory_order_release);
+    s_isContainerMenuOpenCached.store(false, std::memory_order_release);
+    s_worldCreated.store(false, std::memory_order_release);
+}
 
 void World::Update() noexcept
 {
+    const bool isConn = m_transport.IsConnected();
+    s_isConnectedCached.store(isConn, std::memory_order_release);
+    if (isConn)
+    {
+        auto* const pUi = UI::Get();
+        const bool containerOpen = pUi && pUi->GetMenuOpen(BSFixedString("ContainerMenu"));
+        s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
+    }
+    else
+    {
+        s_isContainerMenuOpenCached.store(false, std::memory_order_release);
+    }
+
     const auto cNow = std::chrono::high_resolution_clock::now();
     const auto cDelta = cNow - m_lastFrameTime;
     m_lastFrameTime = cNow;
@@ -104,6 +124,7 @@ void World::Create() noexcept
     {
         entt::locator<World>::emplace();
     }
+    s_worldCreated.store(true, std::memory_order_release);
 }
 
 World& World::Get() noexcept

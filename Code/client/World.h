@@ -18,6 +18,8 @@
 
 #include <Structs/ServerSettings.h>
 
+#include <atomic>
+
 struct World : entt::registry
 {
     World();
@@ -53,14 +55,31 @@ struct World : entt::registry
     auto& GetDispatcher() noexcept { return m_dispatcher; }
 
     const ServerSettings& GetServerSettings() const noexcept { return m_serverSettings; }
-    void SetServerSettings(ServerSettings aServerSettings) noexcept { m_serverSettings = aServerSettings; }
+    void SetServerSettings(ServerSettings aServerSettings) noexcept
+    {
+        m_serverSettings = aServerSettings;
+        s_syncPlayerHomesCached.store(m_serverSettings.SyncPlayerHomes, std::memory_order_release);
+    }
 
     [[nodiscard]] uint64_t GetTick() const noexcept;
 
     static void Create() noexcept;
+    [[nodiscard]] static bool IsCreated() noexcept { return s_worldCreated.load(std::memory_order_acquire); }
     [[nodiscard]] static World& Get() noexcept;
 
+    // Lock-free main-thread state snapshots safe to query from Papyrus VM & AI worker threads
+    [[nodiscard]] static bool IsConnectedCached() noexcept { return s_isConnectedCached.load(std::memory_order_acquire); }
+    [[nodiscard]] static bool IsContainerMenuOpenCached() noexcept { return s_isContainerMenuOpenCached.load(std::memory_order_acquire); }
+    [[nodiscard]] static bool IsSyncPlayerHomesCached() noexcept { return s_syncPlayerHomesCached.load(std::memory_order_acquire); }
+    static void SetConnectedHint(bool aConnected) noexcept { s_isConnectedCached.store(aConnected, std::memory_order_release); }
+    static void SetContainerMenuOpenHint(bool aOpen) noexcept { s_isContainerMenuOpenCached.store(aOpen, std::memory_order_release); }
+
 private:
+    inline static std::atomic<bool> s_worldCreated{false};
+    inline static std::atomic<bool> s_isConnectedCached{false};
+    inline static std::atomic<bool> s_isContainerMenuOpenCached{false};
+    inline static std::atomic<bool> s_syncPlayerHomesCached{false};
+
     entt::dispatcher m_dispatcher;
     RunnerService m_runner;
     TransportService m_transport;

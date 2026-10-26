@@ -31,7 +31,9 @@
 #include <Services/RfabAdapterService.h>
 
 #include <Forms/ActorValueInfo.h>
+#include <Forms/EffectSetting.h>
 #include <Forms/TESRace.h>
+#include <Magic/EffectItem.h>
 
 #include <Effects/ValueModifierEffect.h>
 
@@ -172,6 +174,21 @@ void Actor::ForcePosition(const NiPoint3& acPosition) noexcept
     }
 
     SetPosition(acPosition, updateController);
+}
+
+GamePtr<Actor> Actor::LookupByHandle(uint32_t aHandle) noexcept
+{
+    GamePtr<TESObjectREFR> spRefr = TESObjectREFR::LookupByHandle(aHandle);
+    if (!spRefr)
+        return nullptr;
+
+    if (Actor* pActor = Cast<Actor>(spRefr.Get()))
+    {
+        spRefr.Detach();
+        return GamePtr<Actor>::Adopt(pActor);
+    }
+
+    return nullptr;
 }
 
 void Actor::ResetTeleportPhysics(float aNewZ) noexcept
@@ -370,6 +387,33 @@ void Actor::SetNoBleedoutRecovery(bool aSet) noexcept
 void Actor::DispelAllSpells(bool aNow) noexcept
 {
     magicTarget.DispelAllSpells(aNow);
+}
+
+void Actor::DispelHostileEffects() noexcept
+{
+    // Selectively terminate only temporary hostile/detrimental DoTs (poisons, bleeds, fire/frost/shock burns)
+    // while keeping 100% of long-duration RFAB food/alcohol/elixir buffs, shrine blessings, Mage Armor, and passives!
+    if (!currentProcess || !currentProcess->middleProcess || !currentProcess->middleProcess->ActiveEffects)
+        return;
+
+    constexpr uint32_t kActiveEffectDispelledFlag = (1u << 18);
+    for (ActiveEffect* pEffect : *currentProcess->middleProcess->ActiveEffects)
+    {
+        if (!pEffect || pEffect->fDuration <= 0.0f)
+            continue;
+
+        const auto* pEffectItem = static_cast<const EffectItem*>(pEffect->pEffect);
+        const EffectSetting* pSetting = pEffectItem ? pEffectItem->pEffectSetting : nullptr;
+        if (!pSetting)
+            continue;
+
+        const bool isHostileDoT = (pSetting->flags & EffectSetting::kHostile) != 0;
+        if (isHostileDoT)
+        {
+            pEffect->uiFlags |= kActiveEffectDispelledFlag;
+            pEffect->fElapsedSeconds = pEffect->fDuration + 1.0f;
+        }
+    }
 }
 
 bool Actor::IsInCombat() const noexcept
@@ -737,7 +781,11 @@ TESObjectREFR* Actor::GetOccupiedFurniture() const noexcept
 
 bool Actor::HasValidNearbyFurniture(float aMaxDistance) const noexcept
 {
-    const TESObjectREFR* pFurniture = GetOccupiedFurniture();
+    if (!currentProcess || !currentProcess->middleProcess || !currentProcess->middleProcess->occupiedFurniture)
+        return false;
+
+    const GamePtr<TESObjectREFR> spFurniture = TESObjectREFR::LookupByHandle(currentProcess->middleProcess->occupiedFurniture);
+    const TESObjectREFR* pFurniture = spFurniture.Get();
     if (!pFurniture || pFurniture->IsDisabled() || pFurniture->IsDeleted())
         return false;
 
@@ -1310,6 +1358,8 @@ bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
 TP_THIS_FUNCTION(TDamageActor, bool, Actor, float aDamage, Actor* apHitter, bool aKillMove);
 static TDamageActor* RealDamageActor = nullptr;
 static thread_local bool s_inAuthoritativeDamageHook = false;
+static thread_local bool s_interceptLethalPlayerDamageInHook = false;
+static thread_local bool s_lethalPlayerDamageTriggered = false;
 
 struct ScopedDamageHookGuard
 {
@@ -1320,6 +1370,24 @@ struct ScopedDamageHookGuard
     }
     ~ScopedDamageHookGuard() noexcept { s_inAuthoritativeDamageHook = m_prev; }
     bool m_prev{false};
+};
+
+struct ScopedLethalPlayerDamageIntercept
+{
+    ScopedLethalPlayerDamageIntercept() noexcept
+        : m_prevIntercept(s_interceptLethalPlayerDamageInHook)
+        , m_prevTriggered(s_lethalPlayerDamageTriggered)
+    {
+        s_interceptLethalPlayerDamageInHook = true;
+        s_lethalPlayerDamageTriggered = false;
+    }
+    ~ScopedLethalPlayerDamageIntercept() noexcept
+    {
+        s_interceptLethalPlayerDamageInHook = m_prevIntercept;
+        s_lethalPlayerDamageTriggered = m_prevTriggered;
+    }
+    bool m_prevIntercept{false};
+    bool m_prevTriggered{false};
 };
 
 // TODO: this is flawed, since it does not account for invulnerable actors
@@ -1406,20 +1474,17 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
             if (downedSvc.IsLocalPlayerDowned() || downedSvc.IsLocalPlayerInvulnerable())
                 return false;
 
-            // Cushion temporaryModifier across RealDamageActor so RFAB.dll / HookDamage.dll / Requiem multipliers
-            // execute 100% natively without ever reaching <= 0 HP or firing Actor::Kill / REQ_DeathHandler / killmoves.
+            // Preserve 100% genuine MaxHP, CurrentHP, GetHealthPercentage(), and mid-hit temporaryModifier buffs
+            // across RFAB.dll / HookDamage.dll / Requiem damage formulas, intercepting fatal subtraction cleanly inside
+            // HookRestoreActorValue (SE 37513) right before kHealth would ever drop <= 1.0f!
             ScopedDamageHookGuard dmgGuard;
-            constexpr float kLethalGuardCushion = 65536.0f;
+            ScopedLethalPlayerDamageIntercept lethalGuard;
             const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
-            const float savedTempMod = apThis->healthModifiers.temporaryModifier;
-            apThis->healthModifiers.temporaryModifier = savedTempMod + kLethalGuardCushion;
 
             const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, false);
 
-            apThis->healthModifiers.temporaryModifier = savedTempMod;
             const float realHealthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
-
-            if (realHealthAfter <= 1.0f)
+            if (s_lethalPlayerDamageTriggered || realHealthAfter <= 1.0f)
             {
                 downedSvc.FinalizeLethalHitCushion(apThis, healthBefore);
                 return false;
@@ -1529,7 +1594,18 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
             if (downed.ShouldBlockPlayerHealthMutation(aValue))
                 return;
 
-            if (!s_inAuthoritativeDamageHook)
+            if (s_interceptLethalPlayerDamageInHook && aValue < 0.0f)
+            {
+                const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
+                if ((curHp + aValue) <= 1.0f)
+                {
+                    s_lethalPlayerDamageTriggered = true;
+                    if (curHp > 1.0f)
+                        TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, 1.0f - curHp);
+                    return;
+                }
+            }
+            else if (!s_inAuthoritativeDamageHook)
             {
                 if (aValue < 0.0f)
                 {
@@ -1568,13 +1644,17 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
     const auto* pExt = apThis ? apThis->GetExtension() : nullptr;
     const bool isInteractivePlayerTransfer =
         (apOldOwner && apOldOwner == PlayerCharacter::Get()) ||
-        (UI::Get() && UI::Get()->GetMenuOpen(BSFixedString("ContainerMenu")));
+        World::IsContainerMenuOpenCached();
     const bool blockRemote =
         pExt &&
         (pExt->IsRemotePlayer() ||
          (pExt->IsRemote() && !isInteractivePlayerTransfer));
 
-    if (!ScopedInventoryOverride::IsOverriden() && apItem && !blockRemote)
+    if (World::IsConnectedCached() &&
+        !ScopedInventoryOverride::IsOverriden() &&
+        apThis &&
+        apItem &&
+        !blockRemote)
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1589,7 +1669,7 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
         {
             const char* pEditorId = apItem->GetFormEditorID();
             const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
-            const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+            const bool syncHomes = World::IsSyncPlayerHomesCached();
             if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apItem->formType), apItem->formID, syncHomes))
                 item.IsQuestItem = true;
         }
@@ -1602,7 +1682,13 @@ void TP_MAKE_THISCALL(HookAddInventoryItem, Actor, TESBoundObject* apItem, Extra
 
 void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2)
 {
-    if (!ScopedInventoryOverride::IsOverriden() && apObject && apObject->baseForm && !apThis->GetExtension()->IsRemote())
+    if (World::IsConnectedCached() &&
+        !ScopedInventoryOverride::IsOverriden() &&
+        apThis &&
+        apObject &&
+        apObject->baseForm &&
+        apThis->GetExtension() &&
+        !apThis->GetExtension()->IsRemote())
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1617,7 +1703,7 @@ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t
         {
             const char* pEditorId = apObject->baseForm->GetFormEditorID();
             const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
-            const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+            const bool syncHomes = World::IsSyncPlayerHomesCached();
             if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apObject->baseForm->formType), apObject->baseForm->formID, syncHomes))
                 item.IsQuestItem = true;
         }
@@ -1637,7 +1723,11 @@ void Actor::PickUpObject(TESObjectREFR* apObject, int32_t aCount, bool aUnk1, fl
 
 void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation)
 {
-    if (apObject && !apThis->GetExtension()->IsRemote())
+    if (World::IsConnectedCached() &&
+        apThis &&
+        apObject &&
+        apThis->GetExtension() &&
+        !apThis->GetExtension()->IsRemote())
     {
         auto& modSystem = World::Get().GetModSystem();
 
@@ -1736,10 +1826,10 @@ void Actor::DropObject(TESBoundObject* apObject, ExtraDataList* apExtraData, int
     spdlog::debug("Dropping object, form id: {:X}, count: {}, actor: {:X}", apObject->formID, aCount, formID);
     BSPointerHandle<TESObjectREFR> result{};
     TiltedPhoques::ThisCall(RealDropObject, this, &result, apObject, apExtraData, aCount, apLocation, apRotation);
-    if (TESObjectREFR* pDropped = TESObjectREFR::GetByHandle(result))
+    if (GamePtr<TESObjectREFR> spDropped = TESObjectREFR::LookupByHandle(result))
     {
-        pDropped->SetSkipSaveFlag(true);
-        pDropped->UnsetChanged(0xFFFFFFFF);
+        spDropped->SetSkipSaveFlag(true);
+        spDropped->UnsetChanged(0xFFFFFFFF);
     }
 }
 
@@ -1748,8 +1838,10 @@ static TUpdateDetectionState* RealUpdateDetectionState = nullptr;
 
 void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
 {
-    auto pOwner = TESObjectREFR::GetByHandle(apThis->hOwner);
-    auto pTarget = TESObjectREFR::GetByHandle(apThis->hTarget);
+    GamePtr<TESObjectREFR> spOwner = TESObjectREFR::LookupByHandle(apThis->hOwner);
+    GamePtr<TESObjectREFR> spTarget = TESObjectREFR::LookupByHandle(apThis->hTarget);
+    TESObjectREFR* const pOwner = spOwner.Get();
+    TESObjectREFR* const pTarget = spTarget.Get();
 
     if (pOwner && pTarget)
     {

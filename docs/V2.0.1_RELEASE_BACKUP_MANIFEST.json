@@ -1,0 +1,41 @@
+{
+  "backup_manifest_version": 1,
+  "protected_release_tag": "v2.0.1-backup",
+  "source_release_tag": "v2.0.1",
+  "release_id": 423810937,
+  "source_tag_commit": "1047556002519127ee34ffc23b395ee7ecf81362",
+  "branch_head_at_audit": "3447a5437bfb6812f4a9ac8dee3707924b6121c0",
+  "published_at": "2026-04-17T02:45:10Z",
+  "html_url": "https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup",
+  "policy": "Immutable golden backup of RFAB Online v2.0.1. Must never be overwritten or deleted by CI or release scripts.",
+  "assets": [
+    {
+      "id": 676796126,
+      "name": "RFAB_Online_v2.0.1_Full_Installer.zip",
+      "size": 176105095,
+      "sha256": "bfb633d6b751e8fd9f5a149f935bc149bf79a428276931b0a277a358577cb5bf",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.1-backup/RFAB_Online_v2.0.1_Full_Installer.zip"
+    },
+    {
+      "id": 676796129,
+      "name": "RFAB_Online_v2.0.1_PDB_Symbols.zip",
+      "size": 85607833,
+      "sha256": "f9e95eec07cdb63bb54bf8bbf39084636bb3ae6818efd65003d994d3c93b6581",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.1-backup/RFAB_Online_v2.0.1_PDB_Symbols.zip"
+    },
+    {
+      "id": 676796130,
+      "name": "RFAB_Online_v2.0.1_Quick_Update.zip",
+      "size": 15555725,
+      "sha256": "f48a9cf055d87c46437c0b0ad22514a27ac21068d783301661aa845434161da7",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.1-backup/RFAB_Online_v2.0.1_Quick_Update.zip"
+    },
+    {
+      "id": 676796128,
+      "name": "SHA256SUMS.txt",
+      "size": 310,
+      "sha256": "71a0ff68a41b2dc2ff12065bcd4619c6b5734b2b588f5a327b95fa9b2fd485a1",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.0.1-backup/SHA256SUMS.txt"
+    }
+  ]
+}

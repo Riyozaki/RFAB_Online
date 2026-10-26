@@ -1,7 +1,11 @@
 #pragma once
 
 #include <Games/Memory.h>
+#include <cstddef>
 #include <iterator>
+#include <memory>
+#include <type_traits>
+#include <utility>
 
 template <class T> struct GameArray
 {
@@ -99,18 +103,58 @@ template <class T> struct GameArray
 
 template <class T> void GameArray<T>::Resize(size_t aLength) noexcept
 {
-    if (capacity >= aLength)
+    constexpr uint32_t kDontDeallocateMask = 0x80000000u;
+    constexpr uint32_t kCapacityMask = 0x7FFFFFFFu;
+
+    const uint32_t targetLength = static_cast<uint32_t>(aLength & kCapacityMask);
+    const uint32_t realCapacity = capacity & kCapacityMask;
+    const bool dontDeallocate = (capacity & kDontDeallocateMask) != 0;
+
+    if (realCapacity >= targetLength && (data != nullptr || targetLength == 0))
     {
-        length = aLength & 0xFFFFFFFF;
+        if constexpr (!std::is_trivially_destructible_v<T>)
+        {
+            for (uint32_t i = targetLength; i < length; ++i)
+                std::destroy_at(&data[i]);
+        }
+        for (uint32_t i = length; i < targetLength; ++i)
+            std::construct_at(&data[i]);
+
+        length = targetLength;
+        return;
     }
-    else
+
+    T* pNewData = targetLength > 0
+        ? reinterpret_cast<T*>(Memory::Allocate(sizeof(T) * targetLength))
+        : nullptr;
+
+    const uint32_t toCopy = (data != nullptr) ? ((length < targetLength) ? length : targetLength) : 0u;
+    for (uint32_t i = 0; i < toCopy; ++i)
     {
-        T* pNewData = reinterpret_cast<T*>(Memory::Allocate(sizeof(T) * aLength));
-        std::copy(data, data + length, pNewData);
-        Memory::Free(data);
-        data = pNewData;
-        capacity = length = aLength;
+        if constexpr (std::is_move_constructible_v<T>)
+            std::construct_at(&pNewData[i], std::move(data[i]));
+        else
+            std::construct_at(&pNewData[i], data[i]);
     }
+    for (uint32_t i = toCopy; i < targetLength; ++i)
+    {
+        std::construct_at(&pNewData[i]);
+    }
+
+    if (data != nullptr)
+    {
+        if constexpr (!std::is_trivially_destructible_v<T>)
+        {
+            for (uint32_t i = 0; i < length; ++i)
+                std::destroy_at(&data[i]);
+        }
+        if (!dontDeallocate)
+            Memory::Free(data);
+    }
+
+    data = pNewData;
+    capacity = targetLength;
+    length = targetLength;
 }
 
 static_assert(offsetof(GameArray<int>, length) == 0x10);
@@ -348,6 +392,21 @@ template <class T> struct GamePtr
     GamePtr(std::nullptr_t) noexcept
         : m_pPointer(nullptr)
     {
+    }
+
+    // Adopts an already-AddRef'd pointer (e.g. directly from LookupREFRByHandle SE 16828) without extra IncRef.
+    static GamePtr Adopt(T* apAlreadyAddRefed) noexcept
+    {
+        GamePtr result;
+        result.m_pPointer = apAlreadyAddRefed;
+        return result;
+    }
+
+    T* Detach() noexcept
+    {
+        T* const pPtr = m_pPointer;
+        m_pPointer = nullptr;
+        return pPtr;
     }
 
     GamePtr(T* apPointer) noexcept

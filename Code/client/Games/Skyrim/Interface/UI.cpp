@@ -113,8 +113,14 @@ template <size_t Index>
 IMenu* WrappedMenuCreator(UIMessage* apMessage)
 {
     IMenu* pMenu = s_realCreators[Index](apMessage);
-    if (!pMenu || !World::Get().GetTransport().IsConnected())
+    if (!pMenu || !World::IsConnectedCached())
         return pMenu;
+
+    if constexpr (Index < kAllowListCount)
+    {
+        if (std::strcmp(kAllowList[Index], "ContainerMenu") == 0)
+            World::SetContainerMenuOpenHint(true);
+    }
 
     // CRITICAL FOR RFAB + SKYRIMSOULS RE (SE 1.5.97):
     // When SkyrimSoulsRE.dll is loaded, SkyrimSoulsRE::CreateMenu wraps our menu creator and checks

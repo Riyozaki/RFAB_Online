@@ -58,10 +58,10 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
         action.TargetEventName = apAction->targetEventName.AsAscii();
         action.IdleId = apAction->idleForm ? apAction->idleForm->formID : 0;
 
-        // Save for later
-        if (res)
+        // Save for later (thread-safe sharded store: HookPerformAction executes on Skyrim AI worker threads!)
+        if (res && pActor->formID != 0)
         {
-            pExtension->LatestAnimation = action;
+            ActorExtension::SetLatestAnimation(pActor->formID, action);
         }
 
         World::Get().GetRunner().Trigger(action);

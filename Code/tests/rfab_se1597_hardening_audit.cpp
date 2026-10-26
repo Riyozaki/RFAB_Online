@@ -1170,7 +1170,17 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         lo << "SkyrimTogether.esp\r\n";
     }
     {
-        const auto oldCwd = std::filesystem::current_path();
+        struct ScopedCurrentPath
+        {
+            std::filesystem::path Prev;
+            ~ScopedCurrentPath() noexcept
+            {
+                std::error_code ec;
+                if (!Prev.empty())
+                    std::filesystem::current_path(Prev, ec);
+            }
+        } cwdGuard{std::filesystem::current_path()};
+
         std::filesystem::current_path(loDir);
         ESLoader::ESLoader loader;
         (void)loader.BuildRecordCollection();
@@ -1180,7 +1190,6 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(order.front().m_standardId == 0x00);
         REQUIRE(order[260].m_isLite == true);
         REQUIRE(order.back().m_filename == "SkyrimTogether.esp");
-        std::filesystem::current_path(oldCwd);
     }
     std::filesystem::remove_all(loDir);
 

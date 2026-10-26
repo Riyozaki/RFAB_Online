@@ -147,10 +147,10 @@ void TP_MAKE_THISCALL(HookInitFromPackage, void, TESPackage* apPackage, TESObjec
     if (s_execInitPackage)
         return TiltedPhoques::ThisCall(RealInitFromPackage, apThis, apPackage, apTarget, arActor);
 
-    if (arActor && arActor->GetExtension()->IsRemote())
+    if (arActor && arActor->GetExtension() && arActor->GetExtension()->IsRemote())
         return;
 
-    if (arActor && apPackage)
+    if (World::IsConnectedCached() && arActor && apPackage)
         World::Get().GetRunner().Trigger(InitPackageEvent(arActor->formID, apPackage->formID));
 
 #endif
@@ -164,11 +164,14 @@ void TP_MAKE_THISCALL(HookSetCurrentPickREFR, Console, BSPointerHandle<TESObject
 {
     uint32_t formId = 0;
 
-    TESObjectREFR* pObject = TESObjectREFR::GetByHandle(apRefr->handle.iBits);
-    if (pObject)
-        formId = pObject->formID;
+    if (apRefr)
+    {
+        if (GamePtr<TESObjectREFR> spObject = TESObjectREFR::LookupByHandle(apRefr->handle.iBits))
+            formId = spObject->formID;
+    }
 
-    World::Get().GetDebugService().SetDebugId(formId);
+    if (World::IsCreated())
+        World::Get().GetDebugService().SetDebugId(formId);
 
     return TiltedPhoques::ThisCall(RealSetCurrentPickREFR, apThis, apRefr);
 }

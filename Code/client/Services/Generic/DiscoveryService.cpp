@@ -205,12 +205,30 @@ void DiscoveryService::VisitForms() noexcept
 
     for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
     {
-        TESObjectREFR* const pRefr = TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]);
-        if (pRefr)
+        GamePtr<TESObjectREFR> spRefr = TESObjectREFR::LookupByHandle(pProcessLists->highActorHandleArray[i]);
+        TESObjectREFR* const pRefr = spRefr.Get();
+        if (!pRefr)
+            continue;
+
+        if (pRefr->GetNiNode())
         {
-            if (pRefr->GetNiNode())
+            m_niNodeFlickerGraceFrames.erase(pRefr->formID);
+            visitor(pRefr);
+        }
+        else if (m_forms.count(pRefr->formID) != 0 &&
+                 !pRefr->IsDisabled() &&
+                 !pRefr->IsDeleted() &&
+                 pRefr->parentCell &&
+                 pRefr->parentCell->loadedCellData != nullptr)
+        {
+            // Keep already-registered high-process actors alive across short (<15-frame) 3D rebuilds
+            // (QueueNiNodeUpdate, helmet/armor equip, vampire/werewolf transform, exterior grid seam).
+            constexpr uint8_t kMaxNiNodeFlickerFrames = 15;
+            uint8_t& missingFrames = m_niNodeFlickerGraceFrames[pRefr->formID];
+            if (missingFrames < kMaxNiNodeFlickerFrames)
             {
-                visitor(pRefr);
+                ++missingFrames;
+                s_previousForms.erase(pRefr->formID);
             }
         }
     }
@@ -222,6 +240,7 @@ void DiscoveryService::VisitForms() noexcept
     // We dispatch removal events first to prevent needless reallocations
     for (uint32_t formId : s_previousForms)
     {
+        m_niNodeFlickerGraceFrames.erase(formId);
         m_dispatcher.trigger(ActorRemovedEvent(formId));
         m_forms.erase(formId);
     }
@@ -233,6 +252,7 @@ void DiscoveryService::VisitForms() noexcept
 void DiscoveryService::ResetLoadedForms() noexcept
 {
     m_forms.clear();
+    m_niNodeFlickerGraceFrames.clear();
     m_interiorCellId = 0;
     m_pLocation = nullptr;
     ResetCachedCellData();

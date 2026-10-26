@@ -7,6 +7,8 @@
 
 #include <Games/TES.h>
 
+#include <mutex>
+
 ModSystem::ModSystem(entt::dispatcher& aDispatcher) noexcept
 {
     std::memset(m_standardToServer, 0, sizeof(m_standardToServer));
@@ -18,6 +20,8 @@ ModSystem::ModSystem(entt::dispatcher& aDispatcher) noexcept
 
 bool ModSystem::GetServerModId(const uint32_t aGameId, uint32_t& aModId, uint32_t& aBaseId) const noexcept
 {
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+
     uint32_t hiByte = aGameId >> 24;
 
     // If it's a lite mod
@@ -50,6 +54,8 @@ bool ModSystem::GetServerModId(uint32_t aGameId, GameId& aServerId) const noexce
 
 uint32_t ModSystem::GetGameId(uint32_t aServerId, uint32_t aFormId) const noexcept
 {
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+
     auto itor = m_serverToGame.find(aServerId);
     if (itor != std::end(m_serverToGame))
     {
@@ -78,31 +84,40 @@ uint32_t ModSystem::GetGameId(const GameId& acGameId) const noexcept
 
 void ModSystem::HandleMods(const Mods& acMods) noexcept
 {
-    m_serverToGame.clear();
-    m_liteToServer.clear();
-    std::memset(m_standardToServer, 0, sizeof(m_standardToServer));
-    m_standardToServer[0xFF] = std::numeric_limits<uint32_t>::max();
+    Map<uint16_t, uint32_t> newLiteToServer;
+    Map<uint32_t, GameMod> newServerToGame;
+    uint32_t newStandardToServer[0x100]{};
+    newStandardToServer[0xFF] = std::numeric_limits<uint32_t>::max();
 
     const auto pModManager = ModManager::Get();
-
-    for (const auto& mod : acMods.ModList)
+    if (pModManager)
     {
-        if (Mod* pMod = pModManager->GetByName(mod.Filename.c_str()))
+        for (const auto& mod : acMods.ModList)
         {
-            if (mod.IsLite)
+            if (Mod* pMod = pModManager->GetByName(mod.Filename.c_str()))
             {
-                m_serverToGame.emplace(mod.Id, GameMod{static_cast<uint16_t>(pMod->GetId() & 0xFFFu), true});
-                m_liteToServer.emplace(pMod->GetId(), mod.Id);
+                if (mod.IsLite)
+                {
+                    newServerToGame.emplace(mod.Id, GameMod{static_cast<uint16_t>(pMod->GetId() & 0xFFFu), true});
+                    newLiteToServer.emplace(pMod->GetId(), mod.Id);
+                }
+                else
+                {
+                    newServerToGame.emplace(mod.Id, GameMod{static_cast<uint16_t>(pMod->GetId() & 0xFFu), false});
+                    newStandardToServer[pMod->GetId() & 0xFF] = mod.Id;
+                }
             }
             else
             {
-                m_serverToGame.emplace(mod.Id, GameMod{static_cast<uint16_t>(pMod->GetId() & 0xFFu), false});
-                m_standardToServer[pMod->GetId() & 0xFF] = mod.Id;
+                spdlog::error("Failed to find mod {}, is lite? {}, id: {:X}", mod.Filename.c_str(), mod.IsLite, mod.Id);
             }
         }
-        else
-        {
-            spdlog::error("Failed to find mod {}, is lite? {}, id: {:X}", mod.Filename.c_str(), mod.IsLite, mod.Id);
-        }
+    }
+
+    {
+        std::unique_lock<std::shared_mutex> lock(m_mutex);
+        m_liteToServer.swap(newLiteToServer);
+        m_serverToGame.swap(newServerToGame);
+        std::memcpy(m_standardToServer, newStandardToServer, sizeof(m_standardToServer));
     }
 }

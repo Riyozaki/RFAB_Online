@@ -40,6 +40,12 @@ struct Actor : TESObjectREFR
         const NiPoint3& acPosition,
         const NiPoint3& acRotation) noexcept;
     static GamePtr<Actor> Spawn(uint32_t aBaseFormId) noexcept;
+    static GamePtr<Actor> LookupByHandle(uint32_t aHandle) noexcept;
+    template <class T>
+    static GamePtr<Actor> LookupByHandle(const BSPointerHandle<T>& acHandle) noexcept
+    {
+        return LookupByHandle(acHandle.handle.iBits);
+    }
 
     virtual void sub_9C();
     virtual void sub_9D();
@@ -257,6 +263,7 @@ struct Actor : TESObjectREFR
     bool InitiateMountPackage(Actor* apMount) noexcept;
     void GenerateMagicCasters() noexcept;
     void DispelAllSpells(bool aNow = false) noexcept;
+    void DispelHostileEffects() noexcept;
     void Reset() noexcept;
     void Kill(Actor* apKiller = nullptr) noexcept;
     void Respawn() noexcept;

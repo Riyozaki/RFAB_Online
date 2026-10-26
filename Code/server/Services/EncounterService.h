@@ -156,17 +156,24 @@ public:
         return changed;
     }
 
-    void RemovePlayer(uint32_t aPlayerId)
+    std::vector<uint32_t> RemovePlayer(uint32_t aPlayerId)
     {
+        std::vector<uint32_t> cancelledTargets{};
         m_players.erase(aPlayerId);
         m_channelsByTarget.erase(aPlayerId);
         for (auto it = m_channelsByTarget.begin(); it != m_channelsByTarget.end();)
         {
             if (it->second.ReviverPlayerId == aPlayerId)
+            {
+                cancelledTargets.push_back(it->second.TargetPlayerId);
                 it = m_channelsByTarget.erase(it);
+            }
             else
+            {
                 ++it;
+            }
         }
+        return cancelledTargets;
     }
 
     bool TryStartAllyRevive(uint32_t aReviverId, uint32_t aTargetId, uint64_t aNowMs)
