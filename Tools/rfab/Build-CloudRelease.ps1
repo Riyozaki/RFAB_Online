@@ -97,7 +97,7 @@ function Ensure-V202BackupRelease([string]$RepoRootPath) {
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-    $existingJson = & gh release view v2.0.2-backup --json assets 2>$null
+    $existingJson = & cmd.exe /d /s /c "gh release view v2.0.2-backup --json assets 2>nul"
     if ($LASTEXITCODE -eq 0 -and $existingJson) {
         $existingRel = $existingJson | ConvertFrom-Json
         $existingMap = @{}
