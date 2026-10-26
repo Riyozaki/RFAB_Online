@@ -1,15 +1,19 @@
 ﻿param(
     [string]$VersionTag = "v2.0.1",
-    [string]$BuildMode = "releasedbg"
+    [string]$BuildMode = "releasedbg",
+    # Publishing is OPT-IN. Without -Publish the script only builds, tests and packages
+    # into release_artifacts\ and never touches GitHub Releases. This prevents branch
+    # pushes (arena/**, main) from silently clobbering assets of the published release.
+    [switch]$Publish
 )
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0")
-if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v2.0.1' (previous releases are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v2.0.1"
+# Every already-published release is immutable. A new release always needs a NEW tag.
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup")
+if ($Publish -and ($VersionTag -in $ProtectedTags)) {
+    throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten! Use a new version tag."
 }
-if ($VersionTag -in $ProtectedTags) {
-    throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"
+if (-not $Publish) {
+    Write-Host "[RELEASE POLICY] Build/test/package only (no -Publish): GitHub Releases are NOT modified." -ForegroundColor Yellow
 }
 
 $IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main")
@@ -23,8 +27,66 @@ $script:LastDiagTail = ""
 $script:ProgressLog = New-Object System.Collections.Generic.List[string]
 $CacheMarker = Join-Path $env:LOCALAPPDATA ".xmake\packages\.rfab_cached_ok"
 
+# Create-only, idempotent mirror of a published release into an immutable "<tag>-backup" pre-release.
+# Runs on every CI build (even without -Publish) because it can only ADD a missing backup, never modify
+# an existing release. Assets are verified against the source SHA256SUMS.txt before mirroring.
+function Ensure-ImmutableBackupRelease([string]$SrcTag, [string]$DstTag, [string]$SrcCommit) {
+    try {
+        if (-not $env:GH_TOKEN) { return }
+        & cmd.exe /d /s /c "gh release view $DstTag >nul 2>&1"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[BACKUP] Protected backup release $DstTag already exists on GitHub." -ForegroundColor Green
+            return
+        }
+        & cmd.exe /d /s /c "gh release view $SrcTag >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) { return }
+
+        Write-Host "[BACKUP] Mirroring $SrcTag assets into immutable backup release $DstTag..." -ForegroundColor Cyan
+        $bakDir = Join-Path $env:TEMP ("rfab_bak_" + [Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
+        try {
+            & cmd.exe /d /s /c "gh release download $SrcTag -D `"$bakDir`" --clobber"
+            if ($LASTEXITCODE -ne 0) { throw "could not download $SrcTag assets" }
+
+            $sumsPath = Join-Path $bakDir "SHA256SUMS.txt"
+            if (-not (Test-Path -LiteralPath $sumsPath)) { throw "SHA256SUMS.txt missing in $SrcTag" }
+            foreach ($line in [System.IO.File]::ReadAllLines($sumsPath)) {
+                $t = $line.Trim()
+                if (-not $t) { continue }
+                $parts = $t -split '\s+', 2
+                $f = Join-Path $bakDir $parts[1].TrimStart('*')
+                if (-not (Test-Path -LiteralPath $f)) { throw "Missing asset $($parts[1])" }
+                $actual = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actual -ne $parts[0].ToLowerInvariant()) { throw "SHA256 mismatch on $($parts[1])" }
+            }
+
+            $tagSha = (& gh api "repos/{owner}/{repo}/git/ref/tags/$SrcTag" -q .object.sha 2>$null)
+            $bakNotes = Join-Path $env:TEMP ("rfab_bak_notes_" + [Guid]::NewGuid().ToString("N") + ".md")
+            $bakText = "Immutable backup mirror of stable release **$SrcTag**.`r`n`r`n" +
+                       "- Assets were built from commit ``$SrcCommit``.`r`n" +
+                       "- Git tag ``$SrcTag`` points to ``$tagSha``.`r`n" +
+                       "- Every asset was verified against SHA256SUMS.txt before mirroring.`r`n"
+            [System.IO.File]::WriteAllText($bakNotes, $bakText, (New-Object System.Text.UTF8Encoding($false)))
+
+            & cmd.exe /d /s /c "gh release create $DstTag --target $SrcCommit --title `"RFAB Online $SrcTag (Immutable Backup Archive)`" --notes-file `"$bakNotes`" --prerelease"
+            if ($LASTEXITCODE -ne 0) { throw "gh release create $DstTag failed" }
+            Remove-Item -LiteralPath $bakNotes -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -LiteralPath $bakDir -File | ForEach-Object {
+                & cmd.exe /d /s /c "gh release upload $DstTag `"$($_.FullName)`" --clobber"
+                if ($LASTEXITCODE -ne 0) { throw "upload of $($_.Name) to $DstTag failed" }
+            }
+            Write-Host "[BACKUP] Created verified GitHub backup release $DstTag!" -ForegroundColor Green
+        } finally {
+            Remove-Item -LiteralPath $bakDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Emit-Annotation "warning" "BACKUP" ("Non-fatal: backup of $SrcTag -> $DstTag failed ($SrcTag itself is untouched): " + $_.Exception.Message)
+    }
+}
+
 function Ensure-V120BackupRelease([string]$RepoRootPath) {
     try {
+        if (-not $Publish) { return }
         if (-not $env:GH_TOKEN) { return }
         & cmd.exe /d /s /c "gh release view v1.2.0-backup >nul 2>&1"
         if ($LASTEXITCODE -eq 0) {
@@ -80,7 +142,7 @@ function Ensure-V120BackupRelease([string]$RepoRootPath) {
 
 function Update-ReleaseTelemetry([string]$StateTitle, [string]$BodyText) {
     try {
-        if ($VersionTag -in $ProtectedTags) { return }
+        if ((-not $Publish) -or ($VersionTag -in $ProtectedTags)) { return }
         if ($StateTitle.Length -gt 200) { $StateTitle = $StateTitle.Substring(0, 200) }
         if ($BodyText.Length -gt 60000) {
             $BodyText = $BodyText.Substring($BodyText.Length - 60000)
@@ -134,7 +196,7 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
             $compactTail = @($tailShow | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             $script:LastDiagTail = ($compactTail -join "`r`n")
             Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n")
-            if ($VersionTag -notin $ProtectedTags) {
+            if ($Publish -and ($VersionTag -notin $ProtectedTags)) {
                 $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
                 Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
                 & cmd.exe /d /s /c "gh release upload $VersionTag `"$failLogAsset`" --clobber >nul 2>&1"
@@ -155,6 +217,7 @@ try {
     Set-Location -LiteralPath $RepoRoot
 
     Ensure-V120BackupRelease -RepoRootPath $RepoRoot
+    Ensure-ImmutableBackupRelease -SrcTag "v2.0.1" -DstTag "v2.0.1-backup" -SrcCommit "3447a5437bfb6812f4a9ac8dee3707924b6121c0"
 
     Invoke-LoggedCmd "[1/7] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
     Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"
@@ -180,6 +243,12 @@ try {
     $ReleaseNotes = [System.IO.File]::ReadAllText($NotesTemplateFile, [System.Text.Encoding]::UTF8)
     $ReleaseNotes = $ReleaseNotes.Replace("{{VERSION_TAG}}", $VersionTag)
     [System.IO.File]::WriteAllText($NotesFile, $ReleaseNotes, (New-Object System.Text.UTF8Encoding($false)))
+
+    if (-not $Publish) {
+        Emit-Annotation "notice" "RFAB_BUILD" "Build, tests and packaging succeeded (publish skipped; artifacts in release_artifacts\)."
+        $global:LASTEXITCODE = 0
+        exit 0
+    }
 
     $CommitSha    = (& git rev-parse HEAD).Trim()
     $InstallerZip = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_Full_Installer.zip"

@@ -1,0 +1,102 @@
+name: Build & Publish Clean Release
+
+# Release policy:
+# - push to main / arena/**  -> build + unit tests + packaging ONLY. Never touches GitHub Releases.
+#                               The packaged Quick_Update zip is attached as a workflow artifact for testers.
+# - workflow_dispatch         -> same, and publishes ONLY when `publish` is checked AND `version_tag`
+#                               is a NEW tag (Build-CloudRelease.ps1 refuses to overwrite published releases).
+
+on:
+  push:
+    branches: ['arena/**', 'main']
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'New release tag to publish (e.g. v2.0.2). Existing releases are immutable.'
+        required: true
+        default: 'v2.0.2'
+      publish:
+        description: 'Publish to GitHub Releases (otherwise build/test only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One-shot, idempotent safety net: mirror the stable v2.0.1 release (assets verified by SHA256SUMS)
+  # into an immutable `v2.0.1-backup` pre-release before any further development builds run.
+  backup-stable-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure immutable backup of v2.0.1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SRC_TAG: v2.0.1
+          DST_TAG: v2.0.1-backup
+          # Commit the published v2.0.1 assets were actually built from (release targetCommitish).
+          SRC_COMMIT: 3447a5437bfb6812f4a9ac8dee3707924b6121c0
+        run: |
+          set -euo pipefail
+          if gh release view "$DST_TAG" -R "$REPO" >/dev/null 2>&1; then
+            echo "Backup release $DST_TAG already exists - nothing to do."
+            exit 0
+          fi
+          mkdir -p bak
+          gh release download "$SRC_TAG" -R "$REPO" -D bak
+          cd bak
+          tr -d '\r' < SHA256SUMS.txt > SHA256SUMS.lf
+          sha256sum -c SHA256SUMS.lf
+          rm SHA256SUMS.lf
+          printf '%s\n' \
+            "Immutable backup mirror of stable release **${SRC_TAG}**." \
+            "" \
+            "- Assets built from commit \`${SRC_COMMIT}\` (merge of PR #7)." \
+            "- Git tag \`${SRC_TAG}\` itself points to \`$(gh api repos/$REPO/git/ref/tags/$SRC_TAG -q .object.sha)\`." \
+            "- All assets verified against SHA256SUMS.txt before mirroring." \
+            "" \
+            "Created automatically before v2.0.x stabilization work started." > ../notes.md
+          gh release create "$DST_TAG" -R "$REPO" --target "$SRC_COMMIT" \
+            --title "RFAB Online ${SRC_TAG} (Immutable Backup Archive)" \
+            --notes-file ../notes.md --prerelease ./*
+
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/.xmake/packages
+          key: ${{ runner.os }}-xmake-mt-${{ hashFiles('**/xmake.lua') }}
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: 3.1.0
+      - name: Build, test & package (no publish)
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: powershell
+        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "${{ inputs.version_tag || 'v0.0.0-ci' }}"
+      - name: Build, test, package & PUBLISH
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: powershell
+        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "${{ inputs.version_tag }}" -Publish
+      - name: Upload test build (Quick Update + checksums)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfab-online-quick-update-${{ github.sha }}
+          path: |
+            release_artifacts/*_Quick_Update.zip
+            release_artifacts/SHA256SUMS.txt
+          retention-days: 14
+          if-no-files-found: warn
