@@ -5,15 +5,11 @@
 #endif
 
 #include <Structs/LockData.h>
-#include <Game/Player.h>
 
 struct ObjectComponent
 {
-    ObjectComponent(Player* apLastSender)
-        : pLastSender(apLastSender)
-    {
-    }
+    ObjectComponent() noexcept = default;
 
-    Player* pLastSender;
     LockData CurrentLockData{};
+    bool HasAuthoritativeMutation{false};
 };

@@ -889,8 +889,9 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
     calendar.SetDate(acSnapshot.Calendar.Day, acSnapshot.Calendar.Month, acSnapshot.Calendar.Year);
     calendar.SetTime(acSnapshot.Calendar.Hour, acSnapshot.Calendar.Minute, acSnapshot.Calendar.TimeScale);
 
-    // 5. Clear all downed/revive/wipe states before clients transition
+    // 5. Clear all downed/revive/wipe states and container anti-dupe markers before clients transition
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
+    m_world.GetInventoryService().ResetLootLedger();
 
     // 6. Drop snapshots strictly newer than the restored epoch & persist updated store to disk
     while (!m_snapshots.empty() && m_snapshots.back().EpochId > acSnapshot.EpochId)
@@ -1035,6 +1036,7 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         }
     }
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
+    m_world.GetInventoryService().ResetLootLedger();
     {
         auto objectView = m_world.view<ObjectComponent>();
         std::vector<entt::entity> toDestroy(objectView.begin(), objectView.end());

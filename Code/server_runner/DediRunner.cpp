@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <vector>
 #include <base/threading/ThreadUtils.h>
+#include <common/RfabModpackCompat.h>
 
 namespace
 {
@@ -57,47 +58,57 @@ void EnsureServerLoadOrderReady()
         if (!fs::exists(pluginsTxt, ec) && !fs::exists(loadOrderTxt, ec))
             return false;
 
-        std::unordered_set<std::string> enabledSet = {
-            "Skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"
+        std::unordered_set<std::string> enabledLowerSet = {
+            "skyrim.esm", "update.esm", "dawnguard.esm", "hearthfires.esm", "dragonborn.esm"
         };
         std::vector<std::string> ordered;
+        std::unordered_set<std::string> seenLower;
 
-        if (fs::exists(pluginsTxt, ec))
+        auto appendOrdered = [&](const std::string& name)
         {
-            std::ifstream pf(pluginsTxt);
-            std::string line;
-            while (std::getline(pf, line))
+            const std::string lower = RfabCompat::Detail::ToLowerAscii(name);
+            if (!lower.empty() && seenLower.insert(lower).second)
+                ordered.push_back(name);
+        };
+
+        const bool hasPluginsTxt = fs::exists(pluginsTxt, ec) && !ec;
+        const bool hasLoadOrderTxt = fs::exists(loadOrderTxt, ec) && !ec;
+
+        if (hasPluginsTxt)
+        {
+            std::string rawPlugins;
+            if (RfabCompat::Detail::ReadTextFile(pluginsTxt, rawPlugins))
             {
-                while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
-                    line.pop_back();
-                if (line.size() > 1 && line[0] == '*')
+                const auto activeFromPlugins = RfabCompat::ParseActivePluginList(rawPlugins, true);
+                for (const auto& name : activeFromPlugins)
                 {
-                    const std::string name = line.substr(1);
-                    enabledSet.insert(name);
-                    if (!fs::exists(loadOrderTxt, ec))
-                        ordered.push_back(name);
+                    enabledLowerSet.insert(RfabCompat::Detail::ToLowerAscii(name));
+                    if (!hasLoadOrderTxt)
+                        appendOrdered(name);
                 }
             }
         }
 
-        if (fs::exists(loadOrderTxt, ec))
+        if (hasLoadOrderTxt)
         {
-            std::ifstream lf(loadOrderTxt);
-            std::string line;
-            while (std::getline(lf, line))
+            std::string rawLoadOrder;
+            if (RfabCompat::Detail::ReadTextFile(loadOrderTxt, rawLoadOrder))
             {
-                while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
-                    line.pop_back();
-                if (!line.empty() && line[0] != '#' && enabledSet.count(line) > 0)
-                    ordered.push_back(line);
+                const auto allInOrder = RfabCompat::ParseActivePluginList(rawLoadOrder, false);
+                for (const auto& name : allInOrder)
+                {
+                    const std::string lower = RfabCompat::Detail::ToLowerAscii(name);
+                    if (!hasPluginsTxt || enabledLowerSet.count(lower) > 0)
+                        appendOrdered(name);
+                }
             }
         }
 
         if (ordered.empty())
             return false;
 
-        if (enabledSet.count("SkyrimTogether.esp") == 0)
-            ordered.push_back("SkyrimTogether.esp");
+        if (seenLower.count("skyrimtogether.esp") == 0)
+            appendOrdered("SkyrimTogether.esp");
 
         std::ofstream out(targetLoadOrder, std::ios::binary | std::ios::trunc);
         if (!out.is_open())

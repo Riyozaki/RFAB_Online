@@ -363,6 +363,228 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
     m_partyJoinedConnection = aDispatcher.sink<PartyJoinedEvent>().connect<&CharacterService::OnPartyJoinedEvent>(this);
     m_playerCellChangedConnection = m_dispatcher.sink<NotifyPlayerCellChanged>().connect<&CharacterService::OnPlayerCellChanged>(this);
     m_playerLeftConnection = m_dispatcher.sink<NotifyPlayerLeft>().connect<&CharacterService::OnPlayerLeft>(this);
+
+    m_formIdConstructConn = m_world.on_construct<FormIdComponent>().connect<&CharacterService::OnFormIdIndexUpdated>(this);
+    m_formIdUpdateConn = m_world.on_update<FormIdComponent>().connect<&CharacterService::OnFormIdIndexUpdated>(this);
+    m_formIdDestroyConn = m_world.on_destroy<FormIdComponent>().connect<&CharacterService::OnFormIdIndexDestroyed>(this);
+
+    m_localConstructConn = m_world.on_construct<LocalComponent>().connect<&CharacterService::OnLocalIndexUpdated>(this);
+    m_localUpdateConn = m_world.on_update<LocalComponent>().connect<&CharacterService::OnLocalIndexUpdated>(this);
+    m_localDestroyConn = m_world.on_destroy<LocalComponent>().connect<&CharacterService::OnLocalIndexDestroyed>(this);
+
+    m_remoteConstructConn = m_world.on_construct<RemoteComponent>().connect<&CharacterService::OnRemoteIndexUpdated>(this);
+    m_remoteUpdateConn = m_world.on_update<RemoteComponent>().connect<&CharacterService::OnRemoteIndexUpdated>(this);
+    m_remoteDestroyConn = m_world.on_destroy<RemoteComponent>().connect<&CharacterService::OnRemoteIndexDestroyed>(this);
+
+    m_objectConstructConn = m_world.on_construct<ObjectComponent>().connect<&CharacterService::OnObjectIndexUpdated>(this);
+    m_objectUpdateConn = m_world.on_update<ObjectComponent>().connect<&CharacterService::OnObjectIndexUpdated>(this);
+    m_objectDestroyConn = m_world.on_destroy<ObjectComponent>().connect<&CharacterService::OnObjectIndexDestroyed>(this);
+}
+
+void CharacterService::OnFormIdIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity);
+    if (!pForm || pForm->Id == 0)
+        return;
+
+    if (aRegistry.all_of<ObjectComponent>(aEntity))
+    {
+        m_objectEntityByFormId[pForm->Id] = aEntity;
+        return;
+    }
+
+    m_actorEntityByFormId[pForm->Id] = aEntity;
+}
+
+void CharacterService::OnFormIdIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != 0)
+    {
+        auto it = m_actorEntityByFormId.find(pForm->Id);
+        if (it != m_actorEntityByFormId.end() && it->second == aEntity)
+            m_actorEntityByFormId.erase(it);
+
+        auto objIt = m_objectEntityByFormId.find(pForm->Id);
+        if (objIt != m_objectEntityByFormId.end() && objIt->second == aEntity)
+            m_objectEntityByFormId.erase(objIt);
+    }
+}
+
+void CharacterService::OnLocalIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pLocal = aRegistry.try_get<LocalComponent>(aEntity))
+        m_entityByServerId[pLocal->Id] = aEntity;
+}
+
+void CharacterService::OnLocalIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pLocal = aRegistry.try_get<LocalComponent>(aEntity))
+    {
+        auto it = m_entityByServerId.find(pLocal->Id);
+        if (it != m_entityByServerId.end() && it->second == aEntity)
+            m_entityByServerId.erase(it);
+    }
+}
+
+void CharacterService::OnRemoteIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pRemote = aRegistry.try_get<RemoteComponent>(aEntity))
+        m_entityByServerId[pRemote->Id] = aEntity;
+}
+
+void CharacterService::OnRemoteIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pRemote = aRegistry.try_get<RemoteComponent>(aEntity))
+    {
+        auto it = m_entityByServerId.find(pRemote->Id);
+        if (it != m_entityByServerId.end() && it->second == aEntity)
+            m_entityByServerId.erase(it);
+    }
+}
+
+void CharacterService::OnObjectIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pObj = aRegistry.try_get<ObjectComponent>(aEntity))
+        m_entityByServerId[pObj->Id] = aEntity;
+
+    if (const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != 0)
+    {
+        auto actorIt = m_actorEntityByFormId.find(pForm->Id);
+        if (actorIt != m_actorEntityByFormId.end() && actorIt->second == aEntity)
+            m_actorEntityByFormId.erase(actorIt);
+        m_objectEntityByFormId[pForm->Id] = aEntity;
+    }
+}
+
+void CharacterService::OnObjectIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pObj = aRegistry.try_get<ObjectComponent>(aEntity))
+    {
+        auto it = m_entityByServerId.find(pObj->Id);
+        if (it != m_entityByServerId.end() && it->second == aEntity)
+            m_entityByServerId.erase(it);
+    }
+
+    if (const auto* pForm = aRegistry.try_get<FormIdComponent>(aEntity); pForm && pForm->Id != 0)
+    {
+        auto objIt = m_objectEntityByFormId.find(pForm->Id);
+        if (objIt != m_objectEntityByFormId.end() && objIt->second == aEntity)
+            m_objectEntityByFormId.erase(objIt);
+    }
+}
+
+entt::entity CharacterService::FindActorEntityByFormId(uint32_t aFormId) const noexcept
+{
+    if (aFormId == 0)
+        return entt::null;
+
+    const auto it = m_actorEntityByFormId.find(aFormId);
+    if (it != m_actorEntityByFormId.end())
+    {
+        const entt::entity candidate = it->second;
+        if (m_world.valid(candidate) && !m_world.all_of<ObjectComponent>(candidate))
+        {
+            if (const auto* pForm = m_world.try_get<FormIdComponent>(candidate); pForm && pForm->Id == aFormId)
+                return candidate;
+        }
+    }
+
+    auto view = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
+    for (entt::entity entity : view)
+    {
+        if (view.get<FormIdComponent>(entity).Id == aFormId)
+        {
+            m_actorEntityByFormId[aFormId] = entity;
+            return entity;
+        }
+    }
+
+    return entt::null;
+}
+
+entt::entity CharacterService::FindAnyEntityByFormId(uint32_t aFormId) const noexcept
+{
+    if (aFormId == 0)
+        return entt::null;
+
+    if (const entt::entity actorEntity = FindActorEntityByFormId(aFormId); actorEntity != entt::null)
+        return actorEntity;
+
+    const auto objIt = m_objectEntityByFormId.find(aFormId);
+    if (objIt != m_objectEntityByFormId.end())
+    {
+        const entt::entity candidate = objIt->second;
+        if (m_world.valid(candidate))
+        {
+            if (const auto* pForm = m_world.try_get<FormIdComponent>(candidate); pForm && pForm->Id == aFormId)
+                return candidate;
+        }
+    }
+
+    auto view = m_world.view<FormIdComponent>();
+    for (entt::entity entity : view)
+    {
+        if (view.get<FormIdComponent>(entity).Id == aFormId)
+        {
+            if (m_world.all_of<ObjectComponent>(entity))
+                m_objectEntityByFormId[aFormId] = entity;
+            else
+                m_actorEntityByFormId[aFormId] = entity;
+            return entity;
+        }
+    }
+
+    return entt::null;
+}
+
+entt::entity CharacterService::FindEntityByServerId(uint32_t aServerId) const noexcept
+{
+    const auto it = m_entityByServerId.find(aServerId);
+    if (it != m_entityByServerId.end())
+    {
+        const entt::entity candidate = it->second;
+        if (m_world.valid(candidate))
+        {
+            if (const auto* pRemote = m_world.try_get<RemoteComponent>(candidate); pRemote && pRemote->Id == aServerId)
+                return candidate;
+            if (const auto* pLocal = m_world.try_get<LocalComponent>(candidate); pLocal && pLocal->Id == aServerId)
+                return candidate;
+            if (const auto* pObj = m_world.try_get<ObjectComponent>(candidate); pObj && pObj->Id == aServerId)
+                return candidate;
+        }
+    }
+
+    auto remoteView = m_world.view<RemoteComponent>();
+    for (entt::entity entity : remoteView)
+    {
+        if (remoteView.get<RemoteComponent>(entity).Id == aServerId)
+        {
+            m_entityByServerId[aServerId] = entity;
+            return entity;
+        }
+    }
+
+    auto localView = m_world.view<LocalComponent>();
+    for (entt::entity entity : localView)
+    {
+        if (localView.get<LocalComponent>(entity).Id == aServerId)
+        {
+            m_entityByServerId[aServerId] = entity;
+            return entity;
+        }
+    }
+
+    auto objectView = m_world.view<ObjectComponent>();
+    for (entt::entity entity : objectView)
+    {
+        if (objectView.get<ObjectComponent>(entity).Id == aServerId)
+        {
+            m_entityByServerId[aServerId] = entity;
+            return entity;
+        }
+    }
+
+    return entt::null;
 }
 
 void CharacterService::DeleteRemoteEntityComponents(entt::entity aEntity) const noexcept
@@ -422,6 +644,8 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
 
 void CharacterService::DeleteTempActor(const uint32_t aFormId) noexcept
 {
+    ActorExtension::EraseLatestAnimation(aFormId);
+
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
     if (!pActor || aFormId == 0x14)
         return;
@@ -504,10 +728,8 @@ void CharacterService::OnActorAdded(const ActorAddedEvent& acEvent) noexcept
 
 void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
 {
-    auto view = m_world.view<FormIdComponent>();
-    const auto entityIt = std::find_if(view.begin(), view.end(), [view, formId = acEvent.FormId](auto aEntity) { return view.get<FormIdComponent>(aEntity).Id == formId; });
-
-    if (entityIt == view.end())
+    const entt::entity cId = FindActorEntityByFormId(acEvent.FormId);
+    if (cId == entt::null)
     {
         if ((acEvent.FormId & 0xFF000000) == 0xFF000000)
             spdlog::debug("Dynamic actor {:X} already removed from form ids map", acEvent.FormId);
@@ -516,7 +738,6 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
         return;
     }
 
-    const auto cId = *entityIt;
     m_pendingLocalTempSpawns.erase(cId);
 
     // SkyMP FormView Isolation:
@@ -729,6 +950,8 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
 
 void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
 {
+    ActorExtension::ClearAllLatestAnimations();
+
     if (m_engineWorldLoadInProgress)
         return;
 
@@ -822,6 +1045,14 @@ void CharacterService::PreSavePurgeDynamicActors() noexcept
             pNpcForm->UnsetChanged(0xFFFFFFFF);
         }
     }
+
+    // Ensure placed TESLevCharacter spawners temporarily hidden for authoritative BaseId reconciliation
+    // never bake CHANGE_REFR_DISABLED into the player's .ess save!
+    for (const uint32_t suppressedId : m_suppressedPlacedActors)
+    {
+        if (TESForm* pSuppressed = TESForm::GetById(suppressedId))
+            pSuppressed->UnsetChanged(0xFFFFFFFF);
+    }
 }
 
 void CharacterService::SchedulePostSaveRemoteRestore() noexcept
@@ -849,6 +1080,10 @@ void CharacterService::DetachAllActorsForEngineLoad() noexcept
     m_playerServerIds.clear();
     m_playerBaseNpcPool.clear();
     m_createdNetworkFormIds.clear();
+    m_suppressedPlacedActors.clear();
+    m_actorEntityByFormId.clear();
+    m_objectEntityByFormId.clear();
+    m_entityByServerId.clear();
     m_weaponDrawUpdates.clear();
     NotifySaveLoadReset();
 
@@ -956,6 +1191,20 @@ void CharacterService::PurgeNetworkActorsOnLiveDisconnect() noexcept
         RemoteComponent,
         InterpolationComponent,
         RemoteAnimationComponent>();
+
+    for (const uint32_t suppressedId : m_suppressedPlacedActors)
+    {
+        if (Actor* pSuppressed = Cast<Actor>(TESForm::GetById(suppressedId)))
+        {
+            if (pSuppressed->IsDisabled())
+                pSuppressed->EnableImpl();
+            pSuppressed->UnsetChanged(0xFFFFFFFF);
+        }
+    }
+    m_suppressedPlacedActors.clear();
+    m_actorEntityByFormId.clear();
+    m_objectEntityByFormId.clear();
+    m_entityByServerId.clear();
 
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 }
@@ -1325,7 +1574,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         {
             if (acMessage.IsPlayer && acMessage.BaseId == GameId{} && pLiveActor->baseForm && !acMessage.AppearanceBuffer.empty())
             {
-                if (TESNPC* pBaseNpc = Cast<TESNPC>(pLiveActor->baseForm))
+                if (TESNPC* pBaseNpc = Cast<TESNPC>(pLiveActor->baseForm);
+                    pBaseNpc && ((pBaseNpc->formID & 0xFF000000u) == 0xFF000000u))
                 {
                     pBaseNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
                     pBaseNpc->overlayRace = nullptr;
@@ -1441,17 +1691,15 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 {
     const double cArrivalTime = m_transport.GetMessageReceiveTime();
     const CoopWorldView::ObserverState obs = BuildLocalObserverState();
-    auto view = m_world.view<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>();
 
     for (const auto& [serverId, update] : acMessage.Updates)
     {
-        auto itor = std::find_if(std::begin(view), std::end(view), [serverId = serverId, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == serverId; });
-
-        if (itor == std::end(view))
+        const entt::entity entity = FindEntityByServerId(serverId);
+        if (entity == entt::null || !m_world.all_of<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>(entity))
             continue;
 
-        auto& interpolationComponent = view.get<InterpolationComponent>(*itor);
-        auto& animationComponent = view.get<RemoteAnimationComponent>(*itor);
+        auto& interpolationComponent = m_world.get<InterpolationComponent>(entity);
+        auto& animationComponent = m_world.get<RemoteAnimationComponent>(entity);
         const auto& movement = update.UpdatedMovement;
 
         const CoopWorldView::WorldOrCell incomingLoc = CoopWorldView::WorldOrCell::FromPacket(
@@ -1474,7 +1722,7 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 
             if (transition.HasAuthoritativeLocation)
             {
-                if (spaceWasDifferent && model.SpawnRequest.IsPlayer && m_world.all_of<FormIdComponent>(*itor))
+                if (spaceWasDifferent && model.SpawnRequest.IsPlayer && m_world.all_of<FormIdComponent>(entity))
                     model.DematerializeGraceUntilMs = NowSteadyWorldViewMs() + CoopWorldView::kRemotePlayerDoorTransitionGraceMs;
 
                 model.Location = incomingLoc;
@@ -1503,9 +1751,9 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
             const bool withinDoorGrace = model.SpawnRequest.IsPlayer &&
                                          model.DematerializeGraceUntilMs > 0 &&
                                          nowMs < model.DematerializeGraceUntilMs;
-            if (!transition.CompatibleWithObserver && !withinDoorGrace && m_world.all_of<FormIdComponent>(*itor))
+            if (!transition.CompatibleWithObserver && !withinDoorGrace && m_world.all_of<FormIdComponent>(entity))
             {
-                DematerializeRemoteView(*itor, &model);
+                DematerializeRemoteView(entity, &model);
             }
         }
 
@@ -1521,7 +1769,7 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 
         InterpolationSystem::AddPoint(interpolationComponent, point);
 
-        if (m_world.all_of<FormIdComponent>(*itor))
+        if (m_world.all_of<FormIdComponent>(entity))
         {
             for (const auto& action : update.ActionEvents)
             {
@@ -1533,49 +1781,41 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
 
 void CharacterService::OnActionEvent(const ActionEvent& acActionEvent) const noexcept
 {
-    auto view = m_world.view<LocalAnimationComponent, FormIdComponent>();
-    const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
+    const entt::entity entity = FindActorEntityByFormId(acActionEvent.ActorId);
+    if (entity == entt::null)
+        return;
 
-    if (itor != std::end(view))
+    if (auto* pLocalAnim = m_world.try_get<LocalAnimationComponent>(entity))
     {
-        auto& localComponent = view.get<LocalAnimationComponent>(*itor);
-
-        localComponent.Append(acActionEvent);
+        pLocalAnim->Append(acActionEvent);
     }
     else if (m_transport.IsOnline())
     {
         // A `LocalAnimationComponent` is not attached yet, but the actor already exists and is running animations
-
-        auto view = m_world.view<FormIdComponent, EarlyAnimationBufferComponent>();
-        const auto itor = std::find_if(std::begin(view), std::end(view), [id = acActionEvent.ActorId, view](entt::entity entity) { return view.get<FormIdComponent>(entity).Id == id; });
-
-        if (itor != std::end(view))
+        if (auto* pEarlyAnim = m_world.try_get<EarlyAnimationBufferComponent>(entity))
         {
-            view.get<EarlyAnimationBufferComponent>(*itor).Actions.push_back(acActionEvent);
+            pEarlyAnim->Actions.push_back(acActionEvent);
         }
     }
 }
 
 void CharacterService::OnFactionsChanges(const NotifyFactionsChanges& acEvent) const noexcept
 {
-    auto view = m_world.view<RemoteComponent, FormIdComponent, CacheComponent>();
-
     for (const auto& [id, factions] : acEvent.Changes)
     {
         if (auto modelIt = m_remoteModels.find(id); modelIt != m_remoteModels.end())
             modelIt.value().SpawnRequest.FactionsContent = factions;
 
-        const auto itor = std::find_if(std::begin(view), std::end(view), [id = id, view](entt::entity entity) { return view.get<RemoteComponent>(entity).Id == id; });
-
-        if (itor != std::end(view))
+        const entt::entity entity = FindEntityByServerId(id);
+        if (entity != entt::null && m_world.all_of<RemoteComponent, FormIdComponent, CacheComponent>(entity))
         {
-            auto& formIdComponent = view.get<FormIdComponent>(*itor);
+            auto& formIdComponent = m_world.get<FormIdComponent>(entity);
 
             auto* const pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
             if (!pActor)
                 continue;
 
-            auto& cacheComponent = view.get<CacheComponent>(*itor);
+            auto& cacheComponent = m_world.get<CacheComponent>(entity);
             cacheComponent.FactionsContent = factions;
 
             pActor->SetFactions(cacheComponent.FactionsContent);
@@ -1591,16 +1831,12 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
         return;
     }
 
-    // TODO(cosideci): handle case if no one has it, therefore no RemoteComponent
-    auto view = m_world.view<RemoteComponent, FormIdComponent>();
-
-    const auto itor = std::find_if(std::begin(view), std::end(view), [&acMessage, &view](auto entity) { return view.get<RemoteComponent>(entity).Id == acMessage.ServerId; });
-
-    if (itor != std::end(view))
+    const entt::entity entity = FindEntityByServerId(acMessage.ServerId);
+    if (entity != entt::null && m_world.all_of<RemoteComponent, FormIdComponent>(entity))
     {
-        auto& formIdComponent = view.get<FormIdComponent>(*itor);
+        auto& formIdComponent = m_world.get<FormIdComponent>(entity);
 
-        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, *itor, acMessage.OwnershipEpoch))
+        if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, entity, acMessage.OwnershipEpoch))
         {
             spdlog::info("Ownership claimed {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
             return;
@@ -2661,10 +2897,8 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
         }
     }
 
-    // Serialize actions
-    auto* const pExtension = pActor->GetExtension();
-
-    message.LatestAction = pExtension->LatestAnimation;
+    // Serialize actions (thread-safe snapshot from sharded store)
+    (void)ActorExtension::TryGetLatestAnimation(pActor->formID, message.LatestAction);
     pActor->SaveAnimationVariables(message.LatestAction.Variables);
 
     const bool isLeader = m_world.Get().GetPartyService().IsLeader(); // Distinguish logs in 2-party      
@@ -2972,10 +3206,13 @@ Actor* CharacterService::MaterializeRemoteView(
             if (!pNpc)
                 return nullptr;
 
-            if (!acMessage.AppearanceBuffer.empty())
+            // NEVER mutate shared static .esm/.esp TESNPC templates in memory: only deserialize onto dynamic 0xFF00xxxx templates!
+            if ((pNpc->formID & 0xFF000000u) == 0xFF000000u && !acMessage.AppearanceBuffer.empty())
+            {
                 pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
-            if ((pNpc->formID & 0xFF000000u) != 0xFF000000u)
-                pNpc->UnsetChanged(0xFFFFFFFF);
+                pNpc->SetSkipSaveFlag(true);
+            }
+            pNpc->UnsetChanged(0xFFFFFFFF);
         }
         else
         {
@@ -3069,7 +3306,11 @@ Actor* CharacterService::MaterializeRemoteView(
                 if (!acMessage.IsDead)
                 {
                     if (!pActor->IsDisabled())
+                    {
                         pActor->DisableImpl();
+                        pActor->UnsetChanged(0xFFFFFFFF);
+                        m_suppressedPlacedActors.insert(cActorId);
+                    }
 
                     auto pCreated = Actor::CreateInCell(pExpectedNpc, apTargetCell, apTargetWorldSpace, spawnPos, spawnRot);
                     pActor = pCreated;
@@ -3085,7 +3326,11 @@ Actor* CharacterService::MaterializeRemoteView(
         }
 
         if (pActor && !spawnedAuthoritativeLeveledClone && pActor->IsDisabled())
+        {
             pActor->EnableImpl();
+            if (m_suppressedPlacedActors.erase(cActorId) > 0)
+                pActor->UnsetChanged(0xFFFFFFFF);
+        }
     }
 
     if (!pActor)

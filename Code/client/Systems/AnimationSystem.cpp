@@ -56,14 +56,11 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
 
     float horizontalSpeed = 0.0f;
     {
-        auto interpView = aWorld.view<FormIdComponent, InterpolationComponent>();
-        for (entt::entity e : interpView)
+        const entt::entity actorEntity = aWorld.GetCharacterService().FindActorEntityByFormId(apActor->formID);
+        if (actorEntity != entt::null)
         {
-            if (interpView.get<FormIdComponent>(e).Id == apActor->formID)
-            {
-                horizontalSpeed = interpView.get<InterpolationComponent>(e).LastHorizontalSpeed;
-                break;
-            }
+            if (const auto* pInterp = aWorld.try_get<InterpolationComponent>(actorEntity))
+                horizontalSpeed = pInterp->LastHorizontalSpeed;
         }
     }
 
@@ -248,13 +245,10 @@ void AnimationSystem::Serialize(World& aWorld, ClientReferencesMoveRequest& aMov
     {
         if (entry.TargetId != 0)
         {
-            auto targetView = aWorld.view<FormIdComponent>();
-            const auto targetIt = std::find_if(
-                std::begin(targetView), std::end(targetView),
-                [id = entry.TargetId, targetView](entt::entity e) { return targetView.get<FormIdComponent>(e).Id == id; });
-            if (targetIt != std::end(targetView))
+            const entt::entity targetEntity = aWorld.GetCharacterService().FindAnyEntityByFormId(entry.TargetId);
+            if (targetEntity != entt::null)
             {
-                if (const auto targetServerId = Utils::GetServerId(*targetIt); targetServerId.has_value())
+                if (const auto targetServerId = Utils::GetServerId(targetEntity); targetServerId.has_value())
                     entry.TargetId = kEncodedActorServerIdTag | (targetServerId.value() & kEncodedActorServerIdMask);
                 else if (entry.TargetId == 0x14 || (entry.TargetId & 0xFF000000u) == 0xFF000000u)
                     entry.TargetId = 0;

@@ -115,6 +115,10 @@ struct CharacterService
     void EndEngineWorldLoad() noexcept;
     [[nodiscard]] bool IsEngineWorldLoading() const noexcept { return m_engineWorldLoadInProgress; }
 
+    [[nodiscard]] entt::entity FindActorEntityByFormId(uint32_t aFormId) const noexcept;
+    [[nodiscard]] entt::entity FindAnyEntityByFormId(uint32_t aFormId) const noexcept;
+    [[nodiscard]] entt::entity FindEntityByServerId(uint32_t aServerId) const noexcept;
+
 private:
     struct RemoteEntityModel
     {
@@ -165,6 +169,15 @@ private:
     void RunRfabExperienceUpdates() noexcept;
     void ApplyCachedWeaponDraws(const UpdateEvent& acUpdateEvent) noexcept;
 
+    void OnFormIdIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnFormIdIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnLocalIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnLocalIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnRemoteIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnRemoteIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnObjectIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+    void OnObjectIndexDestroyed(entt::registry& aRegistry, entt::entity aEntity) noexcept;
+
     World& m_world;
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
@@ -184,6 +197,10 @@ private:
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};
     mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
     mutable Set<uint32_t> m_createdNetworkFormIds{};
+    mutable Set<uint32_t> m_suppressedPlacedActors{};
+    mutable Map<uint32_t, entt::entity> m_actorEntityByFormId{};
+    mutable Map<uint32_t, entt::entity> m_objectEntityByFormId{};
+    mutable Map<uint32_t, entt::entity> m_entityByServerId{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};
     mutable Map<uint32_t, PendingMountAttach> m_pendingRemoteMounts{};
     mutable PendingLocalMountRequest m_pendingLocalMount{};
@@ -238,4 +255,16 @@ private:
     entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_playerCellChangedConnection;
     entt::scoped_connection m_playerLeftConnection;
+    entt::scoped_connection m_formIdConstructConn;
+    entt::scoped_connection m_formIdUpdateConn;
+    entt::scoped_connection m_formIdDestroyConn;
+    entt::scoped_connection m_localConstructConn;
+    entt::scoped_connection m_localUpdateConn;
+    entt::scoped_connection m_localDestroyConn;
+    entt::scoped_connection m_remoteConstructConn;
+    entt::scoped_connection m_remoteUpdateConn;
+    entt::scoped_connection m_remoteDestroyConn;
+    entt::scoped_connection m_objectConstructConn;
+    entt::scoped_connection m_objectUpdateConn;
+    entt::scoped_connection m_objectDestroyConn;
 };

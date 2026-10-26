@@ -70,6 +70,33 @@ bool ESLoader::LoadLoadOrder()
     uint16_t liteId = 0x0;
     bool firstLine = true;
 
+    struct ParsedLine
+    {
+        String Filename;
+        bool HasStar{false};
+    };
+
+    auto toLowerCopy = [](const String& s) -> String
+    {
+        String out = s;
+        for (char& ch : out)
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return out;
+    };
+
+    auto isImplicitBaseMaster = [&](const String& s) noexcept -> bool
+    {
+        const String lower = toLowerCopy(s);
+        return lower == "skyrim.esm" ||
+               lower == "update.esm" ||
+               lower == "dawnguard.esm" ||
+               lower == "hearthfires.esm" ||
+               lower == "dragonborn.esm";
+    };
+
+    Vector<ParsedLine> parsedLines;
+    bool anyStarLine = false;
+
     String line;
     while (std::getline(loadOrderFile, line))
     {
@@ -96,13 +123,35 @@ bool ESLoader::LoadLoadOrder()
         if (line.empty() || line[0] == '#')
             continue;
 
-        // If user copied plugins.txt instead of loadorder.txt, ignore disabled lines and strip leading '*'
+        bool hasStar = false;
         if (line[0] == '*')
+        {
+            hasStar = true;
+            anyStarLine = true;
             line.erase(line.begin());
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+                line.erase(line.begin());
+        }
 
         if (line.empty())
             continue;
 
+        parsedLines.push_back(ParsedLine{line, hasStar});
+    }
+
+    Set<String> seenLowerPlugins;
+    for (const auto& entry : parsedLines)
+    {
+        // If user copied SSE plugins.txt (which marks active mods with '*'), ignore disabled lines without '*'
+        // except the 5 implicit vanilla SSE base masters.
+        if (anyStarLine && !entry.HasStar && !isImplicitBaseMaster(entry.Filename))
+            continue;
+
+        const String lowerName = toLowerCopy(entry.Filename);
+        if (!seenLowerPlugins.insert(lowerName).second)
+            continue;
+
+        line = entry.Filename;
         PluginData plugin;
         plugin.m_filename = line;
 

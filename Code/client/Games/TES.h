@@ -1,6 +1,7 @@
 #pragma once
 
 #include <NetImmerse/NiPointer.h>
+#include <NetImmerse/ImageSpaceModifierInstance.h>
 
 struct NEW_REFR_DATA;
 struct TESObjectCELL;
@@ -12,7 +13,6 @@ struct TESGlobal;
 struct TESQuest;
 struct BGSListForm;
 struct Actor;
-struct ImageSpaceModifierInstance;
 
 struct GridCellArray
 {

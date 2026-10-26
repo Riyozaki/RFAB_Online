@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Events/PacketEvent.h>
+#include <common/CoopLootLedger.h>
 
 struct World;
 struct UpdateEvent;
@@ -31,8 +32,11 @@ public:
      */
     void OnWeaponDrawnRequest(const PacketEvent<DrawWeaponRequest>& acMessage) noexcept;
 
+    void ResetLootLedger() noexcept { m_lootLedger.Clear(); }
+
 private:
     World& m_world;
+    CoopLootLedger::ContainerLootLedger m_lootLedger{};
 
     entt::scoped_connection m_inventoryChangeConnection;
     entt::scoped_connection m_equipmentChangeConnection;

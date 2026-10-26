@@ -282,6 +282,28 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
             CharacterSpawnRequest spawnMessage{};
             Serialize(m_world, entity, &spawnMessage);
             apObserver->Send(spawnMessage);
+
+            // Wake dormant persistent world NPCs immediately when a living player enters their cell range!
+            auto& mutableOwner = characterView.get<OwnerComponent>(entity);
+            if (mutableOwner.GetOwner() == nullptr &&
+                !charComp.IsPlayer() &&
+                !charComp.IsPlayerSummon() &&
+                !charComp.IsMount() &&
+                !m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(apObserver->GetId()))
+            {
+                const uint64_t nowMs = SteadyClockMs();
+                const uint64_t newEpoch = mutableOwner.SetOwner(apObserver, nowMs);
+                mutableOwner.InvalidOwners.clear();
+                m_interestRegistry.UnmarkInRange(apObserver->GetId(), serverId);
+
+                NotifyOwnershipTransfer grant{};
+                grant.ServerId = serverId;
+                grant.OwnershipEpoch = newEpoch;
+                apObserver->Send(grant);
+
+                m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
+                    nowMs, CoopFlight::FlightEventKind::kOwnershipChanged, serverId, apObserver->GetId());
+            }
         }
         else if (action == CoopWorldView::ServerPeerSyncAction::kSendRemove)
         {
@@ -375,46 +397,52 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             auto& partyService = m_world.GetPartyService();
 
             bool isOwner = false;
+            auto& existingOwnerComp = view.get<OwnerComponent>(*itor);
+            Player* pOwningPlayer = existingOwnerComp.GetOwner();
 
-            if (partyService.IsPlayerInParty(acMessage.pPlayer) && !characterComponent.IsMount())
+            if (!characterComponent.IsMount())
             {
                 PartyService::Party* pParty = partyService.GetPlayerParty(acMessage.pPlayer);
-                auto& existingOwnerComp = view.get<OwnerComponent>(*itor);
-                Player* pOwningPlayer = existingOwnerComp.GetOwner();
+                const bool isOrphanEntity = (pOwningPlayer == nullptr);
+                const bool inParty = (pParty != nullptr) && partyService.IsPlayerInParty(acMessage.pPlayer);
 
-                const bool ownerValidInRange = pOwningPlayer != nullptr &&
-                                               pOwningPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon());
-                const bool ownerDowned = pOwningPlayer != nullptr &&
-                                         m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pOwningPlayer->GetId());
-                const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
-                const bool canChallengeOwnership =
-                    partyService.IsPlayerLeader(acMessage.pPlayer) || ownerDowned || !ownerValidInRange;
-
-                if (canChallengeOwnership && pParty)
+                if (isOrphanEntity || inParty)
                 {
-                    const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
-                        pOwningPlayer ? pOwningPlayer->GetId() : 0,
-                        acMessage.pPlayer->GetId(),
-                        existingOwnerComp.LastChangedAtMs,
-                        SteadyClockMs(),
-                        characterComponent.IsPlayer(),
-                        characterComponent.IsPlayerSummon(),
-                        ownerValidInRange,
-                        ownerDowned,
-                        challengerDowned);
+                    const bool ownerValidInRange = pOwningPlayer != nullptr &&
+                                                   pOwningPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon());
+                    const bool ownerDowned = pOwningPlayer != nullptr &&
+                                             m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pOwningPlayer->GetId());
+                    const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
+                    const bool canChallengeOwnership =
+                        isOrphanEntity || partyService.IsPlayerLeader(acMessage.pPlayer) || ownerDowned || !ownerValidInRange;
 
-                    // Transfer ownership if owning player is in the same party (or disconnected) and passes anti-flap/summon/downed rules.
-                    // Preserve the server's authoritative battle-damaged/dead/looted state instead of
-                    // overwriting it with the newly arriving peer's untouched local NPC state!
-                    const bool samePartyOrOrphan =
-                        pOwningPlayer == nullptr ||
-                        std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end();
-                    if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
-                        samePartyOrOrphan)
+                    if (canChallengeOwnership)
                     {
-                        const ActorData authoritativeActorData = BuildActorData(*itor);
-                        TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), authoritativeActorData);
-                        isOwner = true;
+                        const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
+                            pOwningPlayer ? pOwningPlayer->GetId() : 0,
+                            acMessage.pPlayer->GetId(),
+                            existingOwnerComp.LastChangedAtMs,
+                            SteadyClockMs(),
+                            characterComponent.IsPlayer(),
+                            characterComponent.IsPlayerSummon(),
+                            ownerValidInRange,
+                            ownerDowned,
+                            challengerDowned);
+
+                        // Transfer ownership if entity is dormant/orphaned OR owning player is in the same party
+                        // and passes anti-flap/summon/downed rules. Preserve the server's authoritative battle-damaged/dead/looted
+                        // state instead of overwriting it with the newly arriving peer's untouched local NPC state!
+                        const bool samePartyOrOrphan =
+                            isOrphanEntity ||
+                            (pParty != nullptr &&
+                             std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end());
+                        if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
+                            samePartyOrOrphan)
+                        {
+                            const ActorData authoritativeActorData = BuildActorData(*itor);
+                            TransferOwnership(acMessage.pPlayer, World::ToInteger(*itor), authoritativeActorData);
+                            isOwner = true;
+                        }
                     }
                 }
             }
@@ -437,6 +465,9 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             {
                 response.ActionsToReplay = pAnimationComponent->ActionsReplayCache.FormRefinedReplayChain();
             }
+
+            if (!isOwner && acMessage.pPlayer)
+                m_interestRegistry.MarkInRange(acMessage.pPlayer->GetId(), response.ServerId);
 
             acMessage.pPlayer->Send(response);
 
@@ -495,6 +526,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                     if (auto* pAnim = m_world.try_get<AnimationComponent>(existingEntity))
                         response.ActionsToReplay = pAnim->ActionsReplayCache.FormRefinedReplayChain();
 
+                    m_interestRegistry.MarkInRange(acMessage.pPlayer->GetId(), existingServerId);
                     acMessage.pPlayer->Send(response);
                     m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
                         nowMs, CoopFlight::FlightEventKind::kAmbushDeduplicated, existingServerId, acMessage.pPlayer->GetId());
@@ -685,6 +717,23 @@ void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& ac
 
         m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
             nowMs, CoopFlight::FlightEventKind::kOwnershipChanged, response.ServerId, pSelectedOwner->GetId());
+        return;
+    }
+
+    // SkyMP ServerWorldModel Persistence:
+    // Placed world NPCs (carrying FormIdComponent) MUST NOT be destroyed when all players leave their cell/grid!
+    // Transition them into a dormant unowned server entity so their battle-damaged HP, dead corpse state,
+    // looted inventory, and rolled TESLevCharacter BaseId persist across cell unloads and re-entries.
+    if (m_world.all_of<FormIdComponent>(acEvent.Entity) &&
+        !characterComponent.IsPlayer() &&
+        !characterComponent.IsPlayerSummon())
+    {
+        const uint64_t nowMs = SteadyClockMs();
+        ownerComponent.SetOwner(nullptr, nowMs);
+        ownerComponent.InvalidOwners.clear();
+        ReconcileEntityForAllObservers(acEvent.Entity);
+        PruneExcessDormantCharacters();
+        spdlog::debug("Character {:X} transitioned to dormant persistent world state", response.ServerId);
         return;
     }
 
@@ -1525,5 +1574,55 @@ void CharacterService::ProcessMovementChanges() const noexcept
     {
         if (!message.Updates.empty())
             pPlayer->Send(message);
+    }
+}
+
+void CharacterService::PruneExcessDormantCharacters() const noexcept
+{
+    constexpr size_t kMaxDormantPersistentNpcs = 4096;
+
+    size_t dormantCount = 0;
+    entt::entity oldestPrunable = entt::null;
+    uint64_t oldestChangedMs = std::numeric_limits<uint64_t>::max();
+
+    auto view = m_world.view<FormIdComponent, OwnerComponent, CharacterComponent>();
+    for (auto entity : view)
+    {
+        const auto& ownerComp = view.get<OwnerComponent>(entity);
+        if (ownerComp.GetOwner() != nullptr)
+            continue;
+
+        ++dormantCount;
+
+        const auto& charComp = view.get<CharacterComponent>(entity);
+        if (charComp.IsDead() || charComp.IsDragon() || charComp.IsPlayer())
+            continue;
+
+        bool isDamaged = false;
+        if (const auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
+        {
+            const auto hpIt = pAv->CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
+            const auto maxIt = pAv->CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
+            if (hpIt != pAv->CurrentActorValues.ActorValuesList.end() &&
+                maxIt != pAv->CurrentActorValues.ActorMaxValuesList.end() &&
+                maxIt->second > 0.0f &&
+                hpIt->second + 0.5f < maxIt->second)
+            {
+                isDamaged = true;
+            }
+        }
+        if (isDamaged)
+            continue;
+
+        if (ownerComp.LastChangedAtMs < oldestChangedMs)
+        {
+            oldestChangedMs = ownerComp.LastChangedAtMs;
+            oldestPrunable = entity;
+        }
+    }
+
+    if (dormantCount > kMaxDormantPersistentNpcs && oldestPrunable != entt::null)
+    {
+        m_world.GetDispatcher().trigger(CharacterRemoveEvent(World::ToInteger(oldestPrunable)));
     }
 }

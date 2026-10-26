@@ -15,14 +15,68 @@
 #include <Messages/ScriptAnimationRequest.h>
 #include <Messages/NotifyScriptAnimation.h>
 
+namespace
+{
+constexpr size_t kMaxUntouchedCachedObjects = 16384;
+}
+
 ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher)
     : m_world(aWorld)
 {
+    m_objectRemovedConnection = m_world.on_destroy<ObjectComponent>().connect<&ObjectService::OnObjectComponentRemoved>(this);
     m_leaveCellConnection = aDispatcher.sink<PlayerLeaveCellEvent>().connect<&ObjectService::OnPlayerLeaveCellEvent>(this);
     m_assignObjectConnection = aDispatcher.sink<PacketEvent<AssignObjectsRequest>>().connect<&ObjectService::OnAssignObjectsRequest>(this);
     m_activateConnection = aDispatcher.sink<PacketEvent<ActivateRequest>>().connect<&ObjectService::OnActivate>(this);
     m_lockChangeConnection = aDispatcher.sink<PacketEvent<LockChangeRequest>>().connect<&ObjectService::OnLockChange>(this);
     m_scriptAnimationConnection = aDispatcher.sink<PacketEvent<ScriptAnimationRequest>>().connect<&ObjectService::OnScriptAnimationRequest>(this);
+}
+
+void ObjectService::OnObjectComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept
+{
+    if (const auto* pFormId = aRegistry.try_get<FormIdComponent>(aEntity))
+    {
+        const uint64_t key = PackGameIdKey(pFormId->Id);
+        const auto it = m_objectEntityByKey.find(key);
+        if (it != m_objectEntityByKey.end() && it->second == aEntity)
+            m_objectEntityByKey.erase(it);
+    }
+}
+
+void ObjectService::PruneExcessUntouchedObjects() noexcept
+{
+    if (m_objectEntityByKey.size() <= kMaxUntouchedCachedObjects)
+        return;
+
+    auto view = m_world.view<ObjectComponent, CellIdComponent>();
+    Vector<entt::entity> candidates;
+    for (auto entity : view)
+    {
+        const auto& objComp = view.get<ObjectComponent>(entity);
+        if (objComp.HasAuthoritativeMutation)
+            continue;
+
+        const auto& cellComp = view.get<CellIdComponent>(entity);
+        bool anyPlayerNearby = false;
+        for (Player* pPlayer : m_world.GetPlayerManager())
+        {
+            if (pPlayer && cellComp.IsInRange(pPlayer->GetCellComponent(), false))
+            {
+                anyPlayerNearby = true;
+                break;
+            }
+        }
+
+        if (!anyPlayerNearby)
+            candidates.push_back(entity);
+    }
+
+    size_t idx = 0;
+    while (m_objectEntityByKey.size() > kMaxUntouchedCachedObjects && idx < candidates.size())
+    {
+        const entt::entity victim = candidates[idx++];
+        if (m_world.valid(victim))
+            m_world.destroy(victim);
+    }
 }
 
 // TODO(cosideci): the cell handling of objects need to be revamped.
@@ -44,7 +98,8 @@ void ObjectService::OnPlayerLeaveCellEvent(const PlayerLeaveCellEvent& acEvent) 
 // This is fine for containers and doors, but if this system is expanded, think of temporaries.
 void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsRequest>& acMessage) noexcept
 {
-    auto view = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
+    if (!acMessage.pPlayer)
+        return;
 
     AssignObjectsResponse response;
 
@@ -53,17 +108,25 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
         if (!object.Id || object.Id.ModId == 0xFFFFFFFF)
             continue;
 
-        const auto iter = std::find_if(
-            std::begin(view), std::end(view),
-            [view, id = object.Id](auto entity)
-            {
-                const auto& formIdComponent = view.get<FormIdComponent>(entity);
-                return formIdComponent.Id == id;
-            });
-
-        if (iter != std::end(view))
+        const uint64_t key = PackGameIdKey(object.Id);
+        auto mapIt = m_objectEntityByKey.find(key);
+        entt::entity existingEntity = entt::null;
+        if (mapIt != m_objectEntityByKey.end())
         {
-            if (auto* pCellComp = m_world.try_get<CellIdComponent>(*iter))
+            if (m_world.valid(mapIt->second) &&
+                m_world.all_of<FormIdComponent, ObjectComponent, InventoryComponent>(mapIt->second))
+            {
+                existingEntity = mapIt->second;
+            }
+            else
+            {
+                m_objectEntityByKey.erase(mapIt);
+            }
+        }
+
+        if (existingEntity != entt::null)
+        {
+            if (auto* pCellComp = m_world.try_get<CellIdComponent>(existingEntity))
             {
                 if (!pCellComp->WorldSpaceId)
                 {
@@ -72,7 +135,7 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
                         pCellComp->WorldSpaceId = object.WorldSpaceId;
                         pCellComp->CenterCoords = object.CurrentCoords;
                     }
-                    else if (acMessage.pPlayer && acMessage.pPlayer->GetCellComponent().WorldSpaceId)
+                    else if (acMessage.pPlayer->GetCellComponent().WorldSpaceId)
                     {
                         pCellComp->WorldSpaceId = acMessage.pPlayer->GetCellComponent().WorldSpaceId;
                         pCellComp->CenterCoords = acMessage.pPlayer->GetCellComponent().CenterCoords;
@@ -81,15 +144,15 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
             }
 
             ObjectData objectData;
-            objectData.ServerId = World::ToInteger(*iter);
+            objectData.ServerId = World::ToInteger(existingEntity);
 
-            auto& formIdComponent = view.get<FormIdComponent>(*iter);
+            auto& formIdComponent = m_world.get<FormIdComponent>(existingEntity);
             objectData.Id = formIdComponent.Id;
 
-            auto& objectComponent = view.get<ObjectComponent>(*iter);
+            auto& objectComponent = m_world.get<ObjectComponent>(existingEntity);
             objectData.CurrentLockData = objectComponent.CurrentLockData;
 
-            auto& inventoryComponent = view.get<InventoryComponent>(*iter);
+            auto& inventoryComponent = m_world.get<InventoryComponent>(existingEntity);
             objectData.CurrentInventory = inventoryComponent.Content;
 
             objectData.IsSenderFirst = false;
@@ -102,12 +165,12 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
 
             m_world.emplace<FormIdComponent>(cEntity, object.Id);
 
-            auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity, acMessage.pPlayer);
+            auto& objectComponent = m_world.emplace<ObjectComponent>(cEntity);
             objectComponent.CurrentLockData = object.CurrentLockData;
 
             GameId worldSpaceId = object.WorldSpaceId;
             GridCellCoords coords = object.CurrentCoords;
-            if (!worldSpaceId && acMessage.pPlayer && acMessage.pPlayer->GetCellComponent().WorldSpaceId)
+            if (!worldSpaceId && acMessage.pPlayer->GetCellComponent().WorldSpaceId)
             {
                 worldSpaceId = acMessage.pPlayer->GetCellComponent().WorldSpaceId;
                 coords = acMessage.pPlayer->GetCellComponent().CenterCoords;
@@ -117,6 +180,8 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
             auto& inventoryComp = m_world.emplace<InventoryComponent>(cEntity);
             inventoryComp.Content = object.CurrentInventory;
 
+            m_objectEntityByKey[key] = cEntity;
+
             ObjectData objectData;
             objectData.Id = object.Id;
             objectData.ServerId = World::ToInteger(cEntity);
@@ -125,6 +190,8 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
             response.Objects.push_back(objectData);
         }
     }
+
+    PruneExcessUntouchedObjects();
 
     if (!response.Objects.empty())
         acMessage.pPlayer->Send(response);
@@ -152,28 +219,23 @@ void ObjectService::OnActivate(const PacketEvent<ActivateRequest>& acMessage) co
     }
 }
 
-void ObjectService::OnLockChange(const PacketEvent<LockChangeRequest>& acMessage) const noexcept
+void ObjectService::OnLockChange(const PacketEvent<LockChangeRequest>& acMessage) noexcept
 {
     NotifyLockChange notifyLockChange;
     notifyLockChange.Id = acMessage.Packet.Id;
     notifyLockChange.IsLocked = acMessage.Packet.IsLocked;
     notifyLockChange.LockLevel = acMessage.Packet.LockLevel;
 
-    auto objectView = m_world.view<FormIdComponent, ObjectComponent>();
-
-    const auto iter = std::find_if(
-        std::begin(objectView), std::end(objectView),
-        [objectView, id = acMessage.Packet.Id](auto entity)
-        {
-            const auto& formIdComponent = objectView.get<FormIdComponent>(entity);
-            return formIdComponent.Id == id;
-        });
-
-    if (iter != std::end(objectView))
+    const uint64_t key = PackGameIdKey(acMessage.Packet.Id);
+    const auto mapIt = m_objectEntityByKey.find(key);
+    if (mapIt != m_objectEntityByKey.end() && m_world.valid(mapIt->second))
     {
-        auto& objectComponent = objectView.get<ObjectComponent>(*iter);
-        objectComponent.CurrentLockData.IsLocked = acMessage.Packet.IsLocked;
-        objectComponent.CurrentLockData.LockLevel = acMessage.Packet.LockLevel;
+        if (auto* pObjectComponent = m_world.try_get<ObjectComponent>(mapIt->second))
+        {
+            pObjectComponent->CurrentLockData.IsLocked = acMessage.Packet.IsLocked;
+            pObjectComponent->CurrentLockData.LockLevel = acMessage.Packet.LockLevel;
+            pObjectComponent->HasAuthoritativeMutation = true;
+        }
     }
 
     for (Player* pPlayer : m_world.GetPlayerManager())

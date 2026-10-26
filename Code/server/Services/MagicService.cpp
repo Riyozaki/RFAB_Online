@@ -32,11 +32,9 @@ void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMes
     if (!m_world.valid(entity))
         return;
 
-    if (const auto* pOwner = m_world.try_get<OwnerComponent>(entity))
-    {
-        if (pOwner->GetOwner() != acMessage.pPlayer)
-            return;
-    }
+    const auto* pOwner = m_world.try_get<OwnerComponent>(entity);
+    if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
+        return;
 
     NotifySpellCast notify{};
     notify.CasterId = message.CasterId;
@@ -57,11 +55,9 @@ void MagicService::OnInterruptCastRequest(const PacketEvent<InterruptCastRequest
     if (!m_world.valid(entity))
         return;
 
-    if (const auto* pOwner = m_world.try_get<OwnerComponent>(entity))
-    {
-        if (pOwner->GetOwner() != acMessage.pPlayer)
-            return;
-    }
+    const auto* pOwner = m_world.try_get<OwnerComponent>(entity);
+    if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
+        return;
 
     NotifyInterruptCast notify{};
     notify.CasterId = message.CasterId;
@@ -75,15 +71,47 @@ void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMes
 {
     auto& message = acMessage.Packet;
     const auto entity = static_cast<entt::entity>(message.TargetId);
-    if (!m_world.valid(entity))
+    if (!m_world.valid(entity) || !acMessage.pPlayer)
         return;
 
-    if (!std::isfinite(message.Magnitude))
+    if (!std::isfinite(message.Magnitude) || message.SpellId == GameId{} || message.EffectId == GameId{})
+        return;
+
+    const auto* pTargetChar = m_world.try_get<CharacterComponent>(entity);
+    if (pTargetChar && !pTargetChar->IsPlayer() && pTargetChar->IsDead())
+        return;
+
+    if (const auto* pTargetCell = m_world.try_get<CellIdComponent>(entity))
+    {
+        const bool isDragon = pTargetChar && pTargetChar->IsDragon();
+        if (!pTargetCell->IsInRange(acMessage.pPlayer->GetCellComponent(), isDragon))
+            return;
+    }
+
+    const auto* pTargetOwner = m_world.try_get<OwnerComponent>(entity);
+    bool senderAuthorized = (pTargetOwner && pTargetOwner->GetOwner() == acMessage.pPlayer);
+
+    uint32_t sanitizedCasterId = message.CasterId;
+    if (sanitizedCasterId != 0)
+    {
+        const auto casterEntity = static_cast<entt::entity>(sanitizedCasterId);
+        if (!m_world.valid(casterEntity))
+        {
+            sanitizedCasterId = 0;
+        }
+        else if (const auto* pCasterOwner = m_world.try_get<OwnerComponent>(casterEntity))
+        {
+            if (pCasterOwner->GetOwner() == acMessage.pPlayer)
+                senderAuthorized = true;
+        }
+    }
+
+    if (!senderAuthorized)
         return;
 
     NotifyAddTarget notify{};
     notify.TargetId = message.TargetId;
-    notify.CasterId = message.CasterId;
+    notify.CasterId = sanitizedCasterId;
     notify.SpellId = message.SpellId;
     notify.EffectId = message.EffectId;
     notify.Magnitude = CoopPacketSafety::SanitizeFiniteFloat(message.Magnitude, -100000.0f, 100000.0f, 0.0f);
@@ -100,6 +128,10 @@ void MagicService::OnRemoveSpellRequest(const PacketEvent<RemoveSpellRequest>& a
     const auto& message = acMessage.Packet;
     const auto entity = static_cast<entt::entity>(message.TargetId);
     if (!m_world.valid(entity))
+        return;
+
+    const auto* pOwner = m_world.try_get<OwnerComponent>(entity);
+    if (!pOwner || pOwner->GetOwner() != acMessage.pPlayer)
         return;
 
     NotifyRemoveSpell notify{};

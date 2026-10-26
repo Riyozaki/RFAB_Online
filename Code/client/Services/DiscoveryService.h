@@ -91,6 +91,8 @@ private:
 
     //! @brief Cached actor forms detected in the previous frame.
     Set<uint32_t> m_forms;
+    //! @brief Per-actor hysteresis counter preventing 1-frame NiNode rebuilds from dropping ownership.
+    Map<uint32_t, uint8_t> m_niNodeFlickerGraceFrames;
     /**
      * The center grid coordinates are the coordinates of the cell in the cell grid
      * where the cells around it in a 5 by 5 grid (by default) are loaded.

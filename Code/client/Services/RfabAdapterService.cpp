@@ -116,18 +116,50 @@ void RfabAdapterService::RefreshRuntimeBindings() noexcept
     const std::filesystem::path gameRoot = DiscoverSkyrimRootDirectory();
     m_bindings = RfabCompat::LoadBindingsFromDisk(gameRoot);
     m_liveXpTable = {};
+    m_espEdidIndex.Clear();
 
     std::string raw;
-    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.ExperienceIniRelPath, raw))
+    if (const auto expPath = RfabCompat::ResolveRfabConfigPath(
+            gameRoot, m_bindings.ExperienceIniRelPath, {"Experience.ini", "[RFAB] Experience.ini", "RFAB_Experience.ini"});
+        !expPath.empty() && RfabCompat::Detail::ReadTextFile(expPath, raw))
+    {
         RfabCompat::ParseExperienceIni(raw, m_liveXpTable);
-    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.QuestsIniRelPath, raw))
+    }
+
+    if (const auto questsPath = RfabCompat::ResolveRfabConfigPath(
+            gameRoot, m_bindings.QuestsIniRelPath, {"Quests.ini", "[RFAB] Quests.ini", "RFAB_Quests.ini"});
+        !questsPath.empty() && RfabCompat::Detail::ReadTextFile(questsPath, raw))
+    {
         RfabCompat::ParseQuestsIni(raw, m_liveXpTable);
-    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.XpSettingsJsonRelPath, raw))
+    }
+
+    if (const auto xpSettingsPath = RfabCompat::ResolveRfabConfigPath(
+            gameRoot, m_bindings.XpSettingsJsonRelPath, {"RFAB_XP_Settings.json", "XP_Settings.json"});
+        !xpSettingsPath.empty() && RfabCompat::Detail::ReadTextFile(xpSettingsPath, raw))
+    {
         RfabCompat::ParseXpSettingsJson(raw, m_liveXpTable);
-    if (RfabCompat::Detail::ReadTextFile(gameRoot / m_bindings.BossListJsonRelPath, raw))
+    }
+
+    if (const auto bossListPath = RfabCompat::ResolveRfabConfigPath(
+            gameRoot, m_bindings.BossListJsonRelPath, {"BossList.json", "RFAB_BossList.json", "[RFAB] BossList.json"});
+        !bossListPath.empty() && RfabCompat::Detail::ReadTextFile(bossListPath, raw))
+    {
         RfabCompat::ParseBossListJson(raw, m_liveXpTable);
-    else if (RfabCompat::Detail::ReadTextFile(gameRoot / "Data/SKSE/Plugins/StorageUtilData/BossList.json", raw))
-        RfabCompat::ParseBossListJson(raw, m_liveXpTable);
+    }
+
+    // Build zero-dependency binary EDID <-> (PluginName, LocalFormId) index from installed RFAB/Requiem .esp/.esm/.esl files
+    // so forms whose runtime EDIDs Skyrim SE strips (BGSListForm, BGSPerk, TESNPC, TESObjectARMO, TESObjectACTI) resolve across ANY RFAB version!
+    if (!gameRoot.empty())
+    {
+        const size_t indexedPlugins = m_espEdidIndex.IndexRfabPluginsInDataDir(gameRoot / "Data", m_bindings);
+        if (indexedPlugins > 0)
+        {
+            spdlog::info(
+                "[RFAB] Indexed {} EDIDs across {} .esp/.esm/.esl plugin(s) for cross-version RFAB compatibility.",
+                m_espEdidIndex.Size(),
+                indexedPlugins);
+        }
+    }
 
     m_pCachedXpGlobal = nullptr;
     m_pCachedXpMultiplierGlobal = nullptr;
@@ -174,6 +206,18 @@ TESForm* RfabAdapterService::ResolveFormByEditorIdOrBaseId(const std::string& ac
     {
         if (TESForm* pByEdid = TESForm::GetByEditorId(BSFixedString(acEditorId.c_str())))
             return pByEdid;
+
+        if (const auto* pEspRef = m_espEdidIndex.LookupByEditorId(acEditorId))
+        {
+            if (auto* pModManager = ModManager::Get())
+            {
+                if (Mod* pMod = pModManager->GetByName(pEspRef->PluginName.c_str()))
+                {
+                    if (TESForm* pResolved = TESForm::GetById(pMod->GetFormId(pEspRef->LocalFormId)))
+                        return pResolved;
+                }
+            }
+        }
     }
 
     if (aFallbackBaseId != 0)
@@ -193,6 +237,18 @@ TESGlobal* RfabAdapterService::ResolveGlobalByEditorId(const std::string& acEdit
         {
             if (auto* pGlobal = Cast<TESGlobal>(pByEdid))
                 return pGlobal;
+        }
+
+        if (const auto* pEspRef = m_espEdidIndex.LookupByEditorId(acEditorId))
+        {
+            if (auto* pModManager = ModManager::Get())
+            {
+                if (Mod* pMod = pModManager->GetByName(pEspRef->PluginName.c_str()))
+                {
+                    if (auto* pGlobal = Cast<TESGlobal>(TESForm::GetById(pMod->GetFormId(pEspRef->LocalFormId))))
+                        return pGlobal;
+                }
+            }
         }
 
         if (auto* pModManager = ModManager::Get())
@@ -228,6 +284,18 @@ BGSListForm* RfabAdapterService::ResolveFormListByEditorId(const std::string& ac
     {
         if (auto* pList = Cast<BGSListForm>(pByEdid))
             return pList;
+    }
+
+    if (const auto* pEspRef = m_espEdidIndex.LookupByEditorId(acEditorId))
+    {
+        if (auto* pModManager = ModManager::Get())
+        {
+            if (Mod* pMod = pModManager->GetByName(pEspRef->PluginName.c_str()))
+            {
+                if (auto* pList = Cast<BGSListForm>(TESForm::GetById(pMod->GetFormId(pEspRef->LocalFormId))))
+                    return pList;
+            }
+        }
     }
 
     if (auto* pModManager = ModManager::Get())
@@ -994,12 +1062,45 @@ bool RfabAdapterService::IsBossActor(Actor* apActor) const noexcept
 
     if (TESForm* pBase = apActor->baseForm)
     {
-        if (m_liveXpTable.ContainsBossBaseFormId(pBase->formID))
+        std::string ownerPluginName;
+        uint32_t localFormId = pBase->formID & 0x00FFFFFFu;
+        const uint32_t topByte = (pBase->formID >> 24) & 0xFFu;
+        if (topByte < 0xFFu)
+        {
+            if (auto* pModManager = ModManager::Get())
+            {
+                const bool wantLite = (topByte == 0xFEu);
+                const uint16_t wantId = wantLite
+                    ? static_cast<uint16_t>((pBase->formID >> 12) & 0xFFFu)
+                    : static_cast<uint16_t>(topByte);
+                if (wantLite)
+                    localFormId = pBase->formID & 0x00000FFFu;
+
+                for (Mod* pMod : pModManager->mods)
+                {
+                    if (!pMod || !pMod->IsLoaded() || pMod->IsLite() != wantLite)
+                        continue;
+                    if (pMod->GetId() == wantId)
+                    {
+                        ownerPluginName = pMod->filename;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (m_liveXpTable.ContainsBossForm(ownerPluginName, localFormId))
             return true;
 
         if (const char* baseEdid = pBase->GetFormEditorID(); baseEdid && baseEdid[0] != '\0')
         {
             if (RfabCompat::IsRfabBossEditorId(baseEdid, &m_liveXpTable))
+                return true;
+        }
+        else if (!ownerPluginName.empty())
+        {
+            const std::string indexedEdid = m_espEdidIndex.LookupEditorId(ownerPluginName, localFormId);
+            if (!indexedEdid.empty() && RfabCompat::IsRfabBossEditorId(indexedEdid, &m_liveXpTable))
                 return true;
         }
     }
@@ -1524,8 +1625,8 @@ void RfabAdapterService::TriggerContextualTacticalPing(bool aForceDanger, const 
 
     m_pingCooldownRemainingSec = std::clamp(static_cast<double>(m_bindings.TacticalPingCooldownSec), 0.15, 5.0);
 
-    const uint32_t localWorldId = pPlayer->GetWorldSpace() ? (pPlayer->GetWorldSpace()->formID & 0x00FFFFFFu) : 0u;
-    const uint32_t localCellId = pPlayer->parentCell ? (pPlayer->parentCell->formID & 0x00FFFFFFu) : 0u;
+    const uint32_t localWorldId = pPlayer->GetWorldSpace() ? pPlayer->GetWorldSpace()->formID : 0u;
+    const uint32_t localCellId = pPlayer->parentCell ? pPlayer->parentCell->formID : 0u;
 
     TESObjectREFR* pBestTarget = nullptr;
     uint32_t bestServerId = 0;
@@ -1551,8 +1652,8 @@ void RfabAdapterService::TriggerContextualTacticalPing(bool aForceDanger, const 
         if (!pRef || pRef == pPlayer || pRef->IsDisabled())
             continue;
 
-        const uint32_t refWorldId = pRef->GetWorldSpace() ? (pRef->GetWorldSpace()->formID & 0x00FFFFFFu) : 0u;
-        const uint32_t refCellId = pRef->parentCell ? (pRef->parentCell->formID & 0x00FFFFFFu) : 0u;
+        const uint32_t refWorldId = pRef->GetWorldSpace() ? pRef->GetWorldSpace()->formID : 0u;
+        const uint32_t refCellId = pRef->parentCell ? pRef->parentCell->formID : 0u;
         if (localWorldId != 0)
         {
             if (refWorldId != localWorldId)
@@ -1894,8 +1995,8 @@ void RfabAdapterService::RefreshTacticalHudSnapshot() noexcept
     next.Mode = m_tacticalHudMode;
     next.AllyProtectionEnabled = IsAllyProtectionEnabled();
 
-    const uint32_t localWorldId = pPlayer->GetWorldSpace() ? (pPlayer->GetWorldSpace()->formID & 0x00FFFFFFu) : 0u;
-    const uint32_t localCellId = pPlayer->parentCell ? (pPlayer->parentCell->formID & 0x00FFFFFFu) : 0u;
+    const uint32_t localWorldId = pPlayer->GetWorldSpace() ? pPlayer->GetWorldSpace()->formID : 0u;
+    const uint32_t localCellId = pPlayer->parentCell ? pPlayer->parentCell->formID : 0u;
     const auto& downedService = m_world.GetDownedStateService();
     const auto& partyService = m_world.GetPartyService();
     const uint32_t localPid = m_hasLocalPlayerId ? m_localPlayerId : m_transport.GetLocalPlayerId();
@@ -1938,8 +2039,8 @@ void RfabAdapterService::RefreshTacticalHudSnapshot() noexcept
             if (!pAlly || !downedService.IsRemotePlayerDowned(pid))
                 continue;
 
-            const uint32_t allyWorldId = pAlly->GetWorldSpace() ? (pAlly->GetWorldSpace()->formID & 0x00FFFFFFu) : 0u;
-            const uint32_t allyCellId = pAlly->parentCell ? (pAlly->parentCell->formID & 0x00FFFFFFu) : 0u;
+            const uint32_t allyWorldId = pAlly->GetWorldSpace() ? pAlly->GetWorldSpace()->formID : 0u;
+            const uint32_t allyCellId = pAlly->parentCell ? pAlly->parentCell->formID : 0u;
             if (localWorldId != 0 ? (allyWorldId != localWorldId) : (localCellId != 0 && allyCellId != localCellId))
                 continue;
 

@@ -69,15 +69,12 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
         }
     }
 
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto iter = std::find_if(std::begin(view), std::end(view), [view, formId = acEvent.FormId](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (iter == std::end(view))
+    const entt::entity targetEntity = m_world.GetCharacterService().FindAnyEntityByFormId(acEvent.FormId);
+    if (targetEntity == entt::null)
         return;
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
-    if (m_world.try_get<WaitingForAssignmentComponent>(*iter))
+    if (m_world.try_get<WaitingForAssignmentComponent>(targetEntity))
     {
         spdlog::debug(
             __FUNCTION__ ": WaitingForAssignment, don't send inventory changes actorId: {:X}, isLeader: {}, item id: {:X}",
@@ -85,7 +82,7 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
         return;
     }
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(targetEntity);
     if (!serverIdRes.has_value())
     {
         spdlog::debug(
@@ -110,11 +107,8 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
     if (!m_transport.IsConnected())
         return;
 
-    auto view = m_world.view<FormIdComponent>();
-
-    const auto iter = std::find_if(std::begin(view), std::end(view), [view, formId = acEvent.ActorId](auto entity) { return view.get<FormIdComponent>(entity).Id == formId; });
-
-    if (iter == std::end(view))
+    const entt::entity actorEntity = m_world.GetCharacterService().FindActorEntityByFormId(acEvent.ActorId);
+    if (actorEntity == entt::null)
         return;
 
     const bool isLeader = m_world.GetPartyService().IsLeader(); // Helps distinguish in 2-party logs
@@ -128,7 +122,7 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
 
     const char* pActorBaseName = pActor->baseForm ? pActor->baseForm->GetName() : "<null>";
 
-    if (m_world.try_get<WaitingForAssignmentComponent>(*iter))
+    if (m_world.try_get<WaitingForAssignmentComponent>(actorEntity))
     {
         spdlog::debug(
             __FUNCTION__ ": WaitingForAssignment, don't send equipment changes actorId: {:X}, isLeader: {}, "
@@ -138,7 +132,7 @@ void InventoryService::OnEquipmentChangeEvent(const EquipmentChangeEvent& acEven
         return;
     }
 
-    std::optional<uint32_t> serverIdRes = Utils::GetServerId(*iter);
+    std::optional<uint32_t> serverIdRes = Utils::GetServerId(actorEntity);
     if (!serverIdRes.has_value())
     {
         spdlog::debug(
@@ -257,12 +251,13 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
         const auto& rfabAdapter = m_world.GetRfabAdapterService();
         const auto& bindings = rfabAdapter.GetBindings();
         if (TESForm* pAdvRing = rfabAdapter.ResolveFormByEditorIdOrBaseId(
-                bindings.AdventurerRingEditorId, bindings.FallbackAdventurerRingBaseFormId);
-            pAdvRing && itemId == pAdvRing->formID)
+                bindings.AdventurerRingEditorId, bindings.FallbackAdventurerRingBaseFormId))
         {
-            return;
+            if (itemId == pAdvRing->formID)
+                return;
         }
-        if ((itemId & 0x00FFFFFFu) == bindings.FallbackAdventurerRingBaseFormId)
+        else if ((itemId & 0xFF000000u) != 0xFE000000u &&
+                 (itemId & 0x00FFFFFFu) == bindings.FallbackAdventurerRingBaseFormId)
         {
             return;
         }

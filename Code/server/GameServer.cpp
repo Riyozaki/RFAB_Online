@@ -730,7 +730,14 @@ void GameServer::OnConsume(const void* apData, const uint32_t aSize, const Conne
         return;
     }
 
-    m_messageHandlers[pMessage->GetOpcode()](pMessage, aConnectionId);
+    const auto opcode = pMessage->GetOpcode();
+    if (opcode >= std::size(m_messageHandlers) || !m_messageHandlers[opcode])
+    {
+        spdlog::error("Unhandled or out-of-bounds opcode {} from {:x}", opcode, aConnectionId);
+        return;
+    }
+
+    m_messageHandlers[opcode](pMessage, aConnectionId);
     //}
 }
 
@@ -781,7 +788,15 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
             const auto& [ownerComponent] = ownerView.get(entity);
             if (ownerComponent.GetOwner() == pPlayer)
             {
-                m_pWorld->GetDispatcher().enqueue(OwnershipTransferEvent(entity));
+                const auto* pCharComp = m_pWorld->try_get<CharacterComponent>(entity);
+                if (pCharComp && (pCharComp->IsPlayer() || pCharComp->IsPlayerSummon()))
+                {
+                    m_pWorld->GetDispatcher().enqueue(CharacterRemoveEvent(World::ToInteger(entity)));
+                }
+                else
+                {
+                    m_pWorld->GetDispatcher().enqueue(OwnershipTransferEvent(entity));
+                }
             }
         }
 
@@ -969,6 +984,13 @@ bool GameServer::ValidateAuthParams(ConnectionId_t aConnectionId, const UniquePt
 
 void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId, const UniquePtr<AuthenticationRequest>& acRequest)
 {
+    if (m_pWorld->GetPlayerManager().GetByConnectionId(aConnectionId) != nullptr)
+    {
+        spdlog::warn("Duplicate AuthenticationRequest from already authenticated connection {:x}; kicking.", aConnectionId);
+        Kick(aConnectionId);
+        return;
+    }
+
     const auto info = GetConnectionInfo(aConnectionId);
 
     char remoteAddress[48]{};
@@ -1063,9 +1085,29 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
             // but requires essential mods?
 
             // mods that may exist on the server, but not on the client
+            auto equalsAsciiIgnoreCase = [](const String& aLhs, const String& aRhs) noexcept
+            {
+                if (aLhs.size() != aRhs.size())
+                    return false;
+                for (size_t idx = 0; idx < aLhs.size(); ++idx)
+                {
+                    char c1 = aLhs[idx];
+                    char c2 = aRhs[idx];
+                    if (c1 >= 'A' && c1 <= 'Z')
+                        c1 = static_cast<char>(c1 - 'A' + 'a');
+                    if (c2 >= 'A' && c2 <= 'Z')
+                        c2 = static_cast<char>(c2 - 'A' + 'a');
+                    if (c1 != c2)
+                        return false;
+                }
+                return true;
+            };
+
             for (const auto& entry : modsComponent.GetServerMods())
             {
-                const auto it = std::find_if(userMods.begin(), userMods.end(), [&](const Mods::Entry& it) { return it.Filename == entry.first; });
+                const auto it = std::find_if(userMods.begin(), userMods.end(), [&](const Mods::Entry& it) {
+                    return equalsAsciiIgnoreCase(it.Filename, entry.first);
+                });
 
                 if (it == userMods.end())
                 {

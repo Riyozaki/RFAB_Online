@@ -77,7 +77,7 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
         return;
 
     bool movedViaCellTransfer = false;
-    if ((apActor->formID & 0xFF000000u) != 0xFF000000u && apActor->formID != 0x14)
+    if (apActor->formID != 0x14)
     {
         PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
         TESWorldSpace* pLocalWs = pLocalPlayer ? pLocalPlayer->GetWorldSpace() : nullptr;
@@ -90,8 +90,13 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
             if (GridCellCoords::IsCellInGridCell(destGrid, centerGrid, false))
             {
                 TESObjectCELL* pDestCell = pModMgr->GetCellFromCoordinates(destGrid.X, destGrid.Y, pLocalWs, false);
-                if (pDestCell && pDestCell->loadedCellData &&
-                    (stepDistSq > kTeleportSnapThresholdSq || apActor->parentCell != pDestCell || !apActor->GetNiNode()))
+                const bool isDynamicActor = (apActor->formID & 0xFF000000u) == 0xFF000000u;
+                // Transfer ALL non-player actors (including 0xFF00xxxx remote players & summons!) into the newly crossed
+                // loaded cell so parentCell never lingers in an old origin cell that unloads 3 grids later.
+                const bool needsMoveTo = isDynamicActor
+                    ? (apActor->parentCell != pDestCell || stepDistSq > kTeleportSnapThresholdSq)
+                    : (stepDistSq > kTeleportSnapThresholdSq || apActor->parentCell != pDestCell || !apActor->GetNiNode());
+                if (pDestCell && pDestCell->loadedCellData && needsMoveTo)
                 {
                     apActor->MoveTo(pDestCell, position);
                     movedViaCellTransfer = true;

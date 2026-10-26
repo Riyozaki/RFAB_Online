@@ -669,7 +669,7 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
 
     if (pPlayer->IsInCombat())
         pPlayer->StopCombat();
-    pPlayer->DispelAllSpells();
+    pPlayer->DispelHostileEffects();
 
     // 2. Restore checkpoint inventory if provided by server
     if (acMessage.HasRestoreInventory)
@@ -688,21 +688,23 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
         const uint32_t targetWorldFormId = modSystem.GetGameId(acMessage.TargetWorldSpaceId);
 
         TESObjectCELL* pTargetCell = targetCellFormId != 0 ? Cast<TESObjectCELL>(TESForm::GetById(targetCellFormId)) : nullptr;
-        if (!pTargetCell && targetWorldFormId != 0)
+        TESWorldSpace* pTargetWorldSpace = targetWorldFormId != 0 ? Cast<TESWorldSpace>(TESForm::GetById(targetWorldFormId)) : nullptr;
+        if (!pTargetCell && pTargetWorldSpace)
         {
-            if (auto* pWorldSpace = Cast<TESWorldSpace>(TESForm::GetById(targetWorldFormId)))
-            {
-                const int32_t gridX = static_cast<int32_t>(std::floor(acMessage.PositionX / 4096.0f));
-                const int32_t gridY = static_cast<int32_t>(std::floor(acMessage.PositionY / 4096.0f));
-                if (auto* pModMgr = ModManager::Get())
-                    pTargetCell = pModMgr->GetCellFromCoordinates(gridX, gridY, pWorldSpace, false);
-            }
+            const int32_t gridX = static_cast<int32_t>(std::floor(acMessage.PositionX / 4096.0f));
+            const int32_t gridY = static_cast<int32_t>(std::floor(acMessage.PositionY / 4096.0f));
+            if (auto* pModMgr = ModManager::Get())
+                pTargetCell = pModMgr->GetCellFromCoordinates(gridX, gridY, pTargetWorldSpace, false);
         }
 
         NiPoint3 targetPos{};
         targetPos.x = acMessage.PositionX;
         targetPos.y = acMessage.PositionY;
         targetPos.z = acMessage.PositionZ;
+
+        NiPoint3 targetRot = pPlayer->rotation;
+        targetRot.x = 0.0f;
+        targetRot.z = acMessage.RotationZ;
 
         const uint32_t curCellId = pPlayer->parentCell ? pPlayer->parentCell->formID : 0u;
         const uint32_t curWorldId = pPlayer->GetWorldSpace() ? pPlayer->GetWorldSpace()->formID : 0u;
@@ -712,15 +714,22 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
 
         ScopedReferencesOverride refGuard;
         pPlayer->ResetTeleportPhysics(targetPos.z);
-        if (sameLoadedContext || !pTargetCell)
+        if (sameLoadedContext)
         {
             pPlayer->SetPosition(targetPos, true);
+            pPlayer->SetRotation(0.0f, 0.0f, acMessage.RotationZ);
+        }
+        else if (pTargetCell || pTargetWorldSpace)
+        {
+            // Native InternalMoveTo (SE 56227) accepts (nullptr, pTargetWorldSpace, targetPos, targetRot)
+            // when rolling back from an interior dungeon to an unloaded exterior checkpoint cell!
+            pPlayer->MoveToWorldOrCell(pTargetCell, pTargetWorldSpace, targetPos, targetRot);
         }
         else
         {
-            pPlayer->MoveTo(pTargetCell, targetPos);
+            pPlayer->SetPosition(targetPos, true);
+            pPlayer->SetRotation(0.0f, 0.0f, acMessage.RotationZ);
         }
-        pPlayer->SetRotation(0.0f, 0.0f, acMessage.RotationZ);
         pPlayer->ResetTeleportPhysics(targetPos.z);
     }
 

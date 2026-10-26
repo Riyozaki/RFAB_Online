@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 #include <Events/PacketEvent.h>
@@ -24,6 +25,15 @@ namespace
 constexpr uint32_t kHealthActorValueIndex = 24;
 constexpr uint32_t kInfamyActorValueIndex = 37;
 constexpr float kMaxSanitizedActorValue = 100000.0f;
+constexpr uint64_t kExternalDamageReconcileWindowMs = 650ULL;
+
+uint64_t SteadyActorValueNowMs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
 }
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -54,6 +64,7 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
     const auto* pCharComp = m_world.try_get<CharacterComponent>(*it);
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    const uint64_t nowMs = SteadyActorValueNowMs();
     for (const auto& [id, value] : message.Values)
     {
         if (id == kInfamyActorValueIndex || !std::isfinite(value))
@@ -85,6 +96,17 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
                 rollbackOwnerHp.Values[kHealthActorValueIndex] = currentHp;
                 if (acMessage.pPlayer)
                     acMessage.pPlayer->Send(rollbackOwnerHp);
+                continue;
+            }
+
+            if (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end() &&
+                actorValuesComponent.LastExternalDamageAtMs != 0 &&
+                nowMs >= actorValuesComponent.LastExternalDamageAtMs &&
+                (nowMs - actorValuesComponent.LastExternalDamageAtMs) <= kExternalDamageReconcileWindowMs &&
+                sanitized > currentHp + 0.5f)
+            {
+                // Suppress stale periodic owner HP snapshots that departed before a peer's
+                // RequestHealthChangeBroadcast hit reached the owner client.
                 continue;
             }
         }
@@ -150,15 +172,35 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     if (it == actorValuesView.end())
         return;
 
+    const auto& ownerComponent = actorValuesView.get<OwnerComponent>(*it);
     const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(*it);
-    if (pCharacterComponent)
+    const bool isDragon = pCharacterComponent && pCharacterComponent->IsDragon();
+
+    if (const auto* pTargetCell = m_world.try_get<CellIdComponent>(*it))
     {
-        // Never allow late in-flight regen/heal packets to add health above 0 on an already-dead non-player NPC.
-        if (!pCharacterComponent->IsPlayer() && pCharacterComponent->IsDead() && sanitizedDelta > 0.f)
+        if (!acMessage.pPlayer || !pTargetCell->IsInRange(acMessage.pPlayer->GetCellComponent(), isDragon))
             return;
     }
 
+    if (pCharacterComponent)
+    {
+        // Reject late regen/heal or damage packets against an already-dead non-player NPC.
+        if (!pCharacterComponent->IsPlayer() && pCharacterComponent->IsDead())
+            return;
+    }
+
+    if (sanitizedDelta < 0.f &&
+        ownerComponent.GetOwner() != acMessage.pPlayer &&
+        m_world.GetRfabProgressionService().GetLedger().IsBossGhost(message.Id))
+    {
+        spdlog::debug("Blocked non-owner damage {:.1f} on invulnerable boss ghost {:x}", sanitizedDelta, message.Id);
+        return;
+    }
+
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    if (sanitizedDelta < 0.f && ownerComponent.GetOwner() != acMessage.pPlayer)
+        actorValuesComponent.LastExternalDamageAtMs = SteadyActorValueNowMs();
+
     const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
     float updatedHealth = std::max(0.f, (std::isfinite(currentHealth) ? currentHealth : 0.f) + sanitizedDelta);
 
@@ -218,13 +260,30 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     auto& characterComponent = characterView.get<CharacterComponent>(*it);
     const auto& ownerComponent = characterView.get<OwnerComponent>(*it);
 
-    // Any peer may deal the killing blow (IsDead == true), whereas resurrecting/respawning an already-dead NPC
-    // (IsDead == false) is accepted strictly from the authoritative owner to prevent stale non-owner resurrection!
+    if (const auto* pTargetCell = m_world.try_get<CellIdComponent>(*it))
+    {
+        if (!acMessage.pPlayer || !pTargetCell->IsInRange(acMessage.pPlayer->GetCellComponent(), characterComponent.IsDragon()))
+            return;
+    }
+
+    // Any peer in range may deal the killing blow (IsDead == true) unless the boss is currently invulnerable/ghosted,
+    // whereas resurrecting/respawning an already-dead NPC (IsDead == false) is accepted strictly from the owner.
+    if (message.IsDead &&
+        ownerComponent.GetOwner() != acMessage.pPlayer &&
+        m_world.GetRfabProgressionService().GetLedger().IsBossGhost(message.Id))
+    {
+        spdlog::debug("Ignored non-owner death packet on invulnerable boss ghost {:x}", message.Id);
+        return;
+    }
+
     if (!message.IsDead && characterComponent.IsDead() && ownerComponent.GetOwner() != acMessage.pPlayer)
     {
         spdlog::debug("Ignored stale non-owner resurrection on dead actor {:x}", message.Id);
         return;
     }
+
+    if (characterComponent.IsDead() == message.IsDead)
+        return;
 
     characterComponent.SetDead(message.IsDead);
 

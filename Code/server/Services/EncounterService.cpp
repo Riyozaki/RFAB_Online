@@ -146,7 +146,16 @@ void EncounterService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
     if (!acEvent.pPlayer)
         return;
 
-    m_coordinator.RemovePlayer(acEvent.pPlayer->GetId());
+    const uint32_t leaverId = acEvent.pPlayer->GetId();
+    const auto cancelledTargets = m_coordinator.RemovePlayer(leaverId);
+    for (const uint32_t targetId : cancelledTargets)
+    {
+        NotifyReviveState msg{};
+        msg.Status = NotifyReviveState::ReviveStatus::ChannelCancelled;
+        msg.TargetPlayerId = targetId;
+        msg.ReviverPlayerId = leaverId;
+        GameServer::Get()->SendToPlayers(msg, acEvent.pPlayer);
+    }
 }
 
 void EncounterService::OnUpdate(const UpdateEvent&) noexcept

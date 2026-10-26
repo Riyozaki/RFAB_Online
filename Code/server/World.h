@@ -11,6 +11,7 @@
 #include <Services/RfabProgressionService.h>
 #include <Services/SaveSnapshotService.h>
 #include <Services/EncounterService.h>
+#include <Services/InventoryService.h>
 
 #include "Game/PlayerManager.h"
 
@@ -44,6 +45,8 @@ struct World : entt::registry
     const SaveSnapshotService& GetSaveSnapshotService() const noexcept { return ctx().at<const SaveSnapshotService>(); }
     EncounterService& GetEncounterService() noexcept { return ctx().at<EncounterService>(); }
     const EncounterService& GetEncounterService() const noexcept { return ctx().at<const EncounterService>(); }
+    InventoryService& GetInventoryService() noexcept { return ctx().at<InventoryService>(); }
+    const InventoryService& GetInventoryService() const noexcept { return ctx().at<const InventoryService>(); }
     PlayerManager& GetPlayerManager() noexcept { return m_playerManager; }
     const PlayerManager& GetPlayerManager() const noexcept { return m_playerManager; }
     ScriptService& GetScriptService() const noexcept { return *m_pScriptService; }

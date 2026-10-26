@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v2.0.1` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — актуальная сборка нового поколения (`WorldOrCell` / `FormView` / бесшовные серверные чекпоинты + полный пакет архитектурных исправлений `v2.0.1`) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.0.2` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — актуальная сборка нового поколения (`SkyMP-Grade Server Authority` / `Zero-CTD Core` / `ServerWorldModel + ClientWorldView` / `O(1)` индексы / кросс-версионный бинарный индексатор `.esp/.esl` для **любой** версии RFAB) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)** и **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — неприкосновенные эталонные бэкапы релиза `2.0.1` (`SHA-256` зафиксированы в `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)** — сохранённый эталонный бэкап стабильной ветки `1.2.0`.
 - **[`v1.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.1.0)** — сохранённый бэкап стабильного релиза `1.1.0`.
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
@@ -10,9 +11,44 @@
 
 ---
 
-## [v2.0.1] — 2026-10-26 *(Архитектурная стабилизация `v2.0.x` по итогам живого кооп-плейтеста)*
+## [v2.0.2] — 2026-10-26 *(SkyMP-Grade Server Authority, Zero-CTD Core, Any-Version RFAB Compatibility & Full Codebase Security Hardening)*
 
-### 🛡️ Исправлено на архитектурном уровне (`под корень`)
+### 🏛️ Новые серверные и клиентские подсистемы профессионального уровня (`SkyMP` / `Skyrim Online` вдохновение)
+- **Серверный анти-дюп реестр контейнеров и трупов (`CoopLootLedger` — `Code/common/CoopLootLedger.h` + `Server::InventoryService`):**
+  - Заменена слепая ретрансляция `RequestInventoryChanges` из TiltedEvolution на серверно-авторитетную модель захвата лута с 15-секундным окном конкурентного истощения слота: если два игрока одновременно нажимают «Взять» / «Взять всё» в одном сундуке босса или на одном трупе, сервер выдаёт предмет первому игроку, а опоздавшему отправляет корректирующий `NotifyInventoryChanges` с `Count = -OverdrawnRollback` прямо на сущность его персонажа — полностью устраняя классический кооп-дюп при пинге без блокировки динамического/скриптового `OnDeath` лута RFAB при одиночном лутании и с сохранением групповой выдачи ключей/когтей (`IsQuestItem`). При откате чекпоинта (`SaveSnapshotService`) леджер атомарно очищается (`ResetLootLedger()`).
+- **Серверное окно согласования совместного урона и серверный щит бесплотных фаз боссов (`Server::ActorValueService`):**
+  - На `ActorValuesComponent` добавлена метка `LastExternalDamageAtMs` (`650 мс` окно согласования): устаревшие периодические снапшоты `RequestActorValueChanges` от владельца NPC, вылетевшие в сеть до прихода пакета попадания от союзника (`RequestHealthChangeBroadcast`), больше не откатывают полоску HP босса/врага обратно вверх.
+  - Сервер проверяет `RfabProgressionLedger::IsBossGhost` для всех не-хозяйских пакетов урона и убийства (`OnHealthChangeBroadcast` / `OnDeathStateChange`), делая фазы неуязвимости боссов RFAB непробиваемыми при любом сетевом лаге, проверяет пространственную досягаемость `CellIdComponent::IsInRange` и делает `OnDeathStateChange` строго идемпотентным.
+- **Zero-Spoof защита сетевого протокола, регистронезависимый `ModId` и чистота дисконнекта:**
+  - `Server::MagicService`: строгая проверка `OwnerComponent` на `OnSpellCastRequest`, `OnInterruptCastRequest` и `OnRemoveSpellRequest`, а также проверка владения `CasterId` или `TargetId` + запрет наложения эффектов на мёртвых NPC и вне `IsInRange` в `OnAddTargetRequest`.
+  - `ModsComponent` и `GameServer`: нормализация регистра имён `.esm/.esp/.esl` плагинов к нижнему регистру ASCII при выдаче серверного `ModId` и проверке `MoPo` — игроки с разным регистром файлов в MO2/NTFS (`RFAB.esp` vs `rfab.esp`) всегда получают идентичные `ModId`.
+  - `GameServer`: защита границ таблицы опкодов в `OnConsume` и блокировка повторного `AuthenticationRequest` на уже авторизованном соединении (`GetByConnectionId != nullptr`).
+  - `PartyService` и `EncounterService`: исправлено истечение приглашений в пати через `GetPlayerManager()` (вместо пустого `m_world.view<PartyComponent>()`), очистка висячих `Player*` в `Invitations` при выходе игрока, защита `OnPartyKick` от кика из чужой группы и мгновенная рассылка `NotifyReviveState::ChannelCancelled` раненому игроку, если поднимавший его союзник отключился посреди реанимации.
+  - `MovementComponent`: дефолтная инициализация всех полей (`Sent{true}`), устраняющая чтение неинициализированной памяти при первой отправке фракций/спавна.
+- **Универсальная `O(1)` индексация мировых объектов и сетевых сущностей на сервере и клиенте:**
+  - `ObjectComponent` и `Server::ObjectService`: удалён висячий указатель `Player* pLastSender`, внедрён `O(1)` индекс `m_objectEntityByKey` (`PackGameIdKey -> entt::entity`) с EnTT-сигналом `on_destroy<ObjectComponent>` и бюджетом вытеснения нетронутых дальних объектов (`kMaxUntouchedCachedObjects = 16384`) при 100% сохранении всех взломанных замков и изменённых сундуков (`HasAuthoritativeMutation`).
+  - `Client::CharacterService`, `Utils::GetByServerId<T>`, `AnimationSystem`, `MagicService`, `InventoryService`: `ObjectComponent` включён в `O(1)` таблицы `m_entityByServerId` и `m_objectEntityByFormId`, благодаря чему поиск по `ServerId` и `FormId` на каждом кадре анимаций, боя, магии и инвентаря работает за `O(1)` вместо линейных проходов по всему реестру.
+
+### 🧱 Фундаментальная переработка ядра (`Stages 0–3`)
+- **Этап 0 (`v2.0.1-backup` & CI Release Guard):** создан золотой манифест контрольных сумм `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`, а в `.github/workflows/release.yml` и `Tools/rfab/Build-CloudRelease.ps1` внедрена защита тегов `v2.0.1-backup` и `v2.0.1` и гейт `-PublishRelease`.
+- **Этап 1 (`Zero-CTD Core` — аллокаторы, время жизни объектов и потокобезопасность):**
+  - `ActorExtension` сделан тривиально разрушаемым (`static_assert(std::is_trivially_destructible_v<ActorExtension>)`), а `LatestAnimation` вынесен в 16-шардовое потокобезопасное хранилище — устранена утечка/порча кучи при удалении `ExActor`/`ExPlayerCharacter` движком через `FormFree` без вызова C++-деструктора.
+  - В `Memory.cpp` перехвачено полное семейство CRT-аллокаторов (`malloc`, `calloc`, `realloc`, `_recalloc`, `_expand`, `free`, `_msize`, `_aligned_*`) в `mimalloc` до старта `gameMain()`, а для `ActorValueList` (`0x528` байт в SE 1.5.97) добавлен 16-байтный обнулённый sentinel-хвост (`actorValues[164] == nullptr`), защищающий `StatsMenu` в любых будущих пересборках `RFAB.dll` / `CustomSkills.dll`.
+  - Исправлен `GameArray<T>::Resize` (`kCapacityMask = 0x7FFFFFFFu` + placement-new / деструкторы), добавлены `GamePtr<T>::Adopt`/`Detach` и полноценный RAII `NiPointer<T>` (`sizeof == sizeof(void*)` + полный тип `ImageSpaceModifierInstance`).
+  - Добавлены `std::shared_mutex` в `ModSystem`, атомарные кэш-флаги на `World` (`IsCreated`, `IsConnectedCached`, `IsContainerMenuOpenCached`, `IsSyncPlayerHomesCached`), удерживающие ссылки `TESObjectREFR::LookupByHandle` / `Actor::LookupByHandle` на всех рабочих потоках Papyrus/Havok/AI и строгая проверка `IsRemote() || HasCombatTargetLock()` в `CombatController::HookUpdateTarget` (`SE 32489`).
+- **Этап 2 (`ServerWorldModel` + `ClientWorldView`):**
+  - Персистентные мировые NPC не уничтожаются на сервере при выходе последнего наблюдателя из ячейки, а переходят в спящий режим `SetOwner(nullptr, nowMs)` (с капом `PruneExcessDormantCharacters = 4096`) и мгновенно пробуждаются при возвращении любого игрока; призванные существа игрока гарантированно очищаются при дисконнекте владельца, а соло-игроки корректно подхватывают сиротские сущности в `OnAssignCharacterRequest`.
+  - В клиентском `CharacterService` внедрены защита статических `.esm/.esp` шаблонов `TESNPC` (`0xFF00xxxx` guard перед `Deserialize`), реестр `m_suppressedPlacedActors` с авто-восстановлением перед сохранением/загрузкой/отключением, кросс-ячеечный `MoveTo` для `0xFF00xxxx` клонов в `InterpolationSystem` и 15-кадровый гистерезис `m_niNodeFlickerGraceFrames` против мерцания `GetNiNode()` в `DiscoveryService`.
+- **Этап 3 (`Exact RFAB Combat, Buff-Preserving Rollback & Any-Version RFAB Compatibility`):**
+  - В `Actor.cpp` полностью убран костыль `+65536.0f` на `healthModifiers.temporaryModifier` в `HookDamageActor` (`SE 36345`), ломавший `% MaxHP` и пороги низкого здоровья RFAB/Requiem: внедрена связка `ScopedLethalPlayerDamageIntercept` + `HookRestoreActorValue` (`SE 37513`), вычисляющая весь урон со 100% подлинными `MaxHP`/`CurrentHP` и мягко удерживающая летальный удар на `1.0f HP` с переводом в `Downed-on-Knee`.
+  - В `CoordinatedSaveService::ApplyInSessionRollback` снятие всех заклинаний (`DispelAllSpells`) заменено на выборочный `Actor::DispelHostileEffects()` (снимаются только временные враждебные яды/кровотечения/поджоги при 100% сохранении еды, алкоголя, эликсиров, алтарей и `Mage Armor` RFAB), а кросс-ячеечный откат из подземелья в незагруженный экстерьер использует нативный `MoveToWorldOrCell` (`SE 56227`) без провала в пустоту.
+  - В `RfabModpackCompat.h` и `RfabAdapterService` внедрён скоростной бинарный индексатор `.esm/.esp/.esl` (`EspEdidIndex`, потоково индексирующий `EDID <-> (PluginName, LocalFormId)` с учётом таблицы мастеров `TES4::MAST` и ESL-флагов без зависимости от `PO3_Tweaks`), рекурсивный поиск конфигов в подпапках `Data/SKSE/Plugins/`, двухпроходный парсер `plugins.txt` (`*Active.esp` vs отключённые моды) в `ESLoader` / `DediRunner` и защита от 24-битных межмодовых коллизий `FormID`.
+
+---
+
+## [v2.0.1] — 2026-10-26 *(Базовый релиз `v2.0.1` — сохранён в `v2.0.1-backup`)*
+
+### 🛡️ Исправлено на архитектурном уровне в базовом `v2.0.1`
 - **`GamePtr<T>` (`Code/client/Games/Primitives.h`):** инициализация `m_pPointer{nullptr}`, явный конструктор `GamePtr(std::nullptr_t)`, обнуляющий перемещающий конструктор и вызов `Release()` в `operator=(GamePtr&&)` — полностью устранён краш `SkyrimTogetherClient.dll+0x65D2CB` (`DecRefHandle` по стековому мусору при non-NRVO возврате из `Actor::CreateInCell`).
 - **Пост-вайп синхронизация ИИ и `WorldView` в открытом мире (Форт Греймур):**
   - `CoopAnimationState::NormalizePostReviveActorState` + `DownedStateService::RestoreLivingCombatTargetability` сбрасывают все неживые биты `actorState.flags1` (`kEssentialDown = 7`, `kBleedout = 8`, `kDying = 1`), снимают `knock/recoil/stagger` и вызывают `EvaluatePackage()` у окрестных NPC после подъёма и `MoveTo`, а `HookUpdateDetectionState` мгновенно снимает зажатый `-1000` уровень обнаружения у живых игроков.

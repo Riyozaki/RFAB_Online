@@ -9,4 +9,5 @@
 struct ActorValuesComponent
 {
     ActorValues CurrentActorValues{};
+    uint64_t LastExternalDamageAtMs{0};
 };

@@ -73,6 +73,7 @@ protected:
 
     void ProcessFactionsChanges() const noexcept;
     void ProcessMovementChanges() const noexcept;
+    void PruneExcessDormantCharacters() const noexcept;
 
 private:
     World& m_world;

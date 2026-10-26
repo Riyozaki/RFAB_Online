@@ -86,10 +86,9 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
     // Only expire once every 10 seconds
     m_nextInvitationExpire = cCurrentTick + 10000;
 
-    auto view = m_world.view<PartyComponent>();
-    for (auto entity : view)
+    for (Player* pPlayer : m_world.GetPlayerManager())
     {
-        auto& partyComponent = view.get<PartyComponent>(entity);
+        auto& partyComponent = pPlayer->GetParty();
         auto itor = std::begin(partyComponent.Invitations);
         while (itor != std::end(partyComponent.Invitations))
         {
@@ -190,7 +189,8 @@ void PartyService::OnPartyKick(const PacketEvent<PartyKickRequest>& acPacket) no
     }
 
     auto& inviterPartyComponent = player->GetParty();
-    if (inviterPartyComponent.JoinedPartyId) // Ensure not in party
+    if (inviterPartyComponent.JoinedPartyId && pKick != player &&
+        pKick->GetParty().JoinedPartyId == inviterPartyComponent.JoinedPartyId)
     {
         Party& party = m_parties[*inviterPartyComponent.JoinedPartyId];
         if (party.LeaderPlayerId == player->GetId())
@@ -317,9 +317,17 @@ void PartyService::OnPartyAcceptInvite(const PacketEvent<PartyAcceptInviteReques
         auto& inviterPartyComponent = pInviter->GetParty();
         auto& selfPartyComponent = pSelf->GetParty();
 
-        // Check if we have this invitation so people don't invite themselves
-        if (selfPartyComponent.Invitations.count(pInviter) == 0)
+        // Check if we have a non-expired invitation so people don't invite themselves
+        const auto invIt = selfPartyComponent.Invitations.find(pInviter);
+        if (invIt == selfPartyComponent.Invitations.end())
             return;
+
+        if (invIt->second < GameServer::Get()->GetTick())
+        {
+            selfPartyComponent.Invitations.erase(invIt);
+            return;
+        }
+        selfPartyComponent.Invitations.erase(invIt);
 
         spdlog::debug("[PartyService]: Invite found, processing.");
         if (!inviterPartyComponent.JoinedPartyId) // Ensure inviter is in a party otherwise break
@@ -360,27 +368,47 @@ void PartyService::OnPartyLeave(const PacketEvent<PartyLeaveRequest>& acPacket) 
 
 void PartyService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
 {
+    if (acEvent.pPlayer)
+    {
+        for (Player* pOther : m_world.GetPlayerManager())
+        {
+            if (pOther && pOther != acEvent.pPlayer)
+                pOther->GetParty().Invitations.erase(acEvent.pPlayer);
+        }
+        acEvent.pPlayer->GetParty().Invitations.clear();
+    }
+
     RemovePlayerFromParty(acEvent.pPlayer);
     BroadcastPlayerList(acEvent.pPlayer);
 }
 
 void PartyService::RemovePlayerFromParty(Player* apPlayer) noexcept
 {
+    if (!apPlayer)
+        return;
+
     auto* pPartyComponent = &apPlayer->GetParty();
     spdlog::debug("[PartyService]: Removing player from party.");
 
     if (pPartyComponent->JoinedPartyId)
     {
         auto id = *pPartyComponent->JoinedPartyId;
+        pPartyComponent->JoinedPartyId.reset();
 
-        Party& party = m_parties[id];
+        auto partyIt = m_parties.find(id);
+        if (partyIt == m_parties.end())
+            return;
+
+        Party& party = partyIt->second;
         auto& members = party.Members;
 
-        members.erase(std::find(std::begin(members), std::end(members), apPlayer));
+        const auto memberIt = std::find(std::begin(members), std::end(members), apPlayer);
+        if (memberIt != std::end(members))
+            members.erase(memberIt);
 
         if (members.empty())
         {
-            m_parties.erase(id);
+            m_parties.erase(partyIt);
             m_world.GetRfabProgressionService().BroadcastAllyProtectionState(false);
         }
         else
@@ -393,8 +421,6 @@ void PartyService::RemovePlayerFromParty(Player* apPlayer) noexcept
             spdlog::debug("[PartyService]: Updating other party players of removal.");
             BroadcastPartyInfo(id);
         }
-
-        pPartyComponent->JoinedPartyId.reset();
 
         spdlog::debug("[PartyService]: Sending party left event to player.");
         NotifyPartyLeft leftMessage;

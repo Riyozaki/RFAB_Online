@@ -31,26 +31,16 @@ std::optional<uint32_t> GetServerId(entt::entity aEntity) noexcept;
 
 template <class T> T* GetByServerId(const uint32_t acServerId) noexcept
 {
-    auto view = World::Get().view<FormIdComponent>();
-
-    for (entt::entity entity : view)
+    auto& world = World::Get();
+    const entt::entity entity = world.GetCharacterService().FindEntityByServerId(acServerId);
+    if (entity != entt::null)
     {
-        std::optional<uint32_t> serverIdRes = GetServerId(entity);
-        if (!serverIdRes.has_value())
-            continue;
-
-        uint32_t serverId = serverIdRes.value();
-
-        if (serverId == acServerId)
+        if (const auto* pFormIdComponent = world.try_get<FormIdComponent>(entity))
         {
-            const auto& formIdComponent = view.get<FormIdComponent>(entity);
-            TESForm* pForm = TESForm::GetById(formIdComponent.Id);
-
-            if (pForm != nullptr)
-            {
+            if (TESForm* pForm = TESForm::GetById(pFormIdComponent->Id))
                 return Cast<T>(pForm);
-            }
         }
+        return nullptr;
     }
 
     spdlog::debug("{}: form not found for server id {:X}", __FUNCTION__, acServerId);

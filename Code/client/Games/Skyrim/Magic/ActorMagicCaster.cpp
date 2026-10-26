@@ -34,14 +34,13 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
 
     if (apThis->hDesiredTarget)
     {
-        TESObjectREFR* pDesiredTarget = TESObjectREFR::GetByHandle(apThis->hDesiredTarget.handle.iBits);
-        if (pDesiredTarget)
+        if (GamePtr<TESObjectREFR> spDesiredTarget = TESObjectREFR::LookupByHandle(apThis->hDesiredTarget))
         {
-            targetFormId = pDesiredTarget->formID;
+            targetFormId = spDesiredTarget->formID;
         }
     }
 
-    if (apSpell && apThis->pCasterActor->formID != 0)
+    if (World::IsConnectedCached() && apSpell && apThis->pCasterActor->formID != 0)
     {
         World::Get().GetRunner().Trigger(SpellCastEvent(
             apThis->pCasterActor->formID,
@@ -56,7 +55,7 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
 
 void TP_MAKE_THISCALL(HookInterruptCast, ActorMagicCaster, bool abRefund)
 {
-    if (apThis && apThis->pCasterActor && apThis->pCasterActor->formID != 0 && apThis->pCasterActor->GetNiNode())
+    if (World::IsConnectedCached() && apThis && apThis->pCasterActor && apThis->pCasterActor->formID != 0 && apThis->pCasterActor->GetNiNode())
     {
         if (const ActorExtension* pExtended = apThis->pCasterActor->GetExtension(); pExtended && pExtended->IsLocal())
         {

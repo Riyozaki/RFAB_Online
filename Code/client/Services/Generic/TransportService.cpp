@@ -186,6 +186,8 @@ void TransportService::OnConnected()
 void TransportService::OnDisconnected(EDisconnectReason aReason)
 {
     m_connected = false;
+    World::SetConnectedHint(false);
+    World::SetContainerMenuOpenHint(false);
 
     spdlog::warn("Disconnected from server {}", aReason);
 
@@ -225,6 +227,7 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
     if (acMessage.Type == AR::kAccepted)
     {
         m_connected = true;
+        World::SetConnectedHint(true);
 
         m_world.SetServerSettings(acMessage.Settings);
 
