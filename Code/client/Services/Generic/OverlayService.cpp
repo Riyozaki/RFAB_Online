@@ -3,6 +3,7 @@
 #include <Services/OverlayService.h>
 
 #include <OverlayApp.hpp>
+#include <include/cef_command_line.h>
 
 #include <D3D11Hook.hpp>
 #include <OverlayRenderHandlerD3D11.hpp>

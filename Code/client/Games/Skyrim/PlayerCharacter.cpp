@@ -20,6 +20,7 @@
 #include <Games/References.h>
 #include <Forms/TESWorldSpace.h>
 
+#include <Forms/TESFaction.h>
 #include <Forms/TESObjectCELL.h>
 
 #include <ModCompat/BehaviorVar.h>
