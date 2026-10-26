@@ -182,7 +182,7 @@ TEST_CASE("CoopWorldView CancelledCookieTracker and 350ms door-transition grace 
     {
         CoopWorldView::ObserverState obs{};
         obs.EngineReady = true;
-        obs.Location = CoopWorldView::WorldOrCell::MakeExterior(GameId{0, 0x3C}, 4, -2);
+        obs.Location = CoopWorldView::WorldOrCell::MakeExterior(GameId{0, 0x3C}, GridCellCoords(4, -2));
         obs.PosX = 18000.0f;
         obs.PosY = -6000.0f;
 
