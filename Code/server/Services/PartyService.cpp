@@ -399,7 +399,7 @@ void PartyService::RemovePlayerFromParty(Player* apPlayer) noexcept
         if (partyIt == m_parties.end())
             return;
 
-        Party& party = partyIt->second;
+        Party& party = partyIt.value();
         auto& members = party.Members;
 
         const auto memberIt = std::find(std::begin(members), std::end(members), apPlayer);
