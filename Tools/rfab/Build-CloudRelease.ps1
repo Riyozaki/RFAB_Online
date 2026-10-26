@@ -240,12 +240,12 @@ function Ensure-V203BackupRelease([string]$RepoRootPath) {
         }
 
         $bakNotes = Join-Path $bakDir "BACKUP_NOTES.md"
-        $bakText = "Immutable golden backup mirror of release **v2.0.3** (commit ``e7b96ef70276d29a916012c3489359a9bd736ce2``), preserved automatically before v2.1.0 architectural stabilization builds.`r`n"
+        $bakText = "Immutable golden backup mirror of release **v2.0.3** (commit ``865da6c6cc1ba6e336f894feeddf0aa9d4418959``), preserved automatically before v2.1.0 architectural stabilization builds.`r`n"
         [System.IO.File]::WriteAllText($bakNotes, $bakText, (New-Object System.Text.UTF8Encoding($false)))
 
         & cmd.exe /d /s /c "gh release view v2.0.3-backup >nul 2>&1"
         if ($LASTEXITCODE -ne 0) {
-            & cmd.exe /d /s /c "gh release create v2.0.3-backup --target e7b96ef70276d29a916012c3489359a9bd736ce2 --title `"RFAB Online v2.0.3 (Immutable Release Backup)`" --notes-file `"$bakNotes`" --prerelease"
+            & cmd.exe /d /s /c "gh release create v2.0.3-backup --target 865da6c6cc1ba6e336f894feeddf0aa9d4418959 --title `"RFAB Online v2.0.3 (Immutable Release Backup)`" --notes-file `"$bakNotes`" --prerelease"
             if ($LASTEXITCODE -ne 0) {
                 throw "[BACKUP] Failed to create GitHub release v2.0.3-backup; aborting before publishing v2.1.0."
             }

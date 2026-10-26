@@ -52,7 +52,9 @@ struct CharacterService
         const GridCellCoords& acCenterCoords,
         const glm::vec3& acPosition,
         const glm::vec3& acRotation,
-        bool aIsDead) const noexcept;
+        bool aIsDead,
+        float aCurrentHealth = 0.0f,
+        float aMaxHealth = 0.0f) const noexcept;
     [[nodiscard]] const CoopWorldView::ServerInterestRegistry& GetInterestRegistry() const noexcept { return m_interestRegistry; }
 
 protected:

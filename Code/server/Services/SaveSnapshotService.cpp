@@ -355,6 +355,7 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
         // Trailing v2.1.0+ self-describing TLV extension container (`kTlvContainerMagic`)
         // holding persistent placed actor snapshots (`PersistentActorsByKey`) keyed by FormId.
         {
+            constexpr uint64_t kV210TlvContainerExtMagic = 0x544C5643323130ULL;
             TiltedPhoques::Buffer tlvChunkBuf(512 * 1024);
             TiltedPhoques::Buffer::Writer chunkWriter(&tlvChunkBuf);
             Serialization::WriteVarInt(chunkWriter, m_snapshots.size());
@@ -388,12 +389,17 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
             CoopCheckpoint::TlvContainerBuilder tlvBuilder;
             tlvBuilder.AppendChunk(
                 CoopCheckpoint::TlvTag::kV210PersistentActors,
-                tlvChunkBuf.GetData(),
+                tlvChunkBuf.GetWriteData(),
                 chunkWriter.Size());
-            if (!tlvBuilder.Bytes().empty() &&
-                writer.Size() + tlvBuilder.Bytes().size() <= rawBuffer.GetFullSize())
+            const std::vector<uint8_t> tlvBytes = tlvBuilder.Bytes();
+            if (!tlvBytes.empty())
             {
-                writer.WriteBytes(tlvBuilder.Bytes().data(), tlvBuilder.Bytes().size() * 8);
+                Serialization::WriteVarInt(writer, kV210TlvContainerExtMagic);
+                Serialization::WriteVarInt(writer, static_cast<uint64_t>(tlvBytes.size()));
+                for (const uint8_t byteVal : tlvBytes)
+                {
+                    writer.WriteBits(static_cast<uint64_t>(byteVal), 8);
+                }
             }
         }
 
@@ -583,61 +589,76 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
                     }
                 }
 
-                if (!reader.Eof() && reader.Size() < payload.size())
+                if (!reader.Eof())
                 {
-                    const size_t remainingOffset = reader.Size();
-                    const size_t remainingBytes = payload.size() - remainingOffset;
-                    std::vector<CoopCheckpoint::TlvChunkView> tlvChunks;
-                    if (CoopCheckpoint::ParseTlvContainer(
-                            payload.data() + remainingOffset,
-                            remainingBytes,
-                            tlvChunks))
+                    constexpr uint64_t kV210TlvContainerExtMagic = 0x544C5643323130ULL;
+                    const uint64_t extMagic3 = Serialization::ReadVarInt(reader);
+                    if (extMagic3 == kV210TlvContainerExtMagic)
                     {
-                        for (const auto& chunk : tlvChunks)
+                        const uint64_t tlvByteCount = std::min<uint64_t>(
+                            Serialization::ReadVarInt(reader),
+                            4ULL * 1024ULL * 1024ULL);
+                        std::vector<uint8_t> tlvBlob(static_cast<size_t>(tlvByteCount), 0u);
+                        for (size_t bIdx = 0; bIdx < tlvBlob.size(); ++bIdx)
                         {
-                            if (chunk.Tag != static_cast<uint32_t>(CoopCheckpoint::TlvTag::kV210PersistentActors) ||
-                                !chunk.Data || chunk.ByteLength == 0)
-                            {
-                                continue;
-                            }
+                            uint64_t rawByte = 0;
+                            reader.ReadBits(rawByte, 8);
+                            tlvBlob[bIdx] = static_cast<uint8_t>(rawByte & 0xFFu);
+                        }
 
-                            TiltedPhoques::Buffer chunkBuffer(chunk.ByteLength);
-                            std::memcpy(chunkBuffer.GetWriteData(), chunk.Data, chunk.ByteLength);
-                            TiltedPhoques::Buffer::Reader chunkReader(&chunkBuffer);
-
-                            const uint64_t tlvSnapCount = std::min<uint64_t>(
-                                Serialization::ReadVarInt(chunkReader),
-                                loadedSnapshots.size());
-                            for (uint64_t sIdx = 0; sIdx < tlvSnapCount; ++sIdx)
+                        std::vector<CoopCheckpoint::TlvChunkView> tlvChunks;
+                        if (!tlvBlob.empty() &&
+                            CoopCheckpoint::ParseTlvContainer(
+                                tlvBlob.data(),
+                                tlvBlob.size(),
+                                tlvChunks))
+                        {
+                            for (const auto& chunk : tlvChunks)
                             {
-                                auto& snap = loadedSnapshots[static_cast<size_t>(sIdx)];
-                                const uint64_t actorCount = std::min<uint64_t>(
-                                    Serialization::ReadVarInt(chunkReader),
-                                    65536ULL);
-                                for (uint64_t i = 0; i < actorCount; ++i)
+                                if (chunk.Tag != static_cast<uint32_t>(CoopCheckpoint::TlvTag::kV210PersistentActors) ||
+                                    !chunk.Data || chunk.ByteLength == 0)
                                 {
-                                    const uint64_t packedKey = Serialization::ReadVarInt(chunkReader);
-                                    ActorStateRecord aRec{};
-                                    aRec.FormId.Deserialize(chunkReader);
-                                    aRec.BaseId.Deserialize(chunkReader);
-                                    aRec.CurrentHealth = Serialization::ReadFloat(chunkReader);
-                                    aRec.MaxHealth = Serialization::ReadFloat(chunkReader);
-                                    aRec.IsDead = Serialization::ReadBool(chunkReader);
-                                    aRec.HasSpatialState = Serialization::ReadBool(chunkReader);
-                                    if (aRec.HasSpatialState)
+                                    continue;
+                                }
+
+                                TiltedPhoques::Buffer chunkBuffer(chunk.ByteLength);
+                                std::memcpy(chunkBuffer.GetWriteData(), chunk.Data, chunk.ByteLength);
+                                TiltedPhoques::Buffer::Reader chunkReader(&chunkBuffer);
+
+                                const uint64_t tlvSnapCount = std::min<uint64_t>(
+                                    Serialization::ReadVarInt(chunkReader),
+                                    loadedSnapshots.size());
+                                for (uint64_t sIdx = 0; sIdx < tlvSnapCount; ++sIdx)
+                                {
+                                    auto& snap = loadedSnapshots[static_cast<size_t>(sIdx)];
+                                    const uint64_t actorCount = std::min<uint64_t>(
+                                        Serialization::ReadVarInt(chunkReader),
+                                        65536ULL);
+                                    for (uint64_t i = 0; i < actorCount; ++i)
                                     {
-                                        aRec.CellId.Deserialize(chunkReader);
-                                        aRec.WorldSpaceId.Deserialize(chunkReader);
-                                        aRec.CenterCoords.Deserialize(chunkReader);
-                                        aRec.Position.x = Serialization::ReadFloat(chunkReader);
-                                        aRec.Position.y = Serialization::ReadFloat(chunkReader);
-                                        aRec.Position.z = Serialization::ReadFloat(chunkReader);
-                                        aRec.Rotation.x = Serialization::ReadFloat(chunkReader);
-                                        aRec.Rotation.y = Serialization::ReadFloat(chunkReader);
-                                        aRec.Rotation.z = Serialization::ReadFloat(chunkReader);
+                                        const uint64_t packedKey = Serialization::ReadVarInt(chunkReader);
+                                        ActorStateRecord aRec{};
+                                        aRec.FormId.Deserialize(chunkReader);
+                                        aRec.BaseId.Deserialize(chunkReader);
+                                        aRec.CurrentHealth = Serialization::ReadFloat(chunkReader);
+                                        aRec.MaxHealth = Serialization::ReadFloat(chunkReader);
+                                        aRec.IsDead = Serialization::ReadBool(chunkReader);
+                                        aRec.HasSpatialState = Serialization::ReadBool(chunkReader);
+                                        if (aRec.HasSpatialState)
+                                        {
+                                            aRec.CellId.Deserialize(chunkReader);
+                                            aRec.WorldSpaceId.Deserialize(chunkReader);
+                                            aRec.CenterCoords.Deserialize(chunkReader);
+                                            aRec.Position.x = Serialization::ReadFloat(chunkReader);
+                                            aRec.Position.y = Serialization::ReadFloat(chunkReader);
+                                            aRec.Position.z = Serialization::ReadFloat(chunkReader);
+                                            aRec.Rotation.x = Serialization::ReadFloat(chunkReader);
+                                            aRec.Rotation.y = Serialization::ReadFloat(chunkReader);
+                                            aRec.Rotation.z = Serialization::ReadFloat(chunkReader);
+                                        }
+                                        if (packedKey != 0)
+                                            snap.PersistentActorsByKey[packedKey] = aRec;
                                     }
-                                    if (packedKey != 0)
-                                        snap.PersistentActorsByKey[packedKey] = aRec;
                                 }
                             }
                         }
@@ -901,7 +922,7 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
             continue;
 
         ActorStateRecord rec{};
-        rec.BaseId = charComp.BaseId;
+        rec.BaseId = charComp.BaseId.Id;
         if (const auto* pForm = m_world.try_get<FormIdComponent>(entity);
             pForm && static_cast<bool>(pForm->Id) && pForm->Id.ModId != 0xFFFFFFFFu)
         {

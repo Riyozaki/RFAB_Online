@@ -158,7 +158,9 @@ entt::entity CharacterService::EnsureDormantPersistentCharacter(
     const GridCellCoords& acCenterCoords,
     const glm::vec3& acPosition,
     const glm::vec3& acRotation,
-    bool aIsDead) const noexcept
+    bool aIsDead,
+    float aCurrentHealth,
+    float aMaxHealth) const noexcept
 {
     if (acFormId == GameId{} || acFormId.ModId == std::numeric_limits<uint32_t>::max())
         return entt::null;
@@ -175,7 +177,13 @@ entt::entity CharacterService::EnsureDormantPersistentCharacter(
             charComp.BaseId = FormIdComponent(acBaseId);
         charComp.SetDead(aIsDead);
         m_world.emplace<InventoryComponent>(entity);
-        m_world.emplace<ActorValuesComponent>(entity);
+        auto& avComp = m_world.emplace<ActorValuesComponent>(entity);
+        if (aIsDead)
+            avComp.CurrentActorValues.ActorValuesList[24] = 0.0f;
+        else if (aCurrentHealth > 0.0f)
+            avComp.CurrentActorValues.ActorValuesList[24] = aCurrentHealth;
+        if (aMaxHealth > 0.0f)
+            avComp.CurrentActorValues.ActorMaxValuesList[24] = aMaxHealth;
         auto& moveComp = m_world.emplace<MovementComponent>(entity);
         moveComp.Position = acPosition;
         moveComp.Rotation = acRotation;
@@ -186,9 +194,18 @@ entt::entity CharacterService::EnsureDormantPersistentCharacter(
     {
         if (auto* pChar = m_world.try_get<CharacterComponent>(entity))
         {
-            if (acBaseId != GameId{} && (!pChar->BaseId || pChar->BaseId->Id == GameId{}))
+            if (acBaseId != GameId{} && (!pChar->BaseId || pChar->BaseId.Id == GameId{}))
                 pChar->BaseId = FormIdComponent(acBaseId);
             pChar->SetDead(aIsDead);
+        }
+        if (auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
+        {
+            if (aIsDead)
+                pAv->CurrentActorValues.ActorValuesList[24] = 0.0f;
+            else if (aCurrentHealth > 0.0f)
+                pAv->CurrentActorValues.ActorValuesList[24] = aCurrentHealth;
+            if (aMaxHealth > 0.0f)
+                pAv->CurrentActorValues.ActorMaxValuesList[24] = aMaxHealth;
         }
         if (auto* pCell = m_world.try_get<CellIdComponent>(entity); pCell && (acCellId != GameId{} || acWorldSpaceId != GameId{}))
         {
@@ -522,13 +539,13 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             // dead state and persisted health!
             if (existingOwnerComp.GetOwner() == nullptr)
             {
-                if ((!characterComponent.BaseId || characterComponent.BaseId->Id == GameId{}) && message.FormId != GameId{})
+                if ((!characterComponent.BaseId || characterComponent.BaseId.Id == GameId{}) && message.FormId != GameId{})
                     characterComponent.BaseId = FormIdComponent(message.FormId);
                 if (characterComponent.FactionsContent.StandardFactions.empty() && !message.FactionsContent.StandardFactions.empty())
                     characterComponent.FactionsContent = message.FactionsContent;
                 if (inventoryComponent.Content.Entries.empty() && !message.CurrentActorData.InitialInventory.Entries.empty())
                     inventoryComponent.Content = message.CurrentActorData.InitialInventory;
-                if (actorValuesComponent.CurrentActorValues.ActorValuesList.empty() &&
+                if (actorValuesComponent.CurrentActorValues.ActorValuesList.size() <= 1 &&
                     !message.CurrentActorData.InitialActorValues.ActorValuesList.empty())
                 {
                     const auto savedHpIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(24);
@@ -539,7 +556,9 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                     const float savedMaxHp = hadSavedMaxHp ? savedMaxHpIt->second : 0.0f;
 
                     actorValuesComponent.CurrentActorValues = message.CurrentActorData.InitialActorValues;
-                    if (hadSavedHp)
+                    if (characterComponent.IsDead())
+                        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = 0.0f;
+                    else if (hadSavedHp)
                         actorValuesComponent.CurrentActorValues.ActorValuesList[24] = savedHp;
                     if (hadSavedMaxHp && savedMaxHp > 0.0f)
                         actorValuesComponent.CurrentActorValues.ActorMaxValuesList[24] = savedMaxHp;

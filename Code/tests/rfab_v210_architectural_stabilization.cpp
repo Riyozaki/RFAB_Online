@@ -18,17 +18,27 @@ namespace
 std::filesystem::path LocateRepoRootForV210Audit()
 {
     std::error_code ec;
-    auto cursor = std::filesystem::current_path(ec);
-    for (int depth = 0; depth < 8 && !cursor.empty(); ++depth)
+    auto searchUpwards = [&](std::filesystem::path cursor) -> std::filesystem::path
     {
-        if (std::filesystem::exists(cursor / "Code" / "client" / "World.h", ec) &&
-            std::filesystem::exists(cursor / "docs" / "V2.0.3_RELEASE_BACKUP_MANIFEST.json", ec))
+        for (int depth = 0; depth < 8 && !cursor.empty(); ++depth)
         {
-            return cursor;
+            if (std::filesystem::exists(cursor / "Code" / "client" / "World.h", ec) &&
+                std::filesystem::exists(cursor / "docs" / "V2.0.3_RELEASE_BACKUP_MANIFEST.json", ec))
+            {
+                return cursor;
+            }
+            const auto parent = cursor.parent_path();
+            if (parent == cursor)
+                break;
+            cursor = parent;
         }
-        cursor = cursor.parent_path();
-    }
-    return {};
+        return {};
+    };
+
+    if (const auto fromCwd = searchUpwards(std::filesystem::current_path(ec)); !fromCwd.empty())
+        return fromCwd;
+
+    return searchUpwards(std::filesystem::path(__FILE__).parent_path());
 }
 
 std::string LoadV210RepoFile(const std::filesystem::path& acRoot, const char* apRelPath)
@@ -50,11 +60,11 @@ TEST_CASE("v2.1.0 Phase 0: Immutable v2.0.3 backup manifest, release pipeline pr
     REQUIRE(manifest.find("\"v2.0.3\"") != std::string::npos);
     REQUIRE(manifest.find("\"v2.0.3-backup\"") != std::string::npos);
     REQUIRE(manifest.find("424566518") != std::string::npos);
-    REQUIRE(manifest.find("e7b96ef70276d29a916012c3489359a9bd736ce2") != std::string::npos);
-    REQUIRE(manifest.find("0b03101a09bf4beba42a707561a5a39d1f9abba7edd2f939354092bfb6870689") != std::string::npos);
-    REQUIRE(manifest.find("1fe98cfb3f02715b59e48b1798fa7ef3b7fd366ac79653b4d4afae5554e84a53") != std::string::npos);
-    REQUIRE(manifest.find("db297e2113c56416db6bcec2eb25d3b0cfa7489d93d4838074ff960721d20844") != std::string::npos);
-    REQUIRE(manifest.find("c20d0734032ad0ea8a1a3e1bfc0620729bdbbc40a3c3767e82c74fc62ecb1f1f") != std::string::npos);
+    REQUIRE(manifest.find("865da6c6cc1ba6e336f894feeddf0aa9d4418959") != std::string::npos);
+    REQUIRE(manifest.find("5073f1eca4010888df6a772103f8207a744041779b07b23a361a5f40025fdcfb") != std::string::npos);
+    REQUIRE(manifest.find("b7c80a3717dceee70555ed4e17eb270535ca8bec717f42d3926b3605d2da122e") != std::string::npos);
+    REQUIRE(manifest.find("66e9ebb415903deb28bf584c71a4f17f69cf28780b176a3175dfd19b9d4f7f91") != std::string::npos);
+    REQUIRE(manifest.find("143758f14c3dead27271638b2f44b48a4e64111059296a00c5e4ad1cc35fe1ee") != std::string::npos);
 
     const std::string buildPs1 = LoadV210RepoFile(root, "Tools/rfab/Build-CloudRelease.ps1");
     REQUIRE(buildPs1.find("[string]$VersionTag = \"v2.1.0\"") != std::string::npos);

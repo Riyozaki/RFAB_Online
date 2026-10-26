@@ -262,7 +262,7 @@ void PartyService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
         m_sessionLedger.RecordPartyJoin(
             identityKey,
             partyId,
-            party.LeaderPlayerId == acEvent.pPlayer->GetId(),
+            reconnect.RestoreAsLeader,
             nowMs);
 
         spdlog::info(
@@ -481,6 +481,8 @@ void PartyService::RemovePlayerFromParty(Player* apPlayer, bool aExplicitLeave) 
             if (party.LeaderPlayerId == apPlayer->GetId())
             {
                 party.LeaderPlayerId = members.at(0)->GetId(); // Reassign party leader
+                if (aExplicitLeave)
+                    m_sessionLedger.RecordPartyLeaderChange(id, GetPlayerSessionIdentityKey(members.at(0)));
                 spdlog::debug("[PartyService]: Leader left, reassigned party leader to {}", party.LeaderPlayerId);
             }
             spdlog::debug("[PartyService]: Updating other party players of removal.");
