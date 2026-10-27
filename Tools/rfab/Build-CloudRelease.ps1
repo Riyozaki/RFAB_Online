@@ -16,6 +16,10 @@ if ($VersionTag -in $ProtectedTags) {
 }
 
 $IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main")
+if ($env:GITHUB_REF -and $env:GITHUB_REF -like "refs/heads/arena/*") {
+    Write-Host "[CI POLICY] Feature branch '$($env:GITHUB_REF)' detected: verifying full Windows x64 build + TPTests + release bundles with PublishRelease=false." -ForegroundColor Cyan
+    $PublishRelease = $false
+}
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"

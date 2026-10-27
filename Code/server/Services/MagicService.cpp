@@ -135,6 +135,7 @@ void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMes
     notify.IsDualCasting = message.IsDualCasting;
     notify.ApplyHealPerkBonus = message.ApplyHealPerkBonus;
     notify.ApplyStaminaPerkBonus = message.ApplyStaminaPerkBonus;
+    notify.HasPreAdjustedPerks = message.HasPreAdjustedPerks;
 
     if (!GameServer::Get()->SendToPlayersInRange(notify, entity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);

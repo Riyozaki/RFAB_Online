@@ -71,6 +71,14 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
         return res;
     }
 
+    const char* actionKeyword = (apAction->action && apAction->action->keyword.AsAscii())
+        ? apAction->action->keyword.AsAscii()
+        : "";
+    if (Actor::TryAcceptRemoteHitReactionAction(pActor, actionKeyword))
+    {
+        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
+    }
+
     return 0;
 }
 

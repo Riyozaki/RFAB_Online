@@ -8,6 +8,7 @@
 #include <Messages/NotifyRemoveSpell.h>
 #include <spdlog/spdlog.h>
 #include <chrono>
+#include <unordered_map>
 #include <unordered_set>
 
 struct World;
@@ -111,6 +112,7 @@ struct MagicService
     bool m_revealingOtherPlayers = false;
     double m_buffPollAccumulatorSec = 0.0;
     std::unordered_set<uint32_t> m_activeLocalPlayerSpells{};
+    std::unordered_map<uint64_t, uint64_t> m_concentrationClaimKeepaliveMs{};
 
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_cellChangeConnection;

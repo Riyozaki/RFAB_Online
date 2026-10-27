@@ -2,6 +2,7 @@
 
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
+#include <CoopDamagePipeline.h>
 
 struct World;
 
@@ -54,6 +55,7 @@ private:
     void RunActorValuesUpdates() noexcept;
     void RunSmallHealthUpdates() noexcept;
     void RunDeathStateUpdates() noexcept;
+    void BroadcastCombatHealthSnapshots() noexcept;
 
     void BroadcastActorValues() noexcept;
     void CreateActorValuesComponent(entt::entity aEntity, Actor* apActor) noexcept;
@@ -64,4 +66,7 @@ private:
 
     //! @brief Server ids and collected health changes.
     Map<uint32_t, float> m_smallHealthChanges;
+    Map<uint32_t, uint32_t> m_smallHealthAttackerIds;
+    mutable Map<uint32_t, uint64_t> m_lastLocalPredictedHitMs;
+    mutable CoopDamagePipeline::RemoteHitImpactGate m_remoteHitImpactGate{};
 };

@@ -86,6 +86,27 @@ static TGetPerkRank* RealGetPerkRank = nullptr;
 static thread_local bool s_autoSucceedEffectCheck = false;
 static thread_local bool s_applyHealPerkBonus = false;
 static thread_local bool s_applyStaminaPerkBonus = false;
+static thread_local bool s_remotePreAdjustedPerks = false;
+static thread_local bool s_captureLocalCasterPerkRatio = false;
+static thread_local float s_capturedPerkMagnitudeRatio = 1.0f;
+
+struct ScopedLocalCasterPerkCapture
+{
+    ScopedLocalCasterPerkCapture() noexcept
+        : m_prevCapture(s_captureLocalCasterPerkRatio)
+        , m_prevRatio(s_capturedPerkMagnitudeRatio)
+    {
+        s_captureLocalCasterPerkRatio = true;
+        s_capturedPerkMagnitudeRatio = 1.0f;
+    }
+    ~ScopedLocalCasterPerkCapture() noexcept
+    {
+        s_captureLocalCasterPerkRatio = m_prevCapture;
+        s_capturedPerkMagnitudeRatio = m_prevRatio;
+    }
+    bool m_prevCapture{false};
+    float m_prevRatio{1.0f};
+};
 
 void MagicTarget::DispelAllSpells(bool aNow) noexcept
 {
@@ -94,29 +115,37 @@ void MagicTarget::DispelAllSpells(bool aNow) noexcept
     TiltedPhoques::ThisCall(dispelAllSpells, this, aNow);
 }
 
-bool MagicTarget::AddTarget(AddTargetData& arData, bool aApplyHealPerkBonus, bool aApplyStaminaPerkBonus) noexcept
+bool MagicTarget::AddTarget(
+    AddTargetData& arData,
+    bool aApplyHealPerkBonus,
+    bool aApplyStaminaPerkBonus,
+    bool aHasPreAdjustedPerks) noexcept
 {
     struct ScopedRemoteAddTargetState
     {
-        ScopedRemoteAddTargetState(bool aHealPerk, bool aStaminaPerk) noexcept
+        ScopedRemoteAddTargetState(bool aHealPerk, bool aStaminaPerk, bool aPreAdjustedPerks) noexcept
             : m_prevAutoSucceed(s_autoSucceedEffectCheck)
             , m_prevHealPerk(s_applyHealPerkBonus)
             , m_prevStaminaPerk(s_applyStaminaPerkBonus)
+            , m_prevPreAdjusted(s_remotePreAdjustedPerks)
         {
             s_autoSucceedEffectCheck = true;
-            s_applyHealPerkBonus = aHealPerk;
+            s_applyHealPerkBonus = aHealPerk && !aPreAdjustedPerks;
             s_applyStaminaPerkBonus = aStaminaPerk;
+            s_remotePreAdjustedPerks = aPreAdjustedPerks;
         }
         ~ScopedRemoteAddTargetState() noexcept
         {
             s_autoSucceedEffectCheck = m_prevAutoSucceed;
             s_applyHealPerkBonus = m_prevHealPerk;
             s_applyStaminaPerkBonus = m_prevStaminaPerk;
+            s_remotePreAdjustedPerks = m_prevPreAdjusted;
         }
         bool m_prevAutoSucceed;
         bool m_prevHealPerk;
         bool m_prevStaminaPerk;
-    } stateGuard(aApplyHealPerkBonus, aApplyStaminaPerkBonus);
+        bool m_prevPreAdjusted;
+    } stateGuard(aApplyHealPerkBonus, aApplyStaminaPerkBonus, aHasPreAdjustedPerks);
 
     return TiltedPhoques::ThisCall(RealAddTarget, this, arData);
 }
@@ -266,12 +295,18 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
 
         if (arData.pSpell && arData.pSpell->IsHealingSpell())
         {
-            addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
+            addTargetEvent.ApplyHealPerkBonus = false;
             addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
         }
 
         ScopedCoopPartyTeammateFlags teammateGuard(isFriendlySupport);
+        ScopedLocalCasterPerkCapture perkCapture;
         bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+        if (result)
+        {
+            addTargetEvent.Magnitude *= s_capturedPerkMagnitudeRatio;
+            addTargetEvent.HasPreAdjustedPerks = true;
+        }
         // Concentration spells (e.g. Healing Hands / Sparks) are channeled continuously via SpellCastRequest/InterruptCastRequest;
         // Fire-and-Forget heals/buffs/spells sync deterministically via AddTargetEvent.
         if (result && !isConcentration && arData.ShouldSync())
@@ -338,7 +373,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         {
             if (arData.pSpell && arData.pSpell->IsHealingSpell())
             {
-                addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
+                addTargetEvent.ApplyHealPerkBonus = false;
                 addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
             }
 
@@ -352,7 +387,13 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 Actor::ArmLocalPlayerScriptDamageWindow(pTargetActor->formID, durationMs);
             }
 
+            ScopedLocalCasterPerkCapture perkCapture;
             bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+            if (result)
+            {
+                addTargetEvent.Magnitude *= s_capturedPerkMagnitudeRatio;
+                addTargetEvent.HasPreAdjustedPerks = true;
+            }
             if (result && (!isFriendlySupport || !isConcentration) && arData.ShouldSync())
             {
                 const bool allowPacket = !isConcentration ||
@@ -418,7 +459,17 @@ bool TP_MAKE_THISCALL(HookFindTargets, MagicCaster, float afEffectivenessMult, i
 
 void TP_MAKE_THISCALL(HookAdjustForPerks, ActiveEffect, Actor* apCaster, MagicTarget* apTarget)
 {
+    if (s_remotePreAdjustedPerks)
+        return;
+
+    const float magBefore = apThis ? apThis->fMagnitude : 0.0f;
     TiltedPhoques::ThisCall(RealAdjustForPerks, apThis, apCaster, apTarget);
+
+    if (s_captureLocalCasterPerkRatio && apThis)
+    {
+        s_capturedPerkMagnitudeRatio =
+            CoopDamagePipeline::ComputeCasterOutgoingPerkMultiplier(magBefore, apThis->fMagnitude);
+    }
 
     if (s_applyHealPerkBonus && apThis)
     {

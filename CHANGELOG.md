@@ -14,6 +14,16 @@
 
 ---
 
+## [v3.1.0-dev] — 2026-10-27 *(Hybrid Host-Canonical Combat, 1/M Enemy Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Physical Hit Impact & Host-Canonical BGSScene)*
+
+- **Единый контур `HookApplyActorEffect` + `HookRestoreActorValue` и синхронизация `CurrentHP` (`Actor.cpp`, `ActorValueService.cpp`):** устранён дедлок, блокировавший сетевую передачу отрицательных `ValueModifierEffect` (огненные шары, молнии, яды, чары оружия) и регенерации на NPC владельца, убрана двойная отправка лечения на `0x14`, включена 4 Гц боевая сверка `kHealth` с непрыгающим окном локального предсказания (`ShouldReconcileRemoteActorHealthSnapshot`, `700 мс`).
+- **Баланс плоской регенерации врагов `1 / M` (`CoopDamagePipeline::ScaleIncomingEnemyHealDelta`):** плоский боевой реген и `ActiveEffect`-хилы врагов RFAB (тролли, спригганы, драконьи жрецы, двемерские сферы, вампиры, вражеские зелья и заклинания Восстановления) делятся на `M` синхронно с входящим уроном (`1 / M`), возвращая задуманный авторами RFAB DPS-чек и TTK при сохранении `1:1` процентных скриптовых фаз боссов (`>= 25% MaxHP`).
+- **Потоковая магия Гостя и 100% перенос исходящих перков `0x14` (`MagicTarget.cpp`, `MagicService.cpp`):** потоковые заклинания Разрушения (`CONCENTRATION`: *Пламя*, *Искры*, *Обморожение*, *Грозовой разряд*) от не-владельца наносят точный перкованный урон на любой частоте кадров (`60–240 FPS`) с продлением серверного `CombatClaim` каждые `2 с` и обновлением вторичных дебаффов без стака; `ScopedLocalCasterPerkCapture` переносит реальный множитель `AdjustForPerks` кастера (`CustomSkills`, второе кольцо `RFAB.dll`, зелья, парный каст, условные перки против нежити) на Хост без повторного наложения входящих перков цели, а `OnNotifySpellCast` резолвит `SpellFormId` до `magicItems[slot]`.
+- **Физический импакт и стаггер от ударов Гостя по ИИ Хоста (`Animation.cpp`, `RemoteHitImpactGate`):** захват родного `ActionStaggerStart` / `ActionRecoil` и графового `staggerMagnitude` при ударе Гостя передаёт вектор удара и стаггер (включая `0`-урона сбитие атаки щитом без задержки батчинга) в живой ИИ Хоста с анти-станлок окном пойза `1650 мс` и мгновенным пробуждением боя (`StartCombatEx`).
+- **Хост-каноничные квестовые сцены `BGSScene` (`Client/Server QuestService.cpp`):** `SceneMaster` закреплён строго за лидером группы (Хостом), исключая зависание сюжетных сцен при раннем пересечении триггера гостем и сетевое эхо `TESSceneEvent`.
+
+---
+
 ## [v3.0.0] — 2026-10-27 *(Unified Multiplayer Architecture: Clean Slate, Native 0.0 HP Bleedout & Spell Revive, Sticky Host Cell Authority, WorldReloadBarrier, 1/M Incoming Damage Scaling, Seamless Cell Motion & Modular Services)*
 
 - **Неприкосновенный бэкап `v2.1.0-backup` (`docs/V2.1.0_RELEASE_BACKUP_MANIFEST.json`, `Ensure-V210BackupRelease`):** перед публикацией `v3.0.0` облачный пайплайн автоматически зеркалирует и сверяет по `SHA-256` все 4 архива релиза `v2.1.0`.

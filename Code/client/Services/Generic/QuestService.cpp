@@ -222,7 +222,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
 
 BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDispatcher<TESSceneEvent>*)
 {
-    if (!apEvent)
+    if (s_inRemoteQuestUpdate || !apEvent)
         return BSTEventResult::kOk;
     auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
     if (!pScene)
@@ -236,7 +236,7 @@ BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDi
     m_world.GetRunner().Queue(
         [this, sceneId = apEvent->sceneFormId, questId = pQuest->formID, stageId = pQuest->currentStage, netQuestType, sceneType = apEvent->sceneType]()
         {
-            if (!m_world.GetPartyService().IsInParty())
+            if (!m_world.GetPartyService().IsInParty() || !m_world.GetPartyService().IsLeader())
                 return;
 
             GameId sceneGameId{};
@@ -432,29 +432,29 @@ void QuestService::OnQuestSceneUpdate(const NotifyQuestSceneUpdate& aUpdate) noe
         return;
     }
 
-    if (aUpdate.SceneType == 0) // Scene Begin
+    ScopedRemoteQuestUpdateGuard remoteSceneGuard;
+
+    if (aUpdate.SceneType == 0) // Scene Begin (Host-canonical)
     {
-        if (pScene->isPlaying)
-            spdlog::debug(
-                __FUNCTION__ ": skip starting scene already playing, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType,
-                PlayerId());
-        else
+        if (!pQuest->IsEnabled())
         {
-            spdlog::debug(
-                __FUNCTION__ ": BLOCKED starting scene, causes more bugs than fixed, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
-            // pScene->ScriptForceStart();
+            bool isStarted = false;
+            pQuest->EnsureQuestStarted(isStarted, false);
+        }
+
+        // On non-leader clients, scene actors are Remote puppets driven by Host's SpeakSound, Subtitles, and
+        // AnimationSystem; ensure no conflicting local BGSScene instance hijacks puppet packages until Scene End
+        // delivers Host's authoritative StageUpdateForced progression.
+        if (!bIsLeader && pScene->isPlaying)
+        {
+            pScene->ScriptStop();
         }
     }
-
-    else // Scene End
+    else // Scene End (Host-canonical)
     {
-        if (!pScene->isPlaying)
-            spdlog::debug(
-                __FUNCTION__ ": skip stopping scene not playing, questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType,
-                PlayerId());
-        else
+        if (pScene->isPlaying)
         {
-            spdlog::warn(__FUNCTION__ ": FIXME/REVIEW stopping scene questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
+            spdlog::debug(__FUNCTION__ ": stopping completed host scene questId {:X}, sceneId {:X}, {} {}", aUpdate.QuestId.LogFormat(), aUpdate.SceneId.LogFormat(), playerType, PlayerId());
             pScene->ScriptStop();
         }
     }
