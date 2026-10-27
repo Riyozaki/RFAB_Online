@@ -68,12 +68,14 @@ TEST_CASE("v2.1.0 Phase 0: Immutable v2.0.3 backup manifest, release pipeline pr
     REQUIRE(manifest.find("143758f14c3dead27271638b2f44b48a4e64111059296a00c5e4ad1cc35fe1ee") != std::string::npos);
 
     const std::string buildPs1 = LoadV210RepoFile(root, "Tools/rfab/Build-CloudRelease.ps1");
-    REQUIRE(buildPs1.find("[string]$VersionTag = \"v3.0.0\"") != std::string::npos);
+    REQUIRE(buildPs1.find("[string]$VersionTag = \"v3.1.0\"") != std::string::npos);
     REQUIRE(buildPs1.find("Ensure-V203BackupRelease") != std::string::npos);
     REQUIRE(buildPs1.find("$script:V203BackupReady") != std::string::npos);
     REQUIRE(buildPs1.find("\"v2.0.3-backup\"") != std::string::npos);
     REQUIRE(buildPs1.find("Ensure-V210BackupRelease") != std::string::npos);
     REQUIRE(buildPs1.find("\"v2.1.0-backup\"") != std::string::npos);
+    REQUIRE(buildPs1.find("Ensure-V300BackupRelease") != std::string::npos);
+    REQUIRE(buildPs1.find("\"v3.0.0-backup\"") != std::string::npos);
 
     REQUIRE(RfabCompat::AreBuildVersionsProtocolCompatible("v2.1.0", "v2.1.0"));
     REQUIRE(RfabCompat::AreBuildVersionsProtocolCompatible("v2.1.0", "v2.0.3"));

@@ -255,6 +255,39 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         CHECK(rx->SourceServerId == 0x1005);
         CHECK(rx->StaggerMagnitude == Approx(0.55f));
         CHECK(rx->StaggerDirection == Approx(0.25f));
+
+        NotifyHealthChangeBroadcast notify{};
+        notify.Id = rx->Id;
+        notify.DeltaHealth = rx->DeltaHealth;
+        notify.SourceServerId = rx->SourceServerId;
+        notify.StaggerMagnitude = rx->StaggerMagnitude;
+        notify.StaggerDirection = rx->StaggerDirection;
+
+        Buffer notifyBuf(256);
+        Buffer::Writer notifyWriter(&notifyBuf);
+        notify.Serialize(notifyWriter);
+
+        Buffer::Reader notifyReader(&notifyBuf);
+        const ServerMessageFactory serverFactory;
+        auto extractedNotify = serverFactory.Extract(notifyReader);
+        REQUIRE(extractedNotify);
+        auto rxNotify = CastUnique<NotifyHealthChangeBroadcast>(std::move(extractedNotify));
+        CHECK(*rxNotify == notify);
+        CHECK(rxNotify->StaggerMagnitude == Approx(0.55f));
+        CHECK(rxNotify->StaggerDirection == Approx(0.25f));
+    }
+
+    SECTION("Temporary Fortify Health buffs (Transmute Muscles / Beef Stew / Arkay) above Permanent MaxHP are never chopped")
+    {
+        // Player has 150 Permanent MaxHP + 250 Temporary Fortify Health = 400 CurrentHP.
+        const float permMaxHp = 150.0f;
+        const float currentBuffedHp = 400.0f;
+        const auto afterChip = ApplyAuthoritativeServerHealthDelta(
+            currentBuffedHp,
+            std::max(permMaxHp, currentBuffedHp),
+            -25.0f);
+        CHECK(afterChip.UpdatedHealth == Approx(375.0f));
+        CHECK(afterChip.ClampedBroadcastDelta == Approx(-25.0f));
     }
 }
 
@@ -268,8 +301,18 @@ TEST_CASE("v3.1 Architectural Source Contracts across Client & Server Services",
     const auto magicTargetCpp = LoadV310File(root, "Code/client/Games/Skyrim/Magic/MagicTarget.cpp");
     const auto cliMagicCpp = LoadV310File(root, "Code/client/Services/Generic/MagicService.cpp");
     const auto cliAvCpp = LoadV310File(root, "Code/client/Services/Generic/ActorValueService.cpp");
+    const auto srvAvCpp = LoadV310File(root, "Code/server/Services/ActorValueService.cpp");
     const auto cliQuestCpp = LoadV310File(root, "Code/client/Services/Generic/QuestService.cpp");
     const auto srvQuestCpp = LoadV310File(root, "Code/server/Services/QuestService.cpp");
+    const auto v300Manifest = LoadV310File(root, "docs/V3.0.0_RELEASE_BACKUP_MANIFEST.json");
+    const auto buildPs1 = LoadV310File(root, "Tools/rfab/Build-CloudRelease.ps1");
+
+    // 0. Immutable v3.0.0-backup manifest & v3.1.0 release pipeline:
+    CHECK(v300Manifest.find("\"v3.0.0-backup\"") != std::string::npos);
+    CHECK(v300Manifest.find("0b6977459bc9e6e62d8bf6f36925cba2f3a83b486c3a67f6edcad0aaeb8aa298") != std::string::npos);
+    CHECK(v300Manifest.find("dbb8aa7294af29ba16cb1291f8bbb6027a3825c148e4c0ae2b748f74418c1fe9") != std::string::npos);
+    CHECK(buildPs1.find("Ensure-V300BackupRelease") != std::string::npos);
+    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.0\"") != std::string::npos);
 
     // 1. Destruction ValueModifierEffect & Concentration beam fixes + 1/M enemy heal scaling:
     CHECK(actorCpp.find("ScaleIncomingEnemyHealDelta") != std::string::npos);
@@ -277,17 +320,22 @@ TEST_CASE("v3.1 Architectural Source Contracts across Client & Server Services",
     CHECK(actorCpp.find("TryAcceptRemoteHitReactionAction") != std::string::npos);
     CHECK(animCpp.find("Actor::TryAcceptRemoteHitReactionAction") != std::string::npos);
 
-    // 2. Outgoing 0x14 AdjustForPerks spell ratio + concentration claim keepalive + SpellFormId-first lookup:
+    // 2. Outgoing 0x14 AdjustForPerks spell ratio + Frame-0 CastSpellImmediate guard + 0x14 incoming perk preservation:
     CHECK(magicTargetCpp.find("ScopedLocalCasterPerkCapture") != std::string::npos);
     CHECK(magicTargetCpp.find("ComputeCasterOutgoingPerkMultiplier") != std::string::npos);
+    CHECK(magicTargetCpp.find("allowLocalPlayerPvpBeam") != std::string::npos);
     CHECK(cliMagicCpp.find("m_concentrationClaimKeepaliveMs") != std::string::npos);
+    CHECK(cliMagicCpp.find("resyncEvt.HasPreAdjustedPerks = true;") != std::string::npos);
 
-    // 3. Periodic CurrentHP reconciliation + RemoteHitImpactGate stagger execution:
+    // 3. Periodic CurrentHP reconciliation + Temporary HP preservation + RemoteHitImpactGate stagger & cast interrupt:
     CHECK(cliAvCpp.find("ShouldReconcileRemoteActorHealthSnapshot") != std::string::npos);
     CHECK(cliAvCpp.find("m_remoteHitImpactGate.TryConsumeStagger") != std::string::npos);
+    CHECK(cliAvCpp.find("pActor->InterruptCast(false);") != std::string::npos);
     CHECK(cliAvCpp.find("BroadcastCombatHealthSnapshots") != std::string::npos);
+    CHECK(srvAvCpp.find("std::max(maxHealth, currentHealth)") != std::string::npos);
 
-    // 4. Host-canonical BGSScene authority & echo suppression:
+    // 4. Host-canonical BGSScene authority, liveStageId capture & echo suppression:
     CHECK(cliQuestCpp.find("ScopedRemoteQuestUpdateGuard remoteSceneGuard") != std::string::npos);
+    CHECK(cliQuestCpp.find("update.Status = RequestQuestUpdate::StageUpdateForced;") != std::string::npos);
     CHECK(srvQuestCpp.find("ignoring non-leader scene") != std::string::npos);
 }

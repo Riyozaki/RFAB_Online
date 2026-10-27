@@ -1864,7 +1864,9 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                 }
                 else
                 {
-                    const float nativeMaxHp = apThis->GetActorPermanentValue(ActorValueInfo::kHealth);
+                    const float nativeMaxHp = std::max(
+                        apThis->GetActorPermanentValue(ActorValueInfo::kHealth),
+                        apThis->GetActorValue(ActorValueInfo::kHealth));
                     aValue = CoopDamagePipeline::ScaleIncomingEnemyHealDelta(
                         aValue,
                         nativeMaxHp,

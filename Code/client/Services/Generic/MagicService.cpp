@@ -951,6 +951,7 @@ void MagicService::ResyncLocalPlayerActiveBuffs() noexcept
         resyncEvt.EffectID = pEffectItem->pEffectSetting->formID;
         resyncEvt.Magnitude = pActive->fMagnitude;
         resyncEvt.IsDualCasting = false;
+        resyncEvt.HasPreAdjustedPerks = true;
         OnAddTargetEvent(resyncEvt);
     }
 }

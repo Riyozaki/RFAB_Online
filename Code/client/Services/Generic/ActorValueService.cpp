@@ -12,8 +12,6 @@
 #include <Misc/BSFixedString.h>
 #include <Components.h>
 
-extern thread_local bool g_forceAnimation;
-
 namespace
 {
 [[nodiscard]] uint64_t ClientAvSteadyNowMs() noexcept
@@ -256,6 +254,11 @@ void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcep
     {
         totalDelta += smallIt->second;
         m_smallHealthChanges.erase(smallIt);
+        if (sourceServerId == 0)
+        {
+            if (const auto srcIt = m_smallHealthAttackerIds.find(serverId); srcIt != m_smallHealthAttackerIds.end())
+                sourceServerId = srcIt->second;
+        }
         m_smallHealthAttackerIds.erase(serverId);
     }
 
@@ -281,7 +284,7 @@ void ActorValueService::BroadcastCombatHealthSnapshots() noexcept
     {
         const auto& formIdComponent = view.get<FormIdComponent>(entity);
         Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-        if (!pActor || pActor->IsDead() || !pActor->IsInCombat())
+        if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted() || pActor->IsDead() || !pActor->IsInCombat())
             continue;
 
         const auto* pExt = pActor->GetExtension();
@@ -399,14 +402,13 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
     if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
 
-    if (acMessage.DeltaHealth != 0.0f)
+    if (acMessage.DeltaHealth != 0.0f && std::isfinite(acMessage.DeltaHealth))
     {
         ScopedActorValueOverride avOverride;
-        const float maxHealth = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
-        float newHealth = pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth;
-        if (acMessage.DeltaHealth > 0.f && maxHealth > 0.f)
-            newHealth = std::min(newHealth, maxHealth);
-        newHealth = std::max(0.0f, newHealth);
+        // Let Skyrim's native `actorValueOwner.ForceCurrent(ForceMode::DAMAGE, ...)` cap the DAMAGE modifier at 0.0f
+        // (`Base + Permanent + Temporary`) rather than clamping to `GetActorPermanentValue(kHealth)`, which would chop
+        // active RFAB `TEMPORARY` Fortify Health buffs (`Transmute Muscles`, `Beef Stew`, `Arkay`, `Elixir of Vitality`)!
+        const float newHealth = std::clamp(pActor->GetActorValue(ActorValueInfo::kHealth) + acMessage.DeltaHealth, 0.0f, 100000.0f);
         pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, newHealth);
     }
 
@@ -451,10 +453,9 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
             acMessage.StaggerMagnitude,
             pActor->IsGhost() || pActor->IsDead(),
             ClientAvSteadyNowMs());
-        if (acceptedStagger > 0.05f && pActor->animationGraphHolder.IsReady())
+        if (acceptedStagger > 0.05f && pActor->GetNiNode() && pActor->animationGraphHolder.IsReady())
         {
-            const bool prevForce = g_forceAnimation;
-            g_forceAnimation = true;
+            pActor->InterruptCast(false);
             BSFixedString staggerMagVar("staggerMagnitude");
             BSFixedString staggerDirVar("staggerDirection");
             BSFixedString staggerStartEvt("staggerStart");
@@ -463,7 +464,6 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
                 &staggerDirVar,
                 std::clamp(std::isfinite(acMessage.StaggerDirection) ? acMessage.StaggerDirection : 0.0f, 0.0f, 0.9999f));
             pActor->SendAnimationEvent(&staggerStartEvt);
-            g_forceAnimation = prevForce;
         }
     }
 }
@@ -536,10 +536,7 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
                     nowMs,
                     lastPredHitMs))
             {
-                const float maxHp = pActor->GetActorPermanentValue(ActorValueInfo::kHealth);
-                float targetHp = std::max(0.0f, value);
-                if (maxHp > 0.0f)
-                    targetHp = std::min(targetHp, maxHp);
+                const float targetHp = std::clamp(value, 0.0f, 100000.0f);
                 pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, targetHp);
             }
             continue;

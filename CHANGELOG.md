@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v3.0.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.0.0)** — единая мультиплеерная архитектура `v3.0` (`Clean Slate` / нативный `0.0 HP Bleedout & Spell Revive` / `Sticky Host Cell Authority` / `WorldReloadBarrier` без дисконнекта / `1/M` масштабирование входящего урона без мутации `MaxHP` / бесшовное пересечение клеток `4096` и круговой+дискретный блендинг `BehaviorVar` / модульный `CoopExperienceLedger`) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v3.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.0)** — гибридная боевая, магическая и реген-стабилизация `v3.1` (единый контур `HookRestoreActorValue`, сохранность временных `TEMPORARY` баффов ХП, симметричный баланс регенерации врагов `1/M`, точный перенос всех перков `0x14` + потоковых заклинаний `CONCENTRATION`, физический импакт/стаггер/сбитие кастов от ударов Гостя и Хост-каноничные сцены `BGSScene`) поверх архитектуры `v3.0` для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v3.0.0-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.0.0-backup)** и **[`v3.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.0.0)** — неприкосновенные эталонные бэкапы релиза `3.0.0` (`SHA-256` зафиксированы в `docs/V3.0.0_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.1.0-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0-backup)** и **[`v2.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0)** — неприкосновенные эталонные бэкапы релиза `2.1.0` (`SHA-256` зафиксированы в `docs/V2.1.0_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.3-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3-backup)** и **[`v2.0.3`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — неприкосновенные эталонные бэкапы релиза `2.0.3` (`SHA-256` зафиксированы в `docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.2-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup)** и **[`v2.0.2`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — неприкосновенные эталонные бэкапы релиза `2.0.2` (`SHA-256` зафиксированы в `docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
@@ -14,7 +15,9 @@
 
 ---
 
-## [v3.1.0-dev] — 2026-10-27 *(Hybrid Host-Canonical Combat, 1/M Enemy Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Physical Hit Impact & Host-Canonical BGSScene)*
+## [v3.1.0] — 2026-10-27 *(Hybrid Host-Canonical Combat, 1/M Enemy Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Physical Hit Impact & Host-Canonical BGSScene)*
+
+- **Неприкосновенный бэкап `v3.0.0-backup` (`docs/V3.0.0_RELEASE_BACKUP_MANIFEST.json`, `Ensure-V300BackupRelease`):** перед публикацией `v3.1.0` облачный пайплайн автоматически зеркалирует и сверяет по `SHA-256` все 4 архива релиза `v3.0.0`, оставляя сам релиз `v3.0.0` защищённым в `$ProtectedTags`.
 
 - **Единый контур `HookApplyActorEffect` + `HookRestoreActorValue` и синхронизация `CurrentHP` (`Actor.cpp`, `ActorValueService.cpp`):** устранён дедлок, блокировавший сетевую передачу отрицательных `ValueModifierEffect` (огненные шары, молнии, яды, чары оружия) и регенерации на NPC владельца, убрана двойная отправка лечения на `0x14`, включена 4 Гц боевая сверка `kHealth` с непрыгающим окном локального предсказания (`ShouldReconcileRemoteActorHealthSnapshot`, `700 мс`).
 - **Баланс плоской регенерации врагов `1 / M` (`CoopDamagePipeline::ScaleIncomingEnemyHealDelta`):** плоский боевой реген и `ActiveEffect`-хилы врагов RFAB (тролли, спригганы, драконьи жрецы, двемерские сферы, вампиры, вражеские зелья и заклинания Восстановления) делятся на `M` синхронно с входящим уроном (`1 / M`), возвращая задуманный авторами RFAB DPS-чек и TTK при сохранении `1:1` процентных скриптовых фаз боссов (`>= 25% MaxHP`).

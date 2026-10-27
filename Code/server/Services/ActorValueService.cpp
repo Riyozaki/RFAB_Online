@@ -286,7 +286,7 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
 
     const auto applied = CoopDamagePipeline::ApplyAuthoritativeServerHealthDelta(
         currentHealth,
-        maxHealth,
+        std::max(maxHealth, currentHealth),
         sanitizedDelta);
 
     actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = applied.UpdatedHealth;

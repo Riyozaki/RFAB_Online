@@ -244,11 +244,13 @@ BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDi
             auto& modSys = m_world.GetModSystem();
             if (modSys.GetServerModId(sceneId, sceneGameId) && modSys.GetServerModId(questId, questGameId))
             {
+                TESQuest* pLiveQuest = Cast<TESQuest>(TESForm::GetById(questId));
+                const uint16_t liveStageId = pLiveQuest ? pLiveQuest->currentStage : stageId;
                 RequestQuestSceneUpdate update;
                 update.SceneId = sceneGameId;
                 update.QuestId = questGameId;
-                update.Stage = stageId;
-                update.Status = stageId == RequestQuestUpdate::StageUpdateForced;
+                update.Stage = liveStageId;
+                update.Status = RequestQuestUpdate::StageUpdateForced;
                 update.ClientQuestType = netQuestType;
                 update.SceneType = sceneType;
 

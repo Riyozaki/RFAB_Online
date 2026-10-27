@@ -246,8 +246,35 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
     if (arData.pEffectItem->IsVampireLordEffect())
         pTargetActorEx->GraphDescriptorHash = AnimationGraphDescriptor_VampireLordBehavior::m_key;
 
-    if (ScopedSpellCastOverride::IsOverriden() || s_autoSucceedEffectCheck)
+    if (s_autoSucceedEffectCheck)
         return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+
+    if (ScopedSpellCastOverride::IsOverriden())
+    {
+        // Guard Frame-0 of `OnNotifySpellCast -> CastSpellImmediate` for RemotePlayer (or remote player summon) casts:
+        // hostile player magic on NPCs is 100% caster-authoritative (via `NotifyAddTarget` or `HealthChangeBroadcast`),
+        // so Frame-0 `CastSpellImmediate` must never attach a duplicate damaging `ActiveEffect` onto local/remote NPCs!
+        if (arData.pCaster && !isFriendlySupport && pTargetActor != arData.pCaster)
+        {
+            const ActorExtension* pCasterExt = arData.pCaster->GetExtension();
+            const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
+            const auto* pCasterCmdExt = pCasterCmd ? pCasterCmd->GetExtension() : nullptr;
+            const bool isRemotePlayerOrSummon =
+                (pCasterExt && pCasterExt->IsRemotePlayer()) ||
+                (pCasterCmdExt && pCasterCmdExt->IsRemotePlayer()) ||
+                (pCasterExt && pCasterExt->IsRemote() && arData.pCaster->IsPlayerSummon());
+            if (isRemotePlayerOrSummon)
+            {
+                const bool allowLocalPlayerPvpBeam =
+                    pTargetActorEx->IsLocalPlayer() &&
+                    isConcentration &&
+                    (World::Get().GetServerSettings().PvpEnabled || coopPolicy.AllowPartySparring);
+                if (!allowLocalPlayerPvpBeam)
+                    return false;
+            }
+        }
+        return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+    }
 
     AddTargetEvent addTargetEvent{};
     addTargetEvent.TargetID = pTargetActor->formID;
@@ -460,7 +487,16 @@ bool TP_MAKE_THISCALL(HookFindTargets, MagicCaster, float afEffectivenessMult, i
 void TP_MAKE_THISCALL(HookAdjustForPerks, ActiveEffect, Actor* apCaster, MagicTarget* apTarget)
 {
     if (s_remotePreAdjustedPerks)
-        return;
+    {
+        // Outgoing caster perks (and static TESNPC target perks for NPCs) were already evaluated on the casting client.
+        // Only run AdjustForPerks when a RemotePlayer clone (fresh 0xFF00xxxx TESNPC with 0 outgoing perks) targets
+        // LocalPlayer (0x14), so 0x14's dynamic incoming perks (RFAB Vampire/Lich heal rules, Atronach, Elemental Protection)
+        // evaluate 1x with zero duplicate caster perk multiplication!
+        Actor* pTargetActor = apTarget ? apTarget->GetTargetAsActor() : nullptr;
+        const ActorExtension* pCasterExt = apCaster ? apCaster->GetExtension() : nullptr;
+        if (!pTargetActor || pTargetActor != PlayerCharacter::Get() || !pCasterExt || !pCasterExt->IsRemotePlayer())
+            return;
+    }
 
     const float magBefore = apThis ? apThis->fMagnitude : 0.0f;
     TiltedPhoques::ThisCall(RealAdjustForPerks, apThis, apCaster, apTarget);

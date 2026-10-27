@@ -312,7 +312,9 @@ def main() -> int:
     assert "CoopExperienceLedger::kMaxRfabXpDelta" in srv_char_social_cpp
     v210_backup_manifest = (ROOT / "docs" / "V2.1.0_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
     assert '"v2.1.0-backup"' in v210_backup_manifest and "424756541" in v210_backup_manifest
-    assert '"v2.1.0-backup"' in build_txt and "Ensure-V210BackupRelease" in build_txt and '[string]$VersionTag = "v3.0.0"' in build_txt
+    v300_backup_manifest = (ROOT / "docs" / "V3.0.0_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    assert '"v3.0.0-backup"' in v300_backup_manifest and "425670346" in v300_backup_manifest
+    assert '"v3.0.0-backup"' in build_txt and "Ensure-V300BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.0"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -320,11 +322,14 @@ def main() -> int:
     anim_cpp = (ROOT / "Code" / "client" / "Games" / "Animation.cpp").read_text(encoding="utf-8")
     assert "ScaleIncomingEnemyHealDelta" in dmg_pipe_h and "ScaleIncomingEnemyHealDelta" in actor_cpp
     assert "ComputeCasterOutgoingPerkMultiplier" in dmg_pipe_h and "ScopedLocalCasterPerkCapture" in magic_target_cpp
+    assert "allowLocalPlayerPvpBeam" in magic_target_cpp and "resyncEvt.HasPreAdjustedPerks = true;" in cli_magic_cpp
     assert "s_inLocalCasterConcentrationEffect" in actor_cpp and "m_concentrationClaimKeepaliveMs" in cli_magic_cpp
     assert "ShouldReconcileRemoteActorHealthSnapshot" in dmg_pipe_h and "ShouldReconcileRemoteActorHealthSnapshot" in cli_av_cpp
+    assert "std::max(maxHealth, currentHealth)" in srv_av_cpp and "pActor->InterruptCast(false);" in cli_av_cpp
     assert "RemoteHitImpactGate" in dmg_pipe_h and "m_remoteHitImpactGate.TryConsumeStagger" in cli_av_cpp
     assert "TryAcceptRemoteHitReactionAction" in actor_cpp and "Actor::TryAcceptRemoteHitReactionAction" in anim_cpp
     assert "ScopedRemoteQuestUpdateGuard remoteSceneGuard" in cli_quest_cpp and "ignoring non-leader scene" in srv_quest_cpp
+    assert "update.Status = RequestQuestUpdate::StageUpdateForced;" in cli_quest_cpp
 
     print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 architectural regression checks passed!")
     return 0
