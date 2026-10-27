@@ -10,6 +10,7 @@
 #include <Events/SubtitleEvent.h>
 #include <Forms/TESGlobal.h>
 #include <Forms/TESNPC.h>
+#include <Forms/TESQuest.h>
 #include <Games/ActorExtension.h>
 #include <Games/Misc/SubtitleManager.h>
 #include <Games/Skyrim/Interface/UI.h>
