@@ -13,6 +13,8 @@
 #include <Services/DownedStateService.h>
 #include <Services/CoordinatedSaveService.h>
 #include <Services/DiscoveryService.h>
+#include <Services/ObjectService.h>
+#include <Services/PlayerService.h>
 
 #include <Systems/ModSystem.h>
 
@@ -52,6 +54,10 @@ struct World : entt::registry
     const CoordinatedSaveService& GetCoordinatedSaveService() const noexcept { return ctx().at<const CoordinatedSaveService>(); }
     DiscoveryService& GetDiscoveryService() noexcept { return ctx().at<DiscoveryService>(); }
     const DiscoveryService& GetDiscoveryService() const noexcept { return ctx().at<const DiscoveryService>(); }
+    ObjectService& GetObjectService() noexcept { return ctx().at<ObjectService>(); }
+    const ObjectService& GetObjectService() const noexcept { return ctx().at<const ObjectService>(); }
+    PlayerService& GetPlayerService() noexcept { return ctx().at<PlayerService>(); }
+    const PlayerService& GetPlayerService() const noexcept { return ctx().at<const PlayerService>(); }
 
     auto& GetDispatcher() noexcept { return m_dispatcher; }
 

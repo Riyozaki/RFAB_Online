@@ -114,6 +114,7 @@ struct CharacterService
     void BeginEngineWorldLoad() noexcept;
     void EndEngineWorldLoad() noexcept;
     [[nodiscard]] bool IsEngineWorldLoading() const noexcept { return m_engineWorldLoadInProgress; }
+    void EnsureLocalPlayerRegistered() noexcept;
 
     [[nodiscard]] entt::entity FindActorEntityByFormId(uint32_t aFormId) const noexcept;
     [[nodiscard]] entt::entity FindAnyEntityByFormId(uint32_t aFormId) const noexcept;
@@ -155,7 +156,6 @@ private:
         uint64_t ExpiresAtMs{0};
     };
 
-    void EnsureLocalPlayerRegistered() noexcept;
     void DetachAllActorsForEngineLoad() noexcept;
     void PurgeNetworkActorsOnLiveDisconnect() noexcept;
     bool MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
