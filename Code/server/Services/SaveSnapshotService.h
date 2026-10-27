@@ -222,6 +222,22 @@ public:
         return aNowMs >= m_lastAutoSaveCommittedMs && (aNowMs - m_lastAutoSaveCommittedMs) >= intervalMs;
     }
 
+    struct WorldReloadBarrier
+    {
+        uint64_t EpochId{};
+        uint64_t WorldGeneration{};
+        std::string SlotName{};
+        uint64_t StartedAtMs{};
+        uint32_t HostPlayerId{0};
+        std::unordered_set<uint32_t> ExpectedPlayerIds{};
+        std::unordered_set<uint32_t> ReadyPlayerIds{};
+        bool HostReady{false};
+        bool HostGateReleased{false};
+    };
+
+    inline static constexpr uint64_t kDefaultReloadHostHoldMs = 15'000ULL;
+    inline static constexpr uint64_t kDefaultReloadFullTimeoutMs = 45'000ULL;
+
     void NotifyRolledBackTo(uint64_t aEpochId, const std::string& acSlotName, uint64_t aNowMs = 0)
     {
         m_pending.reset();
@@ -235,7 +251,160 @@ public:
         RecordFlightEvent(aNowMs, CoopFlight::FlightEventKind::kWorldRollback, 0, aEpochId);
     }
 
+    WorldReloadBarrier BeginReloadBarrier(
+        const std::vector<uint32_t>& acPlayerIds,
+        uint32_t aHostPlayerId,
+        uint64_t aEpochId,
+        const std::string& acSlotName,
+        uint64_t aNowMs)
+    {
+        WorldReloadBarrier barrier{};
+        barrier.EpochId = aEpochId;
+        barrier.WorldGeneration = m_worldGeneration;
+        barrier.SlotName = acSlotName;
+        barrier.StartedAtMs = aNowMs;
+        barrier.HostPlayerId = aHostPlayerId;
+        for (const uint32_t pid : acPlayerIds)
+        {
+            if (pid != 0)
+                barrier.ExpectedPlayerIds.insert(pid);
+        }
+
+        const bool hasTrackedHost = (aHostPlayerId != 0) &&
+                                    (barrier.ExpectedPlayerIds.find(aHostPlayerId) != barrier.ExpectedPlayerIds.end());
+        barrier.HostReady = !hasTrackedHost;
+        barrier.HostGateReleased = barrier.HostReady;
+        m_reloadBarrier = barrier;
+        m_hasReloadBarrier = true;
+        return barrier;
+    }
+
+    [[nodiscard]] bool HasActiveReloadBarrier() const noexcept { return m_hasReloadBarrier; }
+    [[nodiscard]] const WorldReloadBarrier* GetReloadBarrier() const noexcept
+    {
+        return m_hasReloadBarrier ? &m_reloadBarrier : nullptr;
+    }
+
+    /**
+     * Hold non-Host dormant NPC wakeups/ownership claims while Host is still loading its `.ess` file,
+     * guaranteeing Host claims canonical `Sticky Host Cell Authority` without double-transfer churn.
+     */
+    [[nodiscard]] bool ShouldHoldNonHostWorldClaims(uint32_t aPlayerId) const noexcept
+    {
+        if (!m_hasReloadBarrier || m_reloadBarrier.HostGateReleased)
+            return false;
+        return aPlayerId != 0 && aPlayerId != m_reloadBarrier.HostPlayerId;
+    }
+
+    /**
+     * Records a player's post-`.ess`-load readiness.
+     * @return true if this call JUST released the Host gate (`HostGateReleased` transitioned false -> true).
+     */
+    bool RecordReloadPlayerReady(uint32_t aPlayerId, uint64_t aEpochId)
+    {
+        if (!m_hasReloadBarrier)
+            return false;
+        if (aEpochId != m_reloadBarrier.EpochId && aEpochId != 0)
+            return false;
+
+        m_reloadBarrier.ReadyPlayerIds.insert(aPlayerId);
+
+        bool justReleasedHostGate = false;
+        if (aPlayerId == m_reloadBarrier.HostPlayerId)
+        {
+            m_reloadBarrier.HostReady = true;
+            if (!m_reloadBarrier.HostGateReleased)
+            {
+                m_reloadBarrier.HostGateReleased = true;
+                justReleasedHostGate = true;
+            }
+        }
+
+        if (m_reloadBarrier.HostGateReleased &&
+            m_reloadBarrier.ReadyPlayerIds.size() >= m_reloadBarrier.ExpectedPlayerIds.size())
+        {
+            ClearReloadBarrier();
+        }
+
+        return justReleasedHostGate;
+    }
+
+    /**
+     * Advances reload barrier timers.
+     * @return true if the Host-hold timeout JUST released the Host gate.
+     */
+    bool TickReloadBarrier(
+        uint64_t aNowMs,
+        uint64_t aHostHoldTimeoutMs = kDefaultReloadHostHoldMs,
+        uint64_t aFullTimeoutMs = kDefaultReloadFullTimeoutMs) noexcept
+    {
+        if (!m_hasReloadBarrier)
+            return false;
+
+        const uint64_t elapsedMs = (aNowMs > m_reloadBarrier.StartedAtMs) ? (aNowMs - m_reloadBarrier.StartedAtMs) : 0ULL;
+        bool justReleasedHostGate = false;
+
+        if (!m_reloadBarrier.HostGateReleased && elapsedMs >= aHostHoldTimeoutMs)
+        {
+            m_reloadBarrier.HostGateReleased = true;
+            justReleasedHostGate = true;
+        }
+
+        if (elapsedMs >= aFullTimeoutMs ||
+            (m_reloadBarrier.HostGateReleased &&
+             m_reloadBarrier.ReadyPlayerIds.size() >= m_reloadBarrier.ExpectedPlayerIds.size()))
+        {
+            ClearReloadBarrier();
+        }
+
+        return justReleasedHostGate;
+    }
+
+    /**
+     * Handles player disconnect while `WorldReloadBarrier` is active.
+     * @return true if Host disconnected and this JUST released the Host gate for remaining peers.
+     */
+    bool HandlePlayerDisconnectedFromReload(uint32_t aPlayerId) noexcept
+    {
+        if (!m_hasReloadBarrier)
+            return false;
+
+        m_reloadBarrier.ExpectedPlayerIds.erase(aPlayerId);
+        m_reloadBarrier.ReadyPlayerIds.erase(aPlayerId);
+
+        bool justReleasedHostGate = false;
+        if (aPlayerId == m_reloadBarrier.HostPlayerId && !m_reloadBarrier.HostGateReleased)
+        {
+            m_reloadBarrier.HostReady = true;
+            m_reloadBarrier.HostGateReleased = true;
+            justReleasedHostGate = true;
+        }
+
+        if (m_reloadBarrier.ExpectedPlayerIds.empty() ||
+            (m_reloadBarrier.HostGateReleased &&
+             m_reloadBarrier.ReadyPlayerIds.size() >= m_reloadBarrier.ExpectedPlayerIds.size()))
+        {
+            ClearReloadBarrier();
+        }
+
+        return justReleasedHostGate;
+    }
+
 private:
+    void ClearReloadBarrier() noexcept
+    {
+        m_hasReloadBarrier = false;
+        m_reloadBarrier.EpochId = 0;
+        m_reloadBarrier.WorldGeneration = 0;
+        m_reloadBarrier.SlotName.clear();
+        m_reloadBarrier.StartedAtMs = 0;
+        m_reloadBarrier.HostPlayerId = 0;
+        m_reloadBarrier.ExpectedPlayerIds.clear();
+        m_reloadBarrier.ReadyPlayerIds.clear();
+        m_reloadBarrier.HostReady = false;
+        m_reloadBarrier.HostGateReleased = false;
+    }
+
     std::string m_sessionTag;
     size_t m_ringSize;
     uint64_t m_nextEpochId{0};
@@ -246,6 +415,8 @@ private:
     std::string m_lastCommittedSlot{};
     uint64_t m_lastAutoSaveCommittedMs{0};
     std::optional<PendingBarrier> m_pending{};
+    WorldReloadBarrier m_reloadBarrier{};
+    bool m_hasReloadBarrier{false};
     CoopFlight::FlightRingBuffer<512> m_flightRing{};
 };
 
@@ -355,6 +526,9 @@ private:
     void RefreshPlayerJoinBaselines() noexcept;
     [[nodiscard]] WorldSnapshot CaptureWorldSnapshot(uint64_t aEpochId, const std::string& acSlotName, bool aIsAuto, uint64_t aNowMs) const;
     void ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bool aIsPartyWipe) noexcept;
+    void BeginWorldReloadBarrier(uint64_t aEpochId, const std::string& acSlotName, uint64_t aNowMs) noexcept;
+    void ReleaseHostReloadGateToGuests(uint64_t aEpochId, const std::string& acSlotName) noexcept;
+    void SyncPostReloadStateToPlayer(Player* apPlayer) noexcept;
 
     World& m_world;
     SaveSnapshotCoordinator m_coordinator;

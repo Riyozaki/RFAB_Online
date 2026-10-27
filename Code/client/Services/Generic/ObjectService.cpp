@@ -126,7 +126,7 @@ bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
 }
 } // namespace
 
-void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
+void ObjectService::ResetForWorldReload() noexcept
 {
     auto view = m_world.view<ObjectComponent>();
     Vector<entt::entity> toDestroy(view.begin(), view.end());
@@ -135,6 +135,11 @@ void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
         if (m_world.valid(entity))
             m_world.destroy(entity);
     }
+}
+
+void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
+{
+    ResetForWorldReload();
 }
 
 void ObjectService::RefreshCurrentCellObjectsAfterRollback() noexcept

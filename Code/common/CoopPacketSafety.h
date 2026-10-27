@@ -11,6 +11,37 @@
 
 namespace CoopPacketSafety
 {
+    /**
+     * Reentrancy-safe RAII frame guard for thread_local ScratchAllocator instances.
+     * Resets the linear scratch buffer ONLY when the outermost Send() frame on the current
+     * thread exits (`depth == 0`), preventing nested logging/serialization callbacks from
+     * invalidating an in-flight outer packet buffer.
+     */
+    template <class TScratchAllocator>
+    class ScopedScratchFrame
+    {
+    public:
+        ScopedScratchFrame(TScratchAllocator& aAllocator, uint32_t& aDepthCounter) noexcept
+            : m_allocator(aAllocator)
+            , m_depth(aDepthCounter)
+        {
+            ++m_depth;
+        }
+
+        ~ScopedScratchFrame() noexcept
+        {
+            if (m_depth > 0 && --m_depth == 0)
+                m_allocator.Reset();
+        }
+
+        ScopedScratchFrame(const ScopedScratchFrame&) = delete;
+        ScopedScratchFrame& operator=(const ScopedScratchFrame&) = delete;
+
+    private:
+        TScratchAllocator& m_allocator;
+        uint32_t& m_depth;
+    };
+
     inline constexpr size_t kMaxInventoryEntries = 4096;
     inline constexpr size_t kMaxEnchantEffects = 64;
     inline constexpr size_t kMaxActorValues = 256;

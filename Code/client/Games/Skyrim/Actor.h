@@ -255,6 +255,7 @@ struct Actor : TESObjectREFR
     void SetEssentialEx(bool aSet) noexcept;
     void SetNoBleedoutRecovery(bool aSet) noexcept;
     void SetPlayerRespawnMode(bool aSet = true) noexcept;
+    void TriggerNativeBleedout() noexcept;
     void SetPlayerTeammate(bool aSet) noexcept;
 
     // Actions

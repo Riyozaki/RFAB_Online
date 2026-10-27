@@ -1050,9 +1050,93 @@ void SaveSnapshotService::AbortBarrier(const std::string& acReason) noexcept
     spdlog::warn("[RFAB SaveSnapshot] Aborted save barrier Epoch={}: {}", aborted.EpochId, acReason);
 }
 
+void SaveSnapshotService::BeginWorldReloadBarrier(
+    uint64_t aEpochId,
+    const std::string& acSlotName,
+    uint64_t aNowMs) noexcept
+{
+    std::vector<uint32_t> playerIds;
+    uint32_t hostPlayerId = 0;
+
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        if (!pPlayer)
+            continue;
+        playerIds.push_back(pPlayer->GetId());
+        if (hostPlayerId == 0 && IsPlayerAuthorizedHost(pPlayer))
+            hostPlayerId = pPlayer->GetId();
+    }
+
+    if (hostPlayerId == 0 && !playerIds.empty())
+        hostPlayerId = *std::min_element(playerIds.begin(), playerIds.end());
+
+    const auto barrier = m_coordinator.BeginReloadBarrier(playerIds, hostPlayerId, aEpochId, acSlotName, aNowMs);
+    spdlog::info(
+        "[RFAB WorldReloadBarrier] Armed server reload barrier Epoch={} WorldGen={} Slot='{}' HostPid={} Players={}",
+        barrier.EpochId,
+        barrier.WorldGeneration,
+        barrier.SlotName,
+        barrier.HostPlayerId,
+        barrier.ExpectedPlayerIds.size());
+}
+
+void SaveSnapshotService::SyncPostReloadStateToPlayer(Player* apPlayer) noexcept
+{
+    if (!apPlayer)
+        return;
+
+    const uint64_t worldGen = m_coordinator.GetCurrentWorldEpoch();
+    const auto& ledger = m_world.GetRfabProgressionService().GetLedger();
+
+    for (const auto& [editorId, val] : ledger.GetSyncedGlobals())
+    {
+        NotifyRfabProgressionEvent globalResync{};
+        globalResync.Kind = NotifyRfabProgressionEvent::EventKind::GlobalValueSync;
+        globalResync.EpochId = worldGen;
+        globalResync.EditorId = String(editorId.c_str());
+        globalResync.GlobalValue = val;
+        globalResync.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
+        apPlayer->Send(globalResync);
+    }
+
+    NotifyRfabProgressionEvent epochMarker{};
+    epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
+    epochMarker.EpochId = worldGen;
+    epochMarker.XpDelta = 0;
+    epochMarker.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
+    apPlayer->Send(epochMarker);
+
+    m_world.GetCharacterService().ForceResyncObserverAfterRollback(apPlayer);
+}
+
+void SaveSnapshotService::ReleaseHostReloadGateToGuests(uint64_t aEpochId, const std::string& acSlotName) noexcept
+{
+    NotifyCommitSave releaseMsg{};
+    releaseMsg.EpochId = CoopCheckpoint::EncodeReloadBarrierEpoch(aEpochId);
+    releaseMsg.SlotName = String(acSlotName.c_str());
+    releaseMsg.Committed = true;
+
+    for (Player* pPlayer : m_world.GetPlayerManager())
+    {
+        if (!pPlayer)
+            continue;
+        if (!IsPlayerAuthorizedHost(pPlayer))
+            pPlayer->Send(releaseMsg);
+        m_world.GetCharacterService().ForceResyncObserverAfterRollback(pPlayer);
+    }
+
+    spdlog::info(
+        "[RFAB WorldReloadBarrier] Released Host reload gate for Epoch={} Slot='{}'",
+        aEpochId,
+        acSlotName);
+}
+
 void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bool aIsPartyWipe) noexcept
 {
-    m_coordinator.NotifyRolledBackTo(acSnapshot.EpochId, acSnapshot.SlotName, NowSteadyMs());
+    const uint64_t rollbackNowMs = NowSteadyMs();
+    m_coordinator.NotifyRolledBackTo(acSnapshot.EpochId, acSnapshot.SlotName, rollbackNowMs);
+
+    const bool preferLiveEssBarrier = !acSnapshot.SlotName.empty();
 
     // 1. Restore RFAB progression ledger
     m_world.GetRfabProgressionService().GetLedger().RestoreSnapshot(acSnapshot.Progression);
@@ -1084,7 +1168,28 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             pPlayer->GetQuestLogComponent().QuestContent = acSnapshot.SharedPartyQuestLog;
     }
 
-    // 3. Restore tracked NPC/boss alive/dead state, spatial coordinates & health on the server + broadcast live resync!
+    // 2b. Phase 3 (`WorldReloadBarrier`): purge post-checkpoint dynamic temporary spawns & post-checkpoint
+    // placed NPC discoveries, and transition surviving placed NPCs cleanly to Dormant (`Owner == nullptr`)
+    // so Host claims canonical Sticky Host Cell Authority after `.ess` reload completes.
+    {
+        std::unordered_set<uint64_t> checkpointPersistentKeys;
+        checkpointPersistentKeys.reserve(acSnapshot.PersistentActorsByKey.size() + acSnapshot.TrackedActors.size());
+        for (const auto& [packedKey, _] : acSnapshot.PersistentActorsByKey)
+            checkpointPersistentKeys.insert(packedKey);
+        for (const auto& [_, savedActor] : acSnapshot.TrackedActors)
+        {
+            if (savedActor.FormId && savedActor.FormId.ModId != 0xFFFFFFFFu)
+            {
+                checkpointPersistentKeys.insert(
+                    CoopWorldView::PackGameIdKey(savedActor.FormId.ModId, savedActor.FormId.BaseId));
+            }
+        }
+        m_world.GetCharacterService().ResetWorldEntitiesForCheckpointReload(
+            checkpointPersistentKeys,
+            !checkpointPersistentKeys.empty());
+    }
+
+    // 3. Restore tracked NPC/boss alive/dead state, spatial coordinates & health on the server!
     for (const auto& [serverEntityId, savedState] : acSnapshot.TrackedActors)
     {
         const entt::entity entity = static_cast<entt::entity>(serverEntityId);
@@ -1136,7 +1241,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             hpChanged = std::abs(prevHp - savedState.CurrentHealth) > 0.05f;
         }
 
-        if (deathChanged)
+        if (!preferLiveEssBarrier && deathChanged)
         {
             NotifyDeathStateChange deathNotify{};
             deathNotify.Id = serverEntityId;
@@ -1145,7 +1250,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
                 pServer->SendToPlayers(deathNotify, nullptr);
         }
 
-        if (spatialChanged && !savedState.IsDead)
+        if (!preferLiveEssBarrier && spatialChanged && !savedState.IsDead)
         {
             if (const auto* pFormComp = m_world.try_get<FormIdComponent>(entity);
                 pFormComp && static_cast<bool>(pFormComp->Id) && pFormComp->Id.ModId != 0xFFFFFFFFu)
@@ -1160,7 +1265,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             }
         }
 
-        if (hpChanged && !savedState.IsDead)
+        if (!preferLiveEssBarrier && hpChanged && !savedState.IsDead)
         {
             NotifyHealthChangeBroadcast hpNotify{};
             hpNotify.Id = serverEntityId;
@@ -1275,6 +1380,9 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         return nullptr;
     };
 
+    if (preferLiveEssBarrier)
+        BeginWorldReloadBarrier(acSnapshot.EpochId, acSnapshot.SlotName, rollbackNowMs);
+
     std::vector<Player*> inSessionPlayers;
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
@@ -1325,7 +1433,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         const bool hasTransform = pTransformState && pTransformState->HasValidTransform;
         const bool useInSession = CoopCheckpoint::ShouldServerPreferInSessionRollback(aIsPartyWipe, hasTransform, acSnapshot.SlotName);
 
-        if (useInSession && (pTransformState || pPlayerState) && pPlayer->GetCharacter().has_value())
+        if ((pTransformState || pPlayerState) && pPlayer->GetCharacter().has_value())
         {
             const entt::entity charEntity = *pPlayer->GetCharacter();
             if (m_world.valid(charEntity))
@@ -1347,7 +1455,8 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
                     if (auto* pInv = m_world.try_get<InventoryComponent>(charEntity))
                         pInv->Content = pPlayerState->CurrentInventory;
                 }
-                inSessionPlayers.push_back(pPlayer);
+                if (useInSession)
+                    inSessionPlayers.push_back(pPlayer);
             }
         }
 
@@ -1355,7 +1464,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         loadCmd.EpochId = acSnapshot.EpochId;
         loadCmd.SlotName = String(acSnapshot.SlotName.c_str());
         loadCmd.IsPartyWipe = aIsPartyWipe;
-        loadCmd.AllowPreJoinFallback = !hasTransform;
+        loadCmd.AllowPreJoinFallback = true;
         loadCmd.UseInSessionRollback = useInSession;
         loadCmd.RestoreHealthFraction = 1.0f;
         if (pTransformState && pTransformState->HasValidTransform)
@@ -1373,45 +1482,45 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             loadCmd.HasRestoreInventory = true;
             loadCmd.RestoreInventory = pPlayerState->CurrentInventory;
         }
-        loadCmd.Message = useInSession
-            ? String("RFAB Online: Отряд пал — мгновенный возврат к чекпоинту сессии")
-            : (aIsPartyWipe
-                ? String("RFAB Online: Отряд пал — возврат к последнему чекпоинту")
-                : String("RFAB Online: Синхронная загрузка чекпоинта группы"));
+        loadCmd.Message = aIsPartyWipe
+            ? String("RFAB Online: Отряд пал — возврат к последнему чекпоинту")
+            : String("RFAB Online: Синхронная загрузка чекпоинта группы");
 
         pPlayer->Send(loadCmd);
     }
 
-    // 7b. Now that ALL players' checkpoint CellIdComponents & MovementComponents are updated and NotifyExecuteLoad
-    // is ahead in each peer's reliable stream, force full observer interest resync so surviving NPCs & peers
-    // re-replicate with authoritative post-rollback coordinates!
     for (Player* pPlayer : inSessionPlayers)
     {
         m_world.GetCharacterService().ForceResyncObserverAfterRollback(pPlayer);
     }
 
-    // Broadcast monotonic WorldGeneration marker & authoritative RFAB globals
+    // For emergency non-.ess rollbacks only, broadcast globals immediately; for live `.ess` barrier
+    // reloads, `SyncPostReloadStateToPlayer` delivers globals & WorldGeneration AFTER each client's
+    // `TESLoadGameEvent` completes so `.ess` loading never overwrites synced `TESGlobal`s!
     const uint64_t worldGen = m_coordinator.GetCurrentWorldEpoch();
-    auto& ledger = m_world.GetRfabProgressionService().GetLedger();
-    if (auto* pServer = GameServer::Get())
+    if (!preferLiveEssBarrier)
     {
-        for (const auto& [editorId, val] : ledger.GetSyncedGlobals())
+        auto& ledger = m_world.GetRfabProgressionService().GetLedger();
+        if (auto* pServer = GameServer::Get())
         {
-            NotifyRfabProgressionEvent globalResync{};
-            globalResync.Kind = NotifyRfabProgressionEvent::EventKind::GlobalValueSync;
-            globalResync.EpochId = worldGen;
-            globalResync.EditorId = String(editorId.c_str());
-            globalResync.GlobalValue = val;
-            globalResync.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
-            pServer->SendToPlayers(globalResync, nullptr);
-        }
+            for (const auto& [editorId, val] : ledger.GetSyncedGlobals())
+            {
+                NotifyRfabProgressionEvent globalResync{};
+                globalResync.Kind = NotifyRfabProgressionEvent::EventKind::GlobalValueSync;
+                globalResync.EpochId = worldGen;
+                globalResync.EditorId = String(editorId.c_str());
+                globalResync.GlobalValue = val;
+                globalResync.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
+                pServer->SendToPlayers(globalResync, nullptr);
+            }
 
-        NotifyRfabProgressionEvent epochMarker{};
-        epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
-        epochMarker.EpochId = worldGen;
-        epochMarker.XpDelta = 0;
-        epochMarker.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
-        pServer->SendToPlayers(epochMarker, nullptr);
+            NotifyRfabProgressionEvent epochMarker{};
+            epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
+            epochMarker.EpochId = worldGen;
+            epochMarker.XpDelta = 0;
+            epochMarker.AuthoritativeTotalXp = ledger.GetTotalSharedXp();
+            pServer->SendToPlayers(epochMarker, nullptr);
+        }
     }
 
     spdlog::info(
@@ -1434,9 +1543,13 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         return true;
     }
 
-    // Pre-checkpoint rollback: seamlessly restore every player to their current-session join baseline WITHOUT
-    // disconnecting or loading any stale .ess save from an older session!
-    m_coordinator.NotifyRolledBackTo(0, "", NowSteadyMs());
+    // Pre-checkpoint rollback (`m_snapshots.empty()`): reload each player's current-session
+    // `RFAB_MP_PreJoin_Backup.ess` via `WorldReloadBarrier` while keeping sockets & `Party` open
+    // (with non-destructive baseline transform fallback ONLY if a brand-new peer has not finished
+    // writing `RFAB_MP_PreJoin_Backup.ess` yet).
+    const uint64_t nowMs = NowSteadyMs();
+    const std::string preJoinSlot(CoopCheckpoint::kPreJoinBackupSlotName);
+    m_coordinator.NotifyRolledBackTo(0, "", nowMs);
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
         if (PartyService::Party* pParty = m_world.GetPartyService().GetPlayerParty(pPlayer))
@@ -1445,6 +1558,7 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
             pParty->GetQuestStageDedupHistory().ResetSceneMaster();
         }
     }
+    m_world.GetCharacterService().ResetWorldEntitiesForCheckpointReload({}, false);
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
     m_world.GetInventoryService().ResetLootLedger();
     {
@@ -1457,7 +1571,8 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         }
     }
 
-    std::vector<Player*> baselinePlayers;
+    BeginWorldReloadBarrier(0, preJoinSlot, nowMs);
+
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
         if (!pPlayer)
@@ -1486,16 +1601,15 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
                     if (auto* pInv = m_world.try_get<InventoryComponent>(charEntity))
                         pInv->Content = pBaseline->CurrentInventory;
                 }
-                baselinePlayers.push_back(pPlayer);
             }
         }
 
         NotifyExecuteLoad fallbackLoad{};
         fallbackLoad.EpochId = 0;
-        fallbackLoad.SlotName = "";
+        fallbackLoad.SlotName = String(preJoinSlot.c_str());
         fallbackLoad.IsPartyWipe = aIsPartyWipe;
-        fallbackLoad.AllowPreJoinFallback = !hasBaselineTransform;
-        fallbackLoad.UseInSessionRollback = true;
+        fallbackLoad.AllowPreJoinFallback = true;
+        fallbackLoad.UseInSessionRollback = false;
         fallbackLoad.RestoreHealthFraction = 1.0f;
         if (hasBaselineTransform)
         {
@@ -1516,22 +1630,10 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
         pPlayer->Send(fallbackLoad);
     }
 
-    for (Player* pPlayer : baselinePlayers)
-    {
-        m_world.GetCharacterService().ForceResyncObserverAfterRollback(pPlayer);
-    }
-
-    if (auto* pServer = GameServer::Get())
-    {
-        NotifyRfabProgressionEvent epochMarker{};
-        epochMarker.Kind = NotifyRfabProgressionEvent::EventKind::LedgerXpGrant;
-        epochMarker.EpochId = m_coordinator.GetCurrentWorldEpoch();
-        epochMarker.XpDelta = 0;
-        epochMarker.AuthoritativeTotalXp = m_world.GetRfabProgressionService().GetLedger().GetTotalSharedXp();
-        pServer->SendToPlayers(epochMarker, nullptr);
-    }
-
-    spdlog::info("[RFAB SaveSnapshot] Triggered seamless in-session baseline rollback (PartyWipe={})", aIsPartyWipe);
+    spdlog::info(
+        "[RFAB WorldReloadBarrier] Triggered pre-checkpoint .ess reload barrier via '{}' (PartyWipe={})",
+        preJoinSlot,
+        aIsPartyWipe);
     return true;
 }
 
@@ -1582,8 +1684,17 @@ void SaveSnapshotService::OnUpdate(const UpdateEvent&) noexcept
 {
     RefreshPlayerJoinBaselines();
 
-    if (m_coordinator.HasBarrierTimedOut(NowSteadyMs()))
+    const uint64_t nowMs = NowSteadyMs();
+    if (m_coordinator.HasBarrierTimedOut(nowMs))
         AbortBarrier("таймаут ожидания одного из игроков в меню/загрузке");
+
+    if (const auto* pReload = m_coordinator.GetReloadBarrier())
+    {
+        const uint64_t barrierEpoch = pReload->EpochId;
+        const std::string barrierSlot = pReload->SlotName;
+        if (m_coordinator.TickReloadBarrier(nowMs))
+            ReleaseHostReloadGateToGuests(barrierEpoch, barrierSlot);
+    }
 }
 
 void SaveSnapshotService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
@@ -1592,6 +1703,14 @@ void SaveSnapshotService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcep
         return;
 
     m_playerJoinBaselines.erase(acEvent.pPlayer->GetId());
+
+    if (const auto* pReload = m_coordinator.GetReloadBarrier())
+    {
+        const uint64_t barrierEpoch = pReload->EpochId;
+        const std::string barrierSlot = pReload->SlotName;
+        if (m_coordinator.HandlePlayerDisconnectedFromReload(acEvent.pPlayer->GetId()))
+            ReleaseHostReloadGateToGuests(barrierEpoch, barrierSlot);
+    }
 
     const auto res = m_coordinator.HandlePlayerDisconnected(acEvent.pPlayer->GetId());
     if (res == SaveSnapshotCoordinator::AckResolution::ReadyToCommit)
@@ -1644,6 +1763,27 @@ void SaveSnapshotService::OnSaveAck(const PacketEvent<CoordinatedSaveAck>& acMes
         return;
 
     const auto& ack = acMessage.Packet;
+    if (CoopCheckpoint::IsReloadBarrierEpoch(ack.EpochId))
+    {
+        const uint64_t reloadEpoch = CoopCheckpoint::DecodeReloadBarrierEpoch(ack.EpochId);
+        const std::string slotName(ack.SlotName.c_str(), ack.SlotName.size());
+
+        // Deliver authoritative post-reload RFAB globals, WorldGeneration epoch marker, and fresh
+        // observer entity reconciliation AFTER this client's `.ess` load completed in memory!
+        SyncPostReloadStateToPlayer(pSender);
+
+        if (m_coordinator.RecordReloadPlayerReady(pSender->GetId(), reloadEpoch))
+            ReleaseHostReloadGateToGuests(reloadEpoch, slotName);
+
+        spdlog::info(
+            "[RFAB WorldReloadBarrier] Player {} reported post-reload ready (Epoch={}, Slot='{}', Success={})",
+            pSender->GetId(),
+            reloadEpoch,
+            slotName,
+            ack.Success);
+        return;
+    }
+
     const std::string reason(ack.Reason.c_str(), ack.Reason.size());
     const auto res = m_coordinator.RecordClientAck(pSender->GetId(), ack.EpochId, ack.Success, reason);
     if (res == SaveSnapshotCoordinator::AckResolution::ReadyToCommit)

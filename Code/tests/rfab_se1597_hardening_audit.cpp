@@ -429,19 +429,19 @@ int main()
                 assert(evalBody.find("std::lock_guard<std::mutex> lock(m_coopSnapshotMutex)") != std::string::npos);
             }
 
-            // (2) DownedStateService defers camera/Papyrus/aggro/network side effects out of FinalizeLethalHitCushion into OnUpdate
+            // (2) DownedStateService defers camera/Papyrus/aggro/network side effects out of LatchNativeBleedoutEntered into OnUpdate
             const std::string downedH = readTextFile("Code/client/Services/DownedStateService.h");
             const std::string downedCpp = readTextFile("Code/client/Services/DownedStateService.cpp");
             assert(downedH.find("std::atomic<bool> m_isLocalDowned") != std::string::npos);
             assert(downedH.find("std::atomic<bool> m_pendingEnterDownedTransition") != std::string::npos);
             assert(downedCpp.find("CompleteEnterLocalDownedState()") != std::string::npos);
             {
-                const auto cushionPos = downedCpp.find("void DownedStateService::FinalizeLethalHitCushion(");
-                const auto posturePos = downedCpp.find("void DownedStateService::ApplyRemoteActorDownedPosture(");
-                assert(cushionPos != std::string::npos && posturePos != std::string::npos && cushionPos < posturePos);
-                const std::string cushionBody = downedCpp.substr(cushionPos, posturePos - cushionPos);
-                assert(cushionBody.find("EnterLocalDownedState()") == std::string::npos);
-                assert(cushionBody.find("m_pendingEnterDownedTransition.store(true") != std::string::npos);
+                const auto latchPos = downedCpp.find("void DownedStateService::LatchNativeBleedoutEntered(");
+                const auto spellRevPos = downedCpp.find("void DownedStateService::RequestAllySpellReviveOnActor(");
+                assert(latchPos != std::string::npos && spellRevPos != std::string::npos && latchPos < spellRevPos);
+                const std::string latchBody = downedCpp.substr(latchPos, spellRevPos - latchPos);
+                assert(latchBody.find("EnterLocalDownedState()") == std::string::npos);
+                assert(latchBody.find("m_pendingEnterDownedTransition.store(true") != std::string::npos);
             }
 
             // (3) AnimationGraphDescriptorManager uses std::unordered_map + std::shared_mutex; BehaviorVar::Add has zero heap leaks
@@ -489,9 +489,9 @@ int main()
             assert(rfabSvcCpp.find("bool RfabAdapterService::IsBossActor(Actor* apActor) const noexcept") != std::string::npos);
             assert(rfabSvcCpp.find("void RfabAdapterService::PollBossEncounterState() noexcept") != std::string::npos);
             assert(rfabSvcCpp.find("void RfabAdapterService::BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept") != std::string::npos);
-            assert(charSvcCpp.find("void CharacterService::ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlayerId) noexcept") != std::string::npos);
-            assert(downedCpp.find("m_world.GetCharacterService().ClaimCombatActorsFromDownedPeer(acMessage.PlayerId);") != std::string::npos);
-            assert(serverAvCpp.find("RfabCompat::ShouldBlockFalseBossResetHeal(") != std::string::npos);
+            assert(charSvcCpp.find("ClaimCombatActorsFromDownedPeer") == std::string::npos);
+            assert(downedCpp.find("ClaimCombatActorsFromDownedPeer") == std::string::npos);
+            assert(serverAvCpp.find("ShouldBlockFalseBossResetHeal") == std::string::npos);
             assert(serverProgH.find("bool UpdateBossGhostState(uint32_t aServerEntityId, bool aIsGhost)") != std::string::npos);
             assert(serverProgCpp.find("case SyncRfabProgressionEvent::EventKind::BossEncounterSync:") != std::string::npos);
             assert(refrCpp.find("#define OBJECT_ANIM_SYNC 1") != std::string::npos);
@@ -511,30 +511,6 @@ int main()
                 assert(RfabCompat::IsRfabBossEditorId("DLC1LD_ForgemasterBoss", &bossTable));
                 assert(RfabCompat::IsRfabBossEditorId("EncDragonPriest09Morokei", &bossTable));
                 assert(!RfabCompat::IsRfabBossEditorId("EncBandit01Melee", &bossTable));
-
-                // False boss out-of-combat reset heal blocked while living allies are fighting:
-                assert(RfabCompat::ShouldBlockFalseBossResetHeal(
-                    /*aEncounterActiveWithLivingAllies=*/true,
-                    /*aIsBossOrHighHpActor=*/true,
-                    /*aServerCurrentHp=*/1200.0f,
-                    /*aServerMaxHp=*/5000.0f,
-                    /*aProposedHp=*/5000.0f));
-
-                // Normal RFAB in-combat regeneration ticks (+150 HP per tick) are NOT blocked:
-                assert(!RfabCompat::ShouldBlockFalseBossResetHeal(
-                    /*aEncounterActiveWithLivingAllies=*/true,
-                    /*aIsBossOrHighHpActor=*/true,
-                    /*aServerCurrentHp=*/1200.0f,
-                    /*aServerMaxHp=*/5000.0f,
-                    /*aProposedHp=*/1350.0f));
-
-                // Legitimate out-of-combat reset when encounter has ended (team wiped / left leash) is NOT blocked:
-                assert(!RfabCompat::ShouldBlockFalseBossResetHeal(
-                    /*aEncounterActiveWithLivingAllies=*/false,
-                    /*aIsBossOrHighHpActor=*/true,
-                    /*aServerCurrentHp=*/1200.0f,
-                    /*aServerMaxHp=*/5000.0f,
-                    /*aProposedHp=*/5000.0f));
 
                 // Transitional door open states normalize cleanly so doors never permanently desync:
                 assert(RfabCompat::AreDoorStatesCompatibleForSync(1u, 1u)); // kOpen == kOpen
@@ -682,7 +658,7 @@ int main()
             }
 
             // [Issues #5 & #6] Network-created vs native cell 0xFFxxxxxx tracking, FormIdComponent on deferred spawns,
-            // non-leader ownership handoff from downed owner, and lock-free AI downed detection/target switching
+            // simulation authority preservation when owner is downed, and lock-free AI target switching
             {
                 const std::string actorExtH = readTextFile("Code/client/Games/ActorExtension.h");
                 const std::string srvCharCpp = readTextFile("Code/server/Services/CharacterService.cpp");
@@ -693,15 +669,16 @@ int main()
                 assert(actorExtH.find("IsDownedPlayer()") != std::string::npos);
                 assert(charSvcCpp.find("pActor->GetExtension()->SetCreatedByNetwork(true);") != std::string::npos);
                 assert(charSvcCpp.find("m_world.emplace_or_replace<FormIdComponent>(aEntity, pActor->formID);") != std::string::npos);
-                assert(srvCharCpp.find("partyService.IsPlayerLeader(acMessage.pPlayer) || ownerDowned || !ownerValidInRange") != std::string::npos);
+                assert(srvCharCpp.find("isOrphanEntity || !ownerValidInRange") != std::string::npos);
                 assert(animSysCpp.find("kLifeStateBleedout") != std::string::npos);
-                assert(actorCpp.find("pTargetActor->GetExtension()->IsDownedPlayer()") != std::string::npos);
+                assert(actorCpp.find("pDet->level = -1000") == std::string::npos);
                 assert(combatCtrlCpp.find("#if 0") == std::string::npos);
-                assert(combatCtrlCpp.find("FindBestStandingPlayerTargetFor(pAttacker)") != std::string::npos);
+                assert(combatCtrlCpp.find("FindBestStandingPlayerTargetFor(spAttacker.Get())") != std::string::npos);
+                assert(combatCtrlCpp.find("if (spReplacement)") != std::string::npos);
                 assert(downedCpp.find("->StartCombatEx(") == std::string::npos);
                 assert(downedCpp.find("pNpc->SetCombatTargetEx(pNearestLivingAlly);") != std::string::npos);
 
-                const auto findPos = rfabSvcCpp.find("Actor* RfabAdapterService::FindBestStandingPlayerTargetFor(");
+                const auto findPos = rfabSvcCpp.find("GamePtr<Actor> RfabAdapterService::FindBestStandingPlayerTargetFor(");
                 const auto setAllyPos = rfabSvcCpp.find("void RfabAdapterService::SetLocalAllyProtectionEnabled(");
                 assert(findPos != std::string::npos && setAllyPos != std::string::npos && findPos < setAllyPos);
                 const std::string findBody = rfabSvcCpp.substr(findPos, setAllyPos - findPos);
@@ -1418,10 +1395,10 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(pFalmer->IntegerLookupTable.size() <= 64);
     }
 
-    // 2. Verify CoopOwnership::EvaluateVoluntaryClaim accepts a standing non-leader party member claiming an enemy
-    //    from a downed leader immediately (even within the 1500ms anti-flap window) while rejecting claims FROM a downed player.
+    // 2. Verify CoopOwnership::EvaluateVoluntaryClaim preserves simulation continuity (anti-flap hold)
+    //    even when the connected in-range owner enters bleedout, while rejecting claims FROM a downed player.
     {
-        const auto acceptFromDownedLeader = CoopOwnership::EvaluateVoluntaryClaim(
+        const auto holdPreservedWhenOwnerDowned = CoopOwnership::EvaluateVoluntaryClaim(
             /*aCurrentOwnerId=*/1u,
             /*aChallengerId=*/2u,
             /*aLastChangedAtMs=*/1000ull,
@@ -1431,7 +1408,7 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
             /*aOwnerValidInRange=*/true,
             /*aOwnerDowned=*/true,
             /*aChallengerDowned=*/false);
-        REQUIRE(acceptFromDownedLeader == CoopOwnership::ClaimDecision::kAccept);
+        REQUIRE(holdPreservedWhenOwnerDowned == CoopOwnership::ClaimDecision::kRejectHoldWindowActive);
 
         const auto rejectDownedChallenger = CoopOwnership::EvaluateVoluntaryClaim(
             /*aCurrentOwnerId=*/2u,

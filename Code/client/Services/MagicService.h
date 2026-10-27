@@ -46,6 +46,7 @@ struct MagicService
      * @see UpdateRevealOtherPlayersEffect
      */
     void StartRevealingOtherPlayers() noexcept;
+    void ResetForWorldReload() noexcept;
 
   protected:
     /**

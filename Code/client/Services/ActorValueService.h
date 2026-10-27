@@ -31,12 +31,7 @@ public:
 
     TP_NOCOPYMOVE(ActorValueService);
 
-    /**
-     * @brief Records the native unscaled 1x engine permanent health before remote SetActorValues mutates it,
-     *        or divides a dynamic 0xFFxxxxxx actor's scaled remote health cleanly without 1/3 or 9x drift.
-     */
-    void CaptureNativeBaseMaxHealth(Actor* apActor) noexcept;
-    void SeedUnscaledMaxHealthFromRemote(uint32_t aFormId, float aScaledMaxHealth) noexcept;
+    void ResetForWorldReload() noexcept;
 
 private:
     enum ValueType : uint8_t
@@ -62,8 +57,6 @@ private:
 
     void BroadcastActorValues() noexcept;
     void CreateActorValuesComponent(entt::entity aEntity, Actor* apActor) noexcept;
-    void ApplyHealthScaling() noexcept;
-    void ApplyHealthMultiplier(Actor* apActor, ActorValuesComponent& aComponent, float aMultiplier) noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -71,6 +64,4 @@ private:
 
     //! @brief Server ids and collected health changes.
     Map<uint32_t, float> m_smallHealthChanges;
-    //! @brief Exact unscaled 1.0x base max health per non-player actor formId (prevents 3^K drift across ownership transfers).
-    Map<uint32_t, float> m_unscaledMaxHealth;
 };

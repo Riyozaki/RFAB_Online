@@ -1754,35 +1754,6 @@ struct CoopAllyActionPolicy
     return false;
 }
 
-// Prevents a wounded boss (< 85% MaxHP) from snapping straight back to >= 98% MaxHP (out-of-combat reset heal)
-// when one player goes Downed-on-Knee or aggro switches while at least one party member is still alive and fighting!
-// Normal RFAB in-combat regeneration (e.g. Dragon Priest / Troll / Vampire ticks) is 100% preserved.
-[[nodiscard]] inline bool ShouldBlockFalseBossResetHeal(
-    bool aEncounterActiveWithLivingAllies,
-    bool aIsBossOrHighHpActor,
-    float aServerCurrentHp,
-    float aServerMaxHp,
-    float aProposedHp) noexcept
-{
-    if (!aEncounterActiveWithLivingAllies || !aIsBossOrHighHpActor)
-        return false;
-
-    if (!std::isfinite(aServerCurrentHp) || !std::isfinite(aServerMaxHp) || !std::isfinite(aProposedHp))
-        return false;
-
-    if (aServerMaxHp < 500.0f || aServerCurrentHp <= 0.0f)
-        return false;
-
-    if (aServerCurrentHp <= (aServerMaxHp * 0.85f) &&
-        aProposedHp >= (aServerMaxHp * 0.98f) &&
-        (aProposedHp - aServerCurrentHp) >= (aServerMaxHp * 0.30f))
-    {
-        return true;
-    }
-
-    return false;
-}
-
 // Normalizes transitional TESObjectREFR::OpenState values (kOpening=2 -> kOpen=1, kClosing=4 -> kClosed=3)
 // so door activations never permanently desync when one client is 1 frame into a transition.
 [[nodiscard]] inline constexpr uint8_t NormalizeDoorOpenState(uint8_t aOpenState) noexcept

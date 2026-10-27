@@ -100,29 +100,7 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
         if (id == kHealthActorValueIndex && pCharComp && !pCharComp->IsPlayer() && !pCharComp->IsDead())
         {
             const auto curIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
-            const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
             const float currentHp = (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end()) ? curIt->second : 0.f;
-            const float maxHp = (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end()) ? maxIt->second : 0.f;
-            const bool isBossOrHighHp = pCharComp->IsDragon() || (maxHp >= 800.0f);
-            const auto& encounterCoord = m_world.GetEncounterService().GetCoordinator();
-            const bool encounterActiveWithLivingAllies =
-                encounterCoord.IsEncounterActiveWithLivingParticipants() ||
-                (acMessage.pPlayer && encounterCoord.IsPlayerDowned(acMessage.pPlayer->GetId()));
-
-            if (RfabCompat::ShouldBlockFalseBossResetHeal(
-                    encounterActiveWithLivingAllies,
-                    isBossOrHighHp,
-                    currentHp,
-                    maxHp,
-                    sanitized))
-            {
-                NotifyHealthChangeBroadcast rollbackOwnerHp{};
-                rollbackOwnerHp.Id = message.Id;
-                rollbackOwnerHp.DeltaHealth = currentHp - sanitized;
-                if (acMessage.pPlayer && rollbackOwnerHp.DeltaHealth < -0.05f)
-                    acMessage.pPlayer->Send(rollbackOwnerHp);
-                continue;
-            }
 
             if (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end() &&
                 actorValuesComponent.LastExternalDamageAtMs != 0 &&
@@ -273,46 +251,21 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
         actorValuesComponent.LastExternalDamageAtMs = nowMs;
 
     const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
-    float updatedHealth = std::max(0.f, (std::isfinite(currentHealth) ? currentHealth : 0.f) + sanitizedDelta);
-
     const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
     const float maxHealth = (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() && std::isfinite(maxIt->second))
         ? maxIt->second
         : 0.f;
-    if (maxHealth > 0.f)
-    {
-        updatedHealth = std::min(updatedHealth, maxHealth);
-    }
 
-    if (sanitizedDelta > 0.f && pCharacterComponent && !pCharacterComponent->IsPlayer() && !pCharacterComponent->IsDead())
-    {
-        const bool isBossOrHighHp = pCharacterComponent->IsDragon() || (maxHealth >= 800.0f);
-        const auto& encounterCoord = m_world.GetEncounterService().GetCoordinator();
-        const bool encounterActiveWithLivingAllies =
-            encounterCoord.IsEncounterActiveWithLivingParticipants() ||
-            (acMessage.pPlayer && encounterCoord.IsPlayerDowned(acMessage.pPlayer->GetId()));
+    const auto applied = CoopDamagePipeline::ApplyAuthoritativeServerHealthDelta(
+        currentHealth,
+        maxHealth,
+        sanitizedDelta);
 
-        if (RfabCompat::ShouldBlockFalseBossResetHeal(
-                encounterActiveWithLivingAllies,
-                isBossOrHighHp,
-                currentHealth,
-                maxHealth,
-                updatedHealth))
-        {
-            NotifyHealthChangeBroadcast rollbackOwnerHp{};
-            rollbackOwnerHp.Id = message.Id;
-            rollbackOwnerHp.DeltaHealth = -sanitizedDelta;
-            if (acMessage.pPlayer)
-                acMessage.pPlayer->Send(rollbackOwnerHp);
-            return;
-        }
-    }
-
-    actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = updatedHealth;
+    actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = applied.UpdatedHealth;
 
     NotifyHealthChangeBroadcast notify;
     notify.Id = message.Id;
-    notify.DeltaHealth = sanitizedDelta;
+    notify.DeltaHealth = applied.ClampedBroadcastDelta;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))

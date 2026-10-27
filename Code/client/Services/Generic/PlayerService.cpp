@@ -95,6 +95,49 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
         pWorldEncountersEnabled->f = 0.f;
 }
 
+void PlayerService::RestoreMultiplayerGlobalsAfterWorldReload() noexcept
+{
+    m_respawnTeleportGuard.NotifyConnected(NowSteadyMsForPlayerService());
+    m_respawnTimer = 0.0;
+    m_knockdownStart = false;
+    m_godmodeStart = false;
+    m_cachedMainSpellId = 0;
+    m_cachedSecondarySpellId = 0;
+    m_cachedPowerId = 0;
+
+    if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
+        pKillMove->f = 0.f;
+
+    if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+        pWorldEncountersEnabled->f = 0.f;
+
+    const auto& settings = m_world.GetServerSettings();
+    if (!settings.GreetingsEnabled)
+    {
+        if (float* greetDistance = Settings::GetGreetDistance())
+            *greetDistance = 0.f;
+    }
+
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+    {
+        if (Settings::IsRfabModpackActive())
+        {
+            const int32_t normalized = RfabCompat::NormalizeRfabEngineDifficultyIndex(pPlayer->difficulty);
+            if (pPlayer->difficulty != normalized)
+                pPlayer->SetDifficulty(normalized);
+        }
+        else if (m_serverDifficulty >= 0 && m_serverDifficulty <= 5)
+        {
+            pPlayer->SetDifficulty(m_serverDifficulty);
+        }
+
+        pPlayer->SetPlayerRespawnMode(settings.DownedSystemEnabled || settings.DeathSystemEnabled);
+    }
+
+    m_respawnTeleportGuard.NotifyServerSettings(settings.DeathSystemEnabled, settings.DownedSystemEnabled);
+    ToggleDeathSystem(settings.DeathSystemEnabled && !settings.DownedSystemEnabled);
+}
+
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
     m_respawnTeleportGuard.NotifyDisconnected(NowSteadyMsForPlayerService());
@@ -110,7 +153,9 @@ void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 
     m_serverDifficulty = m_previousDifficulty = 6;
 
-    ToggleDeathSystem(false);
+    m_isDeathSystemEnabled = false;
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetPlayerRespawnMode(false);
 
     if (TESGlobal* pKillMove = Cast<TESGlobal>(TESForm::GetById(0x100F19)))
         pKillMove->f = m_hasCachedRfabBaseline ? m_previousKillMove : 1.f;
@@ -472,5 +517,9 @@ void PlayerService::ToggleDeathSystem(bool aSet) noexcept
     m_isDeathSystemEnabled = aSet;
 
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pPlayer->SetPlayerRespawnMode(aSet);
+    {
+        const bool keepNativeBleedoutMode =
+            m_transport.IsConnected() && m_world.GetServerSettings().DownedSystemEnabled;
+        pPlayer->SetPlayerRespawnMode(aSet || keepNativeBleedoutMode);
+    }
 }

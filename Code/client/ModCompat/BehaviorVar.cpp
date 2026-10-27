@@ -30,6 +30,7 @@
 #include <immersive_launcher/launcher.h>
 #include <BSAnimationGraphManager.h>
 #include <Games/ActorExtension.h>
+#include <CoopAnimationState.h>
 #include "BehaviorVar.h"
 #include "BehaviorVarsMap.h"
 
@@ -295,12 +296,32 @@ const AnimationGraphDescriptor* BehaviorVar::ConstructModdedDescriptor(
     TiltedPhoques::Vector<uint32_t> floatVector(floatVarSorted.begin(), floatVarSorted.end());
     TiltedPhoques::Vector<uint32_t> intVector(intVarSorted.begin(), intVarSorted.end());
 
+    // Classify every synced Havok float variable into continuous linear, circular [0, 360) angle,
+    // or discrete step (MCO/SCAR/TUDM weapon flags, speed multipliers, i-frame windows, timers).
+    TiltedPhoques::Map<uint32_t, std::string_view> indexToVarName;
+    for (const auto& [varName, varIdx] : acReverseMap)
+        indexToVarName.emplace(varIdx, std::string_view(varName.data(), varName.size()));
+
+    TiltedPhoques::Vector<AnimationFloatBlendMode> floatBlendModes;
+    floatBlendModes.reserve(floatVector.size());
+    for (const uint32_t varIdx : floatVector)
+    {
+        AnimationFloatBlendMode mode = AnimationFloatBlendMode::kContinuousLinear;
+        if (const auto nameIt = indexToVarName.find(varIdx); nameIt != indexToVarName.end())
+        {
+            mode = static_cast<AnimationFloatBlendMode>(
+                CoopAnimationState::ClassifyBehaviorFloatBlendKind(nameIt->second));
+        }
+        floatBlendModes.push_back(mode);
+    }
+
     // Construct a new descriptor on the stack (no heap leak) and register into the
     // node-stable, shared_mutex-protected AnimationGraphDescriptorManager.
     AnimationGraphDescriptor animGraphDescriptor{};
     animGraphDescriptor.BooleanLookUpTable = std::move(boolVector);
     animGraphDescriptor.FloatLookupTable = std::move(floatVector);
     animGraphDescriptor.IntegerLookupTable = std::move(intVector);
+    animGraphDescriptor.FloatBlendModes = std::move(floatBlendModes);
 
     AnimationGraphDescriptorManager::Builder(AnimationGraphDescriptorManager::Get(), acNewHash, std::move(animGraphDescriptor));
     return AnimationGraphDescriptorManager::Get().GetDescriptor(acNewHash);

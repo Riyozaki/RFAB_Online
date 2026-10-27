@@ -10,6 +10,7 @@ struct ReviveActionRequest final : ClientMessage
     {
         StartChannel = 0,
         CancelChannel = 1,
+        HealingSpellRevive = 2,
     };
 
     ReviveActionRequest()

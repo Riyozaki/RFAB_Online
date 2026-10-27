@@ -29,14 +29,9 @@ struct DiscoveryService final : BSTEventSink<TESLoadGameEvent>
 
     void ResetLoadedForms() noexcept;
     void ReconcileMissingWorldEntities() noexcept;
+    void VisitCell(bool aForceTrigger = false) noexcept;
 
 protected:
-    /**
-     * Checks whether the cell has changed, and if so,
-     * notify the client about the new location.
-     * @param aForceTrigger Forcefully notify the client about the current location
-     */
-    void VisitCell(bool aForceTrigger = false) noexcept;
     /**
      * Checks whether the grid cell has shifted, and if so,
      * notify the client about the newly loaded cells.

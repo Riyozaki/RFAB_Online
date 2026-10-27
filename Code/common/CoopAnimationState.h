@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -303,5 +305,142 @@ struct ReplayEntryView
     }
 
     return false;
+}
+
+// ============================================================================
+// v3.0 Phase 4C — Continuous vs Circular vs Discrete BehaviorVar Float Blending
+// ============================================================================
+// Separates continuous Havok locomotion/aiming variables (`SpeedSampled`, `TurnDelta`, `Pitch`,
+// `CastBlend`, `TDM_VelocityX/Y`) from circular `0..360` degree angles (`Direction`, preventing
+// 358 -> 2 degree moonwalk through 180!) and discrete step/config/multiplier/window variables
+// (`weaponSpeedMult`, `weapAdj`, `playbackSpeed`, `TUDM` weapon flags `onehanded`/`twohanded`
+// & `IFrameR`/`DodgeSpeed`, `ProjectGapClose` timers), which must NEVER be half-lerped!
+enum class BehaviorFloatBlendKind : uint8_t
+{
+    kContinuousLinear = 0,
+    kCircularDegrees360 = 1,
+    kDiscreteStep = 2,
+};
+
+[[nodiscard]] inline BehaviorFloatBlendKind ClassifyBehaviorFloatBlendKind(std::string_view aVarName) noexcept
+{
+    if (aVarName.empty())
+        return BehaviorFloatBlendKind::kContinuousLinear;
+
+    const std::string lower = ToAsciiLower(aVarName);
+
+    // 1. Circular [0, 360) degree angles — must interpolate along shortest arc, never linearly across 359 -> 1!
+    if (lower == "direction" ||
+        lower == "swimdirection" ||
+        lower == "staggerdirection" ||
+        lower == "tdm_horseaimturn_angle_absolute")
+    {
+        return BehaviorFloatBlendKind::kCircularDegrees360;
+    }
+
+    // 2. Discrete step / weapon-flag / playback-multiplier / i-frame window / config floats (Vanilla + MCO/SCAR/TUDM/PGC/UD):
+    if (lower == "weapadj" ||
+        lower == "fequipweapadj" ||
+        lower == "weaponspeedmult" ||
+        lower == "2hmweaponspeedmult" ||
+        lower == "leftweaponspeedmult" ||
+        lower == "mc_2hm_weapspeed" ||
+        lower == "playbackspeed" ||
+        lower == "isfirstperson" ||
+        lower == "fisfirstperson" ||
+        lower == "dodgespeed" ||
+        lower == "maxspeedpenalty" ||
+        lower == "speedpenalty" ||
+        lower == "iframer" ||
+        lower == "iframes" ||
+        lower == "invincibleframer" ||
+        lower == "invincibleframes" ||
+        lower == "distance" ||
+        lower == "dagger" ||
+        lower == "unarmed" ||
+        lower == "shield" ||
+        lower == "onehanded" ||
+        lower == "twohanded" ||
+        lower == "fpgc_update_time_required" ||
+        lower == "fpgc_update_time_counter" ||
+        lower.ends_with("weaponspeedmult") ||
+        lower.ends_with("weapspeed") ||
+        lower.starts_with("iframe") ||
+        lower.starts_with("invincibleframe"))
+    {
+        return BehaviorFloatBlendKind::kDiscreteStep;
+    }
+
+    return BehaviorFloatBlendKind::kContinuousLinear;
+}
+
+[[nodiscard]] inline float LerpCircularDegrees360(float aFromDeg, float aToDeg, float aAlpha) noexcept
+{
+    if (!std::isfinite(aFromDeg))
+        return std::isfinite(aToDeg) ? aToDeg : 0.0f;
+    if (!std::isfinite(aToDeg))
+        return aFromDeg;
+
+    const float clampedAlpha = std::clamp(aAlpha, 0.0f, 1.0f);
+    float diff = std::fmod(aToDeg - aFromDeg, 360.0f);
+    if (diff > 180.0f)
+        diff -= 360.0f;
+    else if (diff < -180.0f)
+        diff += 360.0f;
+
+    float result = std::fmod(aFromDeg + diff * clampedAlpha, 360.0f);
+    if (result < 0.0f)
+        result += 360.0f;
+    return result;
+}
+
+[[nodiscard]] inline float BlendAnimationFloatValue(
+    float aFirst,
+    float aSecond,
+    float aActionDiscrete,
+    bool aHasFreshActionDiscrete,
+    float aAlpha,
+    BehaviorFloatBlendKind aKind) noexcept
+{
+    switch (aKind)
+    {
+    case BehaviorFloatBlendKind::kDiscreteStep:
+        if (aHasFreshActionDiscrete && std::isfinite(aActionDiscrete))
+            return aActionDiscrete;
+        if (std::isfinite(aFirst))
+            return aFirst;
+        return std::isfinite(aSecond) ? aSecond : 0.0f;
+
+    case BehaviorFloatBlendKind::kCircularDegrees360:
+        return LerpCircularDegrees360(aFirst, aSecond, aAlpha);
+
+    case BehaviorFloatBlendKind::kContinuousLinear:
+    default:
+    {
+        if (!std::isfinite(aFirst))
+            return std::isfinite(aSecond) ? aSecond : 0.0f;
+        if (!std::isfinite(aSecond))
+            return aFirst;
+
+        const float clampedAlpha = std::clamp(aAlpha, 0.0f, 1.0f);
+        if (std::fabs(aSecond - aFirst) < 500.0f)
+            return aFirst + (aSecond - aFirst) * clampedAlpha;
+
+        // Discontinuous jump >= 500: hold causal `aFirst` until `second.Tick` arrives (`clampedAlpha >= 1.0f`),
+        // never snapping prematurely into a future snapshot!
+        return (clampedAlpha >= 0.999f) ? aSecond : aFirst;
+    }
+    }
+}
+
+[[nodiscard]] constexpr bool ShouldPreferActionDiscreteVariables(
+    uint64_t aActionTick,
+    uint64_t aFirstSnapshotTick,
+    size_t aActionBoolCount,
+    size_t aActionIntCount,
+    size_t aActionFloatCount) noexcept
+{
+    return aActionTick > aFirstSnapshotTick &&
+           (aActionBoolCount > 0 || aActionIntCount > 0 || aActionFloatCount > 0);
 }
 } // namespace CoopAnimationState

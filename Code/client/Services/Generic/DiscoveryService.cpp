@@ -2,6 +2,7 @@
 
 #include <Services/DiscoveryService.h>
 #include <Services/CharacterService.h>
+#include <Services/CoordinatedSaveService.h>
 #include <Games/TES.h>
 
 #include <Games/References.h>
@@ -287,6 +288,14 @@ void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept
         return;
 
     VisitCell();
+
+    // Phase 3 (`WorldReloadBarrier`): when a non-leader Guest finishes `.ess` loading before Host,
+    // keep updating `VisitCell()` (so cell topology stays accurate) while holding NPC `VisitForms()`
+    // until Host releases the reload barrier (or the safety timeout expires), guaranteeing Host claims
+    // canonical `Sticky Host Cell Authority` without double-transfer churn.
+    if (m_world.GetCoordinatedSaveService().IsHoldingWorldDiscoveryForHostBarrier())
+        return;
+
     VisitForms();
 }
 
@@ -332,10 +341,15 @@ BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDis
     }
 
     // Clear stale pre-load form IDs (especially 0x14 PlayerCharacter and nearby NPCs destroyed during
-    // DetachAllActorsForEngineLoad) so VisitForms() immediately re-creates their EnTT entities.
+    // DetachAllActorsForEngineLoad) so VisitForms() immediately re-creates their EnTT entities once
+    // `EndEngineWorldLoad()` and the `WorldReloadBarrier` Host gate settle.
     ResetLoadedForms();
-    VisitCell(true);
-    VisitForms();
+    if (!m_world.GetCharacterService().IsEngineWorldLoading())
+    {
+        VisitCell(true);
+        if (!m_world.GetCoordinatedSaveService().IsHoldingWorldDiscoveryForHostBarrier())
+            VisitForms();
+    }
 
     return BSTEventResult::kOk;
 }

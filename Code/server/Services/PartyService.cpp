@@ -141,11 +141,11 @@ void PartyService::OnPartyCreate(const PacketEvent<PartyCreateRequest>& acPacket
         spdlog::debug("[PartyService]: Created party for {}", player->GetId());
         SendPartyJoinedEvent(party, player);
 
-        if (m_parties.size() == 1 && bAutoPartyJoin)
+        if (bAutoPartyJoin)
         {
             for (Player* otherPlayer : m_world.GetPlayerManager())
             {
-                if (otherPlayer->GetId() != player->GetId())
+                if (otherPlayer && otherPlayer->GetId() != player->GetId() && !IsPlayerInParty(otherPlayer))
                 {
                     party.Members.push_back(otherPlayer);
                     otherPlayer->GetParty().JoinedPartyId = partyId;
@@ -154,9 +154,9 @@ void PartyService::OnPartyCreate(const PacketEvent<PartyCreateRequest>& acPacket
                     SendPartyJoinedEvent(party, otherPlayer);
                 }
             }
-
-            BroadcastPartyInfo(partyId);
         }
+
+        BroadcastPartyInfo(partyId);
     }
 }
 
@@ -290,24 +290,26 @@ void PartyService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
             SendPartyJoinedEvent(party, acEvent.pPlayer);
             BroadcastPartyInfo(partyId);
         }
-        else if (m_parties.size() == 1 && !acEvent.pPlayer->GetParty().JoinedPartyId.has_value())
+        else if (!m_parties.empty() && !acEvent.pPlayer->GetParty().JoinedPartyId.has_value())
         {
-            for (Player* player : m_world.GetPlayerManager())
+            uint32_t primaryPartyId = std::numeric_limits<uint32_t>::max();
+            for (const auto& [candidateId, candidateParty] : m_parties)
             {
-                if (IsPlayerInParty(player))
-                {
-                    auto& playerPartyComponent = player->GetParty();
-                    Party& party = m_parties[*playerPartyComponent.JoinedPartyId];
+                if (!candidateParty.Members.empty() && candidateId < primaryPartyId)
+                    primaryPartyId = candidateId;
+            }
 
+            if (primaryPartyId != std::numeric_limits<uint32_t>::max())
+            {
+                Party& party = m_parties[primaryPartyId];
+                if (std::find(party.Members.begin(), party.Members.end(), acEvent.pPlayer) == party.Members.end())
                     party.Members.push_back(acEvent.pPlayer);
-                    acEvent.pPlayer->GetParty().JoinedPartyId = *playerPartyComponent.JoinedPartyId;
-                    m_sessionLedger.RecordPartyJoin(identityKey, *playerPartyComponent.JoinedPartyId, false, nowMs);
+                acEvent.pPlayer->GetParty().JoinedPartyId = primaryPartyId;
+                m_sessionLedger.RecordPartyJoin(identityKey, primaryPartyId, false, nowMs);
 
-                    spdlog::info("[PartyService]: Auto-added {} to co-op party {}", acEvent.pPlayer->GetUsername().c_str(), *playerPartyComponent.JoinedPartyId);
-                    SendPartyJoinedEvent(party, acEvent.pPlayer);
-                    BroadcastPartyInfo(*playerPartyComponent.JoinedPartyId);
-                    break;
-                }
+                spdlog::info("[PartyService]: Auto-added {} to primary co-op party {}", acEvent.pPlayer->GetUsername().c_str(), primaryPartyId);
+                SendPartyJoinedEvent(party, acEvent.pPlayer);
+                BroadcastPartyInfo(primaryPartyId);
             }
         }
     }

@@ -9,9 +9,10 @@ namespace CoopOwnership
 {
 struct PolicyConfig
 {
-    // Minimum hold window before another peer can voluntarily steal an actor via RequestOwnershipClaim.
-    // Forced handoffs (owner disconnect, cell unload, or owner downed while challenger is alive) bypass this window.
-    // Pattern adapted from cranebeaker/coop-anything (MIT License) actor-ownership playbook & OwnershipService.
+    // Minimum hold window before another peer can voluntarily claim a calm world actor.
+    // Forced handoffs occur ONLY when the current owner disconnects or leaves cell/grid range.
+    // Simulation Authority != Combat Target: a player entering bleedout/downed state while still
+    // connected and in range keeps full simulation continuity for active encounters and bosses.
     uint64_t MinVoluntaryHoldMs{1500};
 };
 
@@ -22,7 +23,8 @@ enum class ClaimDecision : uint8_t
     kRejectPlayerAvatar = 2,
     kRejectSummonPinned = 3,
     kRejectChallengerDowned = 4,
-    kRejectHoldWindowActive = 5
+    kRejectHoldWindowActive = 5,
+    kRejectOwnerActiveInCombatOrNonLeader = 6
 };
 
 inline ClaimDecision EvaluateVoluntaryClaim(
@@ -35,8 +37,11 @@ inline ClaimDecision EvaluateVoluntaryClaim(
     bool aCurrentOwnerValidAndInRange,
     bool aCurrentOwnerDowned,
     bool aChallengerDowned,
-    const PolicyConfig& acConfig = {}) noexcept
+    const PolicyConfig& acConfig = {},
+    bool aChallengerIsCalmPartyLeader = false) noexcept
 {
+    (void)aCurrentOwnerDowned;
+
     if (aIsPlayerAvatar)
         return ClaimDecision::kRejectPlayerAvatar;
 
@@ -46,12 +51,14 @@ inline ClaimDecision EvaluateVoluntaryClaim(
     if (aChallengerPlayerId != 0 && aCurrentOwnerPlayerId == aChallengerPlayerId)
         return ClaimDecision::kAlreadyOwner;
 
-    // Never hand AI simulation of a boss/enemy from a standing fighter to a player lying on one knee.
-    if (aChallengerDowned && aCurrentOwnerValidAndInRange && !aCurrentOwnerDowned)
+    // Never hand simulation of an actor away from a connected, in-range owner to a downed challenger.
+    if (aChallengerDowned && aCurrentOwnerPlayerId != 0 && aCurrentOwnerValidAndInRange)
         return ClaimDecision::kRejectChallengerDowned;
 
-    // If the current owner is alive, connected, and still in range of the actor, enforce anti-flap hysteresis.
-    if (aCurrentOwnerPlayerId != 0 && aCurrentOwnerValidAndInRange && !aCurrentOwnerDowned)
+    // Sticky Host Cell Authority: when the PartyLeader (Host) enters a cell and claims a calm world NPC
+    // from a faster-loading guest, allow immediate takeover without waiting for MinVoluntaryHoldMs
+    // (safe from ping-pong because non-leaders are rejected while Host remains in range).
+    if (aCurrentOwnerPlayerId != 0 && aCurrentOwnerValidAndInRange && !aChallengerIsCalmPartyLeader)
     {
         if (aNowMs >= aLastChangedAtMs && (aNowMs - aLastChangedAtMs) < acConfig.MinVoluntaryHoldMs)
             return ClaimDecision::kRejectHoldWindowActive;

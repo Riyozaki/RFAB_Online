@@ -1,0 +1,40 @@
+{
+  "release_id": 424756541,
+  "tag_name": "v2.1.0",
+  "backup_tag_name": "v2.1.0-backup",
+  "name": "RFAB Online v2.1.0 - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)",
+  "target_commitish": "9ffaad51b280c56fd2c3c08d21a2daa77fe04735",
+  "published_at": "2026-10-26T20:50:57Z",
+  "html_url": "https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0",
+  "immutable_backup_policy": "Must never be deleted or clobbered; mirrored automatically to v2.1.0-backup before v3.0.0 builds.",
+  "assets": [
+    {
+      "id": 680100595,
+      "name": "RFAB_Online_v2.1.0_Full_Installer.zip",
+      "size": 176223644,
+      "sha256": "152b9593007df0e0cd9cffc1fedbdaa3543fa052c0dc9aba3e4cc2d8c418eb35",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.1.0/RFAB_Online_v2.1.0_Full_Installer.zip"
+    },
+    {
+      "id": 680100880,
+      "name": "RFAB_Online_v2.1.0_PDB_Symbols.zip",
+      "size": 88252898,
+      "sha256": "1178ab4d4321221e993957aa1e346e5248a6920af279259586ea77cb78558a19",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.1.0/RFAB_Online_v2.1.0_PDB_Symbols.zip"
+    },
+    {
+      "id": 680100521,
+      "name": "RFAB_Online_v2.1.0_Quick_Update.zip",
+      "size": 15673970,
+      "sha256": "55f6dd48f5f740fb416fc53a9eb652e87704ceaae447122c6cf7f7ec1eb05ff0",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.1.0/RFAB_Online_v2.1.0_Quick_Update.zip"
+    },
+    {
+      "id": 680101057,
+      "name": "SHA256SUMS.txt",
+      "size": 310,
+      "sha256": "e0f219a2273add7097391a0c019176952924a5a881d5d4a838544c1b2d97b402",
+      "browser_download_url": "https://github.com/Riyozaki/RFAB_Online/releases/download/v2.1.0/SHA256SUMS.txt"
+    }
+  ]
+}

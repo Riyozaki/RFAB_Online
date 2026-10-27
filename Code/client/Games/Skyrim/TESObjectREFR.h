@@ -190,6 +190,7 @@ struct TESObjectREFR : TESForm
     void Disable() const noexcept;
     void Enable() const noexcept;
     void MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept;
+    void MoveToCellSeamless(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept;
     void MoveToWorldOrCell(TESObjectCELL* apCell, TESWorldSpace* apWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation) const noexcept;
     void PayGold(int32_t aAmount) noexcept;
     void PayGoldToContainer(TESObjectREFR* pContainer, int32_t aAmount) noexcept;

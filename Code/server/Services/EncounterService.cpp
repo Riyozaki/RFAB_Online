@@ -109,6 +109,13 @@ void EncounterService::OnReviveActionRequest(const PacketEvent<ReviveActionReque
 
     if (pkt.Action == ReviveActionRequest::ActionType::StartChannel)
     {
+        Player* pTarget = m_world.GetPlayerManager().GetById(pkt.TargetPlayerId);
+        if (pTarget && pReviver->GetParty().JoinedPartyId.has_value() && pTarget->GetParty().JoinedPartyId.has_value() &&
+            pReviver->GetParty().JoinedPartyId != pTarget->GetParty().JoinedPartyId)
+        {
+            return;
+        }
+
         if (m_coordinator.TryStartAllyRevive(pReviver->GetId(), pkt.TargetPlayerId, NowEncounterMs()))
         {
             NotifyReviveState started{};
@@ -119,6 +126,33 @@ void EncounterService::OnReviveActionRequest(const PacketEvent<ReviveActionReque
             started.HealthFraction = cfg.ReviveHealthFraction;
             started.GraceSec = cfg.PostReviveGraceSec;
             GameServer::Get()->SendToPlayers(started, nullptr);
+        }
+    }
+    else if (pkt.Action == ReviveActionRequest::ActionType::HealingSpellRevive)
+    {
+        Player* pTarget = m_world.GetPlayerManager().GetById(pkt.TargetPlayerId);
+        if (!pTarget)
+            return;
+
+        if (pReviver->GetId() != pkt.TargetPlayerId &&
+            pReviver->GetParty().JoinedPartyId.has_value() && pTarget->GetParty().JoinedPartyId.has_value() &&
+            pReviver->GetParty().JoinedPartyId != pTarget->GetParty().JoinedPartyId)
+        {
+            return;
+        }
+
+        uint32_t actualReviverId = 0;
+        if (m_coordinator.TryInstantSpellRevive(pReviver->GetId(), pkt.TargetPlayerId, actualReviverId))
+        {
+            NotifyReviveState revived{};
+            revived.Status = NotifyReviveState::ReviveStatus::RevivedByAlly;
+            revived.TargetPlayerId = pkt.TargetPlayerId;
+            revived.ReviverPlayerId = actualReviverId;
+            revived.HealthFraction = cfg.ReviveHealthFraction;
+            revived.GraceSec = cfg.PostReviveGraceSec;
+            GameServer::Get()->SendToPlayers(revived, nullptr);
+
+            BroadcastPlayerDownedState(pTarget, false, 0.f, 0.f, 0.f);
         }
     }
     else

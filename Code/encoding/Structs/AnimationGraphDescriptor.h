@@ -1,5 +1,12 @@
 #pragma once
 
+enum class AnimationFloatBlendMode : uint8_t
+{
+    kContinuousLinear = 0,
+    kCircularDegrees360 = 1,
+    kDiscreteStep = 2,
+};
+
 struct AnimationGraphDescriptor
 {
     AnimationGraphDescriptor() = default;
@@ -12,6 +19,22 @@ struct AnimationGraphDescriptor
         BooleanLookUpTable.assign(acBooleanList, acBooleanList + N);
         FloatLookupTable.assign(acFloatList, acFloatList + O);
         IntegerLookupTable.assign(acIntegerList, acIntegerList + P);
+    }
+
+    template <std::size_t N, std::size_t O, std::size_t P>
+    AnimationGraphDescriptor(
+        const uint32_t (&acBooleanList)[N],
+        const uint32_t (&acFloatList)[O],
+        const uint32_t (&acIntegerList)[P],
+        const AnimationFloatBlendMode (&acFloatBlendModes)[O])
+        : AnimationGraphDescriptor(acBooleanList, acFloatList, acIntegerList)
+    {
+        FloatBlendModes.assign(acFloatBlendModes, acFloatBlendModes + O);
+    }
+
+    [[nodiscard]] AnimationFloatBlendMode GetFloatBlendMode(std::size_t aSlot) const noexcept
+    {
+        return aSlot < FloatBlendModes.size() ? FloatBlendModes[aSlot] : AnimationFloatBlendMode::kContinuousLinear;
     }
 
     bool IsSynced(uint32_t aIdx) const
@@ -34,4 +57,5 @@ struct AnimationGraphDescriptor
     TiltedPhoques::Vector<uint32_t> BooleanLookUpTable;
     TiltedPhoques::Vector<uint32_t> FloatLookupTable;
     TiltedPhoques::Vector<uint32_t> IntegerLookupTable;
+    TiltedPhoques::Vector<AnimationFloatBlendMode> FloatBlendModes;
 };

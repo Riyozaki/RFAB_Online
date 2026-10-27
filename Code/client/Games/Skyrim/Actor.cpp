@@ -385,9 +385,10 @@ void Actor::SetWeaponDrawnEx(bool aDraw) noexcept
         spdlog::debug("Setting weapon drawn after update: {:X}:{}, current state: {}", formID, aDraw, actorState.IsWeaponDrawn());
     }
 
+    const bool prevForce = g_forceAnimation;
     g_forceAnimation = true;
     SetWeaponDrawn(aDraw);
-    g_forceAnimation = false;
+    g_forceAnimation = prevForce;
 }
 
 static thread_local bool s_execInitPackage = false;
@@ -1385,6 +1386,7 @@ void Actor::FixVampireLordModel() noexcept
 
     EquipManager::Get()->Equip(this, pLordArmor, nullptr, 1, nullptr, false, true, false, false);
 
+    const bool prevForce = g_forceAnimation;
     g_forceAnimation = true;
 
     BSFixedString str("isLevitating");
@@ -1402,7 +1404,7 @@ void Actor::FixVampireLordModel() noexcept
     //BSFixedString weapEquip("WeapEquip");
     //SendAnimationEvent(&weapEquip);
 
-    g_forceAnimation = false;
+    g_forceAnimation = prevForce;
 }
 
 char TP_MAKE_THISCALL(HookSetPosition, Actor, NiPoint3& aPosition)
@@ -1461,8 +1463,7 @@ bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
 TP_THIS_FUNCTION(TDamageActor, bool, Actor, float aDamage, Actor* apHitter, bool aKillMove);
 static TDamageActor* RealDamageActor = nullptr;
 static thread_local bool s_inAuthoritativeDamageHook = false;
-static thread_local bool s_interceptLethalPlayerDamageInHook = false;
-static thread_local bool s_lethalPlayerDamageTriggered = false;
+static thread_local bool s_inNativeBleedoutNudge = false;
 
 struct ScopedDamageHookGuard
 {
@@ -1475,22 +1476,15 @@ struct ScopedDamageHookGuard
     bool m_prev{false};
 };
 
-struct ScopedLethalPlayerDamageIntercept
+struct ScopedNativeBleedoutNudgeGuard
 {
-    ScopedLethalPlayerDamageIntercept() noexcept
-        : m_prevIntercept(s_interceptLethalPlayerDamageInHook)
-        , m_prevTriggered(s_lethalPlayerDamageTriggered)
+    ScopedNativeBleedoutNudgeGuard() noexcept
+        : m_prev(s_inNativeBleedoutNudge)
     {
-        s_interceptLethalPlayerDamageInHook = true;
-        s_lethalPlayerDamageTriggered = false;
+        s_inNativeBleedoutNudge = true;
     }
-    ~ScopedLethalPlayerDamageIntercept() noexcept
-    {
-        s_interceptLethalPlayerDamageInHook = m_prevIntercept;
-        s_lethalPlayerDamageTriggered = m_prevTriggered;
-    }
-    bool m_prevIntercept{false};
-    bool m_prevTriggered{false};
+    ~ScopedNativeBleedoutNudgeGuard() noexcept { s_inNativeBleedoutNudge = m_prev; }
+    bool m_prev{false};
 };
 
 // TODO: this is flawed, since it does not account for invulnerable actors
@@ -1499,7 +1493,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     if (!apThis)
         return false;
 
-    if (!World::IsCreated() || !World::IsConnectedCached())
+    if (!World::IsCreated() || !World::IsConnectedCached() || s_inNativeBleedoutNudge)
         return TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
 
     const auto coopPolicy =
@@ -1519,8 +1513,22 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     if (apHitter)
         World::Get().GetRunner().Trigger(HitEvent(apHitter->formID, apThis->formID));
 
+    const auto* pTargetExtForScale = apThis->GetExtension();
+    const bool scaleTargetIncomingDamage =
+        pTargetExtForScale &&
+        CoopDamagePipeline::ShouldScaleIncomingEnemyDamage(
+            pTargetExtForScale->IsPlayer(),
+            apThis->IsPlayerTeammate(),
+            apThis->IsPlayerSummon(),
+            apThis->IsCommandedActor(),
+            apThis->IsMount());
+
     const float currentHealth = apThis->GetActorValue(ActorValueInfo::kHealth);
-    const float estimatedRealDamage = GameplayFormulas::CalculateRealDamage(apThis, aDamage, aKillMove);
+    const float rawEstimatedDamage = GameplayFormulas::CalculateRealDamage(apThis, aDamage, aKillMove);
+    const float estimatedRealDamage = -CoopDamagePipeline::ScaleIncomingEnemyDamageDelta(
+        -rawEstimatedDamage,
+        World::GetEnemyHealthMultiplierCached(),
+        scaleTargetIncomingDamage);
     const bool wouldKill = (currentHealth - estimatedRealDamage) <= 0.f;
 
     auto applyAuthoritativeDamage = [&]() -> bool
@@ -1561,7 +1569,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     const auto* pExHittee = apThis->GetExtension();
     if (pExHittee->IsLocalPlayer())
     {
-        if (!World::Get().GetServerSettings().PvpEnabled && !coopPolicy.AllowPartySparring)
+        if (!World::IsPvpEnabledCached() && !coopPolicy.AllowPartySparring)
         {
             if (apHitter)
             {
@@ -1583,25 +1591,28 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
             if (downedSvc.IsLocalPlayerDowned() || downedSvc.IsLocalPlayerInvulnerable())
                 return false;
 
-            // Preserve 100% genuine MaxHP, CurrentHP, GetHealthPercentage(), and mid-hit temporaryModifier buffs
-            // across RFAB.dll / HookDamage.dll / Requiem damage formulas, intercepting fatal subtraction cleanly inside
-            // HookRestoreActorValue (SE 37513) right before kHealth would ever drop <= 1.0f!
+            // 100% Native Skyrim SE Bleedout (`Essential + NoBleedoutRecovery` at `0.0f HP`):
+            // Keep Essential + NoBleedoutRecovery armed before RealDamageActor (with killmoves suppressed),
+            // let HookRestoreActorValue clamp overkill cleanly at exact 0.0f (never 1.0f, never -1500.0f),
+            // so SkyrimSE.exe natively transitions 0x14 into ACTOR_LIFE_STATE::kBleedout without fighting MCO/Havok.
+            if (!apThis->IsEssential())
+                apThis->SetPlayerRespawnMode(true);
+
             ScopedDamageHookGuard dmgGuard;
-            ScopedLethalPlayerDamageIntercept lethalGuard;
             const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
 
             const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, false);
 
             const float realHealthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
-            if (s_lethalPlayerDamageTriggered || realHealthAfter <= 1.0f)
-            {
-                downedSvc.FinalizeLethalHitCushion(apThis, healthBefore);
-                return false;
-            }
-
             const float actualDelta = realHealthAfter - healthBefore;
             if (actualDelta != 0.f)
                 World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+
+            if (apThis->actorState.IsBleedingOut() || realHealthAfter <= 0.0f)
+            {
+                downedSvc.LatchNativeBleedoutEntered(apThis);
+                return false;
+            }
 
             return result;
         }
@@ -1683,10 +1694,26 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
 TP_THIS_FUNCTION(TRestoreActorValue, void, Actor, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue);
 static TRestoreActorValue* RealRestoreActorValue = nullptr;
 
+void Actor::TriggerNativeBleedout() noexcept
+{
+    SetPlayerRespawnMode(true);
+    if (actorState.IsBleedingOut() || !RealDamageActor)
+        return;
+
+    ScopedDamageHookGuard dmgGuard;
+    ScopedActorValueOverride avOverride;
+    const float curHp = GetActorValue(ActorValueInfo::kHealth);
+    if (curHp > 0.0f && RealRestoreActorValue)
+        TiltedPhoques::ThisCall(RealRestoreActorValue, this, ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, -curHp);
+
+    ScopedNativeBleedoutNudgeGuard nudgeGuard;
+    (void)TiltedPhoques::ThisCall(RealDamageActor, this, 1.0f, nullptr, false);
+}
+
 // Unified hook on Actor::RestoreActorValue (SE ID 37513 @ 0x620900, exact ABI: RCX = Actor*, EDX = ForceMode, R8D = AV, XMM3 = float):
-// 1. Intercepts ALL direct health damage on local player (including RFAB.dll custom combat/magic damage,
-//    poisons, bleeds, fall damage, and scripts) BEFORE kHealth ever goes <= 0 (-50..-500 impossible!).
-// 2. Blocks 100% of unauthorized heals/regen/potions/DoTs on local player while Downed-on-Knee or in revive grace.
+// 1. Clamps overkill subtraction on local player cleanly at exact 0.0f under Essential + NoBleedoutRecovery
+//    so SkyrimSE.exe natively enters kBleedout without ever accumulating -500 HP overkill debt or clamping at 1.0f.
+// 2. Blocks 100% of unauthorized heals/regen/potions/DoTs on local player while in Bleedout or post-revive grace.
 // 3. Blocks passive local health regeneration on remote actors without interfering with authoritative damage/sync.
 void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode aMode, uint32_t aId, float aValue)
 {
@@ -1698,6 +1725,24 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
 
     if (aMode == ActorValueOwner::ForceMode::DAMAGE && aId == ActorValueInfo::kHealth && apThis)
     {
+        const float rawDeltaValue = aValue;
+        if (!ScopedActorValueOverride::IsOverriden() && aValue < 0.0f)
+        {
+            if (const auto* pScaleExt = apThis->GetExtension())
+            {
+                const bool shouldScaleEnemyDamage = CoopDamagePipeline::ShouldScaleIncomingEnemyDamage(
+                    pScaleExt->IsPlayer(),
+                    apThis->IsPlayerTeammate(),
+                    apThis->IsPlayerSummon(),
+                    apThis->IsCommandedActor(),
+                    apThis->IsMount());
+                aValue = CoopDamagePipeline::ScaleIncomingEnemyDamageDelta(
+                    aValue,
+                    World::GetEnemyHealthMultiplierCached(),
+                    shouldScaleEnemyDamage);
+            }
+        }
+
         if (auto* pExt = apThis->GetExtension())
         {
             if (pExt->IsRemote())
@@ -1711,7 +1756,7 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                     if (!s_inApplyActorEffect &&
                         !pExt->IsPlayer() &&
                         !apThis->IsGhost() &&
-                        aValue < -0.05f &&
+                        rawDeltaValue < -0.05f &&
                         Actor::HasLocalPlayerScriptDamageWindow(apThis->formID))
                     {
                         const float prevInfamy = apThis->GetActorValue(ActorValueInfo::kInfamy);
@@ -1731,7 +1776,7 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                             apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, std::max(0.0f, prevInfamy));
                         }
 
-                        if (actualDelta < -0.05f)
+                        if (actualDelta < -0.005f)
                             World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
                     }
                     return;
@@ -1745,33 +1790,44 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
         PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
         if (pLocalPlayer && apThis == pLocalPlayer)
         {
+            if (s_inNativeBleedoutNudge)
+            {
+                const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
+                if (aValue < 0.0f && curHp <= 0.0f)
+                    return;
+                TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, (curHp > 0.0f && aValue < -curHp) ? -curHp : aValue);
+                return;
+            }
+
             auto& downed = World::Get().GetDownedStateService();
             if (downed.ShouldBlockPlayerHealthMutation(aValue))
                 return;
 
-            if (s_interceptLethalPlayerDamageInHook && aValue < 0.0f)
+            if (downed.IsSystemActive() && aValue < 0.0f)
             {
+                if (!pLocalPlayer->IsEssential())
+                    pLocalPlayer->SetPlayerRespawnMode(true);
+
                 const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
-                if ((curHp + aValue) <= 1.0f)
+                if ((curHp + aValue) <= 0.0f)
                 {
-                    s_lethalPlayerDamageTriggered = true;
-                    if (curHp > 1.0f)
-                        TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, 1.0f - curHp);
+                    const float exactZeroDelta = (curHp > 0.0f) ? -curHp : 0.0f;
+                    if (exactZeroDelta < 0.0f)
+                        TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, exactZeroDelta);
+
+                    if (!s_inAuthoritativeDamageHook)
+                    {
+                        if (!ScopedActorValueOverride::IsOverriden() && exactZeroDelta != 0.0f)
+                            World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, exactZeroDelta));
+                        downed.LatchNativeBleedoutEntered(pLocalPlayer);
+                    }
                     return;
                 }
             }
-            else if (!s_inAuthoritativeDamageHook)
-            {
-                if (aValue < 0.0f)
-                {
-                    const float curHp = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
-                    if (downed.InterceptPotentialFatalPlayerDamage(pLocalPlayer, curHp, -aValue))
-                        return;
-                }
 
-                if (!ScopedActorValueOverride::IsOverriden() && aValue != 0.0f)
-                    World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, aValue));
-            }
+            if (!s_inAuthoritativeDamageHook && !ScopedActorValueOverride::IsOverriden() && aValue != 0.0f)
+                World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, aValue));
+
             TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
             return;
         }
@@ -1785,13 +1841,13 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
             !s_inAuthoritativeDamageHook &&
             !s_inApplyActorEffect &&
             !ScopedActorValueOverride::IsOverriden() &&
-            (aValue < -0.05f || (aValue > 1.0f && apThis->IsInCombat())))
+            (rawDeltaValue < -0.05f || (rawDeltaValue > 1.0f && apThis->IsInCombat())))
         {
             const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
             TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
             const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
             const float actualDelta = hpAfter - hpBefore;
-            if (actualDelta < -0.05f || actualDelta > 1.0f)
+            if (actualDelta < -0.005f || actualDelta > 1.0f)
                 World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
             return;
         }
@@ -2020,34 +2076,6 @@ void TP_MAKE_THISCALL(HookUpdateDetectionState, ActorKnowledge, void* apState)
             {
                 spdlog::debug("Cancelling detection from remote player to local player, owner: {:X}, target: {:X}", pOwner->formID, pTarget->formID);
                 return;
-            }
-
-            // Suppress AI detection against downed players (both local 0x14 and downed remote clones) directly on
-            // Skyrim's AI worker threads via lock-free atomic ActorExtension::IsDownedPlayer(), preventing enemies
-            // from re-detecting / re-aggroing a downed player or ignoring standing teammates.
-            if (pTargetExt && !(pOwnerExt && pOwnerExt->IsPlayer()))
-            {
-                if (pTargetExt->IsDownedPlayer())
-                {
-                    if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object)
-                    {
-                        pDet->level = -1000;
-                        pDet->inLos = 0;
-                        pDet->hasLos = 0;
-                        pDet->unk16 = 0;
-                    }
-                    return;
-                }
-
-                // Unpoison forced -1000 wipe/downed clamp immediately once the player is alive & standing again
-                // so exterior/interior enemies re-detect both players natively on the very next AI tick!
-                if (pTargetExt->IsPlayer())
-                {
-                    if (ActorKnowledgeDetectionState* pDet = apThis->spDetection.object; pDet && pDet->level <= -999)
-                    {
-                        pDet->level = 0;
-                    }
-                }
             }
         }
     }

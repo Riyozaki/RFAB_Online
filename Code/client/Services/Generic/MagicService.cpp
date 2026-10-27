@@ -1,4 +1,5 @@
 #include <Services/MagicService.h>
+#include <Services/DownedStateService.h>
 #include <Services/RfabAdapterService.h>
 
 #include <World.h>
@@ -392,6 +393,11 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
     // These effects are applied through spell cast sync or CharacterService summon sync
     if (MagicItem* pMagicItem = Cast<MagicItem>(TESForm::GetById(acEvent.SpellID)))
     {
+        if (acEvent.CasterID == 0x14 && acEvent.TargetID != 0x14 && pMagicItem->IsHealingSpell())
+        {
+            m_world.GetDownedStateService().RequestAllySpellReviveOnActor(acEvent.TargetID, acEvent.Magnitude);
+        }
+
         if (pMagicItem->HasSummonEffect())
             return;
 
@@ -529,6 +535,11 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
         const auto coopPolicy = m_world.GetRfabAdapterService().EvaluateCoopAction(pCaster, pActor, isFriendlySupport);
         if (coopPolicy.BlockHarmfulAction)
             return;
+
+        if (pActor == PlayerCharacter::Get() && pSpell->IsHealingSpell())
+        {
+            m_world.GetDownedStateService().NotifyAllyHealingSpellReceivedFromRemote(pCaster, acMessage.Magnitude);
+        }
     }
 
     // This hack is here because slow time seems to be twice as slow when cast by an npc
@@ -896,6 +907,14 @@ void MagicService::ResyncLocalPlayerActiveBuffs() noexcept
         resyncEvt.IsDualCasting = false;
         OnAddTargetEvent(resyncEvt);
     }
+}
+
+void MagicService::ResetForWorldReload() noexcept
+{
+    m_queuedEffects = {};
+    m_queuedRemoteEffects = {};
+    m_activeLocalPlayerSpells.clear();
+    m_buffPollAccumulatorSec = 0.0;
 }
 
 void MagicService::OnCellChangeEvent(const CellChangeEvent&) noexcept

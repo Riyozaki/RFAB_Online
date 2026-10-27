@@ -64,12 +64,12 @@ TEST_CASE("v2.0.3 Phase 0: Immutable v2.0.2 release backup manifest, UTF-8 BOM, 
     }
 
     const std::string buildPs1 = LoadV203RepoFile(root, "Tools/rfab/Build-CloudRelease.ps1");
-    REQUIRE(buildPs1.find("[string]$VersionTag = \"v2.1.0\"") != std::string::npos);
+    REQUIRE(buildPs1.find("[string]$VersionTag = \"v3.0.0\"") != std::string::npos);
     REQUIRE(buildPs1.find("Ensure-V202BackupRelease") != std::string::npos);
     REQUIRE(buildPs1.find("$script:V202BackupReady") != std::string::npos);
 
     const std::string pkgPs1 = LoadV203RepoFile(root, "Tools/rfab/Package-Release.ps1");
-    REQUIRE(pkgPs1.find("[string]$VersionTag = \"v2.1.0\"") != std::string::npos);
+    REQUIRE(pkgPs1.find("[string]$VersionTag = \"v3.0.0\"") != std::string::npos);
 }
 
 TEST_CASE("v2.0.3 Phase 1: EntityIndexTable overlapping handoffs, reconnect identity, and WorldView parity", "[rfab][v203][phase1]")
@@ -263,7 +263,7 @@ TEST_CASE("v2.0.3 Phase 3: RFAB ScriptDamageAuthLedger, ConcentrationSyncLimiter
         REQUIRE(limiter.ShouldAllowSend(0x14u, 500u, 0x12FD0u, 1200));
     }
 
-    SECTION("Phase 3 source invariants verify ResurrectInPlace and server false-boss-heal rollback")
+    SECTION("Phase 3 source invariants verify ResurrectInPlace and clean boss combat continuity without heal-rollback ping-pong")
     {
         const auto root = LocateRepoRootForV203Audit();
         REQUIRE_FALSE(root.empty());
@@ -276,7 +276,7 @@ TEST_CASE("v2.0.3 Phase 3: RFAB ScriptDamageAuthLedger, ConcentrationSyncLimiter
         REQUIRE(magicTargetCpp.find("ArmLocalPlayerScriptDamageWindow") != std::string::npos);
 
         const std::string serverAvCpp = LoadV203RepoFile(root, "Code/server/Services/ActorValueService.cpp");
-        REQUIRE(serverAvCpp.find("NotifyHealthChangeBroadcast rollbackOwnerHp{}") != std::string::npos);
+        REQUIRE(serverAvCpp.find("ShouldBlockFalseBossResetHeal") == std::string::npos);
     }
 }
 

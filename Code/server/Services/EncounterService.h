@@ -27,6 +27,7 @@ public:
     {
         float ReviveDurationSec{4.0f};
         float ReviveMaxDistanceMeters{4.5f}; // 3.0m client prompt + 1.5m network jitter tolerance
+        float SpellReviveMaxDistanceMeters{45.0f}; // Restoration heal spell range (Heal Other / Grand Healing)
         float ReviveHealthFraction{0.30f};
         float PostReviveGraceSec{3.0f};
         float LeashRadiusMeters{120.0f};
@@ -209,6 +210,54 @@ public:
             return false;
 
         m_channelsByTarget.erase(it);
+        return true;
+    }
+
+    bool TryInstantSpellRevive(uint32_t aSenderId, uint32_t aTargetId, uint32_t& aOutReviverId)
+    {
+        auto targetIt = m_players.find(aTargetId);
+        if (targetIt == m_players.end() || !targetIt->second.IsDowned)
+            return false;
+
+        uint32_t resolvedReviverId = 0;
+        if (aSenderId != aTargetId)
+        {
+            const auto senderIt = m_players.find(aSenderId);
+            if (senderIt == m_players.end() || senderIt->second.IsDowned)
+                return false;
+
+            if (DistanceMeters(senderIt->second, targetIt->second) > m_config.SpellReviveMaxDistanceMeters)
+                return false;
+
+            resolvedReviverId = aSenderId;
+        }
+        else
+        {
+            // Downed target reported being hit by a standing party healer's projectile/AoE heal spell:
+            // resolve the nearest standing ally within SpellReviveMaxDistanceMeters.
+            float bestDist = m_config.SpellReviveMaxDistanceMeters;
+            for (const auto& [allyId, allyRec] : m_players)
+            {
+                if (allyId == aTargetId || allyRec.IsDowned)
+                    continue;
+
+                const float dist = DistanceMeters(allyRec, targetIt->second);
+                if (dist <= bestDist)
+                {
+                    bestDist = dist;
+                    resolvedReviverId = allyId;
+                }
+            }
+
+            if (resolvedReviverId == 0)
+                return false;
+        }
+
+        targetIt->second.IsDowned = false;
+        targetIt->second.HadHostilesWhenDowned = false;
+        m_channelsByTarget.erase(aTargetId);
+        m_wipeStartedAtMs.reset();
+        aOutReviverId = resolvedReviverId;
         return true;
     }
 
