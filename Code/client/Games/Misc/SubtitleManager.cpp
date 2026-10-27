@@ -33,8 +33,8 @@ void* SubtitleManager::HideSubtitle(TESObjectREFR* apSpeaker) noexcept
 void TP_MAKE_THISCALL(HookShowSubtitle, SubtitleManager, TESObjectREFR* apSpeaker, const char* apSubtitleText, bool aIsInDialogue)
 {
     Actor* pActor = apSpeaker ? Cast<Actor>(apSpeaker) : nullptr;
-    if (apSubtitleText && apSubtitleText[0] != '\0' && pActor && pActor->formID != 0 &&
-        pActor->GetExtension() && !pActor->GetExtension()->IsPlayer())
+    if (World::IsCreated() && World::IsConnectedCached() && apSubtitleText && apSubtitleText[0] != '\0' &&
+        pActor && pActor->formID != 0 && pActor->GetExtension() && !pActor->GetExtension()->IsPlayer())
     {
         String safeSubtitle(apSubtitleText);
         World::Get().GetRunner().Trigger(SubtitleEvent(pActor->formID, std::move(safeSubtitle)));

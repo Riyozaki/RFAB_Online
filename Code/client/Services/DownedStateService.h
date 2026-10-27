@@ -128,6 +128,7 @@ private:
     bool m_wasFirstPersonBeforeDowned{false};
     bool m_pendingFirstPersonRestore{false};
     uint8_t m_postReviveSettleFrames{0};
+    uint8_t m_postReviveBleedoutExitFrames{0};
     double m_graceRemainingSec{0.0};
     double m_reportTimerSec{0.0};
     double m_bleedoutReassertTimerSec{0.0};

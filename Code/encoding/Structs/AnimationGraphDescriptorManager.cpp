@@ -47,7 +47,10 @@ void AnimationGraphDescriptorManager::Update(uint64_t aKey, uint64_t newKey, Ani
 {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     (void)aKey;
-    m_descriptors.insert_or_assign(newKey, std::move(aAnimationGraphDescriptor));
+    // Never overwrite an already-registered descriptor in place: worker threads hold raw
+    // const AnimationGraphDescriptor* pointers returned by GetDescriptor() after releasing m_mutex,
+    // and insert_or_assign would destroy and free the existing LookupTable vectors underneath them.
+    m_descriptors.try_emplace(newKey, std::move(aAnimationGraphDescriptor));
 }
 
 std::unordered_map<uint64_t, AnimationGraphDescriptor> AnimationGraphDescriptorManager::GetDescriptors() const

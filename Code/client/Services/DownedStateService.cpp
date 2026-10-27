@@ -313,28 +313,32 @@ void DownedStateService::SetDownedControlLock(bool aLocked) noexcept
         if (pControls->togglePOVHandler)
             pControls->togglePOVHandler->isEnabled = false;
     }
-    else if (m_savedControls.Valid)
+    else
     {
+        // Unconditionally re-enable all 10 PlayerControls input handlers on revive/reset/rollback:
+        // ForceThirdPerson()/ForceFirstPerson() and cross-worldspace Loading Menus transiently zero
+        // togglePOVHandler and pJumpHandler, so relying on m_savedControls.Valid left players unable
+        // to jump or switch to 3rd-person view after a party-wipe rollback.
         if (pControls->pMovementHandler)
-            pControls->pMovementHandler->isEnabled = m_savedControls.Movement;
+            pControls->pMovementHandler->isEnabled = true;
         if (pControls->pSprintHandler)
-            pControls->pSprintHandler->isEnabled = m_savedControls.Sprint;
+            pControls->pSprintHandler->isEnabled = true;
         if (pControls->pReadyWeaponHandler)
-            pControls->pReadyWeaponHandler->isEnabled = m_savedControls.ReadyWeapon;
+            pControls->pReadyWeaponHandler->isEnabled = true;
         if (pControls->pAutoMoveHandler)
-            pControls->pAutoMoveHandler->isEnabled = m_savedControls.AutoMove;
+            pControls->pAutoMoveHandler->isEnabled = true;
         if (pControls->pActivateHandler)
-            pControls->pActivateHandler->isEnabled = m_savedControls.Activate;
+            pControls->pActivateHandler->isEnabled = true;
         if (pControls->pJumpHandler)
-            pControls->pJumpHandler->isEnabled = m_savedControls.Jump;
+            pControls->pJumpHandler->isEnabled = true;
         if (pControls->shoutHandler)
-            pControls->shoutHandler->isEnabled = m_savedControls.Shout;
+            pControls->shoutHandler->isEnabled = true;
         if (pControls->attackBlockHandler)
-            pControls->attackBlockHandler->isEnabled = m_savedControls.AttackBlock;
+            pControls->attackBlockHandler->isEnabled = true;
         if (pControls->sneakHandler)
-            pControls->sneakHandler->isEnabled = m_savedControls.Sneak;
+            pControls->sneakHandler->isEnabled = true;
         if (pControls->togglePOVHandler)
-            pControls->togglePOVHandler->isEnabled = m_savedControls.TogglePOV;
+            pControls->togglePOVHandler->isEnabled = true;
         m_savedControls = {};
     }
 }
@@ -364,6 +368,9 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
 
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 
+    // Lock controls BEFORE ForceThirdPerson() so camera state transitions do not pollute saved handler flags.
+    SetDownedControlLock(true);
+
     // 1st-person skeleton in Skyrim SE has no bleedout pose; switch cleanly to 3rd-person so the player visibly
     // sees their character drop to one knee, and restore 1st-person automatically upon revive.
     m_wasFirstPersonBeforeDowned = false;
@@ -377,7 +384,6 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
     pPlayer->SetWeaponDrawnEx(false);
     pPlayer->SetNoBleedoutRecovery(true);
     pPlayer->StopCombat();
-    SetDownedControlLock(true);
 
     BSFixedString bleedoutLower("bleedoutStart");
     pPlayer->SendAnimationEvent(&bleedoutLower);
@@ -423,6 +429,7 @@ void DownedStateService::SchedulePostReviveHeadAndCameraSettle(bool aRestoreFirs
 {
     m_pendingFirstPersonRestore = m_pendingFirstPersonRestore || aRestoreFirstPerson;
     m_postReviveSettleFrames = std::max<uint8_t>(m_postReviveSettleFrames, 2u);
+    m_postReviveBleedoutExitFrames = std::max<uint8_t>(m_postReviveBleedoutExitFrames, 45u);
 }
 
 void DownedStateService::RestoreLivingCombatTargetability(Actor* apActor, bool aRefreshNearbyAiPackages) noexcept
@@ -591,14 +598,11 @@ void DownedStateService::ResetAllStates() noexcept
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
     {
         RestoreLivingCombatTargetability(pPlayer, wasLocalDowned);
-        if (wasLocalDowned)
-        {
-            BSFixedString bleedoutStopLower("bleedoutStop");
-            pPlayer->SendAnimationEvent(&bleedoutStopLower);
-            BSFixedString bleedoutStop("BleedoutStop");
-            pPlayer->SendAnimationEvent(&bleedoutStop);
-            SchedulePostReviveHeadAndCameraSettle(restoreFirstPerson);
-        }
+        BSFixedString bleedoutStopLower("bleedoutStop");
+        pPlayer->SendAnimationEvent(&bleedoutStopLower);
+        BSFixedString bleedoutStop("BleedoutStop");
+        pPlayer->SendAnimationEvent(&bleedoutStop);
+        SchedulePostReviveHeadAndCameraSettle(restoreFirstPerson);
     }
 
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
@@ -962,12 +966,33 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
     }
     else
     {
-        if (m_postReviveSettleFrames > 0)
+        const bool isLoadingMenuOpen = UI::Get() && UI::Get()->GetMenuOpen(BSFixedString("Loading Menu"));
+        const bool isPlayerReady = !isLoadingMenuOpen && pPlayer && pPlayer->GetNiNode() != nullptr;
+
+        if (isPlayerReady && m_postReviveBleedoutExitFrames > 0)
+        {
+            --m_postReviveBleedoutExitFrames;
+            SetDownedControlLock(false);
+
+            BSFixedString inBleedoutVar("bInBleedout");
+            const bool stillInBleedoutGraph = pPlayer->GetAnimationVariableInt(&inBleedoutVar) != 0;
+            const bool stillInBleedoutLifeState =
+                CoopAnimationState::IsDownedOrBleedoutLifeState(pPlayer->actorState.flags1);
+            if (stillInBleedoutGraph || stillInBleedoutLifeState)
+            {
+                RestoreLivingCombatTargetability(pPlayer, false);
+                BSFixedString bleedoutStopLower("bleedoutStop");
+                pPlayer->SendAnimationEvent(&bleedoutStopLower);
+                BSFixedString bleedoutStop("BleedoutStop");
+                pPlayer->SendAnimationEvent(&bleedoutStop);
+            }
+        }
+
+        if (isPlayerReady && m_postReviveSettleFrames > 0)
         {
             if (m_postReviveSettleFrames >= 2u)
             {
-                if (pPlayer && pPlayer->GetNiNode())
-                    pPlayer->QueueUpdate();
+                pPlayer->QueueUpdate();
                 m_postReviveSettleFrames = 1u;
             }
             else
@@ -979,6 +1004,7 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
                 }
                 m_pendingFirstPersonRestore = false;
                 m_postReviveSettleFrames = 0u;
+                SetDownedControlLock(false);
             }
         }
 

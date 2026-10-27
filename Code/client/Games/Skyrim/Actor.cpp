@@ -45,6 +45,7 @@
 #include <Games/Misc/ActorKnowledge.h>
 
 #include <ExtraData/ExtraDataList.h>
+#include <ExtraData/ExtraLeveledCreature.h>
 #include <ExtraData/ExtraCharge.h>
 #include <ExtraData/ExtraCount.h>
 #include <ExtraData/ExtraEnchantment.h>
@@ -328,6 +329,45 @@ ExPlayerCharacter* Actor::AsExPlayerCharacter() noexcept
 {
     if (this == PlayerCharacter::Get())
         return static_cast<ExPlayerCharacter*>(this);
+
+    return nullptr;
+}
+
+TESNPC* Actor::GetLeveledTemplateBase() const noexcept
+{
+    TESNPC* pNpc = Cast<TESNPC>(baseForm);
+    if (pNpc && !pNpc->IsTemporary())
+        return pNpc;
+
+    if (const auto* pExtraLev = static_cast<const ExtraLeveledCreature*>(extraData.GetByType(ExtraDataType::LeveledCreature)))
+    {
+        if (pExtraLev->npc1 && !pExtraLev->npc1->IsTemporary())
+            return pExtraLev->npc1;
+        if (pExtraLev->npc1)
+        {
+            if (TESNPC* pSource = TESNPC::GetLeveledSourceNpc(pExtraLev->npc1))
+                return pSource;
+            if (TESNPC* pTmpl = pExtraLev->npc1->GetTemplateBase())
+                return pTmpl;
+        }
+        if (pExtraLev->npc2 && !pExtraLev->npc2->IsTemporary())
+            return pExtraLev->npc2;
+        if (pExtraLev->npc2)
+        {
+            if (TESNPC* pSource = TESNPC::GetLeveledSourceNpc(pExtraLev->npc2))
+                return pSource;
+            if (TESNPC* pTmpl = pExtraLev->npc2->GetTemplateBase())
+                return pTmpl;
+        }
+    }
+
+    if (pNpc)
+    {
+        if (TESNPC* pSource = TESNPC::GetLeveledSourceNpc(pNpc))
+            return pSource;
+        if (TESNPC* pTmpl = pNpc->GetTemplateBase())
+            return pTmpl;
+    }
 
     return nullptr;
 }
@@ -2055,7 +2095,7 @@ static TSpeakSoundFunction* RealSpeakSoundFunction = nullptr;
 float TP_MAKE_THISCALL(HookSpeakSoundFunction, Actor, const char* apName, uint32_t* a3, uint32_t a4, uint32_t a5, uint32_t a6, uint64_t a7, uint64_t a8, uint64_t a9, bool a10, uint64_t a11, bool a12, bool a13, bool a14)
 {
     // Guard silent/lip-only guard/NPC topics where apName is null or empty (prevents String(nullptr) strlen crash!).
-    if (apThis && apThis->formID != 0 && apName && apName[0] != '\0')
+    if (World::IsCreated() && World::IsConnectedCached() && apThis && apThis->formID != 0 && apName && apName[0] != '\0')
     {
         if (const auto* pExt = apThis->GetExtension(); !pExt || !pExt->IsRemotePlayer())
         {

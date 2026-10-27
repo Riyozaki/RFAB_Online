@@ -28,7 +28,7 @@ bool TP_MAKE_THISCALL(HookPlayDialogueOption, MenuTopicManager, int32_t aIndex)
             i++;
         }
 
-        if (pText != nullptr)
+        if (pText != nullptr && World::IsCreated() && World::IsConnectedCached())
         {
             String safeText(pText);
             World::Get().GetRunner().Trigger(PlayerDialogueEvent(std::move(safeText)));

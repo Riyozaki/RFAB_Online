@@ -37,7 +37,7 @@
 #include <Camera/PlayerCamera.h>
 
 #include <mutex>
-std::mutex mutex_lock;
+std::recursive_mutex mutex_lock;
 
 // How long we failList a behavior hash that can't be translated.
 // See explanation in BehaviorVar::Patch
@@ -47,6 +47,7 @@ const std::chrono::steady_clock::duration FAILLIST_DURATION(10min);
 BehaviorVar* BehaviorVar::single = nullptr;
 BehaviorVar* BehaviorVar::Get()
 {
+    std::lock_guard<std::recursive_mutex> guard(mutex_lock);
     if (!BehaviorVar::single)
         BehaviorVar::single = new BehaviorVar();
     return BehaviorVar::single;
@@ -453,6 +454,7 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
 // Check if the behavior hash is on the failed liist
 bool BehaviorVar::FailListed(uint64_t hash)
 {
+    std::lock_guard<std::recursive_mutex> guard(mutex_lock);
     auto iter = failedBehaviors.find(hash);
     return iter != failedBehaviors.end() && std::chrono::steady_clock::now() < iter->second;
 }
@@ -460,6 +462,7 @@ bool BehaviorVar::FailListed(uint64_t hash)
 // Place the behavior hash on the failed list
 void BehaviorVar::FailList(uint64_t hash)
 {
+    std::lock_guard<std::recursive_mutex> guard(mutex_lock);
     failedBehaviors.insert_or_assign(hash, std::chrono::steady_clock::now() + FAILLIST_DURATION);
 }
 

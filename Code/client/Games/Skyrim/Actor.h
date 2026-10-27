@@ -200,6 +200,7 @@ struct Actor : TESObjectREFR
     ExPlayerCharacter* AsExPlayerCharacter() noexcept;
 
     // Getters
+    TESNPC* GetLeveledTemplateBase() const noexcept;
     float GetSpeed() noexcept;
     TESForm* GetEquippedWeapon(uint32_t aSlotId) const noexcept;
     TESForm* GetEquippedAmmo() const noexcept;

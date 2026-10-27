@@ -352,6 +352,57 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
             }
         }
 
+        // Trailing v2.1.0+ self-describing TLV extension container (`kTlvContainerMagic`)
+        // holding persistent placed actor snapshots (`PersistentActorsByKey`) keyed by FormId.
+        {
+            constexpr uint64_t kV210TlvContainerExtMagic = 0x544C5643323130ULL;
+            TiltedPhoques::Buffer tlvChunkBuf(512 * 1024);
+            TiltedPhoques::Buffer::Writer chunkWriter(&tlvChunkBuf);
+            Serialization::WriteVarInt(chunkWriter, m_snapshots.size());
+            for (const auto& snap : m_snapshots)
+            {
+                Serialization::WriteVarInt(chunkWriter, snap.PersistentActorsByKey.size());
+                for (const auto& [packedKey, aRec] : snap.PersistentActorsByKey)
+                {
+                    Serialization::WriteVarInt(chunkWriter, packedKey);
+                    aRec.FormId.Serialize(chunkWriter);
+                    aRec.BaseId.Serialize(chunkWriter);
+                    Serialization::WriteFloat(chunkWriter, aRec.CurrentHealth);
+                    Serialization::WriteFloat(chunkWriter, aRec.MaxHealth);
+                    Serialization::WriteBool(chunkWriter, aRec.IsDead);
+                    Serialization::WriteBool(chunkWriter, aRec.HasSpatialState);
+                    if (aRec.HasSpatialState)
+                    {
+                        aRec.CellId.Serialize(chunkWriter);
+                        aRec.WorldSpaceId.Serialize(chunkWriter);
+                        aRec.CenterCoords.Serialize(chunkWriter);
+                        Serialization::WriteFloat(chunkWriter, aRec.Position.x);
+                        Serialization::WriteFloat(chunkWriter, aRec.Position.y);
+                        Serialization::WriteFloat(chunkWriter, aRec.Position.z);
+                        Serialization::WriteFloat(chunkWriter, aRec.Rotation.x);
+                        Serialization::WriteFloat(chunkWriter, aRec.Rotation.y);
+                        Serialization::WriteFloat(chunkWriter, aRec.Rotation.z);
+                    }
+                }
+            }
+
+            CoopCheckpoint::TlvContainerBuilder tlvBuilder;
+            tlvBuilder.AppendChunk(
+                CoopCheckpoint::TlvTag::kV210PersistentActors,
+                tlvChunkBuf.GetWriteData(),
+                chunkWriter.Size());
+            const std::vector<uint8_t> tlvBytes = tlvBuilder.Bytes();
+            if (!tlvBytes.empty())
+            {
+                Serialization::WriteVarInt(writer, kV210TlvContainerExtMagic);
+                Serialization::WriteVarInt(writer, static_cast<uint64_t>(tlvBytes.size()));
+                for (const uint8_t byteVal : tlvBytes)
+                {
+                    writer.WriteBits(static_cast<uint64_t>(byteVal), 8);
+                }
+            }
+        }
+
         return CoopCheckpoint::WriteAtomicCheckpointFile(acPath, rawBuffer.GetWriteData(), writer.Size());
     }
     catch (...)
@@ -537,6 +588,82 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
                         }
                     }
                 }
+
+                if (!reader.Eof())
+                {
+                    constexpr uint64_t kV210TlvContainerExtMagic = 0x544C5643323130ULL;
+                    const uint64_t extMagic3 = Serialization::ReadVarInt(reader);
+                    if (extMagic3 == kV210TlvContainerExtMagic)
+                    {
+                        const uint64_t tlvByteCount = std::min<uint64_t>(
+                            Serialization::ReadVarInt(reader),
+                            4ULL * 1024ULL * 1024ULL);
+                        std::vector<uint8_t> tlvBlob(static_cast<size_t>(tlvByteCount), 0u);
+                        for (size_t bIdx = 0; bIdx < tlvBlob.size(); ++bIdx)
+                        {
+                            uint64_t rawByte = 0;
+                            reader.ReadBits(rawByte, 8);
+                            tlvBlob[bIdx] = static_cast<uint8_t>(rawByte & 0xFFu);
+                        }
+
+                        std::vector<CoopCheckpoint::TlvChunkView> tlvChunks;
+                        if (!tlvBlob.empty() &&
+                            CoopCheckpoint::ParseTlvContainer(
+                                tlvBlob.data(),
+                                tlvBlob.size(),
+                                tlvChunks))
+                        {
+                            for (const auto& chunk : tlvChunks)
+                            {
+                                if (chunk.Tag != static_cast<uint32_t>(CoopCheckpoint::TlvTag::kV210PersistentActors) ||
+                                    !chunk.Data || chunk.ByteLength == 0)
+                                {
+                                    continue;
+                                }
+
+                                TiltedPhoques::Buffer chunkBuffer(chunk.ByteLength);
+                                std::memcpy(chunkBuffer.GetWriteData(), chunk.Data, chunk.ByteLength);
+                                TiltedPhoques::Buffer::Reader chunkReader(&chunkBuffer);
+
+                                const uint64_t tlvSnapCount = std::min<uint64_t>(
+                                    Serialization::ReadVarInt(chunkReader),
+                                    loadedSnapshots.size());
+                                for (uint64_t sIdx = 0; sIdx < tlvSnapCount; ++sIdx)
+                                {
+                                    auto& snap = loadedSnapshots[static_cast<size_t>(sIdx)];
+                                    const uint64_t actorCount = std::min<uint64_t>(
+                                        Serialization::ReadVarInt(chunkReader),
+                                        65536ULL);
+                                    for (uint64_t i = 0; i < actorCount; ++i)
+                                    {
+                                        const uint64_t packedKey = Serialization::ReadVarInt(chunkReader);
+                                        ActorStateRecord aRec{};
+                                        aRec.FormId.Deserialize(chunkReader);
+                                        aRec.BaseId.Deserialize(chunkReader);
+                                        aRec.CurrentHealth = Serialization::ReadFloat(chunkReader);
+                                        aRec.MaxHealth = Serialization::ReadFloat(chunkReader);
+                                        aRec.IsDead = Serialization::ReadBool(chunkReader);
+                                        aRec.HasSpatialState = Serialization::ReadBool(chunkReader);
+                                        if (aRec.HasSpatialState)
+                                        {
+                                            aRec.CellId.Deserialize(chunkReader);
+                                            aRec.WorldSpaceId.Deserialize(chunkReader);
+                                            aRec.CenterCoords.Deserialize(chunkReader);
+                                            aRec.Position.x = Serialization::ReadFloat(chunkReader);
+                                            aRec.Position.y = Serialization::ReadFloat(chunkReader);
+                                            aRec.Position.z = Serialization::ReadFloat(chunkReader);
+                                            aRec.Rotation.x = Serialization::ReadFloat(chunkReader);
+                                            aRec.Rotation.y = Serialization::ReadFloat(chunkReader);
+                                            aRec.Rotation.z = Serialization::ReadFloat(chunkReader);
+                                        }
+                                        if (packedKey != 0)
+                                            snap.PersistentActorsByKey[packedKey] = aRec;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -657,6 +784,26 @@ void SaveSnapshotService::HydratePersistedWorldState() noexcept
                 objRec.CurrentInventory);
         }
     }
+
+    if (auto* pCharSvc = m_world.ctx().find<CharacterService>())
+    {
+        for (const auto& [_, aRec] : latest.PersistentActorsByKey)
+        {
+            if (!aRec.FormId || aRec.FormId.ModId == 0xFFFFFFFFu || !aRec.HasSpatialState)
+                continue;
+            (void)pCharSvc->EnsureDormantPersistentCharacter(
+                aRec.FormId,
+                aRec.BaseId,
+                aRec.CellId,
+                aRec.WorldSpaceId,
+                aRec.CenterCoords,
+                aRec.Position,
+                aRec.Rotation,
+                aRec.IsDead,
+                aRec.CurrentHealth,
+                aRec.MaxHealth);
+        }
+    }
 }
 
 void SaveSnapshotService::RefreshPlayerJoinBaselines() noexcept
@@ -775,6 +922,12 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
             continue;
 
         ActorStateRecord rec{};
+        rec.BaseId = charComp.BaseId.Id;
+        if (const auto* pForm = m_world.try_get<FormIdComponent>(entity);
+            pForm && static_cast<bool>(pForm->Id) && pForm->Id.ModId != 0xFFFFFFFFu)
+        {
+            rec.FormId = pForm->Id;
+        }
         rec.IsDead = charComp.IsDead();
         if (const auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
         {
@@ -801,6 +954,10 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
             rec.Rotation = pMov->Rotation;
         }
         snap.TrackedActors[World::ToInteger(entity)] = rec;
+        if (rec.FormId && rec.FormId.ModId != 0xFFFFFFFFu)
+        {
+            snap.PersistentActorsByKey[CoopWorldView::PackGameIdKey(rec.FormId.ModId, rec.FormId.BaseId)] = rec;
+        }
     }
 
     // 3. Capture authoritative RFAB XP ledger, read XP books, globals & ambush history
@@ -1013,6 +1170,26 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         }
     }
 
+    // 3a-persistent. Ensure persistent placed actors keyed by FormId are restored even if their
+    // transient entt::entity handle changed or was recreated across a server restart / cell unload.
+    for (const auto& [_, savedState] : acSnapshot.PersistentActorsByKey)
+    {
+        if (!savedState.FormId || savedState.FormId.ModId == 0xFFFFFFFFu || !savedState.HasSpatialState)
+            continue;
+
+        (void)m_world.GetCharacterService().EnsureDormantPersistentCharacter(
+            savedState.FormId,
+            savedState.BaseId,
+            savedState.CellId,
+            savedState.WorldSpaceId,
+            savedState.CenterCoords,
+            savedState.Position,
+            savedState.Rotation,
+            savedState.IsDead,
+            savedState.CurrentHealth,
+            savedState.MaxHealth);
+    }
+
     // 3b. Restore world containers & lock states (ObjectComponent + InventoryComponent)
     {
         auto objectView = m_world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
@@ -1066,62 +1243,106 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
 
     // 7a. Restore EVERY player's server state & dispatch NotifyExecuteLoad FIRST so clients teleport to
     // checkpoint coordinates and flush pre-rollback interpolation BEFORE receiving fresh observer spawns!
+    const auto resolvePlayerSnapshotState = [&](Player* apLookupPlayer) noexcept -> const PlayerStateRecord*
+    {
+        if (!apLookupPlayer)
+            return nullptr;
+
+        const std::string lookupIdentKey = MakePlayerIdentityKey(apLookupPlayer);
+        if (!lookupIdentKey.empty())
+        {
+            if (const auto identIt = acSnapshot.PlayersByIdentityKey.find(lookupIdentKey);
+                identIt != acSnapshot.PlayersByIdentityKey.end())
+            {
+                return &identIt->second;
+            }
+        }
+        if (const auto it = acSnapshot.PlayersById.find(apLookupPlayer->GetId()); it != acSnapshot.PlayersById.end())
+            return &it->second;
+        if (!lookupIdentKey.empty())
+        {
+            if (const auto identBaseIt = m_playerJoinBaselinesByIdentityKey.find(lookupIdentKey);
+                identBaseIt != m_playerJoinBaselinesByIdentityKey.end())
+            {
+                return &identBaseIt->second;
+            }
+        }
+        if (const auto baseIt = m_playerJoinBaselines.find(apLookupPlayer->GetId());
+            baseIt != m_playerJoinBaselines.end())
+        {
+            return &baseIt->second;
+        }
+        return nullptr;
+    };
+
     std::vector<Player*> inSessionPlayers;
     for (Player* pPlayer : m_world.GetPlayerManager())
     {
         if (!pPlayer)
             continue;
 
-        const PlayerStateRecord* pPlayerState = nullptr;
-        const std::string identKey = MakePlayerIdentityKey(pPlayer);
-        if (!identKey.empty())
+        const PlayerStateRecord* pPlayerState = resolvePlayerSnapshotState(pPlayer);
+        const PlayerStateRecord* pTransformState = pPlayerState;
+
+        if (const auto partyIdOpt = pPlayer->GetParty().JoinedPartyId; partyIdOpt.has_value())
         {
-            if (const auto identIt = acSnapshot.PlayersByIdentityKey.find(identKey);
-                identIt != acSnapshot.PlayersByIdentityKey.end())
+            if (const auto* pParty = m_world.GetPartyService().GetById(*partyIdOpt))
             {
-                pPlayerState = &identIt->second;
+                Player* pLeader = m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
+                if (pLeader && pLeader != pPlayer)
+                {
+                    const PlayerStateRecord* pLeaderState = resolvePlayerSnapshotState(pLeader);
+                    const bool hasLeaderTransform = pLeaderState && pLeaderState->HasValidTransform;
+                    const bool hasMemberTransform = pPlayerState && pPlayerState->HasValidTransform;
+                    if (CoopCheckpoint::ShouldAnchorPartyMemberToLeaderOnRollback(
+                            hasLeaderTransform,
+                            hasMemberTransform,
+                            hasLeaderTransform ? pLeaderState->WorldSpaceId.BaseId : 0u,
+                            hasLeaderTransform ? pLeaderState->CellId.BaseId : 0u,
+                            hasLeaderTransform ? pLeaderState->Position.x : 0.0f,
+                            hasLeaderTransform ? pLeaderState->Position.y : 0.0f,
+                            hasLeaderTransform ? pLeaderState->Position.z : 0.0f,
+                            hasMemberTransform ? pPlayerState->WorldSpaceId.BaseId : 0u,
+                            hasMemberTransform ? pPlayerState->CellId.BaseId : 0u,
+                            hasMemberTransform ? pPlayerState->Position.x : 0.0f,
+                            hasMemberTransform ? pPlayerState->Position.y : 0.0f,
+                            hasMemberTransform ? pPlayerState->Position.z : 0.0f))
+                    {
+                        pTransformState = pLeaderState;
+                        spdlog::info(
+                            "[RFAB SaveSnapshot] Anchoring party member pid={} rollback transform to leader pid={} (Cell={:X}:{:X}, WS={:X}:{:X})",
+                            pPlayer->GetId(),
+                            pLeader->GetId(),
+                            pLeaderState->CellId.ModId,
+                            pLeaderState->CellId.BaseId,
+                            pLeaderState->WorldSpaceId.ModId,
+                            pLeaderState->WorldSpaceId.BaseId);
+                    }
+                }
             }
-        }
-        if (!pPlayerState)
-        {
-            if (const auto it = acSnapshot.PlayersById.find(pPlayer->GetId()); it != acSnapshot.PlayersById.end())
-                pPlayerState = &it->second;
-        }
-        if (!pPlayerState && !identKey.empty())
-        {
-            if (const auto identBaseIt = m_playerJoinBaselinesByIdentityKey.find(identKey);
-                identBaseIt != m_playerJoinBaselinesByIdentityKey.end())
-            {
-                pPlayerState = &identBaseIt->second;
-            }
-        }
-        if (!pPlayerState)
-        {
-            if (const auto baseIt = m_playerJoinBaselines.find(pPlayer->GetId()); baseIt != m_playerJoinBaselines.end())
-                pPlayerState = &baseIt->second;
         }
 
-        const bool hasTransform = pPlayerState && pPlayerState->HasValidTransform;
+        const bool hasTransform = pTransformState && pTransformState->HasValidTransform;
         const bool useInSession = CoopCheckpoint::ShouldServerPreferInSessionRollback(aIsPartyWipe, hasTransform, acSnapshot.SlotName);
 
-        if (useInSession && pPlayerState && pPlayer->GetCharacter().has_value())
+        if (useInSession && (pTransformState || pPlayerState) && pPlayer->GetCharacter().has_value())
         {
             const entt::entity charEntity = *pPlayer->GetCharacter();
             if (m_world.valid(charEntity))
             {
-                if (pPlayerState->HasValidTransform)
+                if (pTransformState && pTransformState->HasValidTransform)
                 {
                     if (auto* pMov = m_world.try_get<MovementComponent>(charEntity))
                     {
-                        pMov->Position = pPlayerState->Position;
-                        pMov->Rotation = pPlayerState->Rotation;
+                        pMov->Position = pTransformState->Position;
+                        pMov->Rotation = pTransformState->Rotation;
                         pMov->Sent = false;
                     }
-                    CellIdComponent restoredCell{pPlayerState->CellId, pPlayerState->WorldSpaceId, pPlayerState->CenterCoords};
+                    CellIdComponent restoredCell{pTransformState->CellId, pTransformState->WorldSpaceId, pTransformState->CenterCoords};
                     pPlayer->SetCellComponent(restoredCell);
                     m_world.emplace_or_replace<CellIdComponent>(charEntity, restoredCell);
                 }
-                if (pPlayerState->HasInventory)
+                if (pPlayerState && pPlayerState->HasInventory)
                 {
                     if (auto* pInv = m_world.try_get<InventoryComponent>(charEntity))
                         pInv->Content = pPlayerState->CurrentInventory;
@@ -1137,15 +1358,15 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         loadCmd.AllowPreJoinFallback = !hasTransform;
         loadCmd.UseInSessionRollback = useInSession;
         loadCmd.RestoreHealthFraction = 1.0f;
-        if (pPlayerState && pPlayerState->HasValidTransform)
+        if (pTransformState && pTransformState->HasValidTransform)
         {
             loadCmd.HasRestoreTransform = true;
-            loadCmd.TargetCellId = pPlayerState->CellId;
-            loadCmd.TargetWorldSpaceId = pPlayerState->WorldSpaceId;
-            loadCmd.PositionX = pPlayerState->Position.x;
-            loadCmd.PositionY = pPlayerState->Position.y;
-            loadCmd.PositionZ = pPlayerState->Position.z;
-            loadCmd.RotationZ = pPlayerState->Rotation.z;
+            loadCmd.TargetCellId = pTransformState->CellId;
+            loadCmd.TargetWorldSpaceId = pTransformState->WorldSpaceId;
+            loadCmd.PositionX = pTransformState->Position.x;
+            loadCmd.PositionY = pTransformState->Position.y;
+            loadCmd.PositionZ = pTransformState->Position.z;
+            loadCmd.RotationZ = pTransformState->Rotation.z;
         }
         if (pPlayerState && pPlayerState->HasInventory)
         {

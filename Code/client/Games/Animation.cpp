@@ -25,6 +25,9 @@ thread_local bool g_forceAnimation = false;
 
 uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apAction)
 {
+    if (!World::IsCreated() || !World::IsConnectedCached())
+        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
+
     if (!apAction || !apAction->actor)
         return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
@@ -33,7 +36,12 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
     if (!pExtension)
         return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
-    if (!pExtension->IsRemote() || g_forceAnimation)
+    // Fast path for forced local animations and echoed someFlag==1 actions:
+    // never run SaveAnimationVariables() / BehaviorVarPatch across 8 AI worker threads when the action won't be sent.
+    if (g_forceAnimation || apAction->someFlag == 1)
+        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
+
+    if (!pExtension->IsRemote())
     {
         ActionEvent action;
         action.State1 = pActor->actorState.flags1;
@@ -48,14 +56,8 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
 
         const auto res = TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
-        // spdlog::debug("Action event name: {}, target name: {}", apAction->eventName.AsAscii(), apAction->targetEventName.AsAscii());
-
-        // This is a weird case where it gets spammed and doesn't do much, not sure if it still needs to be sent over the network
-        if (apAction->someFlag == 1 || g_forceAnimation)
-            return res;
-
-        action.EventName = apAction->eventName.AsAscii();
-        action.TargetEventName = apAction->targetEventName.AsAscii();
+        action.EventName = apAction->eventName.AsAscii() ? apAction->eventName.AsAscii() : "";
+        action.TargetEventName = apAction->targetEventName.AsAscii() ? apAction->targetEventName.AsAscii() : "";
         action.IdleId = apAction->idleForm ? apAction->idleForm->formID : 0;
 
         // Save for later (thread-safe sharded store: HookPerformAction executes on Skyrim AI worker threads!)

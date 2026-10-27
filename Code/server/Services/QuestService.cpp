@@ -128,6 +128,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         break;
     }
 
+    const uint32_t partyNumber = partyId.value_or(0);
     // All side effects have been generated. Now just logging and a forwarding decision left.
     if (inParty && pParty)
     {
@@ -148,7 +149,30 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
         // Whether the quest stage was advanced by the Party Leader or by a Party Member (e.g. pulling a dungeon lever,
         // picking up a Dragonstone, reading an Elder Scroll, or completing a dialogue), broadcast directly to all other
         // party members and record them in dedupHistory so remote ScriptSetStage application never loops back.
-        if (!useAggressiveSend && dedupHistory.FoundWPlayerId(notify.Id, notify.Stage, notify.Status, pPlayer->GetId()))
+        bool allPartyMembersAlreadyHaveStage = true;
+        if (notify.Status != NotifyQuestUpdate::Stopped)
+        {
+            for (Player* pMember : pParty->Members)
+            {
+                if (!pMember || pMember == pPlayer)
+                    continue;
+                const auto& memberEntries = pMember->GetQuestLogComponent().QuestContent.Entries;
+                const auto memberQuestIt = std::find_if(
+                    memberEntries.begin(),
+                    memberEntries.end(),
+                    [&notify](const auto& e) { return e.Id == notify.Id; });
+                if (memberQuestIt == memberEntries.end() || memberQuestIt->Stage < notify.Stage)
+                {
+                    allPartyMembersAlreadyHaveStage = false;
+                    break;
+                }
+            }
+        }
+
+        if (!useAggressiveSend &&
+            (dedupHistory.FoundWPlayerId(notify.Id, notify.Stage, notify.Status, pPlayer->GetId()) ||
+             (partyNumber != 0 && allPartyMembersAlreadyHaveStage &&
+              dedupHistory.FoundWPartyId(notify.Id, notify.Stage, notify.Status, partyNumber))))
         {
             spdlog::debug(
                 "{}: dropping duplicate quest update: {:X}, stage: {}, status: {}, by {} {:X}",
@@ -161,7 +185,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
             return;
         }
 
-        dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pPlayer->GetId());
+        dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pPlayer->GetId(), std::chrono::steady_clock::now(), partyNumber);
 
         for (Player* pMember : m_world.GetPlayerManager())
         {
@@ -187,7 +211,7 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
                 continue;
             }
 
-            dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pMember->GetId());
+            dedupHistory.Add(notify.Id, notify.Stage, notify.Status, pMember->GetId(), std::chrono::steady_clock::now(), partyNumber);
             pMember->Send(notify);
         }
     }
@@ -299,6 +323,7 @@ void QuestService::SyncLeaderQuestLogToMember(Player* apLeader, Player* apMember
     if (!pParty)
         return;
 
+    const uint32_t partyNumber = apLeader->GetParty().JoinedPartyId.value_or(0);
     auto& dedupHistory = pParty->GetQuestStageDedupHistory();
     const auto& leaderEntries = apLeader->GetQuestLogComponent().QuestContent.Entries;
     auto& memberEntries = apMember->GetQuestLogComponent().QuestContent.Entries;
@@ -328,7 +353,7 @@ void QuestService::SyncLeaderQuestLogToMember(Player* apLeader, Player* apMember
         catchupNotify.SceneMaster = dedupHistory.GetSceneMaster();
         catchupNotify.ClientQuestType = 8; // SideQuest / general syncable quest
 
-        dedupHistory.Add(catchupNotify.Id, catchupNotify.Stage, catchupNotify.Status, apMember->GetId());
+        dedupHistory.Add(catchupNotify.Id, catchupNotify.Stage, catchupNotify.Status, apMember->GetId(), std::chrono::steady_clock::now(), partyNumber);
         apMember->Send(catchupNotify);
     }
 }
@@ -347,20 +372,29 @@ void QuestService::SyncPartyQuestsForPlayer(Player* apPlayer) noexcept
         return;
 
     Player* pLeader = m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
-    if (!pLeader)
-        return;
-
-    if (apPlayer == pLeader)
+    if (pLeader)
     {
-        for (Player* pMember : pParty->Members)
+        if (apPlayer == pLeader)
         {
-            if (pMember && pMember != pLeader)
-                SyncLeaderQuestLogToMember(pLeader, pMember);
+            for (Player* pMember : pParty->Members)
+            {
+                if (pMember && pMember != pLeader)
+                    SyncLeaderQuestLogToMember(pLeader, pMember);
+            }
+        }
+        else
+        {
+            SyncLeaderQuestLogToMember(pLeader, apPlayer);
         }
     }
-    else
+
+    // Reconnect catch-up: also replay any higher quest stages held by other online party members
+    // back to the reconnecting/joining player (including when the party leader reconnects).
+    for (Player* pSource : pParty->Members)
     {
-        SyncLeaderQuestLogToMember(pLeader, apPlayer);
+        if (!pSource || pSource == apPlayer)
+            continue;
+        SyncLeaderQuestLogToMember(pSource, apPlayer);
     }
 }
 
@@ -404,10 +438,23 @@ QuestStageDedupHistory::const_iterator QuestStageDedupHistory::FindWPlayerId(con
     });
 }
 
-void QuestStageDedupHistory::Add(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
-                                 const QuestStatus acQuestStatus, const PlayerId& acPlayerId,
-                                 const TimeStamp acTimeStamp)
+QuestStageDedupHistory::const_iterator QuestStageDedupHistory::FindWPartyId(const QuestOrSceneId& acQuestOrSceneId,
+                                                                            const QuestStage acQuestStage,
+                                                                            const QuestStatus acQuestStatus,
+                                                                            uint32_t aPartyId) noexcept
 {
     Expire();
-    m_cache.emplace_back(acQuestOrSceneId, acQuestStage, acQuestStatus, acPlayerId, acTimeStamp);
+
+    return std::find_if(m_cache.begin(), m_cache.end(), [&](const QuestStageDedupHistory::Entry& e) {
+        return e.questOrSceneId == acQuestOrSceneId && e.questStage == acQuestStage && e.questStatus == acQuestStatus &&
+               e.partyId != 0 && e.partyId == aPartyId;
+    });
+}
+
+void QuestStageDedupHistory::Add(const QuestOrSceneId& acQuestOrSceneId, const QuestStage acQuestStage,
+                                 const QuestStatus acQuestStatus, const PlayerId& acPlayerId,
+                                 const TimeStamp acTimeStamp, uint32_t aPartyId)
+{
+    Expire();
+    m_cache.emplace_back(acQuestOrSceneId, acQuestStage, acQuestStatus, acPlayerId, aPartyId, acTimeStamp);
 }

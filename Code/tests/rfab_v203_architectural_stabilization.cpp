@@ -64,12 +64,12 @@ TEST_CASE("v2.0.3 Phase 0: Immutable v2.0.2 release backup manifest, UTF-8 BOM, 
     }
 
     const std::string buildPs1 = LoadV203RepoFile(root, "Tools/rfab/Build-CloudRelease.ps1");
-    REQUIRE(buildPs1.find("[string]$VersionTag = \"v2.0.3\"") != std::string::npos);
+    REQUIRE(buildPs1.find("[string]$VersionTag = \"v2.1.0\"") != std::string::npos);
     REQUIRE(buildPs1.find("Ensure-V202BackupRelease") != std::string::npos);
     REQUIRE(buildPs1.find("$script:V202BackupReady") != std::string::npos);
 
     const std::string pkgPs1 = LoadV203RepoFile(root, "Tools/rfab/Package-Release.ps1");
-    REQUIRE(pkgPs1.find("[string]$VersionTag = \"v2.0.3\"") != std::string::npos);
+    REQUIRE(pkgPs1.find("[string]$VersionTag = \"v2.1.0\"") != std::string::npos);
 }
 
 TEST_CASE("v2.0.3 Phase 1: EntityIndexTable overlapping handoffs, reconnect identity, and WorldView parity", "[rfab][v203][phase1]")

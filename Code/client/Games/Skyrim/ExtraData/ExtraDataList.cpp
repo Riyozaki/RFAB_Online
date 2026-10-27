@@ -38,24 +38,16 @@ bool ExtraDataList::Contains(ExtraDataType aType) const
 
 BSExtraData* ExtraDataList::GetByType(ExtraDataType aType) const
 {
-    if (!ScopedExtraDataOverride::IsOverriden())
-        lock.Lock();
+    BSScopedLock<BSRecursiveLock> _(lock);
 
     if (!Contains(aType))
-    {
-        if (!ScopedExtraDataOverride::IsOverriden())
-            lock.Unlock();
         return nullptr;
-    }
 
     auto pEntry = data;
     while (pEntry != nullptr && pEntry->GetType() != aType)
     {
         pEntry = pEntry->next;
     }
-
-    if (!ScopedExtraDataOverride::IsOverriden())
-        lock.Unlock();
 
     return pEntry;
 }
