@@ -40,7 +40,7 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
         }
     }
 
-    if (World::IsConnectedCached() && apSpell && apThis->pCasterActor->formID != 0)
+    if (World::IsCreated() && World::IsConnectedCached() && apSpell && apThis->pCasterActor->formID != 0)
     {
         World::Get().GetRunner().Trigger(SpellCastEvent(
             apThis->pCasterActor->formID,
@@ -55,7 +55,7 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
 
 void TP_MAKE_THISCALL(HookInterruptCast, ActorMagicCaster, bool abRefund)
 {
-    if (World::IsConnectedCached() && apThis && apThis->pCasterActor && apThis->pCasterActor->formID != 0 && apThis->pCasterActor->GetNiNode())
+    if (World::IsCreated() && World::IsConnectedCached() && apThis && apThis->pCasterActor && apThis->pCasterActor->formID != 0 && apThis->pCasterActor->GetNiNode())
     {
         if (const ActorExtension* pExtended = apThis->pCasterActor->GetExtension(); pExtended && pExtended->IsLocal())
         {

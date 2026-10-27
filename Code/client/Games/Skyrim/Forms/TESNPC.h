@@ -19,15 +19,17 @@ struct TESNPC : TESActorBase
     static constexpr FormType Type = FormType::Npc;
 
     static TESNPC* Create(const String& acBuffer, uint32_t aChangeFlags) noexcept;
+    static TESNPC* GetLeveledSourceNpc(const TESNPC* apNpc) noexcept;
 
     TESNPC* GetTemplateBase() const noexcept
     {
         TESNPC* pTemplate = npcTemplate;
+        uint32_t depth = 0;
 
-        while (pTemplate && pTemplate->IsTemporary())
+        while (pTemplate && pTemplate->IsTemporary() && depth++ < 16u)
             pTemplate = pTemplate->npcTemplate;
 
-        return pTemplate;
+        return (pTemplate && !pTemplate->IsTemporary()) ? pTemplate : nullptr;
     }
 
     struct FaceMorphs

@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v2.0.3` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — актуальная сборка глубокой архитектурной стабилизации (`Two-Phase Ownership` / `EntityIndexTable` / `In-Place Leveled Sync` / `Multi-Hop EngineFixes` / `ScriptDamageAuthLedger + ConcentrationSyncLimiter` / персистентный анти-дюп + чекпоинты с устойчивым ID игрока) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0)** — финальная сборка корневой архитектурной стабилизации (`RemoteEntityModel SSOT` / `100% O(1) ClientWorldView` / `Bidirectional & Cell-Bucketed ServerInterestRegistry` / `ServerCombatAuthorityLedger` / `PartySessionLedger` / `TLV PersistentActorsByKey`) для долгосрочной игры на **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.0.3-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3-backup)** и **[`v2.0.3`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — неприкосновенные эталонные бэкапы релиза `2.0.3` (`SHA-256` зафиксированы в `docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.2-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup)** и **[`v2.0.2`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — неприкосновенные эталонные бэкапы релиза `2.0.2` (`SHA-256` зафиксированы в `docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)** и **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — неприкосновенные эталонные бэкапы релиза `2.0.1` (`SHA-256` зафиксированы в `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`).
 - **[`v1.2.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.2.0)** — сохранённый эталонный бэкап стабильной ветки `1.2.0`.
@@ -9,6 +10,65 @@
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
 
 > **Чистый переход с версии на версию:** при запуске `INSTALL_RFAB_ONLINE.bat` (или `UPDATE_RFAB_ONLINE.bat` из `Quick_Update.zip`) установщик автоматически останавливает фоновый сервер, **полностью удаляет старые файлы прошлой версии** из `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя ваши настройки `STServer.ini`), очищает возможные остатки в `MO2\overwrite` и устанавливает свежую версию с нуля.
+
+---
+
+## [v2.1.0] — 2026-10-26 *(Final Root-Cause Architectural Stabilization: RemoteEntityModel SSOT, 100% O(1) WorldView, Bidirectional Interest Registry, Server Combat Authority Ledger, Reconnect-Stable Party Ledger & TLV Persistent Actors)*
+
+### 🏛️ Фаза 0 — Неприкосновенный бэкап `v2.0.3-backup` и протокольная совместимость `v2.0.x <-> v2.1.x`
+- **Манифест `docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json` и `Ensure-V203BackupRelease` (`Build-CloudRelease.ps1`):** перед публикацией `v2.1.0` облачный пайплайн автоматически зеркалирует релиз `v2.0.3` в `v2.0.3-backup` со строгой проверкой `SHA-256` всех 4 архивов.
+- **Протокольная совместимость `v2.0.x` и `v2.1.x` (`RfabModpackCompat.h`):** `AreBuildVersionsProtocolCompatible` разрешает соединение между клиентами и серверами внутри семейства `2.0.x`–`2.1.x` без изменения формата сетевых пакетов.
+
+### 🎯 Фаза 1 — Единый источник истины `RemoteEntityModel` (SSOT) и 100% `O(1)` индексы `ClientWorldView`
+- **`ResolveAuthoritativeSpawnState` и защита `HasAuthoritativeSpawnPacket` (`Client::CharacterService`):**
+  - В момент готовности 3D (`RunRemoteUpdates`) материализация удалённого актёра всегда читает актуальное состояние из `m_remoteModels[serverId].SpawnRequest`, исключая применение устаревшего снапшота из лямбды `WaitingFor3D`.
+  - В `OnAssignCharacter` флаг `HasAuthoritativeSpawnPacket` защищает авторитетный `BaseId` уровневого NPC от перезаписи локальным роллом `TESLevCharacter`, а при `!pActor->GetNiNode()` создаёт `WaitingFor3D` для гарантированного применения инвентаря, экипировки и состояния смерти после загрузки 3D.
+- **Полная ликвидация `O(N)` линейных сканов ECS (`std::find_if` = 0):**
+  - Все 22 оставшихся вызова `std::find_if` по EnTT-представлениям в `CharacterService.cpp`, `MagicService.cpp`, `CombatService.cpp` и `ObjectService.cpp` заменены на `O(1)` индексные вызовы `Utils::FindActorEntityByFormId`, `FindAnyEntityByFormId` и `FindEntityByServerId`.
+
+### 🌐 Фаза 2 — Двунаправленный и клеточно-индексированный `ServerInterestRegistry`
+- **`CoopWorldView::ServerInterestRegistry` (`Code/common/CoopWorldView.h`, `Server::CharacterService`):**
+  - Добавлен обратный индекс наблюдателей `m_observersByEntity` (`O(1)` удаление сущности в `ForgetEntity` и мгновенный запрос `ObserversOfEntity`) и клеточные бакеты `m_entitiesByCell` / `m_cellByEntity` (`BindEntityCell`, `UnbindEntityCell`, `EntitiesInCell`).
+
+### ⚔️ Фаза 3 — Серверный реестр боевой авторизации (`ServerCombatAuthorityLedger`)
+- **`CoopDamagePipeline::ServerCombatAuthorityLedger` (`Code/common/CoopDamagePipeline.h`, `Server::ActorValueService`, `CombatService`, `MagicService`):**
+  - Сервер коррелирует боевые попадания с заявками стрел/снарядов (`OnProjectileLaunchRequest`) и заклинаний (`OnSpellCastRequest`, `OnAddTargetRequest`).
+  - Не-владельцы больше не могут прислать положительную дельту здоровья (`DeltaHealth >= 0`) от локального пассивного регена; дружественный огонь по участникам группы и их саммонам блокируется на сервере при `PvpEnabled = false`; урон от упавших (`downed`) игроков принимается только для уже летящих снарядов/кастов в окне `1500 мс` после падения.
+
+### 🤝 Фаза 4 — Устойчивая к реконнектам группа (`PartySessionLedger`) и дедупликация квестов по `PartyId`
+- **`CoopWorldView::PartySessionLedger` (`Code/common/CoopWorldView.h`, `Server::PartyService`):**
+  - Состав группы и роль лидера сохраняются за стабильным хешем личности игрока в течение `30 минут` после дисконнекта и автоматически восстанавливаются при повторном входе (`OnPlayerJoin`).
+- **Двусторонняя досинхронизация квестов и `FoundWPartyId` (`Server::QuestService`):**
+  - `QuestStageDedupHistory` дедуплицирует отражённые стадии квестов по `PartyId` при смене `PlayerId` после реконнекта, а `SyncPartyQuestsForPlayer` досинхронизирует прогресс квестов между всеми участниками группы в обе стороны (включая реконнект лидера).
+
+### 💾 Фаза 5 — Самоописывающийся контейнер TLV в `rfab_checkpoints.bin` и персистентная гидратация NPC по `FormId`
+- **TLV-контейнер (`CoopCheckpoint::TlvContainerBuilder` / `ParseTlvContainer`, `kTlvContainerMagic = 0x564C5452`) и `PersistentActorsByKey` (`SaveSnapshotService`, `Server::CharacterService`):**
+  - В конец `rfab_checkpoints.bin` дописывается расширяемый TLV-контейнер с `CRC-32C` каждого чанка (`TlvTag::kV210PersistentActors`), сохраняющий состояние размещённых мировых NPC (`0x00..0xFE`) по стабильному ключу `(ModId, BaseId)`.
+  - При перезапуске сервера (`HydratePersistedWorldState`) и откатах (`ApplyWorldSnapshot`) `EnsureDormantPersistentCharacter` восстанавливает спящие сущности NPC, а при входе первого игрока в локацию (`OnAssignCharacterRequest`) сервер сохраняет их статус смерти и здоровья вместо сброса к дефолтному живому состоянию клиента.
+
+### 🛡️ Фаза 6 — Устранение крашей при телепортации, подключении и в бою (Playtest Root-Cause Fixes)
+- **Инвариант 3D-готовности (`GetNiNode() != nullptr && !IsStillLoading()`) и потокобезопасность `ExtraDataList` (`CharacterService`, `InventoryService`, `MagicService`, `CombatService`, `ExtraDataList.cpp`):**
+  - Вызовы `SetActorInventory`, `EquipManager::EquipItem`, `UnequipItem`, `AddSpell`, `RemoveSpell`, `CastSpellImmediate` и `Launch` больше никогда не выполняются на полусконструированных актёрах без 3D `NiNode` (`SkyrimSE.exe+0x1133D8` / `0x18065D2CB`); при отсутствии 3D состояние откладывается в `WaitingFor3D` до полной загрузки модели.
+  - `ExtraDataList::GetByType` теперь безусловно захватывает `BSScopedLock<BSRecursiveLock> _(lock)` на всём протяжении обхода связного списка `BSExtraData`.
+  - В `MagicService` полностью заблокирована повторная отправка и применение саммон-заклинаний (`HasSummonEffect()` / `IsSummonEffect()`) и временных `0xFFFFFFFF` форм на удалённых клонах, а в `MaterializeRemoteView` запрещено создание пустого `TESNPC::Create` без `AppearanceBuffer` (`race == nullptr`, краш `Дух волка` в `BSTaskPool`).
+- **Потокобезопасный реестр `AnimationGraphDescriptorManager` и `BehaviorVar` (`AnimationGraphDescriptorManager.{h,cpp}`, `BehaviorVar.cpp`, `Animation.cpp`, `BSAnimationGraphManager.cpp`):**
+  - Контейнер дескрипторов анимаций переведён с `TiltedPhoques::Map` (`robin_hood` flat map, переаллокация которого при регистрации нового графа в `BehaviorVar::Patch` вызывала Use-After-Free в соседних потоках Havok) на узло-стабильный `std::unordered_map` под защитой `std::shared_mutex` и `try_emplace`.
+  - В `HookPerformAction` добавлен быстрый выход для несинхронизируемых фоновых NPC до вызова `SaveAnimationVariables`, а `BSAnimationGraphManager::DumpAnimationVariables` / `GetDescriptorKey` защищены `BSScopedLock<BSRecursiveLock>`.
+
+### 🔄 Фаза 7 — Полное исправление отката при смерти всей группы (Party Wipe Rollback & Controls)
+- **Привязка участников группы к чекпоинту лидера при групповом откате (`CoopCheckpoint::ShouldAnchorPartyMemberToLeaderOnRollback`, `SaveSnapshotService::ApplyWorldSnapshot`):**
+  - Если сохранённый чекпоинт был записан до того, как участник группы телепортировался к лидеру (например, друг ещё находился в Солитьюде `0x37EDF`, а затем присоединился к хосту в бою в Вайтране `0x3C`), при вайпе группы откат переносит всех участников группы к точке чекпоинта лидера, а не разбрасывает их по разным городам.
+- **Безусловное восстановление `PlayerControls` и 45-кадровый пост-ревайв энфорсер выхода из Bleedout (`DownedStateService.{h,cpp}`):**
+  - В `CompleteEnterLocalDownedState()` захват `SetDownedControlLock(true)` перенесён **до** `pCam->ForceThirdPerson()`, а `SetDownedControlLock(false)` теперь безусловно включает все 10 обработчиков `PlayerControls` (включая `pJumpHandler` и `togglePOVHandler`), навсегда устраняя потерю прыжка и камеры 3-го лица после возрождения/отката.
+  - После возрождения и `ApplyInSessionRollback` запускается 45-кадровый (`m_postReviveBleedoutExitFrames = 45`) энфорсер (активный после закрытия `Loading Menu` и готовности 3D `NiNode`), который гарантированно выводит граф `0_master.hkx` из `BleedoutIdle` и снимает блокировку управления даже в случае, если пакет отката пришёл в одну миллисекунду с локальным `bleedoutStart`.
+
+### 🧠 Фаза 8 — Исключение застывания NPC и синхронизация пола/голоса уровневых NPC (`TESLevCharacter`)
+- **Разрешение статического шаблона `TESNPC` для уровневых NPC (`TESNPC::HookSetLeveledNpc` SE ID `14257`, `Actor::GetLeveledTemplateBase`, `ExtraLeveledCreature`):**
+  - Перехват движкового `TESNPC::SetLeveledNpc` (`SE ID 14257`) и чтение `ExtraLeveledCreature` (`0x2D`) позволяют `Actor::GetLeveledTemplateBase()` всегда находить реальный статический `.esm`/`.esp` шаблон `TESNPC` вместо локального временного `0xFF00xxxx` клона (`FFFFFFFF:xxxx`).
+  - В результате оба клиента материализуют уровневых бандитов и стражников с одним и тем же полом, внешностью и `BGSVoiceType`, а в `OnNotifyDialogue` добавлен фильтр `CoopAnimationState::HasVoicePathGenderMismatch`, исключающий воспроизведение женских голосовых дорожек на мужских моделях NPC.
+- **Мгновенное подтверждение пред-назначенного владения и пробуждение AI-пакетов (`Server::CharacterService`, `Client::CharacterService`):**
+  - Когда `WakeDormantCharactersInActiveRanges` или `ReconcileAllEntitiesForObserver` назначает игрока владельцем спящего NPC до прихода его `AssignCharacterRequest`, `OnAssignCharacterRequest` теперь мгновенно подтверждает `isOwner = true` (вместо ошибочного ответа `Owner = false`, оставлявшего NPC без локального AI на обоих клиентах).
+  - При любом переходе NPC в локальное владение (`TakeOwnership`, `OnAssignCharacter`, `DematerializeRemoteView`, `RunLocalUpdates`) вызывается `pActor->EvaluatePackage(false, false)` для немедленного пробуждения AI и боевого поведения.
 
 ---
 

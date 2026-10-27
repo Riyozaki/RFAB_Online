@@ -1524,6 +1524,9 @@ inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
         // v1.1.x and v1.2.x share the exact same network packet schema (including AllyProtectionToggle).
         if (sMaj == 1 && sMin >= 1 && cMin >= 1)
             return true;
+        // v2.0.x and v2.1.x share the exact same wire network packet schema (no ActorData or opcode wire changes).
+        if (sMaj == 2 && sMin <= 1 && cMin <= 1)
+            return true;
     }
 
     return false;

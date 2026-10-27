@@ -131,7 +131,7 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
     if (pProjectile)
         Event.Power = pProjectile->fPower;
 
-    if (World::IsConnectedCached())
+    if (World::IsCreated() && World::IsConnectedCached())
         World::Get().GetRunner().Trigger(Event);
 
     return result;

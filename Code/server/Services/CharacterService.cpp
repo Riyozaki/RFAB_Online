@@ -150,6 +150,85 @@ entt::entity CharacterService::FindPersistentCharacterByFormId(const GameId& acF
     return entt::null;
 }
 
+entt::entity CharacterService::EnsureDormantPersistentCharacter(
+    const GameId& acFormId,
+    const GameId& acBaseId,
+    const GameId& acCellId,
+    const GameId& acWorldSpaceId,
+    const GridCellCoords& acCenterCoords,
+    const glm::vec3& acPosition,
+    const glm::vec3& acRotation,
+    bool aIsDead,
+    float aCurrentHealth,
+    float aMaxHealth) const noexcept
+{
+    if (acFormId == GameId{} || acFormId.ModId == std::numeric_limits<uint32_t>::max())
+        return entt::null;
+
+    entt::entity entity = FindPersistentCharacterByFormId(acFormId);
+    if (entity == entt::null || !m_world.valid(entity))
+    {
+        entity = m_world.create();
+        m_world.emplace<FormIdComponent>(entity, acFormId.BaseId, acFormId.ModId);
+        m_world.emplace<OwnerComponent>(entity, nullptr, SteadyClockMs());
+        m_world.emplace<CellIdComponent>(entity, acCellId, acWorldSpaceId, acCenterCoords);
+        auto& charComp = m_world.emplace<CharacterComponent>(entity);
+        if (acBaseId != GameId{})
+            charComp.BaseId = FormIdComponent(acBaseId);
+        charComp.SetDead(aIsDead);
+        m_world.emplace<InventoryComponent>(entity);
+        auto& avComp = m_world.emplace<ActorValuesComponent>(entity);
+        if (aIsDead)
+            avComp.CurrentActorValues.ActorValuesList[24] = 0.0f;
+        else if (aCurrentHealth > 0.0f)
+            avComp.CurrentActorValues.ActorValuesList[24] = aCurrentHealth;
+        if (aMaxHealth > 0.0f)
+            avComp.CurrentActorValues.ActorMaxValuesList[24] = aMaxHealth;
+        auto& moveComp = m_world.emplace<MovementComponent>(entity);
+        moveComp.Position = acPosition;
+        moveComp.Rotation = acRotation;
+        moveComp.Sent = true;
+        m_world.emplace<AnimationComponent>(entity);
+    }
+    else
+    {
+        if (auto* pChar = m_world.try_get<CharacterComponent>(entity))
+        {
+            if (acBaseId != GameId{} && (!pChar->BaseId || pChar->BaseId.Id == GameId{}))
+                pChar->BaseId = FormIdComponent(acBaseId);
+            pChar->SetDead(aIsDead);
+        }
+        if (auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
+        {
+            if (aIsDead)
+                pAv->CurrentActorValues.ActorValuesList[24] = 0.0f;
+            else if (aCurrentHealth > 0.0f)
+                pAv->CurrentActorValues.ActorValuesList[24] = aCurrentHealth;
+            if (aMaxHealth > 0.0f)
+                pAv->CurrentActorValues.ActorMaxValuesList[24] = aMaxHealth;
+        }
+        if (auto* pCell = m_world.try_get<CellIdComponent>(entity); pCell && (acCellId != GameId{} || acWorldSpaceId != GameId{}))
+        {
+            pCell->Cell = acCellId;
+            pCell->WorldSpaceId = acWorldSpaceId;
+            pCell->CenterCoords = acCenterCoords;
+        }
+        if (auto* pMove = m_world.try_get<MovementComponent>(entity))
+        {
+            pMove->Position = acPosition;
+            pMove->Rotation = acRotation;
+            pMove->Sent = true;
+        }
+    }
+
+    m_characterByFormKey[CoopWorldView::PackGameIdKey(acFormId.ModId, acFormId.BaseId)] = entity;
+    const GameId& spaceOrCell = acWorldSpaceId ? acWorldSpaceId : acCellId;
+    m_interestRegistry.BindEntityCell(
+        World::ToInteger(entity),
+        CoopWorldView::PackGameIdKey(spaceOrCell.ModId, spaceOrCell.BaseId));
+    return entity;
+}
+
 void CharacterService::Serialize(World& aRegistry, entt::entity aEntity, CharacterSpawnRequest* apSpawnRequest) noexcept
 {
     const auto& characterComponent = aRegistry.get<CharacterComponent>(aEntity);
@@ -240,6 +319,8 @@ void CharacterService::ReconcileEntityForAllObservers(entt::entity aEntity) cons
         return;
 
     const uint32_t serverId = World::ToInteger(aEntity);
+    const GameId& spaceOrCell = pCellComp->WorldSpaceId ? pCellComp->WorldSpaceId : pCellComp->Cell;
+    m_interestRegistry.BindEntityCell(serverId, CoopWorldView::PackGameIdKey(spaceOrCell.ModId, spaceOrCell.BaseId));
     Player* const pOwner = pOwnerComp->GetOwner();
 
     std::optional<CharacterSpawnRequest> cachedSpawn{};
@@ -453,54 +534,99 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             auto& cellIdComponent = m_world.get<CellIdComponent>(existingEntity);
             auto& existingOwnerComp = m_world.get<OwnerComponent>(existingEntity);
 
+            // Hydrated dormant NPCs from rfab_checkpoints.bin may have empty baseline inventory/AV maps;
+            // seed any missing baseline fields from the first arriving client while preserving persisted
+            // dead state and persisted health!
+            const GameId sanitizedBaseId =
+                (message.FormId.ModId == std::numeric_limits<uint32_t>::max()) ? GameId{} : message.FormId;
+
+            if (existingOwnerComp.GetOwner() == nullptr || existingOwnerComp.GetOwner() == acMessage.pPlayer)
+            {
+                if ((!characterComponent.BaseId ||
+                     characterComponent.BaseId.Id == GameId{} ||
+                     characterComponent.BaseId.Id.ModId == std::numeric_limits<uint32_t>::max()) &&
+                    sanitizedBaseId != GameId{})
+                {
+                    characterComponent.BaseId = FormIdComponent(sanitizedBaseId);
+                }
+                if (characterComponent.FactionsContent.NpcFactions.empty() &&
+                    characterComponent.FactionsContent.ExtraFactions.empty() &&
+                    (!message.FactionsContent.NpcFactions.empty() || !message.FactionsContent.ExtraFactions.empty()))
+                    characterComponent.FactionsContent = message.FactionsContent;
+                if (inventoryComponent.Content.Entries.empty() && !message.CurrentActorData.InitialInventory.Entries.empty())
+                    inventoryComponent.Content = message.CurrentActorData.InitialInventory;
+                if (actorValuesComponent.CurrentActorValues.ActorValuesList.size() <= 1 &&
+                    !message.CurrentActorData.InitialActorValues.ActorValuesList.empty())
+                {
+                    const auto savedHpIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(24);
+                    const auto savedMaxHpIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(24);
+                    const bool hadSavedHp = (savedHpIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end());
+                    const float savedHp = hadSavedHp ? savedHpIt->second : 0.0f;
+                    const bool hadSavedMaxHp = (savedMaxHpIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end());
+                    const float savedMaxHp = hadSavedMaxHp ? savedMaxHpIt->second : 0.0f;
+
+                    actorValuesComponent.CurrentActorValues = message.CurrentActorData.InitialActorValues;
+                    if (characterComponent.IsDead())
+                        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = 0.0f;
+                    else if (hadSavedHp)
+                        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = savedHp;
+                    if (hadSavedMaxHp && savedMaxHp > 0.0f)
+                        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[24] = savedMaxHp;
+                }
+            }
+
             auto& partyService = m_world.GetPartyService();
 
             bool isOwner = false;
             Player* pOwningPlayer = existingOwnerComp.GetOwner();
 
-            if (!characterComponent.IsMount())
+            if (pOwningPlayer != nullptr && pOwningPlayer == acMessage.pPlayer)
+            {
+                // WakeDormantCharactersInActiveRanges or ReconcileAllEntitiesForObserver pre-assigned this player
+                // as owner before their AssignCharacterRequest arrived: confirm ownership instead of replying Owner=false!
+                existingOwnerComp.InvalidOwners.clear();
+                m_interestRegistry.UnmarkInRange(acMessage.pPlayer->GetId(), World::ToInteger(existingEntity));
+                isOwner = true;
+            }
+            else if (!characterComponent.IsMount())
             {
                 PartyService::Party* pParty = partyService.GetPlayerParty(acMessage.pPlayer);
                 const bool isOrphanEntity = (pOwningPlayer == nullptr);
+                const bool ownerValidInRange = pOwningPlayer != nullptr &&
+                                               pOwningPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon());
+                const bool ownerDowned = pOwningPlayer != nullptr &&
+                                         m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pOwningPlayer->GetId());
+                const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
                 const bool inParty = (pParty != nullptr) && partyService.IsPlayerInParty(acMessage.pPlayer);
+                const bool canChallengeOwnership =
+                    isOrphanEntity || !ownerValidInRange || ownerDowned || (inParty && partyService.IsPlayerLeader(acMessage.pPlayer));
 
-                if (isOrphanEntity || inParty)
+                if (canChallengeOwnership)
                 {
-                    const bool ownerValidInRange = pOwningPlayer != nullptr &&
-                                                   pOwningPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon());
-                    const bool ownerDowned = pOwningPlayer != nullptr &&
-                                             m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pOwningPlayer->GetId());
-                    const bool challengerDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(acMessage.pPlayer->GetId());
-                    const bool canChallengeOwnership =
-                        isOrphanEntity || partyService.IsPlayerLeader(acMessage.pPlayer) || ownerDowned || !ownerValidInRange;
+                    const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
+                        pOwningPlayer ? pOwningPlayer->GetId() : 0,
+                        acMessage.pPlayer->GetId(),
+                        existingOwnerComp.LastChangedAtMs,
+                        SteadyClockMs(),
+                        characterComponent.IsPlayer(),
+                        characterComponent.IsPlayerSummon(),
+                        ownerValidInRange,
+                        ownerDowned,
+                        challengerDowned);
 
-                    if (canChallengeOwnership)
+                    // Transfer ownership if entity is dormant/orphaned, current owner is out-of-range/downed, OR owning player
+                    // is in the same party and passes anti-flap/summon/downed rules. Preserve the server's authoritative
+                    // battle-damaged/dead/looted state instead of overwriting it with the newly arriving peer's untouched local NPC state!
+                    const bool samePartyOrOrphan =
+                        isOrphanEntity || !ownerValidInRange || ownerDowned ||
+                        (pParty != nullptr &&
+                         std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end());
+                    if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
+                        samePartyOrOrphan)
                     {
-                        const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
-                            pOwningPlayer ? pOwningPlayer->GetId() : 0,
-                            acMessage.pPlayer->GetId(),
-                            existingOwnerComp.LastChangedAtMs,
-                            SteadyClockMs(),
-                            characterComponent.IsPlayer(),
-                            characterComponent.IsPlayerSummon(),
-                            ownerValidInRange,
-                            ownerDowned,
-                            challengerDowned);
-
-                        // Transfer ownership if entity is dormant/orphaned OR owning player is in the same party
-                        // and passes anti-flap/summon/downed rules. Preserve the server's authoritative battle-damaged/dead/looted
-                        // state instead of overwriting it with the newly arriving peer's untouched local NPC state!
-                        const bool samePartyOrOrphan =
-                            isOrphanEntity ||
-                            (pParty != nullptr &&
-                             std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end());
-                        if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
-                            samePartyOrOrphan)
-                        {
-                            const ActorData authoritativeActorData = BuildActorData(existingEntity);
-                            TransferOwnership(acMessage.pPlayer, World::ToInteger(existingEntity), authoritativeActorData);
-                            isOwner = true;
-                        }
+                        const ActorData authoritativeActorData = BuildActorData(existingEntity);
+                        TransferOwnership(acMessage.pPlayer, World::ToInteger(existingEntity), authoritativeActorData);
+                        isOwner = true;
                     }
                 }
             }
@@ -1321,7 +1447,9 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     auto& characterComponent = m_world.emplace<CharacterComponent>(cEntity);
     characterComponent.ChangeFlags = message.ChangeFlags;
     characterComponent.SaveBuffer = std::move(message.AppearanceBuffer);
-    characterComponent.BaseId = FormIdComponent(message.FormId);
+    const GameId sanitizedBaseId =
+        (message.FormId.ModId == std::numeric_limits<uint32_t>::max()) ? GameId{} : message.FormId;
+    characterComponent.BaseId = FormIdComponent(sanitizedBaseId);
     characterComponent.FaceTints = message.FaceTints;
     characterComponent.FactionsContent = message.FactionsContent;
     characterComponent.SetDead(message.CurrentActorData.IsDead);

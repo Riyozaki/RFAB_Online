@@ -271,4 +271,37 @@ struct ReplayEntryView
 
     return earliestStandingAfterSit;
 }
+
+// Detects when a remote dialogue/bark audio path (`Data\Sound\Voice\<Plugin>\<VoiceTypeFolder>\<Topic>.fuz`)
+// specifies a sex-specific voice folder (`female*` vs `male*`) that contradicts the local 3D actor's sex.
+// Prevents a Male 3D NPC from speaking with a Female voice (or vice versa) if a placed leveled actor had
+// already materialized its 3D before `BaseId` reconciliation arrived.
+[[nodiscard]] inline bool HasVoicePathGenderMismatch(std::string_view aVoicePath, bool aIsActorFemale) noexcept
+{
+    if (aVoicePath.empty())
+        return false;
+
+    const std::string lower = ToAsciiLower(aVoicePath);
+
+    size_t pos = 0;
+    while (pos < lower.size())
+    {
+        const size_t sep = lower.find_first_of("\\/", pos);
+        const std::string_view segment =
+            (sep == std::string::npos)
+                ? std::string_view(lower).substr(pos)
+                : std::string_view(lower).substr(pos, sep - pos);
+
+        if (segment.size() >= 6 && segment.substr(0, 6) == "female")
+            return !aIsActorFemale;
+        if (segment.size() >= 4 && segment.substr(0, 4) == "male")
+            return aIsActorFemale;
+
+        if (sep == std::string::npos)
+            break;
+        pos = sep + 1;
+    }
+
+    return false;
+}
 } // namespace CoopAnimationState

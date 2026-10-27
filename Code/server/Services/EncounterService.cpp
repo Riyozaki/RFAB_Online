@@ -8,6 +8,7 @@
 #include <Messages/NotifyReviveState.h>
 #include <Messages/ReviveActionRequest.h>
 #include <Messages/SyncPlayerDownedState.h>
+#include <Services/ActorValueService.h>
 #include <Services/SaveSnapshotService.h>
 #include <Setting.h>
 #include <World.h>
@@ -49,12 +50,23 @@ EncounterService::EncounterService(World& aWorld, entt::dispatcher& aDispatcher)
 void EncounterService::ResetAllStatesAfterRollback() noexcept
 {
     m_coordinator.ResetAll(NowEncounterMs());
+    if (auto* pAv = m_world.ctx().find<ActorValueService>())
+    {
+        for (Player* pPlayer : m_world.GetPlayerManager())
+        {
+            if (pPlayer)
+                pAv->RecordPlayerDownedState(pPlayer->GetId(), false);
+        }
+    }
 }
 
 void EncounterService::BroadcastPlayerDownedState(Player* apPlayer, bool aIsDowned, float aX, float aY, float aZ) noexcept
 {
     if (!apPlayer)
         return;
+
+    if (auto* pAv = m_world.ctx().find<ActorValueService>())
+        pAv->RecordPlayerDownedState(apPlayer->GetId(), aIsDowned);
 
     NotifyPlayerDownedState notify{};
     notify.PlayerId = apPlayer->GetId();

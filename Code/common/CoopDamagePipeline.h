@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -254,6 +255,233 @@ private:
     std::mutex m_mutex{};
     std::array<Slot, Capacity> m_slots{};
     size_t m_cursor{0};
+};
+
+// ============================================================================
+// 5. Server-Side Combat & HitClaim Authority Ledger (v2.1.0)
+// ============================================================================
+// Server-side counterpart to client `ScriptDamageAuthLedger`:
+// - Records explicit combat engagement claims (`SpellOrTarget`, `ProjectileLaunch`, `MeleeOrDamage`) per player.
+// - Tracks when a player enters the Downed-on-Knee state (`DownedSinceMs`).
+// - Validates non-owner `HealthChangeBroadcast` deltas on the server:
+//   1. Rejects non-finite, positive (`>= 0`), or out-of-bounds spoofed deltas (`< -100000.0f`).
+//   2. Rejects hits on targets already marked dead on the server (`aIsTargetAlreadyDead`).
+//   3. Rejects friendly-fire on co-op party members/summons when PvP is disabled (`!aIsPvpEnabled && aAreCoopPartyAllies`).
+//   4. Rejects ambient/cloak/script damage emitted by a currently Downed player (`aIsSenderDowned`),
+//      UNLESS that player recorded an in-flight projectile or spell claim BEFORE going downed within `kPostDownedInFlightGraceMs` (1500 ms)!
+enum class ServerHitClaimKind : uint8_t
+{
+    kNone = 0,
+    kSpellOrTarget = 1,
+    kProjectileLaunch = 2,
+    kMeleeOrDamage = 3,
+};
+
+template <size_t Capacity = 64>
+class ServerCombatAuthorityLedger
+{
+public:
+    static constexpr uint64_t kDefaultClaimDurationMs = 4000;
+    static constexpr uint64_t kPostDownedInFlightGraceMs = 1500;
+    static constexpr float kMaxValidSingleHitMagnitude = 100000.0f;
+
+    void Clear() noexcept
+    {
+        for (auto& slot : m_claims)
+            slot = {};
+        for (auto& d : m_downedStates)
+            d = {};
+        m_claimCursor = 0;
+        m_downedCursor = 0;
+    }
+
+    void ForgetPlayer(uint32_t aPlayerId) noexcept
+    {
+        if (aPlayerId == 0)
+            return;
+        for (auto& slot : m_claims)
+        {
+            if (slot.Active && slot.AttackerPlayerId == aPlayerId)
+                slot = {};
+        }
+        for (auto& d : m_downedStates)
+        {
+            if (d.Active && d.PlayerId == aPlayerId)
+                d = {};
+        }
+    }
+
+    void RecordPlayerDownedState(uint32_t aPlayerId, bool aIsDowned, uint64_t aNowMs) noexcept
+    {
+        if (aPlayerId == 0)
+            return;
+        for (auto& d : m_downedStates)
+        {
+            if (d.Active && d.PlayerId == aPlayerId)
+            {
+                if (!aIsDowned)
+                {
+                    d = {};
+                }
+                else if (!d.IsDowned)
+                {
+                    d.IsDowned = true;
+                    d.DownedSinceMs = aNowMs;
+                }
+                return;
+            }
+        }
+        if (aIsDowned)
+        {
+            m_downedStates[m_downedCursor % Capacity] = DownedSlot{aPlayerId, aNowMs, true, true};
+            ++m_downedCursor;
+        }
+    }
+
+    void RecordCombatClaim(
+        uint32_t aAttackerPlayerId,
+        uint32_t aTargetServerId,
+        ServerHitClaimKind aKind,
+        uint64_t aNowMs,
+        uint64_t aDurationMs = kDefaultClaimDurationMs) noexcept
+    {
+        if (aAttackerPlayerId == 0 || aKind == ServerHitClaimKind::kNone)
+            return;
+
+        const uint64_t expiresAt = aNowMs + aDurationMs;
+        for (auto& slot : m_claims)
+        {
+            if (slot.Active && slot.AttackerPlayerId == aAttackerPlayerId && slot.TargetServerId == aTargetServerId)
+            {
+                slot.Kind = aKind;
+                slot.ClaimedAtMs = aNowMs;
+                slot.ExpiresAtMs = expiresAt;
+                return;
+            }
+        }
+
+        for (auto& slot : m_claims)
+        {
+            if (!slot.Active || aNowMs >= slot.ExpiresAtMs)
+            {
+                slot = ClaimSlot{aAttackerPlayerId, aTargetServerId, aNowMs, expiresAt, aKind, true};
+                return;
+            }
+        }
+
+        m_claims[m_claimCursor % Capacity] =
+            ClaimSlot{aAttackerPlayerId, aTargetServerId, aNowMs, expiresAt, aKind, true};
+        ++m_claimCursor;
+    }
+
+    [[nodiscard]] bool HasActiveClaim(
+        uint32_t aAttackerPlayerId,
+        uint32_t aTargetServerId,
+        uint64_t aNowMs) const noexcept
+    {
+        if (aAttackerPlayerId == 0)
+            return false;
+        for (const auto& slot : m_claims)
+        {
+            if (!slot.Active || slot.AttackerPlayerId != aAttackerPlayerId || aNowMs >= slot.ExpiresAtMs)
+                continue;
+            if (slot.TargetServerId == aTargetServerId || slot.TargetServerId == 0)
+                return true;
+        }
+        return false;
+    }
+
+    [[nodiscard]] bool ValidateNonOwnerHealthDelta(
+        uint32_t aAttackerPlayerId,
+        uint32_t aTargetServerId,
+        float aDeltaHealth,
+        bool aIsSenderInRange,
+        bool aIsSenderDowned,
+        bool aIsTargetAlreadyDead,
+        bool aAreCoopPartyAllies,
+        bool aIsPvpEnabled,
+        uint64_t aNowMs) noexcept
+    {
+        if (aAttackerPlayerId == 0 || aTargetServerId == 0 || !aIsSenderInRange)
+            return false;
+
+        if (!std::isfinite(aDeltaHealth) || aDeltaHealth >= 0.0f || aDeltaHealth < -kMaxValidSingleHitMagnitude)
+            return false;
+
+        if (aIsTargetAlreadyDead)
+            return false;
+
+        if (aAreCoopPartyAllies && !aIsPvpEnabled)
+            return false;
+
+        if (aIsSenderDowned)
+        {
+            uint64_t downedSinceMs = aNowMs;
+            for (const auto& d : m_downedStates)
+            {
+                if (d.Active && d.PlayerId == aAttackerPlayerId && d.IsDowned)
+                {
+                    downedSinceMs = d.DownedSinceMs;
+                    break;
+                }
+            }
+
+            // Only allow pre-downed in-flight projectiles or spells launched BEFORE `downedSinceMs`
+            // within `kPostDownedInFlightGraceMs` (1500 ms); block all post-downed cloak/script bleed!
+            bool hasPreDownedInFlightClaim = false;
+            for (const auto& slot : m_claims)
+            {
+                if (!slot.Active || slot.AttackerPlayerId != aAttackerPlayerId || aNowMs >= slot.ExpiresAtMs)
+                    continue;
+                if (slot.Kind != ServerHitClaimKind::kProjectileLaunch &&
+                    slot.Kind != ServerHitClaimKind::kSpellOrTarget)
+                {
+                    continue;
+                }
+                if (slot.TargetServerId != aTargetServerId && slot.TargetServerId != 0)
+                    continue;
+                if (slot.ClaimedAtMs <= downedSinceMs &&
+                    aNowMs <= (downedSinceMs + kPostDownedInFlightGraceMs))
+                {
+                    hasPreDownedInFlightClaim = true;
+                    break;
+                }
+            }
+
+            if (!hasPreDownedInFlightClaim)
+                return false;
+        }
+        else
+        {
+            RecordCombatClaim(aAttackerPlayerId, aTargetServerId, ServerHitClaimKind::kMeleeOrDamage, aNowMs);
+        }
+
+        return true;
+    }
+
+private:
+    struct ClaimSlot
+    {
+        uint32_t AttackerPlayerId{0};
+        uint32_t TargetServerId{0};
+        uint64_t ClaimedAtMs{0};
+        uint64_t ExpiresAtMs{0};
+        ServerHitClaimKind Kind{ServerHitClaimKind::kNone};
+        bool Active{false};
+    };
+
+    struct DownedSlot
+    {
+        uint32_t PlayerId{0};
+        uint64_t DownedSinceMs{0};
+        bool IsDowned{false};
+        bool Active{false};
+    };
+
+    std::array<ClaimSlot, Capacity> m_claims{};
+    std::array<DownedSlot, Capacity> m_downedStates{};
+    size_t m_claimCursor{0};
+    size_t m_downedCursor{0};
 };
 
 } // namespace CoopDamagePipeline

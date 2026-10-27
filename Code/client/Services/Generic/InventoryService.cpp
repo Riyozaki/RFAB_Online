@@ -176,7 +176,7 @@ void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& ac
     if (acMessage.Drop)
     {
         Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
-        if (!pActor)
+        if (!pActor || !pActor->GetNiNode() || pActor->IsStillLoading() || pActor->IsDeleted())
             return;
 
         ScopedInventoryOverride _;
@@ -186,7 +186,10 @@ void InventoryService::OnNotifyInventoryChanges(const NotifyInventoryChanges& ac
     else
     {
         TESObjectREFR* pObject = Utils::GetByServerId<TESObjectREFR>(acMessage.ServerId);
-        if (!pObject)
+        if (!pObject || pObject->IsStillLoading() || pObject->IsDeleted())
+            return;
+
+        if (Actor* pActor = Cast<Actor>(pObject); pActor && !pActor->GetNiNode())
             return;
 
         ScopedInventoryOverride _;
@@ -200,7 +203,7 @@ void InventoryService::OnNotifyEquipmentChanges(const NotifyEquipmentChanges& ac
     m_world.GetCharacterService().SyncRemoteCachedEquipment(acMessage);
 
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ServerId);
-    if (!pActor)
+    if (!pActor || !pActor->GetNiNode() || pActor->IsStillLoading() || pActor->IsDeleted())
         return;
 
     auto& modSystem = World::Get().GetModSystem();
@@ -310,6 +313,9 @@ void InventoryService::OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noe
 
     if (Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id))
     {
+        if (!pActor->GetNiNode() || pActor->IsStillLoading() || pActor->IsDeleted())
+            return;
+
         if (const auto* pExt = pActor->GetExtension(); pExt && pExt->IsRemote() && !pActor->IsDead())
             pActor->SetWeaponDrawnEx(acMessage.IsWeaponDrawn);
     }

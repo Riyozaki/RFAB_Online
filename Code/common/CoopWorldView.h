@@ -313,17 +313,47 @@ enum class ServerPeerSyncAction : uint8_t
 class ServerInterestRegistry
 {
 public:
-    void Clear() noexcept { m_inRangeByObserver.clear(); }
+    void Clear() noexcept
+    {
+        m_inRangeByObserver.clear();
+        m_observersByEntity.clear();
+        m_entitiesByCell.clear();
+        m_cellByEntity.clear();
+    }
 
     void RemoveObserver(uint32_t aObserverPlayerId) noexcept
     {
-        m_inRangeByObserver.erase(aObserverPlayerId);
+        const auto it = m_inRangeByObserver.find(aObserverPlayerId);
+        if (it == m_inRangeByObserver.end())
+            return;
+
+        for (const uint32_t serverId : it->second)
+        {
+            const auto revIt = m_observersByEntity.find(serverId);
+            if (revIt != m_observersByEntity.end())
+            {
+                revIt->second.erase(aObserverPlayerId);
+                if (revIt->second.empty())
+                    m_observersByEntity.erase(revIt);
+            }
+        }
+        m_inRangeByObserver.erase(it);
     }
 
     void ForgetEntityEverywhere(uint32_t aServerId) noexcept
     {
-        for (auto& [_, set] : m_inRangeByObserver)
-            set.erase(aServerId);
+        const auto revIt = m_observersByEntity.find(aServerId);
+        if (revIt != m_observersByEntity.end())
+        {
+            for (const uint32_t obsId : revIt->second)
+            {
+                const auto fwdIt = m_inRangeByObserver.find(obsId);
+                if (fwdIt != m_inRangeByObserver.end())
+                    fwdIt->second.erase(aServerId);
+            }
+            m_observersByEntity.erase(revIt);
+        }
+        UnbindEntityCell(aServerId);
     }
 
     [[nodiscard]] bool IsMarkedInRange(uint32_t aObserverPlayerId, uint32_t aServerId) const noexcept
@@ -337,7 +367,10 @@ public:
     void MarkInRange(uint32_t aObserverPlayerId, uint32_t aServerId)
     {
         if (aObserverPlayerId != 0)
+        {
             m_inRangeByObserver[aObserverPlayerId].insert(aServerId);
+            m_observersByEntity[aServerId].insert(aObserverPlayerId);
+        }
     }
 
     void UnmarkInRange(uint32_t aObserverPlayerId, uint32_t aServerId) noexcept
@@ -345,6 +378,101 @@ public:
         const auto it = m_inRangeByObserver.find(aObserverPlayerId);
         if (it != m_inRangeByObserver.end())
             it->second.erase(aServerId);
+
+        const auto revIt = m_observersByEntity.find(aServerId);
+        if (revIt != m_observersByEntity.end())
+        {
+            revIt->second.erase(aObserverPlayerId);
+            if (revIt->second.empty())
+                m_observersByEntity.erase(revIt);
+        }
+    }
+
+    [[nodiscard]] const std::unordered_set<uint32_t>& ObserversOfEntity(uint32_t aServerId) const noexcept
+    {
+        static const std::unordered_set<uint32_t> kEmpty{};
+        const auto it = m_observersByEntity.find(aServerId);
+        return it != m_observersByEntity.end() ? it->second : kEmpty;
+    }
+
+    [[nodiscard]] const std::unordered_set<uint32_t>& EntitiesOfObserver(uint32_t aObserverPlayerId) const noexcept
+    {
+        static const std::unordered_set<uint32_t> kEmpty{};
+        const auto it = m_inRangeByObserver.find(aObserverPlayerId);
+        return it != m_inRangeByObserver.end() ? it->second : kEmpty;
+    }
+
+    void BindEntityCell(uint32_t aServerId, uint64_t aCellKey)
+    {
+        UnbindEntityCell(aServerId);
+        if (aCellKey == 0)
+            return;
+
+        m_cellByEntity[aServerId] = aCellKey;
+        m_entitiesByCell[aCellKey].insert(aServerId);
+    }
+
+    void UnbindEntityCell(uint32_t aServerId) noexcept
+    {
+        const auto it = m_cellByEntity.find(aServerId);
+        if (it == m_cellByEntity.end())
+            return;
+
+        const uint64_t oldCellKey = it->second;
+        const auto bucketIt = m_entitiesByCell.find(oldCellKey);
+        if (bucketIt != m_entitiesByCell.end())
+        {
+            bucketIt->second.erase(aServerId);
+            if (bucketIt->second.empty())
+                m_entitiesByCell.erase(bucketIt);
+        }
+        m_cellByEntity.erase(it);
+    }
+
+    [[nodiscard]] const std::unordered_set<uint32_t>& EntitiesInCell(uint64_t aCellKey) const noexcept
+    {
+        static const std::unordered_set<uint32_t> kEmpty{};
+        if (aCellKey == 0)
+            return kEmpty;
+        const auto it = m_entitiesByCell.find(aCellKey);
+        return it != m_entitiesByCell.end() ? it->second : kEmpty;
+    }
+
+    [[nodiscard]] std::optional<uint64_t> FindEntityCellKey(uint32_t aServerId) const noexcept
+    {
+        const auto it = m_cellByEntity.find(aServerId);
+        return it != m_cellByEntity.end() ? std::optional<uint64_t>(it->second) : std::nullopt;
+    }
+
+    [[nodiscard]] uint64_t GetEntityCell(uint32_t aServerId) const noexcept
+    {
+        return FindEntityCellKey(aServerId).value_or(0ULL);
+    }
+
+    bool AddObserver(uint32_t aObserverPlayerId, uint32_t aServerId)
+    {
+        if (aObserverPlayerId == 0 || IsMarkedInRange(aObserverPlayerId, aServerId))
+            return false;
+        MarkInRange(aObserverPlayerId, aServerId);
+        return true;
+    }
+
+    bool RemoveObserver(uint32_t aObserverPlayerId, uint32_t aServerId) noexcept
+    {
+        if (!IsMarkedInRange(aObserverPlayerId, aServerId))
+            return false;
+        UnmarkInRange(aObserverPlayerId, aServerId);
+        return true;
+    }
+
+    void ForgetEntity(uint32_t aServerId) noexcept
+    {
+        ForgetEntityEverywhere(aServerId);
+    }
+
+    [[nodiscard]] bool IsObserving(uint32_t aObserverPlayerId, uint32_t aServerId) const noexcept
+    {
+        return IsMarkedInRange(aObserverPlayerId, aServerId);
     }
 
     [[nodiscard]] ServerPeerSyncAction UpdateInterest(
@@ -376,6 +504,9 @@ public:
 
 private:
     std::unordered_map<uint32_t, std::unordered_set<uint32_t>> m_inRangeByObserver{};
+    std::unordered_map<uint32_t, std::unordered_set<uint32_t>> m_observersByEntity{};
+    std::unordered_map<uint64_t, std::unordered_set<uint32_t>> m_entitiesByCell{};
+    std::unordered_map<uint32_t, uint64_t> m_cellByEntity{};
 };
 
 // Fixed-capacity ring buffer tracking recently cancelled AssignCharacterRequest cookies so
@@ -672,6 +803,176 @@ private:
     std::unordered_map<TEntity, FormReverseEntry> m_formByEntity{};
     std::unordered_map<uint32_t, TEntity> m_entityByServerId{};
     std::unordered_map<TEntity, ServerReverseSlot> m_serverByEntity{};
+};
+
+// Reconnect-stable party membership & leadership ledger keyed by BuildPlayerIdentityKey.
+// Distinguishes voluntary party leave (`RecordExplicitPartyLeave`) from unexpected disconnect (`RecordPlayerDisconnect`)
+// so a crashing or reconnecting player automatically rejoins their party and regains leadership if they were the original leader.
+class PartySessionLedger
+{
+public:
+    static constexpr uint64_t kReconnectRetentionWindowMs = 30ULL * 60ULL * 1000ULL;
+
+    struct MembershipRecord
+    {
+        uint32_t PartyId{0};
+        bool WasLeader{false};
+        bool IsCurrentlyConnected{false};
+        uint64_t LastUpdatedMs{0};
+    };
+
+    struct ReconnectResolution
+    {
+        bool Found{false};
+        uint32_t PartyId{0};
+        bool RestoreAsLeader{false};
+    };
+
+    [[nodiscard]] static uint64_t HashIdentity(const char* apUsername) noexcept
+    {
+        if (!apUsername || !*apUsername)
+            return 0;
+        uint64_t hash = 14695981039346656037ULL;
+        for (const unsigned char* p = reinterpret_cast<const unsigned char*>(apUsername); *p; ++p)
+        {
+            unsigned char ch = *p;
+            if (ch >= 'A' && ch <= 'Z')
+                ch = static_cast<unsigned char>(ch + ('a' - 'A'));
+            hash ^= static_cast<uint64_t>(ch);
+            hash *= 1099511628211ULL;
+        }
+        return hash != 0 ? hash : 1ULL;
+    }
+
+    void Clear() noexcept
+    {
+        m_byIdentity.clear();
+        m_byHashKey.clear();
+    }
+
+    void RecordPartyJoin(const std::string& acIdentityKey, uint32_t aPartyId, bool aIsLeader)
+    {
+        if (acIdentityKey.empty())
+            return;
+        auto& rec = m_byIdentity[acIdentityKey];
+        rec.PartyId = aPartyId;
+        rec.WasLeader = aIsLeader;
+        rec.IsCurrentlyConnected = true;
+    }
+
+    void RecordPartyJoin(uint64_t aIdentityHash, uint32_t aPartyId, bool aIsLeader, uint64_t aNowMs)
+    {
+        if (aIdentityHash == 0)
+            return;
+        auto& rec = m_byHashKey[aIdentityHash];
+        rec.PartyId = aPartyId;
+        rec.WasLeader = aIsLeader;
+        rec.IsCurrentlyConnected = true;
+        rec.LastUpdatedMs = aNowMs;
+    }
+
+    void RecordLeadershipChange(const std::string& acNewLeaderKey, uint32_t aPartyId, bool aExplicitTransfer)
+    {
+        if (acNewLeaderKey.empty())
+            return;
+        if (aExplicitTransfer)
+        {
+            for (auto& [_, rec] : m_byIdentity)
+            {
+                if (rec.PartyId == aPartyId)
+                    rec.WasLeader = false;
+            }
+        }
+        auto& rec = m_byIdentity[acNewLeaderKey];
+        rec.PartyId = aPartyId;
+        rec.WasLeader = true;
+    }
+
+    void RecordPartyLeaderChange(uint32_t aPartyId, uint64_t aNewLeaderHash)
+    {
+        if (aNewLeaderHash == 0)
+            return;
+        for (auto& [_, rec] : m_byHashKey)
+        {
+            if (rec.PartyId == aPartyId)
+                rec.WasLeader = false;
+        }
+        auto& rec = m_byHashKey[aNewLeaderHash];
+        rec.PartyId = aPartyId;
+        rec.WasLeader = true;
+    }
+
+    void RecordExplicitPartyLeave(const std::string& acIdentityKey) noexcept
+    {
+        if (acIdentityKey.empty())
+            return;
+        m_byIdentity.erase(acIdentityKey);
+    }
+
+    void RecordPartyLeave(uint64_t aIdentityHash) noexcept
+    {
+        if (aIdentityHash == 0)
+            return;
+        m_byHashKey.erase(aIdentityHash);
+    }
+
+    void RecordPlayerDisconnect(const std::string& acIdentityKey, uint32_t aPartyId, bool aWasLeaderAtDisconnect)
+    {
+        if (acIdentityKey.empty())
+            return;
+        auto it = m_byIdentity.find(acIdentityKey);
+        if (it == m_byIdentity.end())
+        {
+            m_byIdentity[acIdentityKey] = MembershipRecord{aPartyId, aWasLeaderAtDisconnect, false, 0};
+            return;
+        }
+        it->second.PartyId = aPartyId;
+        if (aWasLeaderAtDisconnect)
+            it->second.WasLeader = true;
+        it->second.IsCurrentlyConnected = false;
+    }
+
+    void RecordDisconnect(uint64_t aIdentityHash, uint64_t aNowMs) noexcept
+    {
+        const auto it = m_byHashKey.find(aIdentityHash);
+        if (it == m_byHashKey.end())
+            return;
+        it->second.IsCurrentlyConnected = false;
+        it->second.LastUpdatedMs = aNowMs;
+    }
+
+    [[nodiscard]] ReconnectResolution FindReconnectParty(uint64_t aIdentityHash, uint64_t aNowMs) const noexcept
+    {
+        ReconnectResolution res{};
+        if (aIdentityHash == 0)
+            return res;
+        const auto it = m_byHashKey.find(aIdentityHash);
+        if (it == m_byHashKey.end())
+            return res;
+        if (it->second.LastUpdatedMs != 0 && aNowMs >= it->second.LastUpdatedMs &&
+            (aNowMs - it->second.LastUpdatedMs) > kReconnectRetentionWindowMs)
+        {
+            return res;
+        }
+        res.Found = true;
+        res.PartyId = it->second.PartyId;
+        res.RestoreAsLeader = it->second.WasLeader;
+        return res;
+    }
+
+    [[nodiscard]] std::optional<MembershipRecord> ResolveReconnectMembership(const std::string& acIdentityKey) const noexcept
+    {
+        if (acIdentityKey.empty())
+            return std::nullopt;
+        const auto it = m_byIdentity.find(acIdentityKey);
+        if (it == m_byIdentity.end())
+            return std::nullopt;
+        return it->second;
+    }
+
+private:
+    std::unordered_map<std::string, MembershipRecord> m_byIdentity{};
+    std::unordered_map<uint64_t, MembershipRecord> m_byHashKey{};
 };
 
 } // namespace CoopWorldView
