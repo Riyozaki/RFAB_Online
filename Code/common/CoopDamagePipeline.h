@@ -493,7 +493,7 @@ private:
 //   - Boss percentage-based phase transitions (`50%`, `25%`), execute perks, and HUD bars stay 100% exact.
 //   - Zero `3^K` / `1/3` permanent HP drift across ownership handoffs or `.ess` checkpoint saves.
 //   - Percentage `HealRate` regeneration and boss phase percentage heals (`+0.5 * MaxHP`) stay 1:1 exact.
-[[nodiscard]] constexpr float NormalizeEnemyHealthMultiplier(float aMultiplier) noexcept
+[[nodiscard]] inline float NormalizeEnemyHealthMultiplier(float aMultiplier) noexcept
 {
     if (!std::isfinite(aMultiplier) || aMultiplier <= 0.0f)
         return 1.0f;

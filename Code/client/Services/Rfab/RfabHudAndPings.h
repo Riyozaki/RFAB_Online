@@ -180,12 +180,12 @@ public:
     static void DrawDownedBeacon(
         ImDrawList* apDrawList,
         const RfabDownedBeaconSnapshotEntry& acBeacon,
-        const RfabCompat::TacticalMarkerScreenPlacement& acProj) noexcept;
+        const RfabCompat::ScreenMarkerProjection& acProj) noexcept;
 
     static void DrawTacticalPing(
         ImDrawList* apDrawList,
         const RfabTacticalPingSnapshotEntry& acPing,
-        const RfabCompat::TacticalMarkerScreenPlacement& acProj) noexcept;
+        const RfabCompat::ScreenMarkerProjection& acProj) noexcept;
 
     static void DrawOverlayPanels(
         ImDrawList* apDrawList,

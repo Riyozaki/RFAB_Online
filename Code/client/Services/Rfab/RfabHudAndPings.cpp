@@ -1156,7 +1156,7 @@ void RfabHudAndPings::BuildHudSnapshot(
 void RfabHudAndPings::DrawDownedBeacon(
     ImDrawList* apDrawList,
     const RfabDownedBeaconSnapshotEntry& acBeacon,
-    const RfabCompat::TacticalMarkerScreenPlacement& acProj) noexcept
+    const RfabCompat::ScreenMarkerProjection& acProj) noexcept
 {
     if (!apDrawList)
         return;
@@ -1212,7 +1212,7 @@ void RfabHudAndPings::DrawDownedBeacon(
 void RfabHudAndPings::DrawTacticalPing(
     ImDrawList* apDrawList,
     const RfabTacticalPingSnapshotEntry& acPing,
-    const RfabCompat::TacticalMarkerScreenPlacement& acProj) noexcept
+    const RfabCompat::ScreenMarkerProjection& acProj) noexcept
 {
     if (!apDrawList)
         return;
