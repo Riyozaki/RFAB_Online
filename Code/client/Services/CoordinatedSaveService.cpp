@@ -23,10 +23,13 @@
 #include <Messages/RequestCoordinatedSaveLoad.h>
 #include <PlayerCharacter.h>
 #include <SaveLoad.h>
+#include <Services/ActorValueService.h>
 #include <Services/CharacterService.h>
 #include <Services/DiscoveryService.h>
 #include <Services/DownedStateService.h>
+#include <Services/MagicService.h>
 #include <Services/PartyService.h>
+#include <Services/PlayerService.h>
 #include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 
@@ -283,8 +286,17 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
 
         if (!loadOk)
         {
+            const bool wasLiveBarrierLoad = m_liveSessionWorldReloadPending || m_liveSessionWorldReloadInFlight;
+            m_liveSessionWorldReloadPending = false;
+            m_liveSessionWorldReloadInFlight = false;
+            m_postReloadSyncPending = false;
+            m_waitingForHostBarrierRelease = false;
             m_autoReconnectPendingAfterLoad = false;
             m_wasAutoReconnecting = false;
+            m_world.GetCharacterService().EndEngineWorldLoad();
+            m_world.GetDiscoveryService().ReconcileMissingWorldEntities();
+            if (wasLiveBarrierLoad)
+                SendReloadBarrierReadyAck(m_activeReloadBarrierEpoch, slot, false);
             spdlog::error("[RFAB SaveLoad] ExecuteDirectLoadFromProcessEvents failed for slot '{}'", slot);
             Utils::ShowHudMessage(String("RFAB Online: Не удалось загрузить слот чекпоинта"));
         }
@@ -304,6 +316,25 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
     m_world.GetCharacterService().BeginEngineWorldLoad();
     m_world.GetDiscoveryService().ResetLoadedForms();
+    m_world.GetObjectService().ResetForWorldReload();
+    m_world.GetMagicService().ResetForWorldReload();
+    m_world.GetActorValueService().ResetForWorldReload();
+
+    // Phase 3 (`WorldReloadBarrier`): when executing an authorized coordinated `.ess` reload (Party Wipe
+    // or manual `F9`), KEEP `m_transport`, `PlayerId`, and `PartyService` open instead of calling
+    // `m_transport.Close()`! Only fall back to disconnect + auto-reconnect on uncoordinated loads.
+    if (m_liveSessionWorldReloadPending && (m_transport.IsConnected() || m_transport.IsOnline()))
+    {
+        m_liveSessionWorldReloadPending = false;
+        m_liveSessionWorldReloadInFlight = true;
+        m_postReloadSyncPending = true;
+        m_waitingForHostBarrierRelease = false;
+        spdlog::info(
+            "[RFAB WorldReloadBarrier] Entering live-socket .ess load '{}' (Epoch={}, transport stays open)",
+            acpFileName ? acpFileName : "",
+            m_activeReloadBarrierEpoch);
+        return;
+    }
 
     if (m_transport.IsConnected() || m_transport.IsOnline())
     {
@@ -333,6 +364,19 @@ void CoordinatedSaveService::NotifyEngineLoadCompleted(const char* acpFileName, 
     const std::string norm = RfabCompat::Detail::NormalizeSaveSlotStem(acpFileName ? acpFileName : "");
     if (!m_authorizedPendingLoadSlot.empty() && norm == m_authorizedPendingLoadSlot)
         m_authorizedPendingLoadSlot.clear();
+
+    if (m_liveSessionWorldReloadInFlight)
+    {
+        m_liveSessionWorldReloadInFlight = false;
+        if (!aSucceeded)
+        {
+            m_postReloadSyncPending = false;
+            m_waitingForHostBarrierRelease = false;
+            SendReloadBarrierReadyAck(m_activeReloadBarrierEpoch, m_activeReloadBarrierSlot, false);
+            m_world.GetDiscoveryService().ReconcileMissingWorldEntities();
+        }
+        return;
+    }
 
     if (!aSucceeded)
     {
@@ -437,6 +481,11 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     m_pendingSavePurgeFrames = 0;
     m_isExecutingPreJoinBackup = false;
     m_hasDeferredPrepareSave = false;
+    m_liveSessionWorldReloadPending = false;
+    m_liveSessionWorldReloadInFlight = false;
+    m_postReloadSyncPending = false;
+    m_waitingForHostBarrierRelease = false;
+    m_hostBarrierHoldRemainingSec = 0.0;
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
@@ -462,6 +511,23 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
 
 void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
+    // Safety net: if a physical Wi-Fi/UDP blip occurred mid-reload, allow automatic reconnect once
+    // the engine finishes loading.
+    if ((m_liveSessionWorldReloadInFlight || m_postReloadSyncPending) && m_transport.HasLastServerEndpoint())
+    {
+        m_autoReconnectPendingAfterLoad = true;
+        m_wasAutoReconnecting = true;
+        m_sawLoadingScreenForReconnect = false;
+        m_autoReconnectDelaySec = 1.5;
+        m_autoReconnectAttemptsLeft = 6;
+    }
+
+    m_liveSessionWorldReloadPending = false;
+    m_liveSessionWorldReloadInFlight = false;
+    m_postReloadSyncPending = false;
+    m_waitingForHostBarrierRelease = false;
+    m_hostBarrierHoldRemainingSec = 0.0;
+
     m_pendingPreJoinBackup = false;
     m_isExecutingPreJoinBackup = false;
     m_hasDeferredPrepareSave = false;
@@ -478,6 +544,77 @@ void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
+}
+
+void CoordinatedSaveService::SendReloadBarrierReadyAck(
+    uint64_t aEpochId,
+    const std::string& acSlotName,
+    bool aSuccess) noexcept
+{
+    if (!m_transport.IsConnected())
+        return;
+
+    CoordinatedSaveAck ack{};
+    ack.EpochId = CoopCheckpoint::EncodeReloadBarrierEpoch(aEpochId);
+    ack.SlotName = String(acSlotName.c_str());
+    ack.Success = aSuccess;
+    if (!aSuccess)
+        ack.Reason = String("не удалось загрузить .ess слот чекпоинта");
+    m_transport.Send(ack);
+}
+
+void CoordinatedSaveService::ReleaseGuestWorldDiscoveryHold() noexcept
+{
+    if (!m_waitingForHostBarrierRelease)
+        return;
+
+    m_waitingForHostBarrierRelease = false;
+    m_hostBarrierHoldRemainingSec = 0.0;
+
+    m_world.GetDiscoveryService().ReconcileMissingWorldEntities();
+    if (auto* pObjSvc = m_world.ctx().find<ObjectService>())
+        pObjSvc->RefreshCurrentCellObjectsAfterRollback();
+
+    spdlog::info(
+        "[RFAB WorldReloadBarrier] Host gate released — reconciled guest world entities (Epoch={})",
+        m_activeReloadBarrierEpoch);
+}
+
+void CoordinatedSaveService::CompleteLiveWorldReloadAfterEngineReady() noexcept
+{
+    m_postReloadSyncPending = false;
+
+    m_world.GetPlayerService().RestoreMultiplayerGlobalsAfterWorldReload();
+    m_world.GetDownedStateService().ResetAllStates();
+    m_world.GetCharacterService().EnsureLocalPlayerRegistered();
+    m_world.GetDiscoveryService().VisitCell(true);
+
+    SendReloadBarrierReadyAck(m_activeReloadBarrierEpoch, m_activeReloadBarrierSlot, true);
+
+    if (IsLocalPlayerAuthorizedLeader())
+    {
+        m_waitingForHostBarrierRelease = false;
+        m_hostBarrierHoldRemainingSec = 0.0;
+        m_world.GetDiscoveryService().ReconcileMissingWorldEntities();
+        if (auto* pObjSvc = m_world.ctx().find<ObjectService>())
+            pObjSvc->RefreshCurrentCellObjectsAfterRollback();
+
+        spdlog::info(
+            "[RFAB WorldReloadBarrier] Host completed live-socket .ess reload '{}' (Epoch={}) and claimed canonical cell authority",
+            m_activeReloadBarrierSlot,
+            m_activeReloadBarrierEpoch);
+    }
+    else
+    {
+        // Hold Guest NPC VisitForms() briefly until Server confirms Host reload readiness (or 6.0s cap)
+        // so Host claims canonical Sticky Host Cell Authority without double-transfer churn.
+        m_waitingForHostBarrierRelease = true;
+        m_hostBarrierHoldRemainingSec = 6.0;
+        spdlog::info(
+            "[RFAB WorldReloadBarrier] Guest completed live-socket .ess reload '{}' (Epoch={}), awaiting Host barrier gate",
+            m_activeReloadBarrierSlot,
+            m_activeReloadBarrierEpoch);
+    }
 }
 
 void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
@@ -525,6 +662,26 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
     if (!m_transport.IsConnected())
         return;
+
+    // Phase 3 (`WorldReloadBarrier`): finalize live-socket `.ess` reload as soon as the loading screen
+    // closes and `PlayerCharacter` has a valid `parentCell` and finished 3D/cell streaming.
+    if (m_postReloadSyncPending)
+    {
+        if (IsLoadingMenuOpen() || m_world.GetCharacterService().IsEngineWorldLoading())
+            return;
+
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (pPlayer && !pPlayer->IsStillLoading() && pPlayer->parentCell != nullptr)
+            CompleteLiveWorldReloadAfterEngineReady();
+        return;
+    }
+
+    if (m_waitingForHostBarrierRelease)
+    {
+        m_hostBarrierHoldRemainingSec -= acEvent.Delta;
+        if (m_hostBarrierHoldRemainingSec <= 0.0 || IsLocalPlayerAuthorizedLeader())
+            ReleaseGuestWorldDiscoveryHold();
+    }
 
     if (m_hasDeferredPrepareSave)
     {
@@ -638,6 +795,14 @@ void CoordinatedSaveService::OnNotifyPrepareSave(const NotifyPrepareSave& acMess
 
 void CoordinatedSaveService::OnNotifyCommitSave(const NotifyCommitSave& acMessage) noexcept
 {
+    if (CoopCheckpoint::IsReloadBarrierEpoch(acMessage.EpochId))
+    {
+        ReleaseGuestWorldDiscoveryHold();
+        if (!acMessage.Message.empty())
+            Utils::ShowHudMessage(acMessage.Message);
+        return;
+    }
+
     if (acMessage.Committed)
     {
         m_lastCommittedEpoch = acMessage.EpochId;
@@ -661,7 +826,9 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
     if (!pPlayer)
         return;
 
-    // 1. Preserve 1st-person POV flag BEFORE ResetAllStates(), then clear downed/bleedout posture & grant recovery
+    // Emergency missing-slot fallback ONLY (e.g. a peer joined mid-session after a checkpoint was
+    // written and before their current-session `RFAB_MP_PreJoin_Backup.ess` finished writing):
+    // 1. Preserve 1st-person POV flag BEFORE ResetAllStates(), then clear downed/bleedout posture & grant recovery.
     auto& downedSvc = m_world.GetDownedStateService();
     const bool wasFirstPersonBeforeDowned = downedSvc.ConsumeSavedFirstPersonBeforeDowned();
     const float restoreFrac = std::clamp(acMessage.RestoreHealthFraction, 0.30f, 1.0f);
@@ -672,15 +839,12 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
         pPlayer->StopCombat();
     pPlayer->DispelHostileEffects();
 
-    // 2. Restore checkpoint inventory if provided by server
-    if (acMessage.HasRestoreInventory)
-    {
-        ScopedInventoryOverride invGuard;
-        ScopedEquipOverride equipGuard;
-        pPlayer->SetActorInventory(acMessage.RestoreInventory);
-    }
+    // NOTE (v3.0 Phase 3): NEVER call `SetActorInventory` on `0x14`! Rebuilding the local player's
+    // inventory via RemoveAllItems + AddItem destroys SkyUI hotkeys, ExtraUniqueID, and custom
+    // `RFAB.dll` item metadata. Full inventory/Papyrus/CustomSkills rollback is performed by
+    // synchronized `.ess` world reload via `WorldReloadBarrier`.
 
-    // 3. Teleport local player seamlessly to checkpoint WorldOrCell + Position without .ess reload or disconnect
+    // 2. Teleport local player cleanly to checkpoint WorldOrCell + Position.
     if (acMessage.HasRestoreTransform &&
         CoopOwnership::IsValidHandoffCoordinates(acMessage.PositionX, acMessage.PositionY, acMessage.PositionZ))
     {
@@ -734,7 +898,7 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
         pPlayer->ResetTeleportPhysics(targetPos.z);
     }
 
-    // 4. Re-restore full HP AFTER SetActorInventory, re-normalize lifeState + wake nearby destination NPC AI packages,
+    // 3. Restore HP, re-normalize lifeState + wake nearby destination NPC AI packages,
     // schedule 2-frame unculled FaceGen QueueUpdate() + 1st-person POV restore, and flush stale interpolation views!
     {
         DownedStateService::ScopedReviveHealAllowance allowHeal(downedSvc.GetAuthorizedHealFlag());
@@ -747,8 +911,10 @@ void CoordinatedSaveService::ApplyInSessionRollback(const NotifyExecuteLoad& acM
     if (auto* pObjSvc = m_world.ctx().find<ObjectService>())
         pObjSvc->RefreshCurrentCellObjectsAfterRollback();
 
+    SendReloadBarrierReadyAck(acMessage.EpochId, "", true);
+
     spdlog::info(
-        "[RFAB SaveLoad] Completed seamless in-session checkpoint rollback (Epoch={}, PartyWipe={}, Transform={})",
+        "[RFAB WorldReloadBarrier] Applied emergency missing-slot transform fallback without SetActorInventory (Epoch={}, PartyWipe={}, Transform={})",
         acMessage.EpochId,
         acMessage.IsPartyWipe,
         acMessage.HasRestoreTransform);
@@ -759,36 +925,43 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
     if (!acMessage.Message.empty())
         Utils::ShowHudMessage(acMessage.Message);
 
-    // 1. MMO / SkyMP Model: Party wipes & server-directed in-session rollbacks execute immediately without
-    // closing TransportService or reloading any .ess file on disk!
     if (acMessage.UseInSessionRollback)
     {
         ApplyInSessionRollback(acMessage);
         return;
     }
 
-    // 2. Explicit manual checkpoint slot load (F9 / Load specific RFAB_MP_* slot):
+    // Phase 3 (`WorldReloadBarrier`): unified synchronized `.ess` checkpoint reload for BOTH Party Wipe
+    // and Manual Load (`F9`), keeping `TransportService` socket & `PartyService` open!
     std::string targetSlot = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(
         std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()));
+    const std::string normPreJoin = RfabCompat::Detail::NormalizeSaveSlotStem(m_preJoinBackupSlot);
 
-    auto isUsableSlot = [&](const std::string& aCandidate) -> bool
+    auto isUsableCurrentSessionSlot = [&](const std::string& aCandidate) -> bool
     {
         if (aCandidate.empty())
             return false;
+        const std::string normCandidate = RfabCompat::Detail::NormalizeSaveSlotStem(aCandidate);
+        if (normCandidate == normPreJoin &&
+            !CoopCheckpoint::CanLoadPreJoinSlotInCurrentSession(
+                acMessage.AllowPreJoinFallback,
+                m_preJoinBackupWrittenThisSession))
+        {
+            return false;
+        }
         return BGSSaveLoadManager::VerifySavedSlotOnDisk(aCandidate.c_str());
     };
 
-    if (!isUsableSlot(targetSlot))
+    if (!isUsableCurrentSessionSlot(targetSlot))
     {
-        if (!m_lastCommittedSlot.empty() && isUsableSlot(m_lastCommittedSlot))
+        if (!m_lastCommittedSlot.empty() && isUsableCurrentSessionSlot(m_lastCommittedSlot))
         {
             targetSlot = m_lastCommittedSlot;
         }
-        else if (CoopCheckpoint::ShouldAllowPreJoinDiskFallback(
+        else if (CoopCheckpoint::CanLoadPreJoinSlotInCurrentSession(
                      acMessage.AllowPreJoinFallback,
-                     m_preJoinBackupWrittenThisSession,
-                     acMessage.HasRestoreTransform) &&
-                 isUsableSlot(m_preJoinBackupSlot))
+                     m_preJoinBackupWrittenThisSession) &&
+                 isUsableCurrentSessionSlot(m_preJoinBackupSlot))
         {
             targetSlot = m_preJoinBackupSlot;
         }
@@ -800,14 +973,31 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
 
     if (targetSlot.empty())
     {
-        spdlog::info(
-            "[RFAB SaveLoad] Disk slot '{}' unavailable on this client — applying seamless in-session rollback (Epoch={})",
+        spdlog::warn(
+            "[RFAB WorldReloadBarrier] Disk slot '{}' unavailable in current session — applying non-destructive emergency fallback (Epoch={})",
             std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()),
             acMessage.EpochId);
         ApplyInSessionRollback(acMessage);
         return;
     }
 
-    spdlog::info("[RFAB SaveLoad] Queueing coordinated .ess load for slot '{}' (Epoch={})", targetSlot, acMessage.EpochId);
+    if (auto* pUi = UI::Get())
+        pUi->CloseAllMenus();
+
+    m_liveSessionWorldReloadPending = true;
+    m_liveSessionWorldReloadInFlight = false;
+    m_postReloadSyncPending = false;
+    m_waitingForHostBarrierRelease = false;
+    m_activeReloadBarrierEpoch = acMessage.EpochId;
+    m_activeReloadBarrierSlot = targetSlot;
+
+    // Immediately gate incoming remote actor materialization before `ExecuteDirectLoadFromProcessEvents` runs.
+    m_world.GetCharacterService().BeginEngineWorldLoad();
+
+    spdlog::info(
+        "[RFAB WorldReloadBarrier] Queueing live-socket .ess reload for slot '{}' (Epoch={}, PartyWipe={})",
+        targetSlot,
+        acMessage.EpochId,
+        acMessage.IsPartyWipe);
     m_deferredLoadSlot = targetSlot;
 }

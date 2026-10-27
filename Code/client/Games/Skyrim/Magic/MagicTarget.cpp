@@ -96,17 +96,29 @@ void MagicTarget::DispelAllSpells(bool aNow) noexcept
 
 bool MagicTarget::AddTarget(AddTargetData& arData, bool aApplyHealPerkBonus, bool aApplyStaminaPerkBonus) noexcept
 {
-    s_autoSucceedEffectCheck = true;
-    s_applyHealPerkBonus = aApplyHealPerkBonus;
-    s_applyStaminaPerkBonus = aApplyStaminaPerkBonus;
+    struct ScopedRemoteAddTargetState
+    {
+        ScopedRemoteAddTargetState(bool aHealPerk, bool aStaminaPerk) noexcept
+            : m_prevAutoSucceed(s_autoSucceedEffectCheck)
+            , m_prevHealPerk(s_applyHealPerkBonus)
+            , m_prevStaminaPerk(s_applyStaminaPerkBonus)
+        {
+            s_autoSucceedEffectCheck = true;
+            s_applyHealPerkBonus = aHealPerk;
+            s_applyStaminaPerkBonus = aStaminaPerk;
+        }
+        ~ScopedRemoteAddTargetState() noexcept
+        {
+            s_autoSucceedEffectCheck = m_prevAutoSucceed;
+            s_applyHealPerkBonus = m_prevHealPerk;
+            s_applyStaminaPerkBonus = m_prevStaminaPerk;
+        }
+        bool m_prevAutoSucceed;
+        bool m_prevHealPerk;
+        bool m_prevStaminaPerk;
+    } stateGuard(aApplyHealPerkBonus, aApplyStaminaPerkBonus);
 
-    bool result = TiltedPhoques::ThisCall(RealAddTarget, this, arData);
-
-    s_autoSucceedEffectCheck = false;
-    s_applyHealPerkBonus = false;
-    s_applyStaminaPerkBonus = false;
-
-    return result;
+    return TiltedPhoques::ThisCall(RealAddTarget, this, arData);
 }
 
 bool MagicTarget::AddTargetData::ShouldSync()

@@ -28,6 +28,8 @@ struct PlayerService
 
     TP_NOCOPYMOVE(PlayerService);
 
+    void RestoreMultiplayerGlobalsAfterWorldReload() noexcept;
+
 protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnConnected(const ConnectedEvent& acEvent) noexcept;

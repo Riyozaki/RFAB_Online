@@ -38,7 +38,7 @@
 
 namespace
 {
-constexpr float kDownedFloorHealth = 1.0f;
+constexpr float kNativeBleedoutFloorHealth = 0.0f;
 constexpr float kClientRevivePromptMeters = 3.0f;
 constexpr float kHostileScanRadiusMeters = 55.0f;
 constexpr float kRfabBossMaxHealthThreshold = 1200.0f;
@@ -163,50 +163,17 @@ bool DownedStateService::IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept
     return m_playersBeingRevived.contains(aPlayerId);
 }
 
-bool DownedStateService::InterceptPotentialFatalPlayerDamage(
-    Actor* apPlayer,
-    float aCurrentHealth,
-    float aIncomingDamage) noexcept
+void DownedStateService::LatchNativeBleedoutEntered(Actor* apPlayer) noexcept
 {
-    if (!IsSystemActive() || !apPlayer)
-        return false;
-
-    if (m_isLocalDowned.load(std::memory_order_acquire) || m_isGraceActive.load(std::memory_order_acquire))
-        return true;
-
-    if (aIncomingDamage <= 0.0f)
-        return false;
-
-    if ((aCurrentHealth - aIncomingDamage) > kDownedFloorHealth)
-        return false;
-
-    // Clamp player health safely down to 1.0f under ScopedReviveHealAllowance so Skyrim never triggers Actor::Kill
-    // or REQ_DeathHandler, and arm atomic downed state; heavy camera/Papyrus/aggro/network side effects execute on OnUpdate.
-    FinalizeLethalHitCushion(apPlayer, aCurrentHealth);
-    return true;
-}
-
-void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealthBefore) noexcept
-{
-    if (!apPlayer)
+    if (!apPlayer || !IsSystemActive())
         return;
 
-    {
-        ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
-        const float healthNow = apPlayer->GetActorValue(ActorValueInfo::kHealth);
-        // Note: Actor::ForceActorValue takes the TARGET actor value (computing delta = target - current internally),
-        // NOT a delta! Passing kDownedFloorHealth clamps HP directly to 1.0f without frame-to-frame sign oscillation.
-        if (std::fabs(kDownedFloorHealth - healthNow) > 1e-4f)
-            apPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth);
-
-        const float netDelta = apPlayer->GetActorValue(ActorValueInfo::kHealth) - aHealthBefore;
-        if (std::fabs(netDelta) > 1e-4f)
-            m_world.GetRunner().Trigger(HealthChangeEvent(apPlayer->formID, netDelta));
-    }
+    if (m_isGraceActive.load(std::memory_order_acquire))
+        return;
 
     // Do NOT invoke ForceThirdPerson, Papyrus StopCombat/StartCombat, entt views, or TransportService::Send inside
     // HookDamageActor / HookRestoreActorValue (which run mid-combat and on worker threads). Arm atomic downed state
-    // immediately so all subsequent hits/regen AND AI worker detection/target hooks see IsDownedPlayer() right away!
+    // immediately so all subsequent hits/regen AND AI worker target hooks see IsDownedPlayer() right away!
     if (auto* pExt = apPlayer->GetExtension())
         pExt->SetDownedPlayer(true);
 
@@ -215,10 +182,62 @@ void DownedStateService::FinalizeLethalHitCushion(Actor* apPlayer, float aHealth
     {
         m_pendingEnterDownedTransition.store(true, std::memory_order_release);
         spdlog::info(
-            "Local player entered downed state (hp {:.1f}, cell {:X}) - AI targetability locked off until revive",
+            "Local player entered downed state (native bleedout, hp {:.1f}, cell {:X})",
             apPlayer->GetActorValue(ActorValueInfo::kHealth),
             apPlayer->parentCell ? apPlayer->parentCell->formID : 0u);
     }
+}
+
+void DownedStateService::RequestAllySpellReviveOnActor(uint32_t aTargetFormId, float aHealMagnitude) noexcept
+{
+    if (!IsSystemActive() || IsLocalPlayerDowned() || aTargetFormId == 0 || aTargetFormId == 0x14 || aHealMagnitude < 5.0f)
+        return;
+
+    if (m_spellReviveRequestCooldownSec > 0.0)
+        return;
+
+    uint32_t targetPlayerId = 0;
+    auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
+    for (auto entity : playerView)
+    {
+        if (playerView.get<FormIdComponent>(entity).Id == aTargetFormId)
+        {
+            targetPlayerId = playerView.get<PlayerComponent>(entity).Id;
+            break;
+        }
+    }
+
+    if (targetPlayerId == 0 || !IsRemotePlayerDowned(targetPlayerId))
+        return;
+
+    m_spellReviveRequestCooldownSec = 1.0;
+    ReviveActionRequest req{};
+    req.Action = ReviveActionRequest::ActionType::HealingSpellRevive;
+    req.TargetPlayerId = targetPlayerId;
+    m_transport.Send(req);
+}
+
+void DownedStateService::NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemoteCaster, float aHealMagnitude) noexcept
+{
+    if (!IsSystemActive() || !IsLocalPlayerDowned() || !apRemoteCaster || aHealMagnitude < 5.0f)
+        return;
+
+    if (m_spellReviveRequestCooldownSec > 0.0)
+        return;
+
+    const auto* pCasterExt = apRemoteCaster->GetExtension();
+    if (!pCasterExt || !pCasterExt->IsRemotePlayer() || pCasterExt->IsDownedPlayer())
+        return;
+
+    const uint32_t localPlayerId = GetLocalPlayerId();
+    if (localPlayerId == 0)
+        return;
+
+    m_spellReviveRequestCooldownSec = 1.0;
+    ReviveActionRequest req{};
+    req.Action = ReviveActionRequest::ActionType::HealingSpellRevive;
+    req.TargetPlayerId = localPlayerId;
+    m_transport.Send(req);
 }
 
 void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept
@@ -226,19 +245,27 @@ void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, boo
     if (!apRemoteActor)
         return;
 
+    apRemoteActor->SetEssentialEx(true);
+
     if (auto* pExt = apRemoteActor->GetExtension())
     {
         pExt->SetDownedPlayer(aIsDowned);
         if (!pExt->IsLocalPlayer())
         {
+            ScopedActorValueOverride avOverride;
             if (aIsDowned)
             {
+                apRemoteActor->SetNoBleedoutRecovery(true);
+                apRemoteActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kNativeBleedoutFloorHealth);
                 apRemoteActor->actorState.flags1 =
                     (apRemoteActor->actorState.flags1 & ~CoopAnimationState::kLifeStateMask) |
                     (CoopAnimationState::kLifeStateBleedout << CoopAnimationState::kLifeStateShift);
             }
             else
             {
+                apRemoteActor->SetNoBleedoutRecovery(false);
+                if (apRemoteActor->GetActorValue(ActorValueInfo::kHealth) <= 0.0f)
+                    apRemoteActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, 1.0f);
                 (void)CoopAnimationState::NormalizePostReviveActorState(
                     apRemoteActor->actorState.flags1,
                     apRemoteActor->actorState.flags2);
@@ -250,11 +277,13 @@ void DownedStateService::ApplyRemoteActorDownedPosture(Actor* apRemoteActor, boo
     if (aIsDowned)
         apRemoteActor->SetWeaponDrawnEx(false);
 
-    apRemoteActor->SetNoBleedoutRecovery(aIsDowned);
     BSFixedString animEventLower(aIsDowned ? "bleedoutStart" : "bleedoutStop");
     apRemoteActor->SendAnimationEvent(&animEventLower);
     BSFixedString animEventPascal(aIsDowned ? "BleedoutStart" : "BleedoutStop");
     apRemoteActor->SendAnimationEvent(&animEventPascal);
+
+    if (!aIsDowned)
+        apRemoteActor->SetNoBleedoutRecovery(true);
 
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
     if (aIsDowned)
@@ -359,6 +388,7 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
     if (!pPlayer)
         return;
 
+    m_postReviveRecoveryActive = false;
     m_isChannelingRevive = false;
     m_channelTargetPlayerId = 0;
     m_bleedoutReassertTimerSec = 0.0;
@@ -368,27 +398,25 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
 
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 
-    // Lock controls BEFORE ForceThirdPerson() so camera state transitions do not pollute saved handler flags.
+    // Lock controls BEFORE camera / native bleedout transition so camera state transitions do not pollute saved handler flags.
     SetDownedControlLock(true);
 
-    // 1st-person skeleton in Skyrim SE has no bleedout pose; switch cleanly to 3rd-person so the player visibly
-    // sees their character drop to one knee, and restore 1st-person automatically upon revive.
     m_wasFirstPersonBeforeDowned = false;
     if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
     {
         m_wasFirstPersonBeforeDowned = true;
-        pCam->ForceThirdPerson();
     }
 
     pPlayer->InterruptCast(false);
     pPlayer->SetWeaponDrawnEx(false);
-    pPlayer->SetNoBleedoutRecovery(true);
-    pPlayer->StopCombat();
 
-    BSFixedString bleedoutLower("bleedoutStart");
-    pPlayer->SendAnimationEvent(&bleedoutLower);
-    BSFixedString bleedoutStart("BleedoutStart");
-    pPlayer->SendAnimationEvent(&bleedoutStart);
+    // Ensure genuine native Skyrim SE kBleedout (`Essential + NoBleedoutRecovery` at `0.0f HP`) even when
+    // fatal subtraction came via direct RestoreActorValue (RFAB poison/bleed/magic/ScriptDamage).
+    if (!pPlayer->actorState.IsBleedingOut())
+        pPlayer->TriggerNativeBleedout();
+
+    if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
+        pCam->ForceThirdPerson();
 
     RedirectHostileAggroAwayFromActor(pPlayer);
 
@@ -422,7 +450,7 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
     pkt.NearbyHostileCount = nearbyHostiles;
     m_transport.Send(pkt);
 
-    Utils::ShowHudMessage(String("Вы тяжело ранены (0 HP) — ждите помощи союзника [E] или конца боя"));
+    Utils::ShowHudMessage(String("Вы тяжело ранены (0 HP) — ждите помощи союзника [E] / заклинанием лечения или конца боя"));
 }
 
 void DownedStateService::SchedulePostReviveHeadAndCameraSettle(bool aRestoreFirstPerson) noexcept
@@ -440,26 +468,31 @@ void DownedStateService::RestoreLivingCombatTargetability(Actor* apActor, bool a
     if (auto* pExt = apActor->GetExtension())
         pExt->SetDownedPlayer(false);
 
-    const bool hadDownedPosture = CoopAnimationState::NormalizePostReviveActorState(
-        apActor->actorState.flags1,
-        apActor->actorState.flags2);
-
     if (apActor == PlayerCharacter::Get())
     {
+        // Local player 0x14 recovers natively via SetNoBleedoutRecovery(false) + positive kHealth:
+        // do NOT overwrite actorState.flags1 manually while SkyrimSE.exe / MCO transitions out of kBleedout,
+        // and re-arm SetNoBleedoutRecovery(true) in OnUpdate as soon as actorState.IsBleedingOut() clears!
+        apActor->SetEssentialEx(true);
         apActor->SetNoBleedoutRecovery(false);
-        apActor->SetPlayerRespawnMode(true);
+        m_postReviveRecoveryActive = true;
     }
     else
     {
+        // Remote 0xFF player clones have RealActorProcess suppressed by HookActorProcess, so normalize
+        // their lifeState and emit bleedoutStop explicitly, then re-arm NoBleedoutRecovery(true).
         apActor->SetNoBleedoutRecovery(false);
-    }
-
-    if (hadDownedPosture)
-    {
-        BSFixedString bleedoutStopLower("bleedoutStop");
-        apActor->SendAnimationEvent(&bleedoutStopLower);
-        BSFixedString bleedoutStop("BleedoutStop");
-        apActor->SendAnimationEvent(&bleedoutStop);
+        const bool hadDownedPosture = CoopAnimationState::NormalizePostReviveActorState(
+            apActor->actorState.flags1,
+            apActor->actorState.flags2);
+        if (hadDownedPosture)
+        {
+            BSFixedString bleedoutStopLower("bleedoutStop");
+            apActor->SendAnimationEvent(&bleedoutStopLower);
+            BSFixedString bleedoutStop("BleedoutStop");
+            apActor->SendAnimationEvent(&bleedoutStop);
+        }
+        apActor->SetNoBleedoutRecovery(true);
     }
 
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
@@ -509,13 +542,19 @@ void DownedStateService::ApplyAuthoritativeRevive(
     m_graceRemainingSec = std::clamp(static_cast<double>(aGraceSec), 0.0, 15.0);
     m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
 
+    // 1. Allow native Skyrim SE recovery from kBleedout BEFORE restoring positive kHealth:
+    pPlayer->SetEssentialEx(true);
+    pPlayer->SetNoBleedoutRecovery(false);
+    m_postReviveRecoveryActive = true;
+
+    // 2. Restore kHealth above 0.0f so SkyrimSE.exe natively plays bleedoutStop and exits BleedoutCameraState:
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
         const float maxHp = std::max(
             10.0f,
             pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth) + pPlayer->healthModifiers.temporaryModifier);
         const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
-        const float targetHp = std::max(kDownedFloorHealth + 1.0f, maxHp * std::clamp(aHealthFraction, 0.05f, 1.0f));
+        const float targetHp = std::max(kNativeBleedoutFloorHealth + 1.0f, maxHp * std::clamp(aHealthFraction, 0.05f, 1.0f));
         const float healDelta = std::max(0.0f, targetHp - curHp);
 
         if (healDelta > 0.0f)
@@ -532,18 +571,13 @@ void DownedStateService::ApplyAuthoritativeRevive(
     RestoreLivingCombatTargetability(pPlayer, true);
 
     spdlog::info(
-        "Local player revived (fraction {:.2f}, grace {:.1f}s, hp {:.1f}) - AI targetability restored",
+        "Local player revived natively (fraction {:.2f}, grace {:.1f}s, hp {:.1f}) - AI targetability restored",
         aHealthFraction,
         aGraceSec,
         pPlayer->GetActorValue(ActorValueInfo::kHealth));
 
-    BSFixedString bleedoutStopLower("bleedoutStop");
-    pPlayer->SendAnimationEvent(&bleedoutStopLower);
-    BSFixedString bleedoutStop("BleedoutStop");
-    pPlayer->SendAnimationEvent(&bleedoutStop);
-
-    // Defer QueueUpdate() (frame +1) and ForceFirstPerson() (frame +2) so SetActorInventory() & MoveTo()
-    // never execute while 3rd-person BSFaceGenNiNode/hair geometry is culled by 1st-person camera transition!
+    // Defer QueueUpdate() (frame +1), ForceFirstPerson() (frame +2), and re-arming SetNoBleedoutRecovery(true)
+    // once SkyrimSE.exe clears actorState.IsBleedingOut()!
     SchedulePostReviveHeadAndCameraSettle(restoreFirstPerson);
 
     SyncPlayerDownedState syncUp{};
@@ -568,10 +602,12 @@ void DownedStateService::ResetAllStates() noexcept
     m_isLocalDowned.store(false, std::memory_order_release);
     m_allowAuthorizedHeal.store(false, std::memory_order_release);
     m_wasFirstPersonBeforeDowned = false;
+    m_postReviveRecoveryActive = false;
     m_graceRemainingSec = 0.0;
     m_isGraceActive.store(false, std::memory_order_release);
     m_bleedoutReassertTimerSec = 0.0;
     m_revivePromptCooldownSec = 0.0;
+    m_spellReviveRequestCooldownSec = 0.0;
     m_isChannelingRevive = false;
     m_channelTargetPlayerId = 0;
     m_channelElapsedSec = 0.0;
@@ -597,11 +633,12 @@ void DownedStateService::ResetAllStates() noexcept
 
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
     {
+        if (pPlayer->GetActorValue(ActorValueInfo::kHealth) <= 0.0f)
+        {
+            ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, 1.0f);
+        }
         RestoreLivingCombatTargetability(pPlayer, wasLocalDowned);
-        BSFixedString bleedoutStopLower("bleedoutStop");
-        pPlayer->SendAnimationEvent(&bleedoutStopLower);
-        BSFixedString bleedoutStop("BleedoutStop");
-        pPlayer->SendAnimationEvent(&bleedoutStop);
         SchedulePostReviveHeadAndCameraSettle(restoreFirstPerson);
     }
 
@@ -687,13 +724,40 @@ void DownedStateService::RedirectHostileAggroAwayFromActor(Actor* apDownedActor)
         considerStandingAlly(pAlly);
     }
 
+    if (!pNearestLivingAlly)
+    {
+        auto summonView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent, PlayerComponent>);
+        for (auto entity : summonView)
+        {
+            const uint32_t fid = summonView.get<FormIdComponent>(entity).Id;
+            if (fid == 0 || fid == 0x14)
+                continue;
+
+            Actor* pSummon = Cast<Actor>(TESForm::GetById(fid));
+            if (!pSummon || pSummon->IsDead())
+                continue;
+
+            const auto* pExt = pSummon->GetExtension();
+            const Actor* pCmd = pSummon->GetCommandingActor();
+            const bool isPlayerSummon =
+                pSummon->IsPlayerSummon() ||
+                (pExt && pExt->IsPlayerSummonFlag()) ||
+                (pCmd && (pCmd->formID == 0x14 || (pCmd->GetExtension() && pCmd->GetExtension()->IsPlayer())));
+            if (isPlayerSummon)
+                considerStandingAlly(pSummon);
+        }
+    }
+
+    if (!pNearestLivingAlly)
+        return;
+
     auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     for (auto entity : actorView)
     {
         Actor* pNpc = Cast<Actor>(TESForm::GetById(actorView.get<FormIdComponent>(entity).Id));
         if (!pNpc || pNpc == apDownedActor || pNpc->IsDead())
             continue;
-        if (auto* pExt = pNpc->GetExtension(); pExt && pExt->IsPlayer())
+        if (auto* pExt = pNpc->GetExtension(); pExt && (pExt->IsPlayer() || pExt->IsRemote()))
             continue;
 
         Actor* pCurrentTarget = pNpc->GetCombatTarget();
@@ -702,21 +766,11 @@ void DownedStateService::RedirectHostileAggroAwayFromActor(Actor* apDownedActor)
 
         if (pCurrentTarget == apDownedActor)
         {
-            // NEVER call StopCombat() + StartCombatEx() on a timer: that forced enemies out of combat and back in
-            // every 0.5s (infinite taunt/sheath/draw loop!). Instead, switch CombatController::SetTarget directly
-            // onto the nearest standing player (backed by HookUpdateDetectionState + HookUpdateTarget on AI workers).
-            if (pNearestLivingAlly)
-            {
-                pNpc->SetCombatTargetEx(pNearestLivingAlly);
-                if (!pNpc->IsInCombat())
-                    pNpc->StartCombat(pNearestLivingAlly);
-            }
-            else
-            {
-                pNpc->SetCombatTargetEx(nullptr);
-                if (pNpc->IsInCombat())
-                    pNpc->StopCombat();
-            }
+            // Redirect locally-owned hostiles onto the nearest standing ally or summon WITHOUT ever calling
+            // StopCombat() or SetCombatTargetEx(nullptr), preserving 100% of CombatGroup & RFAB boss phase state!
+            pNpc->SetCombatTargetEx(pNearestLivingAlly);
+            if (!pNpc->IsInCombat())
+                pNpc->StartCombat(pNearestLivingAlly);
         }
     }
 }
@@ -913,22 +967,37 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
         m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
     }
 
+    if (m_spellReviveRequestCooldownSec > 0.0)
+        m_spellReviveRequestCooldownSec = std::max(0.0, m_spellReviveRequestCooldownSec - acEvent.Delta);
+
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
-    // Belt-and-suspenders per-frame health guard: even if an external SKSE plugin mutates healthModifiers
-    // directly in memory without calling DamageActor / RestoreActorValue, clamp HP to 1.0f immediately
-    // and transition into frozen Downed-on-Knee posture before negative HP (-50..-500) can ever stick.
+    // Native Skyrim SE Essential + NoBleedoutRecovery guard at 0.0f HP:
+    // keep Essential armed whenever standing, catch any direct memory mutation driving kHealth <= 0.0f,
+    // and keep kHealth cleanly at 0.0f while kneeling in native kBleedout.
     if (pPlayer)
     {
         const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
-        if (!m_isLocalDowned.load(std::memory_order_acquire) && m_graceRemainingSec <= 0.0 && curHp <= kDownedFloorHealth)
+        if (!m_isLocalDowned.load(std::memory_order_acquire))
         {
-            FinalizeLethalHitCushion(pPlayer, curHp);
+            if (!m_postReviveRecoveryActive && !pPlayer->IsEssential())
+                pPlayer->SetPlayerRespawnMode(true);
+
+            if (!m_postReviveRecoveryActive && m_graceRemainingSec <= 0.0 &&
+                (pPlayer->actorState.IsBleedingOut() || curHp <= kNativeBleedoutFloorHealth))
+            {
+                if (curHp < kNativeBleedoutFloorHealth)
+                {
+                    ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
+                    pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kNativeBleedoutFloorHealth);
+                }
+                LatchNativeBleedoutEntered(pPlayer);
+            }
         }
-        else if (m_isLocalDowned.load(std::memory_order_acquire) && std::fabs(curHp - kDownedFloorHealth) > 0.05f)
+        else if (std::fabs(curHp - kNativeBleedoutFloorHealth) > 0.05f)
         {
             ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
-            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kDownedFloorHealth);
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, kNativeBleedoutFloorHealth);
         }
     }
 
@@ -943,6 +1012,9 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
         SetDownedControlLock(true);
         if (pPlayer)
         {
+            if (!pPlayer->actorState.IsBleedingOut())
+                pPlayer->TriggerNativeBleedout();
+
             if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
                 pCam->ForceThirdPerson();
 
@@ -954,13 +1026,6 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
                 if (pPlayer->actorState.IsWeaponFullyDrawn())
                     pPlayer->SetWeaponDrawnEx(false);
-
-                BSFixedString inBleedoutVar("bInBleedout");
-                if (pPlayer->GetAnimationVariableInt(&inBleedoutVar) == 0)
-                {
-                    BSFixedString bleedoutLower("bleedoutStart");
-                    pPlayer->SendAnimationEvent(&bleedoutLower);
-                }
             }
         }
     }
@@ -969,22 +1034,29 @@ void DownedStateService::OnUpdate(const UpdateEvent& acEvent) noexcept
         const bool isLoadingMenuOpen = UI::Get() && UI::Get()->GetMenuOpen(BSFixedString("Loading Menu"));
         const bool isPlayerReady = !isLoadingMenuOpen && pPlayer && pPlayer->GetNiNode() != nullptr;
 
-        if (isPlayerReady && m_postReviveBleedoutExitFrames > 0)
+        if (isPlayerReady && (m_postReviveBleedoutExitFrames > 0 || m_postReviveRecoveryActive))
         {
-            --m_postReviveBleedoutExitFrames;
+            if (m_postReviveBleedoutExitFrames > 0)
+                --m_postReviveBleedoutExitFrames;
             SetDownedControlLock(false);
 
-            BSFixedString inBleedoutVar("bInBleedout");
-            const bool stillInBleedoutGraph = pPlayer->GetAnimationVariableInt(&inBleedoutVar) != 0;
-            const bool stillInBleedoutLifeState =
-                CoopAnimationState::IsDownedOrBleedoutLifeState(pPlayer->actorState.flags1);
-            if (stillInBleedoutGraph || stillInBleedoutLifeState)
+            if (!pPlayer->actorState.IsBleedingOut())
             {
-                RestoreLivingCombatTargetability(pPlayer, false);
-                BSFixedString bleedoutStopLower("bleedoutStop");
-                pPlayer->SendAnimationEvent(&bleedoutStopLower);
-                BSFixedString bleedoutStop("BleedoutStop");
+                // Native Skyrim SE recovery completed cleanly: re-arm Essential + NoBleedoutRecovery(true) for future fights!
+                pPlayer->SetPlayerRespawnMode(true);
+                m_postReviveRecoveryActive = false;
+                m_postReviveBleedoutExitFrames = 0;
+            }
+            else if (m_postReviveBleedoutExitFrames == 0)
+            {
+                // Safety fallback if a custom behavior graph stalled exiting bleedout after 45 frames:
+                (void)CoopAnimationState::NormalizePostReviveActorState(
+                    pPlayer->actorState.flags1,
+                    pPlayer->actorState.flags2);
+                BSFixedString bleedoutStop("bleedoutStop");
                 pPlayer->SendAnimationEvent(&bleedoutStop);
+                pPlayer->SetPlayerRespawnMode(true);
+                m_postReviveRecoveryActive = false;
             }
         }
 
@@ -1054,10 +1126,6 @@ void DownedStateService::OnNotifyPlayerDownedState(const NotifyPlayerDownedState
     {
         if (pDownedRemoteActor)
             RedirectHostileAggroAwayFromActor(pDownedRemoteActor);
-
-        // Immediately claim AI ownership of active bosses/combatants in the room if the downed peer was their owner,
-        // so boss combat packages, phase transitions, and animations never stall while a standing teammate is fighting!
-        m_world.GetCharacterService().ClaimCombatActorsFromDownedPeer(acMessage.PlayerId);
 
         Utils::ShowHudMessage(String("Союзник тяжело ранен! Удерживайте [E] рядом, чтобы поднять"));
     }

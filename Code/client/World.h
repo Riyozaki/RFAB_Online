@@ -17,6 +17,7 @@
 #include <Systems/ModSystem.h>
 
 #include <Structs/ServerSettings.h>
+#include <CoopDamagePipeline.h>
 
 #include <atomic>
 
@@ -43,10 +44,10 @@ struct World : entt::registry
     const DebugService& GetDebugService() const noexcept { return ctx().at<const DebugService>(); }
     MagicService& GetMagicService() noexcept { return ctx().at<MagicService>(); }
     const MagicService& GetMagicService() const noexcept { return ctx().at<const MagicService>(); }
-    RfabAdapterService& GetRfabAdapterService() noexcept { return ctx().at<RfabAdapterService>(); }
-    const RfabAdapterService& GetRfabAdapterService() const noexcept { return ctx().at<const RfabAdapterService>(); }
-    DownedStateService& GetDownedStateService() noexcept { return ctx().at<DownedStateService>(); }
-    const DownedStateService& GetDownedStateService() const noexcept { return ctx().at<const DownedStateService>(); }
+    RfabAdapterService& GetRfabAdapterService() noexcept { return *m_pRfabAdapterService; }
+    const RfabAdapterService& GetRfabAdapterService() const noexcept { return *m_pRfabAdapterService; }
+    DownedStateService& GetDownedStateService() noexcept { return *m_pDownedStateService; }
+    const DownedStateService& GetDownedStateService() const noexcept { return *m_pDownedStateService; }
     CoordinatedSaveService& GetCoordinatedSaveService() noexcept { return ctx().at<CoordinatedSaveService>(); }
     const CoordinatedSaveService& GetCoordinatedSaveService() const noexcept { return ctx().at<const CoordinatedSaveService>(); }
     DiscoveryService& GetDiscoveryService() noexcept { return ctx().at<DiscoveryService>(); }
@@ -59,6 +60,10 @@ struct World : entt::registry
     {
         m_serverSettings = aServerSettings;
         s_syncPlayerHomesCached.store(m_serverSettings.SyncPlayerHomes, std::memory_order_release);
+        s_pvpEnabledCached.store(m_serverSettings.PvpEnabled, std::memory_order_release);
+        s_enemyHealthMultiplierCached.store(
+            CoopDamagePipeline::NormalizeEnemyHealthMultiplier(m_serverSettings.HealthMultiplier),
+            std::memory_order_release);
     }
 
     [[nodiscard]] uint64_t GetTick() const noexcept;
@@ -71,7 +76,17 @@ struct World : entt::registry
     [[nodiscard]] static bool IsConnectedCached() noexcept { return s_isConnectedCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsContainerMenuOpenCached() noexcept { return s_isContainerMenuOpenCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsSyncPlayerHomesCached() noexcept { return s_syncPlayerHomesCached.load(std::memory_order_acquire); }
-    static void SetConnectedHint(bool aConnected) noexcept { s_isConnectedCached.store(aConnected, std::memory_order_release); }
+    [[nodiscard]] static bool IsPvpEnabledCached() noexcept { return s_pvpEnabledCached.load(std::memory_order_acquire); }
+    [[nodiscard]] static float GetEnemyHealthMultiplierCached() noexcept { return s_enemyHealthMultiplierCached.load(std::memory_order_acquire); }
+    static void SetConnectedHint(bool aConnected) noexcept
+    {
+        s_isConnectedCached.store(aConnected, std::memory_order_release);
+        if (!aConnected)
+        {
+            s_pvpEnabledCached.store(false, std::memory_order_release);
+            s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
+        }
+    }
     static void SetContainerMenuOpenHint(bool aOpen) noexcept { s_isContainerMenuOpenCached.store(aOpen, std::memory_order_release); }
 
 private:
@@ -79,11 +94,15 @@ private:
     inline static std::atomic<bool> s_isConnectedCached{false};
     inline static std::atomic<bool> s_isContainerMenuOpenCached{false};
     inline static std::atomic<bool> s_syncPlayerHomesCached{false};
+    inline static std::atomic<bool> s_pvpEnabledCached{false};
+    inline static std::atomic<float> s_enemyHealthMultiplierCached{1.0f};
 
     entt::dispatcher m_dispatcher;
     RunnerService m_runner;
     TransportService m_transport;
     ModSystem m_modSystem;
+    RfabAdapterService* m_pRfabAdapterService{nullptr};
+    DownedStateService* m_pDownedStateService{nullptr};
     ServerSettings m_serverSettings{};
 
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;

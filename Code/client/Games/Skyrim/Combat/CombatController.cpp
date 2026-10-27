@@ -89,6 +89,7 @@ void TP_MAKE_THISCALL(HookUpdateTarget, CombatController)
                 if (spLockedTarget &&
                     spLockedTarget->formID != 0 &&
                     !spLockedTarget->IsDead() &&
+                    !spLockedTarget->actorState.IsBleedingOut() &&
                     !(pLockedExt && pLockedExt->IsDownedPlayer()))
                 {
                     return;
@@ -104,17 +105,20 @@ void TP_MAKE_THISCALL(HookUpdateTarget, CombatController)
     if (apThis->targetHandle == 0)
         return;
 
-    // Thread-safe AI worker guard: never touch EnTT views here!
-    // Check atomic ActorExtension::IsDownedPlayer() on the selected target; if the AI picked a downed player
-    // (local 0x14 or remote clone), seamlessly retarget onto the nearest standing player via mutex-protected
-    // CoopCombatSnapshot (or clear target to nullptr if all players in range are downed).
+    // Thread-safe AI worker guard: never touch EnTT views here, and NEVER clear target to nullptr!
+    // Clearing target to nullptr forced NPCs/bosses out of CombatGroup and triggered RFAB's 100% out-of-combat heal.
+    // Instead, switch onto the nearest standing player or player summon if one is in the encounter; otherwise keep
+    // CombatGroup intact until an ally enters range or the server triggers party-wipe checkpoint reload.
     GamePtr<Actor> spCurrentTarget = Actor::LookupByHandle(apThis->targetHandle);
-    if (spCurrentTarget && spCurrentTarget->GetExtension() && spCurrentTarget->GetExtension()->IsDownedPlayer())
+    if (spCurrentTarget &&
+        (spCurrentTarget->actorState.IsBleedingOut() ||
+         (spCurrentTarget->GetExtension() && spCurrentTarget->GetExtension()->IsDownedPlayer())))
     {
         GamePtr<Actor> spReplacement = (World::IsCreated() && World::IsConnectedCached())
             ? World::Get().GetRfabAdapterService().FindBestStandingPlayerTargetFor(spAttacker.Get())
             : nullptr;
-        apThis->SetTarget(spReplacement.Get());
+        if (spReplacement)
+            apThis->SetTarget(spReplacement.Get());
     }
 }
 

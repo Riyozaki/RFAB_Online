@@ -511,11 +511,13 @@ TEST_CASE("Co-op Hardening & Mutation Twins: Epoch Ownership, Anti-Flap Hysteres
         REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 1100, false, false, true, false, false, policy) ==
                 CoopOwnership::ClaimDecision::kRejectHoldWindowActive);
 
-        // Once 1600ms pass (or if Player 1 falls on knee!), Player 2 cleanly takes control
+        // Once 1600ms pass (or if Player 1 leaves range), calm handoff succeeds; connected downed owner still preserves hold window
         REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 2600, false, false, true, false, false, policy) ==
                 CoopOwnership::ClaimDecision::kAccept);
-        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 1100, false, false, true, true, false, policy) ==
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 1100, false, false, false, false, false, policy) ==
                 CoopOwnership::ClaimDecision::kAccept);
+        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 1100, false, false, true, true, false, policy) ==
+                CoopOwnership::ClaimDecision::kRejectHoldWindowActive);
 
         // Player summons & avatars can NEVER be stolen, and a downed player NEVER steals AI from a standing ally
         REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(1, 2, 1000, 5000, false, true, true, false, false, policy) ==

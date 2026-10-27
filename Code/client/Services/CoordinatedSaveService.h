@@ -25,8 +25,11 @@ struct NotifyExecuteLoad;
  * - Detaches dynamic 0xFFxxxxxx remote clones & pooled TESNPCs for 2 calm frames before executing Save_Impl
  *   directly inside BGSSaveLoadManager::ProcessEvents (SE 34862), verifies the written "TESV_SAVEGAME"
  *   header on disk, restores remote actors after Save_Impl completes, and reports CoordinatedSaveAck.
- * - Executes Party Wipes & pre-checkpoint rollbacks seamlessly IN-SESSION (SkyMP / MMO model) without
- *   calling m_transport.Close(), reloading .ess files in combat, or touching stale saves from older sessions.
+ * - Executes BOTH Party Wipes and Manual Slot Loads (`F9`) via `WorldReloadBarrier` synchronized `.ess`
+ *   world reloads while keeping `TransportService` socket, `PlayerId`, and `PartyService` open (zero
+ *   `m_transport.Close()`), preserving 100% fidelity for Papyrus VM, `RFAB.dll`, `CustomSkills`,
+ *   `StorageUtil`/`JContainers`, and SkyUI hotkeys. Non-destructive transform/health fallback is kept
+ *   strictly as an emergency safety net if a newly joined peer has zero current-session `.ess` on disk.
  */
 class CoordinatedSaveService
 {
@@ -57,6 +60,12 @@ public:
     void NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept;
     void ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* apMgr) noexcept;
 
+    [[nodiscard]] bool IsHoldingWorldDiscoveryForHostBarrier() const noexcept
+    {
+        return m_liveSessionWorldReloadPending || m_liveSessionWorldReloadInFlight ||
+               m_postReloadSyncPending || m_waitingForHostBarrierRelease;
+    }
+
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_lastCommittedEpoch; }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_lastCommittedSlot; }
 
@@ -74,6 +83,9 @@ private:
     [[nodiscard]] bool IsBlockingInteractiveMenuOpen(std::string& aOutReason) const noexcept;
     void QueuePurgedAuthorizedSave(const std::string& acSlotName, uint64_t aEpochId, bool aSendServerAck) noexcept;
     void ApplyInSessionRollback(const NotifyExecuteLoad& acMessage) noexcept;
+    void SendReloadBarrierReadyAck(uint64_t aEpochId, const std::string& acSlotName, bool aSuccess) noexcept;
+    void CompleteLiveWorldReloadAfterEngineReady() noexcept;
+    void ReleaseGuestWorldDiscoveryHold() noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -83,6 +95,14 @@ private:
     bool m_preJoinBackupWrittenThisSession{false};
     bool m_isExecutingPreJoinBackup{false};
     double m_preJoinBackupDelaySec{0.0};
+
+    bool m_liveSessionWorldReloadPending{false};
+    bool m_liveSessionWorldReloadInFlight{false};
+    bool m_postReloadSyncPending{false};
+    bool m_waitingForHostBarrierRelease{false};
+    uint64_t m_activeReloadBarrierEpoch{0};
+    std::string m_activeReloadBarrierSlot{};
+    double m_hostBarrierHoldRemainingSec{0.0};
 
     bool m_autoReconnectPendingAfterLoad{false};
     bool m_wasAutoReconnecting{false};

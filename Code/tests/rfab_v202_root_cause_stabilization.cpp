@@ -115,7 +115,9 @@ TEST_CASE("Stage 0: Immutable v2.0.1-backup manifest and CI release protection",
     REQUIRE(ps1.find("\"v2.0.2\"") != std::string::npos);
     REQUIRE(ps1.find("\"v2.0.3-backup\"") != std::string::npos);
     REQUIRE(ps1.find("\"v2.0.3\"") != std::string::npos);
-    REQUIRE(ps1.find("[string]$VersionTag = \"v2.1.0\"") != std::string::npos);
+    REQUIRE(ps1.find("\"v2.1.0-backup\"") != std::string::npos);
+    REQUIRE(ps1.find("\"v2.1.0\"") != std::string::npos);
+    REQUIRE(ps1.find("[string]$VersionTag = \"v3.0.0\"") != std::string::npos);
     REQUIRE(ps1.find("[switch]$SkipPublish") != std::string::npos);
 }
 
@@ -192,10 +194,10 @@ TEST_CASE("Stage 3.1 & 3.2: Exact RFAB lethal-damage intercept and buff-preservi
     REQUIRE_FALSE(root.empty());
 
     const std::string actorCpp = LoadRepoFileText(root, "Code/client/Games/Skyrim/Actor.cpp");
-    // +65536 temporaryModifier HP inflation must be completely gone from HookDamageActor
+    // +65536 temporaryModifier HP inflation and 1.0f HP clamp must be gone in favor of native 0.0f bleedout
     REQUIRE(actorCpp.find("65536.0f") == std::string::npos);
-    REQUIRE(actorCpp.find("ScopedLethalPlayerDamageIntercept") != std::string::npos);
-    REQUIRE(actorCpp.find("s_interceptLethalPlayerDamageInHook") != std::string::npos);
+    REQUIRE(actorCpp.find("TriggerNativeBleedout") != std::string::npos);
+    REQUIRE(actorCpp.find("LatchNativeBleedoutEntered") != std::string::npos);
     REQUIRE(actorCpp.find("void Actor::DispelHostileEffects() noexcept") != std::string::npos);
 
     const std::string coordSaveCpp = LoadRepoFileText(root, "Code/client/Services/CoordinatedSaveService.cpp");

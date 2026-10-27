@@ -36,8 +36,8 @@ World::World()
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
 {
     ctx().emplace<ImguiService>();
-    ctx().emplace<RfabAdapterService>(*this, m_dispatcher, m_transport);
-    ctx().emplace<DownedStateService>(*this, m_dispatcher, m_transport);
+    m_pRfabAdapterService = &ctx().emplace<RfabAdapterService>(*this, m_dispatcher, m_transport);
+    m_pDownedStateService = &ctx().emplace<DownedStateService>(*this, m_dispatcher, m_transport);
     ctx().emplace<CoordinatedSaveService>(*this, m_dispatcher, m_transport);
     ctx().emplace<DiscoveryService>(*this, m_dispatcher);
     ctx().emplace<OverlayService>(*this, m_transport, m_dispatcher);
@@ -67,6 +67,9 @@ World::~World()
 {
     s_isConnectedCached.store(false, std::memory_order_release);
     s_isContainerMenuOpenCached.store(false, std::memory_order_release);
+    s_syncPlayerHomesCached.store(false, std::memory_order_release);
+    s_pvpEnabledCached.store(false, std::memory_order_release);
+    s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
     s_worldCreated.store(false, std::memory_order_release);
 }
 

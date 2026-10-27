@@ -60,12 +60,13 @@ public:
     [[nodiscard]] bool IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept;
     [[nodiscard]] bool IsActorDowned(uint32_t aActorFormId) const noexcept;
 
-    // Invoked directly from HookDamageActor and HookRestoreActorValue when incoming damage would kill the player.
-    // Returns true if fatal death was intercepted and converted into Downed-on-Knee state.
-    bool InterceptPotentialFatalPlayerDamage(Actor* apPlayer, float aCurrentHealth, float aIncomingDamage) noexcept;
+    // Lock-free atomic latch called from HookDamageActor / HookRestoreActorValue / OnUpdate when 0x14 reaches 0.0f HP
+    // under native Skyrim SE Essential + NoBleedoutRecovery. Defers all camera/control/aggro/network work to OnUpdate.
+    void LatchNativeBleedoutEntered(Actor* apPlayer) noexcept;
 
-    // Clamps health to 1.0f after authoritative RealDamageActor (with temporaryModifier cushion) and enters Downed-on-Knee.
-    void FinalizeLethalHitCushion(Actor* apPlayer, float aHealthBefore) noexcept;
+    // Triggers a server-authoritative ally revive when a standing party member hits a downed ally with a Restoration heal spell.
+    void RequestAllySpellReviveOnActor(uint32_t aTargetFormId, float aHealMagnitude) noexcept;
+    void NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemoteCaster, float aHealMagnitude) noexcept;
 
     // Applies or clears kneeling bleedout posture on a remote player's Actor instance.
     void ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept;
@@ -127,12 +128,14 @@ private:
     std::atomic<bool> m_downedSystemEnabledCached{true};
     bool m_wasFirstPersonBeforeDowned{false};
     bool m_pendingFirstPersonRestore{false};
+    bool m_postReviveRecoveryActive{false};
     uint8_t m_postReviveSettleFrames{0};
     uint8_t m_postReviveBleedoutExitFrames{0};
     double m_graceRemainingSec{0.0};
     double m_reportTimerSec{0.0};
     double m_bleedoutReassertTimerSec{0.0};
     double m_revivePromptCooldownSec{0.0};
+    double m_spellReviveRequestCooldownSec{0.0};
     SavedControlFlags m_savedControls{};
 
     bool m_isChannelingRevive{false};

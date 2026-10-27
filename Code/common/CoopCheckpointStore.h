@@ -172,32 +172,68 @@ namespace CoopCheckpoint
         }
     }
 
+    inline constexpr std::string_view kPreJoinBackupSlotName = "RFAB_MP_PreJoin_Backup";
+
     /**
-     * MMO / SkyMP Rollback Policy:
-     * - Party wipes ALWAYS execute seamless in-session rollback whenever the server holds a valid
-     *   player checkpoint or session-entry baseline (zero .ess reload, zero m_transport.Close()!).
-     * - Empty slot names (pre-checkpoint rollbacks) also execute seamless in-session rollback.
-     * - Explicit manual slot loads (`!aIsPartyWipe && !acSlotName.empty()`) execute coordinated .ess
-     *   load on clients that possess the current-session .ess slot, with automatic in-session fallback
-     *   for any peer lacking the file on disk.
+     * Bit flag multiplexed onto `CoordinatedSaveAck::EpochId` and `NotifyCommitSave::EpochId`
+     * for Phase 3 `WorldReloadBarrier` readiness ACKs and Host-gate release notifications,
+     * preserving 100% opcode compatibility with existing client/server message factories.
+     */
+    inline constexpr uint64_t kReloadBarrierEpochBit = (1ULL << 62);
+
+    [[nodiscard]] inline constexpr uint64_t EncodeReloadBarrierEpoch(uint64_t aEpochId) noexcept
+    {
+        return (aEpochId & ~kReloadBarrierEpochBit) | kReloadBarrierEpochBit;
+    }
+
+    [[nodiscard]] inline constexpr bool IsReloadBarrierEpoch(uint64_t aEncodedEpochId) noexcept
+    {
+        return (aEncodedEpochId & kReloadBarrierEpochBit) != 0ULL;
+    }
+
+    [[nodiscard]] inline constexpr uint64_t DecodeReloadBarrierEpoch(uint64_t aEncodedEpochId) noexcept
+    {
+        return aEncodedEpochId & ~kReloadBarrierEpochBit;
+    }
+
+    /**
+     * v3.0 Phase 3 (`WorldReloadBarrier`) Unified Checkpoint Reload Policy:
+     * - BOTH Party Wipes and Manual Slot Loads (`F9` / `LoadSpecificSlot`) execute a coordinated
+     *   in-session `.ess` world reload via `WorldReloadBarrier` (keeping sockets & `Party` open!)
+     *   whenever a target `.ess` slot name is present (`!acSlotName.empty()`), guaranteeing 100%
+     *   fidelity for Papyrus VM, `RFAB.dll`, `CustomSkills`, `StorageUtil`/`JContainers`, and
+     *   SkyUI hotkeys.
+     * - Non-destructive transform/health fallback (`true`) is reserved strictly for the rare
+     *   emergency case where no target `.ess` slot exists at all (`acSlotName.empty()`).
      */
     [[nodiscard]] inline constexpr bool ShouldServerPreferInSessionRollback(
         bool aIsPartyWipe,
         bool aHasInSessionPlayerState,
         std::string_view acSlotName) noexcept
     {
-        if (aIsPartyWipe && aHasInSessionPlayerState)
-            return true;
-        if (acSlotName.empty() && aHasInSessionPlayerState)
-            return true;
-        return false;
+        (void)aIsPartyWipe;
+        if (!acSlotName.empty())
+            return false;
+        return aHasInSessionPlayerState;
+    }
+
+    /**
+     * Verifies whether `RFAB_MP_PreJoin_Backup.ess` on disk belongs to the CURRENT multiplayer
+     * session (`aPreJoinWrittenInCurrentSession == true`) and is permitted by server policy,
+     * preventing stale solo/previous-session backups from ever loading.
+     */
+    [[nodiscard]] inline constexpr bool CanLoadPreJoinSlotInCurrentSession(
+        bool aAllowPreJoinFallback,
+        bool aPreJoinWrittenInCurrentSession) noexcept
+    {
+        return aAllowPreJoinFallback && aPreJoinWrittenInCurrentSession;
     }
 
     /**
      * Prevents loading stale `RFAB_MP_PreJoin_Backup.ess` files left on disk from an older solo/co-op
      * session ("грузило сохранения вне сервера"):
      * - A PreJoin backup on disk is ONLY eligible if it was freshly written during THIS session AND
-     *   no in-session server transform rollback is available.
+     *   no explicit server transform override superseded disk loading.
      */
     [[nodiscard]] inline constexpr bool ShouldAllowPreJoinDiskFallback(
         bool aAllowPreJoinFallback,

@@ -137,15 +137,25 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
             horizontalSpeed);
 
         apActor->actorState.flags1 = sitDecision.NormalizedFlags1;
-        if (apActor->GetExtension() && apActor->GetExtension()->IsDownedPlayer() && !apActor->GetExtension()->IsLocalPlayer())
-        {
-            // Preserve ACTOR_LIFE_STATE::kBleedout (8, bits 21..24) on downed remote player clones so native
-            // Skyrim AI / CombatTargetSelector never treats a downed teammate as a standing kAlive target.
-            constexpr uint32_t kLifeStateMask = 0xFu << 21;
-            constexpr uint32_t kLifeStateBleedout = 8u << 21;
-            apActor->actorState.flags1 = (apActor->actorState.flags1 & ~kLifeStateMask) | kLifeStateBleedout;
-        }
         apActor->actorState.flags2 = first.State2;
+        if (const auto* pExt = apActor->GetExtension(); pExt && pExt->IsRemotePlayer())
+        {
+            if (pExt->IsDownedPlayer())
+            {
+                // Preserve ACTOR_LIFE_STATE::kBleedout (8, bits 21..24) on downed remote player clones so native
+                // Skyrim AI / CombatTargetSelector never treats a downed teammate as a standing kAlive target.
+                apActor->actorState.flags1 =
+                    (apActor->actorState.flags1 & ~CoopAnimationState::kLifeStateMask) |
+                    (CoopAnimationState::kLifeStateBleedout << CoopAnimationState::kLifeStateShift);
+            }
+            else if (CoopAnimationState::IsDownedOrBleedoutLifeState(apActor->actorState.flags1))
+            {
+                // Prevent late/in-flight pre-revive action packets from putting a revived 0xFF teammate back into kBleedout!
+                (void)CoopAnimationState::NormalizePostReviveActorState(
+                    apActor->actorState.flags1,
+                    apActor->actorState.flags2);
+            }
+        }
 
         if (CoopAnimationState::IsFurnitureEnterEvent(first.EventName) && hasNearbyFurniture)
             aAnimationComponent.InRemoteFurnitureIdle = true;

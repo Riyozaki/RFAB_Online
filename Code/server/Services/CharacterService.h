@@ -3,6 +3,7 @@
 #include <Events/PacketEvent.h>
 #include <Structs/ActorData.h>
 #include <CoopWorldView.h>
+#include <unordered_set>
 
 struct UpdateEvent;
 struct CharacterInteriorCellChangeEvent;
@@ -43,6 +44,9 @@ struct CharacterService
     void ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept;
     void ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept;
     void ForceResyncObserverAfterRollback(Player* apObserver) const noexcept;
+    void ResetWorldEntitiesForCheckpointReload(
+        const std::unordered_set<uint64_t>& acCheckpointPersistentKeys,
+        bool aHasCheckpointBaseline) const noexcept;
     [[nodiscard]] entt::entity FindPersistentCharacterByFormId(const GameId& acFormId) const noexcept;
     entt::entity EnsureDormantPersistentCharacter(
         const GameId& acFormId,

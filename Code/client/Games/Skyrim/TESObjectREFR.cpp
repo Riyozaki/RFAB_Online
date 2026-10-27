@@ -410,6 +410,24 @@ void TESObjectREFR::MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) co
     MoveToWorldOrCell(apCell, apCell->worldspace, acPosition, rotation);
 }
 
+void TESObjectREFR::MoveToCellSeamless(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept
+{
+    if (!apCell || !apCell->loadedCellData || apCell->cellDetached)
+        return;
+
+    ScopedReferencesOverride recursionGuard;
+
+    if (RealInternalMoveTo)
+    {
+        TiltedPhoques::ThisCall(RealInternalMoveTo, const_cast<TESObjectREFR*>(this), GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    }
+    else
+    {
+        POINTER_SKYRIMSE(TInternalMoveTo, s_internalMoveTo, 56227);
+        TiltedPhoques::ThisCall(s_internalMoveTo, const_cast<TESObjectREFR*>(this), GetNullHandle(), apCell, apCell->worldspace, acPosition, rotation);
+    }
+}
+
 void TESObjectREFR::MoveToWorldOrCell(TESObjectCELL* apCell, TESWorldSpace* apWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation) const noexcept
 {
     if (!apCell && !apWorldSpace)

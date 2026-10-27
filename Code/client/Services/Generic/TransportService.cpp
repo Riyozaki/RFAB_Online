@@ -45,6 +45,15 @@ TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher)
 
     m_connected = false;
 
+    // Phase 3 (`WorldReloadBarrier`): keep GameNetworkingSockets connections alive across heavy
+    // 600-plugin RFAB `.ess` world reloads (up to 60s blocking main-thread load) and prevent send-buffer
+    // overflow while a peer's main thread is inside `BGSSaveLoadGame::LoadGame`.
+    if (auto* pUtils = SteamNetworkingUtils())
+    {
+        pUtils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_TimeoutConnected, 60000);
+        pUtils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendBufferSize, 4 * 1024 * 1024);
+    }
+
     auto handlerGenerator = [this](auto& x)
     {
         using T = typename std::remove_reference_t<decltype(x)>::Type;
@@ -70,12 +79,10 @@ TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher)
 
 bool TransportService::Send(const ClientMessage& acMessage, const TiltedPhoques::EPacketFlags aPacketFlags) const noexcept
 {
-    static thread_local ScratchAllocator s_allocator(1 << 18);
+    static thread_local ScratchAllocator s_allocator(1 << 20);
+    static thread_local uint32_t s_sendDepth = 0;
 
-    struct ScopedReset
-    {
-        ~ScopedReset() { s_allocator.Reset(); }
-    } allocatorGuard;
+    CoopPacketSafety::ScopedScratchFrame allocatorGuard(s_allocator, s_sendDepth);
 
     if (IsConnected())
     {

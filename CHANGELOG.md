@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v2.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0)** — финальная сборка корневой архитектурной стабилизации (`RemoteEntityModel SSOT` / `100% O(1) ClientWorldView` / `Bidirectional & Cell-Bucketed ServerInterestRegistry` / `ServerCombatAuthorityLedger` / `PartySessionLedger` / `TLV PersistentActorsByKey`) для долгосрочной игры на **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v3.0.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.0.0)** — единая мультиплеерная архитектура `v3.0` (`Clean Slate` / нативный `0.0 HP Bleedout & Spell Revive` / `Sticky Host Cell Authority` / `WorldReloadBarrier` без дисконнекта / `1/M` масштабирование входящего урона без мутации `MaxHP` / бесшовное пересечение клеток `4096` и круговой+дискретный блендинг `BehaviorVar` / модульный `CoopExperienceLedger`) для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v2.1.0-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0-backup)** и **[`v2.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0)** — неприкосновенные эталонные бэкапы релиза `2.1.0` (`SHA-256` зафиксированы в `docs/V2.1.0_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.3-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3-backup)** и **[`v2.0.3`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.3)** — неприкосновенные эталонные бэкапы релиза `2.0.3` (`SHA-256` зафиксированы в `docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.2-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2-backup)** и **[`v2.0.2`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.2)** — неприкосновенные эталонные бэкапы релиза `2.0.2` (`SHA-256` зафиксированы в `docs/V2.0.2_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.0.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1-backup)** и **[`v2.0.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.0.1)** — неприкосновенные эталонные бэкапы релиза `2.0.1` (`SHA-256` зафиксированы в `docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json`).
@@ -10,6 +11,17 @@
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
 
 > **Чистый переход с версии на версию:** при запуске `INSTALL_RFAB_ONLINE.bat` (или `UPDATE_RFAB_ONLINE.bat` из `Quick_Update.zip`) установщик автоматически останавливает фоновый сервер, **полностью удаляет старые файлы прошлой версии** из `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя ваши настройки `STServer.ini`), очищает возможные остатки в `MO2\overwrite` и устанавливает свежую версию с нуля.
+
+---
+
+## [v3.0.0] — 2026-10-27 *(Unified Multiplayer Architecture: Clean Slate, Native 0.0 HP Bleedout & Spell Revive, Sticky Host Cell Authority, WorldReloadBarrier, 1/M Incoming Damage Scaling, Seamless Cell Motion & Modular Services)*
+
+- **Неприкосновенный бэкап `v2.1.0-backup` (`docs/V2.1.0_RELEASE_BACKUP_MANIFEST.json`, `Ensure-V210BackupRelease`):** перед публикацией `v3.0.0` облачный пайплайн автоматически зеркалирует и сверяет по `SHA-256` все 4 архива релиза `v2.1.0`.
+- **Фаза 1 (`Clean Slate` & Thread-Safe Core):** реентерабельный `CoopPacketSafety::ScopedScratchFrame`, прямые кэшированные указатели сервисов в `World`, lock-free `IsPvpEnabledCached()`, демонтаж костылей срыва боя (`StopCombat`/`SetTarget(nullptr)`/`pDet->level = -1000`), запрет кражи `Ownership` у раненого владельца (`Simulation Authority != Combat Target`) и удаление `ShouldBlockFalseBossResetHeal`.
+- **Фаза 2 (Нативный `Bleedout / Revive`, спелл-ревайв и `Sticky Host Cell Authority`):** убран пол `1.0f HP` — колено и подъём работают через родной `Essential + NoBleedoutRecovery` при `0.0 HP`, добавлено серверное мгновенное оживление союзника заклинаниями Восстановления (`ReviveActionRequest::HealingSpellRevive`), авто-группа при входе и приоритет Хоста на спокойных мировых NPC (`Sticky Host Cell Authority`).
+- **Фаза 3 (`WorldReloadBarrier`):** синхронная перезагрузка парных `.ess`-чекпоинтов при вайпе группы и `F9` с сохранением открытого сокета `GameNetworkingSockets`, `PlayerId` и `Party` (без `m_transport.Close()` и без `SetActorInventory`), барьер ожидания готовности Хоста и очистка пост-чекпоинтных сущностей на сервере.
+- **Фаза 4 (Чистый пайплайн урона `1 / M`, движения и анимаций):** сохранён 100% нативный `MaxHP` из `RFAB.esp` (входящий урон делится на `M` в `HookRestoreActorValue` после расчётов брони/резистов `RFAB.dll`), экстерьерные границы `4096` проходятся бесшовно через `ForcePosition` / `MoveToCellSeamless` с гистерезисом `128` юнитов, а `BehaviorVar` и `InterpolationSystem` разделяют линейные переменные, круговой `Direction` (`0..360°`) и дискретные переменные `MCO / SCAR / TUDM`.
+- **Фаза 5 (Модульная декомпозиция и `CoopExperienceLedger`):** выделены `Code/common/CoopExperienceLedger.h`, 4 модуля `Code/client/Services/Rfab/*`, 4 клиентских сабсервиса `Character*Subservice.cpp` и серверный `CharacterSocialAndMountSubservice.cpp`, а `RetryPendingMounts` переведён на `O(1)` поиск `FindEntityByServerId`. Полная документация: `docs/FULL_PROJECT_AUDIT_AND_UNIFIED_ARCHITECTURE.md`.
 
 ---
 

@@ -22,6 +22,7 @@
 #include <Messages/NotifyPlayerJoined.h>
 #include <Messages/NotifyPlayerLeft.h>
 #include <Messages/NotifySettingsChange.h>
+#include <common/CoopPacketSafety.h>
 #include <common/RfabModpackCompat.h>
 #include <console/ConsoleRegistry.h>
 #include <resources/ResourceCollection.h>
@@ -200,6 +201,14 @@ GameServer::GameServer(Console::ConsoleRegistry& aConsole) noexcept
 {
     BASE_ASSERT(s_pInstance == nullptr, "Server instance already exists?");
     s_pInstance = this;
+
+    // Phase 3 (`WorldReloadBarrier`): keep connected peers alive across heavy 600-plugin RFAB
+    // `.ess` world reloads (up to 60s blocking main-thread load) without socket timeout or buffer drop.
+    if (auto* pUtils = SteamNetworkingUtils())
+    {
+        pUtils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_TimeoutConnected, 60000);
+        pUtils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendBufferSize, 4 * 1024 * 1024);
+    }
 
     auto port = uServerPort.value_as<uint16_t>();
     while (!Host(port, GetUserTickRate()))
@@ -811,7 +820,11 @@ void GameServer::OnDisconnection(const ConnectionId_t aConnectionId, EDisconnect
 
 void GameServer::Send(const ConnectionId_t aConnectionId, const ServerMessage& acServerMessage, const TiltedPhoques::EPacketFlags aPacketFlags) const
 {
-    static thread_local TiltedPhoques::ScratchAllocator s_allocator{1 << 18};
+    static thread_local TiltedPhoques::ScratchAllocator s_allocator{1 << 22};
+    static thread_local uint32_t s_sendDepth = 0;
+
+    CoopPacketSafety::ScopedScratchFrame allocatorGuard(s_allocator, s_sendDepth);
+    ScopedAllocator _{s_allocator};
 
     Buffer buffer(1 << 20);
     Buffer::Writer writer(&buffer);
@@ -821,13 +834,15 @@ void GameServer::Send(const ConnectionId_t aConnectionId, const ServerMessage& a
 
     TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), static_cast<uint32_t>(writer.Size()));
     Server::Send(aConnectionId, &packet, aPacketFlags);
-
-    s_allocator.Reset();
 }
 
 void GameServer::Send(ConnectionId_t aConnectionId, const ServerAdminMessage& acServerMessage) const
 {
-    static thread_local TiltedPhoques::ScratchAllocator s_allocator{1 << 18};
+    static thread_local TiltedPhoques::ScratchAllocator s_allocator{1 << 22};
+    static thread_local uint32_t s_sendDepth = 0;
+
+    CoopPacketSafety::ScopedScratchFrame allocatorGuard(s_allocator, s_sendDepth);
+    ScopedAllocator _{s_allocator};
 
     Buffer buffer(1 << 20);
     Buffer::Writer writer(&buffer);
@@ -837,8 +852,6 @@ void GameServer::Send(ConnectionId_t aConnectionId, const ServerAdminMessage& ac
 
     TiltedPhoques::PacketView packet(reinterpret_cast<char*>(buffer.GetWriteData()), static_cast<uint32_t>(writer.Size()));
     Server::Send(aConnectionId, &packet);
-
-    s_allocator.Reset();
 }
 
 void GameServer::SendToLoaded(const ServerMessage& acServerMessage) const

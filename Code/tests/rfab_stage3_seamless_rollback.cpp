@@ -77,18 +77,26 @@ TEST_CASE("Stage 3: Atomic RFABCKP2 checkpoint persistence & corruption detectio
     std::filesystem::remove_all(tempRoot, ec);
 }
 
-TEST_CASE("Stage 3: Seamless in-session rollback policy prevents stale PreJoin .ess reloads", "[rfab][stage3][rollback]")
+TEST_CASE("Stage 3: Unified WorldReloadBarrier policy prefers .ess checkpoint reload while blocking stale PreJoin saves", "[rfab][stage3][rollback]")
 {
     using namespace CoopCheckpoint;
 
-    // Party wipes with player state on server ALWAYS prefer seamless in-session rollback (zero .ess reload!)
-    CHECK(ShouldServerPreferInSessionRollback(true, true, "RFAB_MP_Epoch_0005"));
+    // v3.0 Phase 3 (`WorldReloadBarrier`): BOTH Party Wipes and Manual Slot Loads execute live-socket
+    // `.ess` reloads (`ShouldServerPreferInSessionRollback == false`) whenever a slot name is present!
+    CHECK_FALSE(ShouldServerPreferInSessionRollback(true, true, "RFAB_MP_Epoch_0005"));
+    CHECK_FALSE(ShouldServerPreferInSessionRollback(false, true, "RFAB_MP_Epoch_0005"));
+    CHECK_FALSE(ShouldServerPreferInSessionRollback(true, true, kPreJoinBackupSlotName));
+    CHECK_FALSE(ShouldServerPreferInSessionRollback(true, false, "RFAB_MP_Epoch_0005"));
+
+    // Non-destructive transform fallback is ONLY used when no slot name exists at all (`acSlotName.empty()`)
     CHECK(ShouldServerPreferInSessionRollback(true, true, ""));
     CHECK(ShouldServerPreferInSessionRollback(false, true, ""));
+    CHECK_FALSE(ShouldServerPreferInSessionRollback(true, false, ""));
 
-    // Explicit manual slot load with valid non-empty slot name allows coordinated .ess load if desired
-    CHECK_FALSE(ShouldServerPreferInSessionRollback(false, true, "RFAB_MP_Epoch_0005"));
-    CHECK_FALSE(ShouldServerPreferInSessionRollback(true, false, "RFAB_MP_Epoch_0005"));
+    // Current-session PreJoin backup eligibility (`CanLoadPreJoinSlotInCurrentSession`)
+    CHECK(CanLoadPreJoinSlotInCurrentSession(true, true));
+    CHECK_FALSE(CanLoadPreJoinSlotInCurrentSession(false, true));
+    CHECK_FALSE(CanLoadPreJoinSlotInCurrentSession(true, false));
 
     // Client NEVER falls back to RFAB_MP_PreJoin_Backup.ess when forbidden, from a previous session, or when server sent transform!
     CHECK_FALSE(ShouldAllowPreJoinDiskFallback(false, true, false));

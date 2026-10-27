@@ -484,4 +484,150 @@ private:
     size_t m_downedCursor{0};
 };
 
+// ============================================================================
+// 6. Native RFAB MaxHP Preservation & Incoming Enemy Damage Scaling (v3.0 Phase 4A)
+// ============================================================================
+// Instead of mutating client `PERMANENT kHealth` (`ForceActorValue(PERMANENT, kHealth, base * M)`),
+// every NPC keeps its exact 1.0x native `RFAB.esp` `MaxHP` across Host, Guest, Server, and `.ess`
+// checkpoints, while incoming enemy health damage is scaled by `1 / M` at the engine damage funnel:
+//   - Boss percentage-based phase transitions (`50%`, `25%`), execute perks, and HUD bars stay 100% exact.
+//   - Zero `3^K` / `1/3` permanent HP drift across ownership handoffs or `.ess` checkpoint saves.
+//   - Percentage `HealRate` regeneration and boss phase percentage heals (`+0.5 * MaxHP`) stay 1:1 exact.
+[[nodiscard]] constexpr float NormalizeEnemyHealthMultiplier(float aMultiplier) noexcept
+{
+    if (!std::isfinite(aMultiplier) || aMultiplier <= 0.0f)
+        return 1.0f;
+    return std::clamp(aMultiplier, 0.1f, 10.0f);
+}
+
+[[nodiscard]] constexpr bool ShouldScaleIncomingEnemyDamage(
+    bool aIsPlayer,
+    bool aIsPlayerTeammate,
+    bool aIsPlayerSummon,
+    bool aIsCommandedActor,
+    bool aIsMount) noexcept
+{
+    return !aIsPlayer && !aIsPlayerTeammate && !aIsPlayerSummon && !aIsCommandedActor && !aIsMount;
+}
+
+[[nodiscard]] inline float ScaleIncomingEnemyDamageDelta(
+    float aRawDelta,
+    float aEffectiveMultiplier,
+    bool aShouldScale) noexcept
+{
+    if (!std::isfinite(aRawDelta))
+        return 0.0f;
+    if (!aShouldScale || aRawDelta >= 0.0f)
+        return aRawDelta;
+    return aRawDelta / NormalizeEnemyHealthMultiplier(aEffectiveMultiplier);
+}
+
+struct AuthoritativeHealthDeltaResult
+{
+    float UpdatedHealth{0.0f};
+    float ClampedBroadcastDelta{0.0f};
+};
+
+[[nodiscard]] inline AuthoritativeHealthDeltaResult ApplyAuthoritativeServerHealthDelta(
+    float aCurrentHealth,
+    float aMaxHealth,
+    float aSanitizedDelta) noexcept
+{
+    AuthoritativeHealthDeltaResult out{};
+    if (!std::isfinite(aSanitizedDelta))
+    {
+        out.UpdatedHealth = std::isfinite(aCurrentHealth) ? std::max(0.0f, aCurrentHealth) : 0.0f;
+        return out;
+    }
+
+    const float safeCurrent = std::isfinite(aCurrentHealth) ? aCurrentHealth : 0.0f;
+    const float rawUpdated = safeCurrent + aSanitizedDelta;
+    if (std::isfinite(aMaxHealth) && aMaxHealth > 0.0f)
+    {
+        out.UpdatedHealth = std::clamp(rawUpdated, 0.0f, aMaxHealth);
+        out.ClampedBroadcastDelta = std::clamp(aSanitizedDelta, -aMaxHealth, aMaxHealth);
+    }
+    else
+    {
+        out.UpdatedHealth = std::max(0.0f, rawUpdated);
+        out.ClampedBroadcastDelta = aSanitizedDelta;
+    }
+    return out;
+}
+
+// ============================================================================
+// 7. Seamless Exterior Cell-Border Motion Policy (v3.0 Phase 4B)
+// ============================================================================
+// Prevents visible 3D flicker, Havok `ResetTeleportPhysics` velocity resets, and 60-144 Hz `MoveTo`
+// storms when remote players, summons, or NPCs walk/fight across `4096`-unit exterior cell borders:
+//   - `kSmoothForcePosition`: smooth `Actor::ForcePosition` (`SetPosition`) with zero `InternalMoveTo`
+//     whenever `parentCell` is attached inside the inner `3x3` loaded core (`Chebyshev <= 1`) around
+//     the local player's `centerGrid`.
+//   - `kSeamlessCellRehome`: lightweight `MoveToCellSeamless` (`InternalMoveTo` WITHOUT `ResetTeleportPhysics`)
+//     only when `parentCell` reaches the outer `5x5` ring (`Chebyshev >= 2`) before ring-3 unload,
+//     guarded by a `128`-unit border hysteresis band and `1000 ms` cooldown so border combat never ping-pongs.
+//   - `kTeleportMoveTo`: full `MoveTo` (with `ResetTeleportPhysics`) only on true teleports (`> 2048` units)
+//     or when `parentCell` is detached / invalid / in another worldspace.
+enum class ExteriorCellMotionMode : uint8_t
+{
+    kSmoothForcePosition = 0,
+    kSeamlessCellRehome = 1,
+    kTeleportMoveTo = 2,
+};
+
+[[nodiscard]] inline float DistanceFromCellBorder4096(float aWorldCoord) noexcept
+{
+    if (!std::isfinite(aWorldCoord))
+        return 0.0f;
+    constexpr float kCellSize = 4096.0f;
+    float local = std::fmod(aWorldCoord, kCellSize);
+    if (local < 0.0f)
+        local += kCellSize;
+    return std::min(local, kCellSize - local);
+}
+
+[[nodiscard]] inline ExteriorCellMotionMode EvaluateExteriorCellMotion(
+    bool aStepExceedsTeleportSnap,
+    bool aHasValidAttachedParentCell,
+    bool aHasLoadedDestCell,
+    bool aParentEqualsDestCell,
+    int32_t aParentGridX,
+    int32_t aParentGridY,
+    int32_t aCenterGridX,
+    int32_t aCenterGridY,
+    float aPosX,
+    float aPosY,
+    uint64_t aNowTick,
+    uint64_t aLastSeamlessRehomeTick,
+    float aBorderHysteresisUnits = 128.0f,
+    uint64_t aRehomeCooldownMs = 1000ULL) noexcept
+{
+    if (!aHasLoadedDestCell)
+        return ExteriorCellMotionMode::kSmoothForcePosition;
+
+    if (aStepExceedsTeleportSnap || !aHasValidAttachedParentCell)
+        return ExteriorCellMotionMode::kTeleportMoveTo;
+
+    if (aParentEqualsDestCell)
+        return ExteriorCellMotionMode::kSmoothForcePosition;
+
+    const int32_t dx = (aParentGridX >= aCenterGridX) ? (aParentGridX - aCenterGridX) : (aCenterGridX - aParentGridX);
+    const int32_t dy = (aParentGridY >= aCenterGridY) ? (aParentGridY - aCenterGridY) : (aCenterGridY - aParentGridY);
+    const int32_t parentRingDist = std::max(dx, dy);
+
+    // While `parentCell` sits in the inner 3x3 core (`ring <= 1`), it is at least 2 full grid shifts
+    // away from unloading (`ring >= 3`), so smooth `ForcePosition` needs zero `InternalMoveTo` calls.
+    if (parentRingDist <= 1)
+        return ExteriorCellMotionMode::kSmoothForcePosition;
+
+    const float borderDist = std::min(DistanceFromCellBorder4096(aPosX), DistanceFromCellBorder4096(aPosY));
+    if (borderDist < aBorderHysteresisUnits)
+        return ExteriorCellMotionMode::kSmoothForcePosition;
+
+    if (aLastSeamlessRehomeTick != 0 && aNowTick < aLastSeamlessRehomeTick + aRehomeCooldownMs)
+        return ExteriorCellMotionMode::kSmoothForcePosition;
+
+    return ExteriorCellMotionMode::kSeamlessCellRehome;
+}
+
 } // namespace CoopDamagePipeline

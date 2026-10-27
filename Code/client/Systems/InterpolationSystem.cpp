@@ -6,12 +6,16 @@
 #include <AI/AIProcess.h>
 #include <Misc/MiddleProcess.h>
 
+#include <Games/ActorExtension.h>
 #include <Games/References.h>
 #include <Games/TES.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
 #include <PlayerCharacter.h>
+#include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/GridCellCoords.h>
+#include <CoopAnimationState.h>
+#include <CoopDamagePipeline.h>
 #include <World.h>
 
 void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick, const RemoteAnimationComponent* apAnimComponent) noexcept
@@ -91,14 +95,86 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
             {
                 TESObjectCELL* pDestCell = pModMgr->GetCellFromCoordinates(destGrid.X, destGrid.Y, pLocalWs, false);
                 const bool isDynamicActor = (apActor->formID & 0xFF000000u) == 0xFF000000u;
-                // Transfer ALL non-player actors (including 0xFF00xxxx remote players & summons!) into the newly crossed
-                // loaded cell so parentCell never lingers in an old origin cell that unloads 3 grids later.
-                const bool needsMoveTo = isDynamicActor
-                    ? (apActor->parentCell != pDestCell || stepDistSq > kTeleportSnapThresholdSq)
-                    : (stepDistSq > kTeleportSnapThresholdSq || apActor->parentCell != pDestCell || !apActor->GetNiNode());
-                if (pDestCell && pDestCell->loadedCellData && needsMoveTo)
+                (void)isDynamicActor;
+
+                TESObjectCELL* pParentCell = apActor->parentCell;
+                const bool hasAttachedParentCell =
+                    pParentCell && pParentCell->loadedCellData && !pParentCell->cellDetached && pParentCell->worldspace == pLocalWs;
+                const bool hasLoadedDestCell =
+                    pDestCell && pDestCell->loadedCellData && !pDestCell->cellDetached;
+
+                if (hasAttachedParentCell &&
+                    (!aInterpolationComponent.HasTrackedParentGrid || aInterpolationComponent.TrackedParentCell != pParentCell))
+                {
+                    aInterpolationComponent.TrackedParentCell = pParentCell;
+                    if (pParentCell == pDestCell)
+                    {
+                        aInterpolationComponent.TrackedParentGridX = destGrid.X;
+                        aInterpolationComponent.TrackedParentGridY = destGrid.Y;
+                        aInterpolationComponent.HasTrackedParentGrid = true;
+                    }
+                    else
+                    {
+                        bool foundInActiveGrid = false;
+                        for (int32_t dy = -2; dy <= 2 && !foundInActiveGrid; ++dy)
+                        {
+                            for (int32_t dx = -2; dx <= 2; ++dx)
+                            {
+                                const int32_t gx = centerGrid.X + dx;
+                                const int32_t gy = centerGrid.Y + dy;
+                                if (pModMgr->GetCellFromCoordinates(gx, gy, pLocalWs, false) == pParentCell)
+                                {
+                                    aInterpolationComponent.TrackedParentGridX = gx;
+                                    aInterpolationComponent.TrackedParentGridY = gy;
+                                    aInterpolationComponent.HasTrackedParentGrid = true;
+                                    foundInActiveGrid = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!foundInActiveGrid)
+                        {
+                            // `parentCell` is already outside the active 5x5 grid: mark ring distance >= 3 to re-home now.
+                            aInterpolationComponent.TrackedParentGridX = centerGrid.X + 3;
+                            aInterpolationComponent.TrackedParentGridY = centerGrid.Y + 3;
+                            aInterpolationComponent.HasTrackedParentGrid = true;
+                        }
+                    }
+                }
+
+                const auto motionMode = CoopDamagePipeline::EvaluateExteriorCellMotion(
+                    stepDistSq > kTeleportSnapThresholdSq,
+                    hasAttachedParentCell,
+                    hasLoadedDestCell,
+                    pParentCell == pDestCell,
+                    aInterpolationComponent.TrackedParentGridX,
+                    aInterpolationComponent.TrackedParentGridY,
+                    centerGrid.X,
+                    centerGrid.Y,
+                    position.x,
+                    position.y,
+                    aTick,
+                    aInterpolationComponent.LastSeamlessRehomeTick);
+
+                if (motionMode == CoopDamagePipeline::ExteriorCellMotionMode::kTeleportMoveTo)
                 {
                     apActor->MoveTo(pDestCell, position);
+                    aInterpolationComponent.TrackedParentCell = pDestCell;
+                    aInterpolationComponent.TrackedParentGridX = destGrid.X;
+                    aInterpolationComponent.TrackedParentGridY = destGrid.Y;
+                    aInterpolationComponent.HasTrackedParentGrid = true;
+                    aInterpolationComponent.LastSeamlessRehomeTick = aTick;
+                    movedViaCellTransfer = true;
+                }
+                else if (motionMode == CoopDamagePipeline::ExteriorCellMotionMode::kSeamlessCellRehome)
+                {
+                    apActor->MoveToCellSeamless(pDestCell, position);
+                    aInterpolationComponent.TrackedParentCell = pDestCell;
+                    aInterpolationComponent.TrackedParentGridX = destGrid.X;
+                    aInterpolationComponent.TrackedParentGridY = destGrid.Y;
+                    aInterpolationComponent.HasTrackedParentGrid = true;
+                    aInterpolationComponent.LastSeamlessRehomeTick = aTick;
                     movedViaCellTransfer = true;
                 }
             }
@@ -108,14 +184,24 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     if (!movedViaCellTransfer)
         apActor->ForcePosition(position);
 
-    // Causal + smooth animation variable blending:
-    // - Use discrete Booleans & Integers from LastRanAction when an ActionEvent ran more recently than first.Tick
-    //   (preventing 100ms snapshots from clobbering newly-fired ForceAction combo/attack/dodge/bleedout states!),
-    //   otherwise from causal first.Variables (never future second.Variables!).
-    // - Smoothly blend continuous Floats (SpeedSampled, Direction, TurnDelta) between first and second.
+    // Causal + behavior-aware animation variable blending (v3.0 Phase 4C):
+    // - Discrete Booleans, Integers (`SCAR_AttackVariants`, `iStep`, `DodgeID`), and Step Floats
+    //   (`weaponSpeedMult`, `weapAdj`, `TUDM` weapon flags & i-frame windows, `playbackSpeed`) come from
+    //   `LastRanAction` when an `ActionEvent` ran after `first.Tick`, otherwise from causal `first.Variables`.
+    // - Circular [0, 360) angles (`Direction`) blend along shortest arc (`358 -> 2` goes through `0`, never `180`).
+    // - Continuous locomotion/aiming floats (`SpeedSampled`, `TurnDelta`, `Pitch`, `TDM_Velocity*`) blend linearly.
     const bool useActionDiscreteVars =
-        apAnimComponent && apAnimComponent->LastRanAction.Tick > first.Tick &&
-        !apAnimComponent->LastRanAction.Variables.Booleans.empty();
+        apAnimComponent &&
+        CoopAnimationState::ShouldPreferActionDiscreteVariables(
+            apAnimComponent->LastRanAction.Tick,
+            first.Tick,
+            apAnimComponent->LastRanAction.Variables.Booleans.size(),
+            apAnimComponent->LastRanAction.Variables.Integers.size(),
+            apAnimComponent->LastRanAction.Variables.Floats.size());
+
+    const AnimationGraphDescriptor* pDescriptor = nullptr;
+    if (const auto* pExt = apActor->GetExtension(); pExt && pExt->GraphDescriptorHash != 0)
+        pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(pExt->GraphDescriptorHash);
 
     AnimationVariables blendedVars = useActionDiscreteVars ? apAnimComponent->LastRanAction.Variables : first.Variables;
     if (first.Variables.Floats.size() == second.Variables.Floats.size() && !first.Variables.Floats.empty())
@@ -125,10 +211,21 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
         {
             const float a = first.Variables.Floats[i];
             const float b = second.Variables.Floats[i];
-            if (std::isfinite(a) && std::isfinite(b) && std::fabs(b - a) < 500.0f)
-                blendedVars.Floats[i] = a + (b - a) * delta;
-            else
-                blendedVars.Floats[i] = b;
+            const bool hasActionFloat =
+                useActionDiscreteVars && i < apAnimComponent->LastRanAction.Variables.Floats.size();
+            const float actionFloat =
+                hasActionFloat ? apAnimComponent->LastRanAction.Variables.Floats[i] : a;
+            const auto blendKind = pDescriptor
+                ? static_cast<CoopAnimationState::BehaviorFloatBlendKind>(pDescriptor->GetFloatBlendMode(i))
+                : CoopAnimationState::BehaviorFloatBlendKind::kContinuousLinear;
+
+            blendedVars.Floats[i] = CoopAnimationState::BlendAnimationFloatValue(
+                a,
+                b,
+                actionFloat,
+                hasActionFloat,
+                delta,
+                blendKind);
         }
     }
     apActor->LoadAnimationVariables(blendedVars);

@@ -7,6 +7,8 @@
 #include <PlaybackClock.h>
 #include <Structs/AnimationVariables.h>
 
+struct TESObjectCELL;
+
 struct InterpolationComponent
 {
     struct TimePoint
@@ -26,4 +28,9 @@ struct InterpolationComponent
     glm::vec3 Position{};
     PlaybackClock Clock{};
     float LastHorizontalSpeed{0.0f};
+    TESObjectCELL* TrackedParentCell{nullptr};
+    int32_t TrackedParentGridX{0};
+    int32_t TrackedParentGridY{0};
+    bool HasTrackedParentGrid{false};
+    uint64_t LastSeamlessRehomeTick{0};
 };

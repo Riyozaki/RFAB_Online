@@ -2,6 +2,7 @@
 #include "Structs/Inventory.h"
 #include "Structs/ActorData.h"
 #include <Messages/CharacterSpawnRequest.h>
+#include <CoopExperienceLedger.h>
 #include <CoopOwnership.h>
 #include <CoopWorldView.h>
 
@@ -103,7 +104,6 @@ struct CharacterService
 
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
-    void ClaimCombatActorsFromDownedPeer(uint32_t aDownedPeerPlayerId) noexcept;
     void NotifySaveLoadReset() noexcept;
     void NotifyInSessionRollbackApplied() noexcept;
     void PreSavePurgeDynamicActors() noexcept;
@@ -174,8 +174,12 @@ private:
     Actor* CreateCharacterForEntity(entt::entity aEntity) const noexcept;
     ActorData BuildActorData(Actor* apActor) const noexcept;
 
+    [[nodiscard]] static uint64_t NowSteadyWorldViewMs() noexcept;
+    static void KillActorSuppressingDuplicateXp(Actor* apActor) noexcept;
+
     void RunLocalUpdates() const noexcept;
     void RunRemoteUpdates() noexcept;
+    void RetryPendingMounts() noexcept;
     void RunFactionsUpdates() const noexcept;
     void RunSpawnUpdates() const noexcept;
     void RunExperienceUpdates() noexcept;
@@ -196,13 +200,7 @@ private:
     TransportService& m_transport;
 
     float m_cachedExperience = 0.f;
-    int32_t m_lastRfabExperience = 0;
-    bool m_rfabExperienceInitialized = false;
-    std::chrono::steady_clock::time_point m_remoteQuestXpWindowUntil{};
-    int32_t m_localQuestXpGainedInWindow = 0;
-    int32_t m_lastAppliedRemoteXpAmount = 0;
-    std::chrono::steady_clock::time_point m_lastAppliedRemoteXpTime{};
-    int32_t m_creditToRefundOnLocalQuestXp = 0;
+    CoopExperienceLedger::ClientRfabXpTracker m_rfabXpTracker{};
     mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
     mutable CoopWorldView::CancelledCookieTracker<64> m_cancelledCookies{};
     mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};

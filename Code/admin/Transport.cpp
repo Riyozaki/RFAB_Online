@@ -5,6 +5,7 @@
 #include "AdminMessages/ServerAdminMessageFactory.h"
 
 #include <Messages/AuthenticationRequest.h>
+#include <common/CoopPacketSafety.h>
 
 #include <TiltedCore/ScratchAllocator.hpp>
 #include <TiltedCore/ViewBuffer.hpp>
@@ -45,12 +46,10 @@ void AdminApp::OnUpdate()
 
 bool AdminApp::Send(const ClientAdminMessage& acMessage) const noexcept
 {
-    static thread_local TiltedPhoques::ScratchAllocator s_allocator(1 << 18);
+    static thread_local TiltedPhoques::ScratchAllocator s_allocator(1 << 20);
+    static thread_local uint32_t s_sendDepth = 0;
 
-    struct ScopedReset
-    {
-        ~ScopedReset() { s_allocator.Reset(); }
-    } allocatorGuard;
+    CoopPacketSafety::ScopedScratchFrame allocatorGuard(s_allocator, s_sendDepth);
 
     if (IsConnected())
     {
@@ -73,12 +72,10 @@ bool AdminApp::Send(const ClientAdminMessage& acMessage) const noexcept
 
 bool AdminApp::Send(const ClientMessage& acMessage) const noexcept
 {
-    static thread_local TiltedPhoques::ScratchAllocator s_allocator(1 << 18);
+    static thread_local TiltedPhoques::ScratchAllocator s_allocator(1 << 20);
+    static thread_local uint32_t s_sendDepth = 0;
 
-    struct ScopedReset
-    {
-        ~ScopedReset() { s_allocator.Reset(); }
-    } allocatorGuard;
+    CoopPacketSafety::ScopedScratchFrame allocatorGuard(s_allocator, s_sendDepth);
 
     if (IsConnected())
     {

@@ -114,10 +114,12 @@ def main() -> int:
     # 9. v2.0.1 Pillars 4-8: Dynamic crime factions, 0x3000802 FaceGen flags, crash unwinder, CEF overlay
     player_char_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "PlayerCharacter.cpp").read_text(encoding="utf-8")
     cli_char_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterService.cpp").read_text(encoding="utf-8")
+    cli_char_move_assign_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterMovementAndAssignmentSubservice.cpp").read_text(encoding="utf-8")
+    cli_char_xp_diag_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterXpAndDialogueSubservice.cpp").read_text(encoding="utf-8")
     main_cpp = (ROOT / "Code" / "client" / "main.cpp").read_text(encoding="utf-8")
     overlay_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "OverlayService.cpp").read_text(encoding="utf-8")
     assert "pModManager->factions" in player_char_cpp
-    assert "0x3000802u" in cli_char_cpp
+    assert "0x3000802u" in (cli_char_cpp + cli_char_move_assign_cpp)
     assert "CleanupUnassignedActorEntity" in cli_char_cpp
     assert "RtlVirtualUnwind" in main_cpp
     assert "RFAB_Online_Crash.log" in main_cpp
@@ -131,13 +133,14 @@ def main() -> int:
     actor_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Actor.cpp").read_text(encoding="utf-8")
     rfab_compat_h = (ROOT / "Code" / "common" / "RfabModpackCompat.h").read_text(encoding="utf-8")
     rfab_adapter_cpp = (ROOT / "Code" / "client" / "Services" / "RfabAdapterService.cpp").read_text(encoding="utf-8")
+    rfab_resolver_cpp = (ROOT / "Code" / "client" / "Services" / "Rfab" / "RfabFormResolver.cpp").read_text(encoding="utf-8")
     assert '"v2.0.1-backup"' in backup_manifest
     assert "std::is_trivially_destructible_v<ActorExtension>" in actor_ext_h
     assert "kActorValueListByteSize = 0x528" in memory_cpp
     assert "TP_HOOK_IAT(_recalloc, cHeapModule)" in memory_cpp
     assert "~NiPointer() noexcept" in ni_ptr_h
-    assert "ScopedLethalPlayerDamageIntercept" in actor_cpp
-    assert "65536.0f" not in actor_cpp
+    assert "TriggerNativeBleedout" in actor_cpp and "LatchNativeBleedoutEntered" in actor_cpp
+    assert "65536.0f" not in actor_cpp and "ScopedLethalPlayerDamageIntercept" not in actor_cpp
     assert "pPlayer->DispelHostileEffects();" in coord_save_cpp
     assert "pPlayer->DispelAllSpells();" not in coord_save_cpp
     assert "MoveToWorldOrCell" in coord_save_cpp
@@ -148,7 +151,7 @@ def main() -> int:
     assert "class EspEdidIndex" in rfab_compat_h
     assert "ParseActivePluginList" in rfab_compat_h
     assert "ResolveRfabConfigPath" in rfab_compat_h
-    assert "m_espEdidIndex.IndexRfabPluginsInDataDir" in rfab_adapter_cpp
+    assert "m_espEdidIndex.IndexRfabPluginsInDataDir" in (rfab_adapter_cpp + rfab_resolver_cpp)
 
     # 11. v2.0.2 SkyMP-Grade Server Authority, Anti-Dupe Ledger, Zero-Spoof Security & O(1) Indexing
     loot_ledger_h = (ROOT / "Code" / "common" / "CoopLootLedger.h").read_text(encoding="utf-8")
@@ -218,10 +221,100 @@ def main() -> int:
     assert "ShouldAnchorPartyMemberToLeaderOnRollback" in checkpoint_h and "ShouldAnchorPartyMemberToLeaderOnRollback" in save_snap_cpp
     assert "pControls->pJumpHandler->isEnabled = true" in downed_cpp and "pControls->togglePOVHandler->isEnabled = true" in downed_cpp
     assert "m_postReviveBleedoutExitFrames" in downed_cpp
-    assert "HasVoicePathGenderMismatch" in coop_anim_h and "HasVoicePathGenderMismatch" in cli_char_cpp
+    assert "HasVoicePathGenderMismatch" in coop_anim_h and "HasVoicePathGenderMismatch" in (cli_char_cpp + cli_char_xp_diag_cpp)
     assert "if (pOwningPlayer != nullptr && pOwningPlayer == acMessage.pPlayer)" in srv_char_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 architectural regression checks passed!")
+    # 15. v3.0 Phase 1 Clean Slate & Thread-Safe Core (ScopedScratchFrame, Direct World Service Pointers & Cached PVP, Simulation Authority != Combat Target, Zero Forced Combat Exit / Boss Heal Ping-Pong)
+    packet_safety_h = (ROOT / "Code" / "common" / "CoopPacketSafety.h").read_text(encoding="utf-8")
+    cli_transport_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "TransportService.cpp").read_text(encoding="utf-8")
+    srv_gameserver_cpp = (ROOT / "Code" / "server" / "GameServer.cpp").read_text(encoding="utf-8")
+    adm_transport_cpp = (ROOT / "Code" / "admin" / "Transport.cpp").read_text(encoding="utf-8")
+    world_h = (ROOT / "Code" / "client" / "World.h").read_text(encoding="utf-8")
+    world_cpp = (ROOT / "Code" / "client" / "World.cpp").read_text(encoding="utf-8")
+    combat_ctrl_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Combat" / "CombatController.cpp").read_text(encoding="utf-8")
+    magic_target_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Magic" / "MagicTarget.cpp").read_text(encoding="utf-8")
+    rfab_compat_h = (ROOT / "Code" / "common" / "RfabModpackCompat.h").read_text(encoding="utf-8")
+    assert "class ScopedScratchFrame" in packet_safety_h
+    assert "CoopPacketSafety::ScopedScratchFrame" in cli_transport_cpp and "m_allocator.Reset()" not in cli_transport_cpp
+    assert "CoopPacketSafety::ScopedScratchFrame" in srv_gameserver_cpp and "m_allocator.Reset()" not in srv_gameserver_cpp
+    assert "CoopPacketSafety::ScopedScratchFrame" in adm_transport_cpp and "m_allocator.Reset()" not in adm_transport_cpp
+    assert "IsPvpEnabledCached()" in world_h and "m_pRfabAdapterService" in world_h and "m_pDownedStateService" in world_h
+    assert "m_pRfabAdapterService = &ctx().emplace<RfabAdapterService>" in world_cpp
+    assert "ScopedRemoteAddTargetState" in magic_target_cpp and "World::IsPvpEnabledCached()" in actor_cpp
+    assert "pDet->level = -1000" not in actor_cpp
+    assert "apThis->SetTarget(nullptr)" not in combat_ctrl_cpp and "if (spReplacement)" in combat_ctrl_cpp
+    assert "ClaimCombatActorsFromDownedPeer" not in cli_char_h and "ClaimCombatActorsFromDownedPeer" not in cli_char_cpp and "ClaimCombatActorsFromDownedPeer" not in downed_cpp
+    assert "ShouldBlockFalseBossResetHeal" not in srv_av_cpp and "ShouldBlockFalseBossResetHeal" not in rfab_compat_h
+
+    # 16. v3.0 Phase 2 Native 0.0f HP Bleedout/Revive, Ally Healing-Spell Revive, Sticky Host Cell Authority & Auto-Party
+    player_svc_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "PlayerService.cpp").read_text(encoding="utf-8")
+    downed_h = (ROOT / "Code" / "client" / "Services" / "DownedStateService.h").read_text(encoding="utf-8")
+    revive_req_h = (ROOT / "Code" / "encoding" / "Messages" / "ReviveActionRequest.h").read_text(encoding="utf-8")
+    enc_h = (ROOT / "Code" / "server" / "Services" / "EncounterService.h").read_text(encoding="utf-8")
+    enc_cpp = (ROOT / "Code" / "server" / "Services" / "EncounterService.cpp").read_text(encoding="utf-8")
+    cli_magic_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "MagicService.cpp").read_text(encoding="utf-8")
+    ownership_h = (ROOT / "Code" / "common" / "CoopOwnership.h").read_text(encoding="utf-8")
+    assert "keepNativeBleedoutMode" in player_svc_cpp and "SetPlayerRespawnMode(false)" in player_svc_cpp
+    assert "LatchNativeBleedoutEntered" in downed_h and "FinalizeLethalHitCushion" not in downed_h
+    assert "kDownedFloorHealth" not in downed_cpp and "kNativeBleedoutFloorHealth = 0.0f" in downed_cpp
+    assert "HealingSpellRevive = 2" in revive_req_h and "TryInstantSpellRevive" in enc_h and "HealingSpellRevive" in enc_cpp
+    assert "RequestAllySpellReviveOnActor" in cli_magic_cpp and "NotifyAllyHealingSpellReceivedFromRemote" in cli_magic_cpp
+    assert "aChallengerIsCalmPartyLeader" in ownership_h and "Sticky Host Cell Authority" in srv_char_cpp
+    assert "primaryPartyId" in srv_party_cpp and "m_parties.size() == 1" not in srv_party_cpp
+
+    # 17. v3.0 Phase 3 WorldReloadBarrier (Live-Socket .ess Checkpoint Reload, Zero SetActorInventory, 0x14 Reuse, Host-First Gate)
+    discovery_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "DiscoveryService.cpp").read_text(encoding="utf-8")
+    save_snap_h = (ROOT / "Code" / "server" / "Services" / "SaveSnapshotService.h").read_text(encoding="utf-8")
+    assert "kReloadBarrierEpochBit" in checkpoint_h and "CanLoadPreJoinSlotInCurrentSession" in checkpoint_h
+    assert "m_liveSessionWorldReloadPending" in coord_save_cpp and "CompleteLiveWorldReloadAfterEngineReady" in coord_save_cpp
+    assert "SetActorInventory(" not in coord_save_cpp
+    assert "IsHoldingWorldDiscoveryForHostBarrier()" in discovery_cpp
+    assert "RestoreMultiplayerGlobalsAfterWorldReload()" in player_svc_cpp
+    assert "k_ESteamNetworkingConfig_TimeoutConnected" in cli_transport_cpp and "k_ESteamNetworkingConfig_TimeoutConnected" in srv_gameserver_cpp
+    assert "struct WorldReloadBarrier" in save_snap_h and "ShouldHoldNonHostWorldClaims" in save_snap_h
+    assert "BeginWorldReloadBarrier(" in save_snap_cpp and "SyncPostReloadStateToPlayer(" in save_snap_cpp
+    assert "ResetWorldEntitiesForCheckpointReload" in srv_char_cpp and "[RFAB WorldReloadBarrier] Reused player" in srv_char_cpp
+
+    # 18. v3.0 Phase 4 Clean Damage, Movement & Animation Pipeline (Native MaxHP 1/M Scaling, Seamless Exterior Cell-Border Motion & BehaviorVar Blending)
+    cli_av_h = (ROOT / "Code" / "client" / "Services" / "ActorValueService.h").read_text(encoding="utf-8")
+    cli_av_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "ActorValueService.cpp").read_text(encoding="utf-8")
+    interp_cpp = (ROOT / "Code" / "client" / "Systems" / "InterpolationSystem.cpp").read_text(encoding="utf-8")
+    refr_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "TESObjectREFR.cpp").read_text(encoding="utf-8")
+    ag_desc_h = (ROOT / "Code" / "encoding" / "Structs" / "AnimationGraphDescriptor.h").read_text(encoding="utf-8")
+    master_desc_cpp = (ROOT / "Code" / "encoding" / "Structs" / "Skyrim" / "AnimationGraphDescriptor_Master_Behavior.cpp").read_text(encoding="utf-8")
+    assert "m_unscaledMaxHealth" not in cli_av_h and "ApplyHealthMultiplier" not in cli_av_cpp and "SetScaledHealthSafely" not in cli_av_cpp
+    assert "SeedUnscaledMaxHealthFromRemote" not in cli_char_cpp and "CaptureNativeBaseMaxHealth" not in cli_char_cpp
+    assert "GetEnemyHealthMultiplierCached" in world_h and "ScaleIncomingEnemyDamageDelta" in actor_cpp and "ApplyAuthoritativeServerHealthDelta" in srv_av_cpp
+    assert "EvaluateExteriorCellMotion" in interp_cpp and "MoveToCellSeamless" in interp_cpp and "!apActor->GetNiNode()" not in interp_cpp
+    assert "void TESObjectREFR::MoveToCellSeamless" in refr_cpp
+    assert "AnimationFloatBlendMode" in ag_desc_h and "kCircularDegrees360" in master_desc_cpp and "kDiscreteStep" in master_desc_cpp
+    assert "ClassifyBehaviorFloatBlendKind" in behavior_var_cpp and "BlendAnimationFloatValue" in interp_cpp
+
+    # 19. v3.0 Phase 5 Modular Decomposition of CharacterService & RfabAdapterService + CoopExperienceLedger & O(1) Mount Retry
+    xp_ledger_h = (ROOT / "Code" / "common" / "CoopExperienceLedger.h").read_text(encoding="utf-8")
+    rfab_adapter_h = (ROOT / "Code" / "client" / "Services" / "RfabAdapterService.h").read_text(encoding="utf-8")
+    rfab_xp_book_cpp = (ROOT / "Code" / "client" / "Services" / "Rfab" / "RfabXpAndBookSync.cpp").read_text(encoding="utf-8")
+    rfab_combat_cpp = (ROOT / "Code" / "client" / "Services" / "Rfab" / "RfabCombatRules.cpp").read_text(encoding="utf-8")
+    rfab_hud_cpp = (ROOT / "Code" / "client" / "Services" / "Rfab" / "RfabHudAndPings.cpp").read_text(encoding="utf-8")
+    cli_char_idx_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterEntityIndexSubservice.cpp").read_text(encoding="utf-8")
+    cli_char_mount_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterMountAndPackageSubservice.cpp").read_text(encoding="utf-8")
+    srv_char_social_cpp = (ROOT / "Code" / "server" / "Services" / "CharacterSocialAndMountSubservice.cpp").read_text(encoding="utf-8")
+
+    assert "class ClientRfabXpTracker" in xp_ledger_h and "NormalizeSenderBaseXp" in xp_ledger_h
+    assert len(rfab_adapter_cpp.splitlines()) < 600
+    assert len(cli_char_cpp.splitlines()) < 2900
+    assert len(srv_char_cpp.splitlines()) < 1950
+    assert "RfabFormResolver m_formResolver" in rfab_adapter_h and "RfabHudAndPings m_hudAndPings" in rfab_adapter_h
+    assert "ApplyDualPoolExperienceDelta" in rfab_xp_book_cpp and "EvaluateSnapshotAction" in rfab_combat_cpp and "BuildHudSnapshot" in rfab_hud_cpp
+    assert "CharacterService::FindEntityByServerId" in cli_char_idx_cpp
+    assert "CharacterService::RetryPendingMounts" in cli_char_mount_cpp and "mountActorView" not in cli_char_mount_cpp
+    assert "m_rfabXpTracker.EvaluateLocalWalletPoll" in cli_char_xp_diag_cpp
+    assert "CoopExperienceLedger::kMaxRfabXpDelta" in srv_char_social_cpp
+    v210_backup_manifest = (ROOT / "docs" / "V2.1.0_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    assert '"v2.1.0-backup"' in v210_backup_manifest and "424756541" in v210_backup_manifest
+    assert '"v2.1.0-backup"' in build_txt and "Ensure-V210BackupRelease" in build_txt and '[string]$VersionTag = "v3.0.0"' in build_txt
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0-Phase1/2/3/4/5 architectural regression checks passed!")
     return 0
 
 
