@@ -75,14 +75,16 @@ TEST_CASE("v3.1 Pillar 1: 1/M Enemy Combat Regen & ActiveEffect Heal Parity", "[
         REQUIRE(scaledPlayerDps == Approx(-100.0f / 3.0f));
         REQUIRE(scaledTrollRegenPerSec == Approx(+40.0f / 3.0f));
 
-        // Net HP change per second for 1 solo-equivalent player = -20 HP/s (3x solo 6.667s = 20.0s, never immortal!):
+        // Net HP change per second for 1 surviving solo-DPS player = -20 HP/s
+        // -> exact M * TTK_solo = 3 * 6.6667s = 20.0s (preserves exact >40 raw DPS threshold, never immortal!):
         const float netPerSecSinglePlayer = scaledPlayerDps + scaledTrollRegenPerSec;
         CHECK(netPerSecSinglePlayer == Approx(-20.0f));
+        CHECK((kTrollMaxHp / -netPerSecSinglePlayer) == Approx(kMult2Players * (400.0f / 60.0f)));
 
-        // Full 3x party output (-300 raw DPS) matches solo 6.6667s TTK to the millisecond:
-        const float scaledPartyDps = ScaleIncomingEnemyDamageDelta(-300.0f, kMult2Players, true);
-        const float netPartyPerSec = scaledPartyDps + scaledTrollRegenPerSec;
-        CHECK((kTrollMaxHp / -netPartyPerSec) == Approx(400.0f / 60.0f));
+        // Two players dealing 2 * 100 = -200 raw DPS under M = 3.0 -> TTK = (3 * 400) / (200 - 40) = 7.5s:
+        const float scaledTwoPlayerDps = ScaleIncomingEnemyDamageDelta(-200.0f, kMult2Players, true);
+        const float netTwoPlayerPerSec = scaledTwoPlayerDps + scaledTrollRegenPerSec;
+        CHECK((kTrollMaxHp / -netTwoPlayerPerSec) == Approx(7.5f));
     }
 
     SECTION("Scripted boss phase reset bursts (>= 25% native MaxHP, non-ActiveEffect) remain 1:1 percentage-exact")

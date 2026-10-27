@@ -274,7 +274,11 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
 
     // Resolve the explicit SpellFormId carried by NotifySpellCast FIRST so fast SkyUI/Wheeler hotkey swaps
     // never cast a stale previously-equipped magicItems[CastingSource] entry before equipment sync arrives.
-    if (acMessage.SpellFormId.ModId != std::numeric_limits<uint32_t>::max() && acMessage.SpellFormId != GameId{})
+    if (acMessage.SpellFormId.ModId == std::numeric_limits<uint32_t>::max())
+    {
+        pSpell = pActor->magicItems[acMessage.CastingSource];
+    }
+    else if (acMessage.SpellFormId != GameId{})
     {
         const uint32_t cSpellFormId = World::Get().GetModSystem().GetGameId(acMessage.SpellFormId);
         if (cSpellFormId != 0)
