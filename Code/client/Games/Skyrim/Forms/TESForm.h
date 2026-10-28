@@ -22,6 +22,7 @@ enum class FormType : uint8_t
     LeveledItem = 53,
     Character = 62,
     QuestItem = 77,
+    ColorForm = 0x85,
     Count = 0x87
 };
 

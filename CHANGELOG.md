@@ -1,7 +1,8 @@
 # Журнал изменений (Changelog) — RFAB Online
 
 В репозитории поддерживаются:
-- **[`v3.1.1` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.1)** — архитектурная стабилизация мира и полное устранение 7 векторов CTD (`CoopWorldStabilizer`, гистерезис границ `High <-> Middle-High` ИИ, единый спавн и варианты фауны без `2x` дублей, симметричное боевое агро, 100% регистрация всех видов магии/посохов/свитков Гостя, заморозка хитбоксов рэгдоллов трупов, надёжный `F9` последнего чекпоинта, экипировка брони NPC, синхронное добивание без микро-ХП и блок спонтанных телепортов в соседние локации) поверх `v3.1` для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v3.1.2` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.2)** — полная синхронизация кастомного цвета волос `RaceMenu` (`skee64.dll`) между всеми игроками без взаимного перекрашивания (`CoopHairColorSync`, персональный пул `0xFF00xxxx` `BGSColorForm` на каждого игрока, клонирование `BSLightingShaderMaterialHairTint` на волосах/бородах/бровях/`HDT-SMP` париках с поддержкой `NO_TINT` и живая досылка после `showracemenu`) поверх `v3.1.1` для **Skyrim SE `1.5.97.0.8` + RFAB**.
+- **[`v3.1.1-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.1-backup)** и **[`v3.1.1`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.1)** — неприкосновенные эталонные бэкапы релиза `3.1.1` (`SHA-256` зафиксированы в `docs/V3.1.1_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v3.1.0-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.0-backup)** и **[`v3.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.1.0)** — неприкосновенные эталонные бэкапы релиза `3.1.0` (`SHA-256` зафиксированы в `docs/V3.1.0_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v3.0.0-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.0.0-backup)** и **[`v3.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v3.0.0)** — неприкосновенные эталонные бэкапы релиза `3.0.0` (`SHA-256` зафиксированы в `docs/V3.0.0_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
 - **[`v2.1.0-backup`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0-backup)** и **[`v2.1.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v2.1.0)** — неприкосновенные эталонные бэкапы релиза `2.1.0` (`SHA-256` зафиксированы в `docs/V2.1.0_RELEASE_BACKUP_MANIFEST.json`, защищены от перезаписи в CI и `Build-CloudRelease.ps1`).
@@ -13,6 +14,17 @@
 - **[`v1.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v1.0.0)** — неприкосновенный эталонный бэкап первоначального релиза.
 
 > **Чистый переход с версии на версию:** при запуске `INSTALL_RFAB_ONLINE.bat` (или `UPDATE_RFAB_ONLINE.bat` из `Quick_Update.zip`) установщик автоматически останавливает фоновый сервер, **полностью удаляет старые файлы прошлой версии** из `MO2\mods\RFAB_Online` и `RFAB_Online_Server` (сохраняя ваши настройки `STServer.ini`), очищает возможные остатки в `MO2\overwrite` и устанавливает свежую версию с нуля.
+
+---
+
+## [v3.1.2] — 2026-10-28 *(RaceMenu Custom Hair Color Sync, Per-Player BGSColorForm Pool & BSLightingShaderMaterialHairTint Isolation)*
+
+- **Неприкосновенный бэкап `v3.1.1-backup` (`docs/V3.1.1_RELEASE_BACKUP_MANIFEST.json`, `Ensure-V311BackupRelease`):** перед публикацией `v3.1.2` облачный пайплайн автоматически зеркалирует и сверяет по `SHA-256` все 4 архива релиза `v3.1.1`, защищая `v3.1.1` в `$ProtectedTags`.
+- **Полное устранение перекрашивания всех персонажей игроков в свой кастомный цвет волос из `RaceMenu` (`CoopHairColorSync.h`, `Tints`, `FaceGenSystem.cpp`, `CharacterMovementAndAssignmentSubservice.cpp`, `CharacterService.cpp`):**
+  - Передача точных `RGB`-байтов цвета волос внутри сетевого контейнера `Tints` (`kHairColorEntryType`) с обратной совместимостью протокола `STServer.exe` и фильтрацией перед генерацией лицевых `TintMask`.
+  - Персональный пул динамических `0xFF00xxxx` `BGSColorForm` (`m_playerHairColorPool`, исключённых из `.ess` через `SetSkipSaveFlag(true)`) для каждого удалённого игрока вместо общей записи `HairColorCustom` из `RaceMenuPlugin.esp` (включая корректную окраску `HDT-SMP` париков через `NIOVTaskUpdateItemDye` в `skee64.dll`).
+  - Индивидуальное клонирование `BSLightingShaderMaterialHairTint` (`Create` + `Copy` + `SetShaderMaterial` + `InitializeShader` с безопасным виртуальным деструктором) на всех `BSGeometry` (`BSTriShape` и `BSDynamicTriShape`: волосы, линия роста, бороды, брови, парики с уважением `NO_TINT`) как у удалённых игроков, так и у локального игрока `0x14`.
+  - Автоматический детектор `AppearanceResyncTracker`, досылающий обновлённый цвет волос и внешность после фоновой подгрузки пресета `skee64` или закрытия `showracemenu` прямо во время сетевой сессии.
 
 ---
 

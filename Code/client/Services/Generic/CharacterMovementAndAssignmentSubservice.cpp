@@ -4,12 +4,17 @@
 
 #include <Actor.h>
 #include <Components.h>
+#include <Forms/BGSColorForm.h>
+#include <Forms/BGSHeadPart.h>
 #include <Forms/TESNPC.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESQuest.h>
 #include <Forms/TESRace.h>
 #include <Forms/TESWorldSpace.h>
 #include <Games/ActorExtension.h>
+#include <Games/IFormFactory.h>
+#include <Games/Memory.h>
+#include <Games/Skyrim/Interface/UI.h>
 #include <Games/TES.h>
 #include <Messages/AssignCharacterRequest.h>
 #include <Messages/NotifyPlayerCellChanged.h>
@@ -25,11 +30,69 @@
 #include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 #include <Systems/CacheSystem.h>
+#include <Systems/FaceGenSystem.h>
 #include <Systems/InterpolationSystem.h>
 #include <World.h>
 
 #include <limits>
 #include <unordered_set>
+
+namespace
+{
+uint64_t ComputeLocalPlayerAppearanceFingerprint(PlayerCharacter* apPlayer) noexcept
+{
+    if (!apPlayer)
+        return 0ULL;
+
+    const TESNPC* pNpc = Cast<TESNPC>(apPlayer->baseForm);
+    if (!pNpc)
+        return 0ULL;
+
+    CoopHairColorSync::Fnv1a64Hasher hasher{};
+
+    uint8_t hairR = 0, hairG = 0, hairB = 0;
+    const bool hasHairColor = FaceGenSystem::TryExtractActorHairColor(apPlayer, hairR, hairG, hairB);
+    hasher.MixByte(hasHairColor ? 1u : 0u);
+    hasher.MixU32(CoopHairColorSync::PackHairColorRgb(hairR, hairG, hairB));
+
+    hasher.MixU32(pNpc->raceForm.race ? pNpc->raceForm.race->formID : 0u);
+    hasher.MixByte(static_cast<uint8_t>(pNpc->actorData.flags & 1u));
+    hasher.MixByte(pNpc->color.red);
+    hasher.MixByte(pNpc->color.green);
+    hasher.MixByte(pNpc->color.blue);
+    hasher.MixFloat(pNpc->weight);
+    hasher.MixU32((pNpc->headData && pNpc->headData->headTexture) ? pNpc->headData->headTexture->formID : 0u);
+
+    hasher.MixByte(pNpc->headpartsCount);
+    if (pNpc->headparts)
+    {
+        for (uint8_t i = 0; i < pNpc->headpartsCount; ++i)
+            hasher.MixU32(pNpc->headparts[i] ? pNpc->headparts[i]->formID : 0u);
+    }
+
+    if (pNpc->faceMorphs)
+    {
+        for (const float opt : pNpc->faceMorphs->option)
+            hasher.MixFloat(opt);
+        for (const uint32_t preset : pNpc->faceMorphs->presets)
+            hasher.MixU32(preset);
+    }
+
+    const auto& tints = apPlayer->GetTints();
+    hasher.MixU32(tints.length);
+    for (uint32_t i = 0; i < tints.length; ++i)
+    {
+        if (const TintMask* pTint = tints[i])
+        {
+            hasher.MixU32(pTint->type);
+            hasher.MixU32(pTint->color);
+            hasher.MixFloat(pTint->alpha);
+        }
+    }
+
+    return hasher.Finish();
+}
+} // namespace
 
 void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessage) noexcept
 {
@@ -364,6 +427,14 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
             if (tints[i]->texture)
                 entries[i].Name = tints[i]->texture->name.AsAscii();
         }
+
+        // Capture exact runtime RGB hair color (both vanilla BGSColorForm and RaceMenu custom HairColorCustom)
+        // because TESNPC::Save only serializes the shared BGSColorForm FormID, never its in-memory RGB bytes!
+        uint8_t hairR = 0, hairG = 0, hairB = 0;
+        if (FaceGenSystem::TryExtractActorHairColor(pActor, hairR, hairG, hairB))
+        {
+            message.FaceTints.SetHairColor(hairR, hairG, hairB);
+        }
     }
 
     if (isPlayer)
@@ -459,7 +530,13 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 
     if (m_transport.Send(message))
     {
-        m_world.emplace<WaitingForAssignmentComponent>(aEntity, sCookieSeed);
+        if (isPlayer)
+        {
+            m_localAppearanceResync.RecordSyncedFingerprint(
+                ComputeLocalPlayerAppearanceFingerprint(PlayerCharacter::Get()),
+                NowSteadyWorldViewMs());
+        }
+        m_world.emplace_or_replace<WaitingForAssignmentComponent>(aEntity, sCookieSeed);
         sCookieSeed++;
         return true;
     }
@@ -669,4 +746,115 @@ bool CharacterService::DespawnSuppressedNonLeaderWildTempSpawn(Actor* apActor, c
     apActor->SetSkipSaveFlag(true);
     apActor->Delete();
     return true;
+}
+
+void CharacterService::ApplyRemotePlayerHairColorForm(
+    const uint32_t aPlayerId,
+    TESNPC* apNpc,
+    const Tints& acFaceTints) const noexcept
+{
+    if (!apNpc || ((apNpc->formID & 0xFF000000u) != 0xFF000000u))
+        return;
+
+    uint8_t hairR = 0, hairG = 0, hairB = 0;
+    if (!acFaceTints.TryGetHairColor(hairR, hairG, hairB))
+        return;
+
+    // Give each remote player's 0xFF00xxxx TESNPC its own isolated 0xFF00xxxx BGSColorForm!
+    // RaceMenu (skee64.dll) mutates a SINGLE shared BGSColorForm record in RaceMenuPlugin.esp in-place,
+    // so leaving apNpc->headData->hairColor pointing at the deserialized FormID caused every remote player
+    // to inherit the local client's custom hair color (and vice versa).
+    BGSColorForm* pDedicatedColor = nullptr;
+    if (aPlayerId != 0)
+    {
+        if (const auto poolIt = m_playerHairColorPool.find(aPlayerId); poolIt != m_playerHairColorPool.end())
+        {
+            pDedicatedColor = Cast<BGSColorForm>(TESForm::GetById(poolIt->second));
+        }
+    }
+
+    if (!pDedicatedColor)
+    {
+        if (IFormFactory* pFactory = IFormFactory::GetForType(FormType::ColorForm))
+        {
+            if (TESForm* pCreated = pFactory->Create())
+            {
+                pDedicatedColor = Cast<BGSColorForm>(pCreated);
+                if (pDedicatedColor)
+                {
+                    pDedicatedColor->SetSkipSaveFlag(true);
+                    pDedicatedColor->UnsetChanged(0xFFFFFFFF);
+                    m_createdNetworkFormIds.insert(pDedicatedColor->formID);
+                    if (aPlayerId != 0)
+                        m_playerHairColorPool[aPlayerId] = pDedicatedColor->formID;
+                }
+            }
+        }
+    }
+
+    if (!pDedicatedColor)
+        return;
+
+    pDedicatedColor->color.red = hairR;
+    pDedicatedColor->color.green = hairG;
+    pDedicatedColor->color.blue = hairB;
+    pDedicatedColor->color.alpha = 0;
+    pDedicatedColor->unk20 |= 1u; // BGSColorForm::Flag::kPlayable
+    pDedicatedColor->SetSkipSaveFlag(true);
+    pDedicatedColor->UnsetChanged(0xFFFFFFFF);
+
+    if (!apNpc->headData)
+    {
+        apNpc->headData = Memory::New<TESNPC::HeadData>();
+        if (apNpc->headData)
+        {
+            apNpc->headData->hairColor = nullptr;
+            apNpc->headData->headTexture = nullptr;
+        }
+    }
+
+    if (apNpc->headData)
+        apNpc->headData->hairColor = pDedicatedColor;
+}
+
+void CharacterService::PollLocalPlayerAppearanceSync() noexcept
+{
+    FaceGenSystem::UpdateLocalPlayerHairTintIsolation();
+
+    if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
+        return;
+
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    if (!pPlayer || pPlayer->IsStillLoading() || pPlayer->IsDeleted())
+        return;
+
+    bool inRaceSexMenu = false;
+    bool inLoadingMenu = false;
+    if (UI* pUi = UI::Get())
+    {
+        static const BSFixedString* s_pRaceSexMenu = new BSFixedString("RaceSex Menu");
+        static const BSFixedString* s_pLoadingMenu = new BSFixedString("Loading Menu");
+        inRaceSexMenu = pUi->GetMenuOpen(*s_pRaceSexMenu);
+        inLoadingMenu = pUi->GetMenuOpen(*s_pLoadingMenu);
+    }
+
+    const uint64_t nowMs = NowSteadyWorldViewMs();
+    if (!m_localAppearanceResync.ShouldPollNow(nowMs, inRaceSexMenu, inLoadingMenu))
+        return;
+
+    const entt::entity playerEntity = FindActorEntityByFormId(0x14u);
+    if (playerEntity == entt::null ||
+        !m_world.all_of<LocalComponent>(playerEntity) ||
+        m_world.any_of<WaitingForAssignmentComponent>(playerEntity))
+    {
+        return;
+    }
+
+    const uint64_t currentFp = ComputeLocalPlayerAppearanceFingerprint(pPlayer);
+    if (!m_localAppearanceResync.EvaluateChangedFingerprint(currentFp, nowMs))
+        return;
+
+    FaceGenSystem::InvalidateLocalPlayerHairTintIsolation();
+    FaceGenSystem::UpdateLocalPlayerHairTintIsolation();
+    (void)RequestServerAssignment(playerEntity);
 }

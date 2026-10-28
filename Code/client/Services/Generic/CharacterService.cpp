@@ -970,6 +970,7 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
 void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
 {
     ActorExtension::ClearAllLatestAnimations();
+    m_localAppearanceResync.Reset();
 
     if (m_engineWorldLoadInProgress)
         return;
@@ -1090,6 +1091,9 @@ void CharacterService::DetachAllActorsForEngineLoad() noexcept
     m_remoteModels.clear();
     m_playerServerIds.clear();
     m_playerBaseNpcPool.clear();
+    m_playerHairColorPool.clear();
+    m_localAppearanceResync.Reset();
+    FaceGenSystem::InvalidateLocalPlayerHairTintIsolation();
     m_createdNetworkFormIds.clear();
     m_weaponDrawUpdates.clear();
     NotifySaveLoadReset();
@@ -1634,15 +1638,14 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
                     pBaseNpc && ((pBaseNpc->formID & 0xFF000000u) == 0xFF000000u))
                 {
                     pBaseNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+                    ApplyRemotePlayerHairColorForm(acMessage.PlayerId, pBaseNpc, acMessage.FaceTints);
                     pBaseNpc->overlayRace = nullptr;
                     pBaseNpc->actorData.SetEssential(true);
                     pBaseNpc->SetSkipSaveFlag(true);
                     pBaseNpc->UnsetChanged(0xFFFFFFFF);
+                    FaceGenSystem::Setup(m_world, entity, acMessage.FaceTints);
                     if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(entity))
-                    {
-                        pFaceGen->Generated = false;
-                        pFaceGen->LastFaceNode = nullptr;
-                    }
+                        pFaceGen->ResetGenerationState();
                     pLiveActor->QueueUpdate();
                 }
             }
@@ -2163,8 +2166,7 @@ void CharacterService::DematerializeRemoteView(entt::entity aEntity, RemoteEntit
 
     if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(aEntity))
     {
-        pFaceGen->Generated = false;
-        pFaceGen->LastFaceNode = nullptr;
+        pFaceGen->ResetGenerationState();
     }
 
     if (auto* pAnim = m_world.try_get<RemoteAnimationComponent>(aEntity))
@@ -2291,6 +2293,8 @@ Actor* CharacterService::MaterializeRemoteView(
             if ((pNpc->formID & 0xFF000000u) == 0xFF000000u && !acMessage.AppearanceBuffer.empty())
             {
                 pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+                if (acMessage.IsPlayer)
+                    ApplyRemotePlayerHairColorForm(acMessage.PlayerId, pNpc, acMessage.FaceTints);
                 pNpc->SetSkipSaveFlag(true);
                 pNpc->UnsetChanged(0xFFFFFFFF);
             }
@@ -2315,6 +2319,7 @@ Actor* CharacterService::MaterializeRemoteView(
                     {
                         if (!acMessage.AppearanceBuffer.empty())
                             pNpc->Deserialize(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
+                        ApplyRemotePlayerHairColorForm(acMessage.PlayerId, pNpc, acMessage.FaceTints);
                         pNpc->overlayRace = nullptr;
                         pNpc->actorData.SetEssential(true);
                         pNpc->SetSkipSaveFlag(true);
@@ -2328,6 +2333,8 @@ Actor* CharacterService::MaterializeRemoteView(
                 pNpc = TESNPC::Create(acMessage.AppearanceBuffer, acMessage.ChangeFlags);
                 if (pNpc)
                 {
+                    if (acMessage.IsPlayer)
+                        ApplyRemotePlayerHairColorForm(acMessage.PlayerId, pNpc, acMessage.FaceTints);
                     pNpc->overlayRace = nullptr;
                     pNpc->actorData.SetEssential(true);
                     m_createdNetworkFormIds.insert(pNpc->formID);
@@ -2338,10 +2345,7 @@ Actor* CharacterService::MaterializeRemoteView(
 
             FaceGenSystem::Setup(m_world, aEntity, acMessage.FaceTints);
             if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(aEntity))
-            {
-                pFaceGen->Generated = false;
-                pFaceGen->LastFaceNode = nullptr;
-            }
+                pFaceGen->ResetGenerationState();
         }
 
         auto pCreated = Actor::CreateInCell(pNpc, apTargetCell, apTargetWorldSpace, spawnPos, spawnRot);
@@ -2677,6 +2681,8 @@ void CharacterService::RunRemoteUpdates() noexcept
 
         AnimationSystem::Update(m_world, pActor, animationComponent, animTick);
     }
+
+    PollLocalPlayerAppearanceSync();
 
     auto facegenView = m_world.view<FormIdComponent, FaceGenComponent>();
 

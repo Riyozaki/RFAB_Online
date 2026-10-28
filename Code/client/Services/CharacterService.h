@@ -3,6 +3,7 @@
 #include "Structs/ActorData.h"
 #include <Messages/CharacterSpawnRequest.h>
 #include <CoopExperienceLedger.h>
+#include <CoopHairColorSync.h>
 #include <CoopOwnership.h>
 #include <CoopWorldStabilizer.h>
 #include <CoopWorldView.h>
@@ -173,6 +174,8 @@ private:
     bool DespawnSuppressedNonLeaderWildTempSpawn(Actor* apActor, entt::entity aEntity) noexcept;
     Actor* MaterializeRemoteView(entt::entity aEntity, RemoteEntityModel& aModel, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace) const noexcept;
     void ReconcileRemoteWorldViews() const noexcept;
+    void ApplyRemotePlayerHairColorForm(uint32_t aPlayerId, TESNPC* apNpc, const Tints& acFaceTints) const noexcept;
+    void PollLocalPlayerAppearanceSync() noexcept;
 
     bool RequestServerAssignment(entt::entity aEntity) const noexcept;
     void CleanupUnassignedActorEntity(entt::entity aEntity) const noexcept;
@@ -216,6 +219,8 @@ private:
     mutable Map<uint32_t, RemoteEntityModel> m_remoteModels{};
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};
     mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
+    mutable Map<uint32_t, uint32_t> m_playerHairColorPool{};
+    mutable CoopHairColorSync::AppearanceResyncTracker m_localAppearanceResync{};
     mutable Set<uint32_t> m_createdNetworkFormIds{};
     mutable CoopWorldView::EntityIndexTable<entt::entity> m_entityIndex{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};

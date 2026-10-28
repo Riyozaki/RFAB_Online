@@ -239,9 +239,11 @@ TEST_CASE("v3.1.1 Source-level regression contracts across all 10 playtest fixes
     CHECK(static_cast<unsigned char>(buildPs1[0]) == 0xEF);
     CHECK(static_cast<unsigned char>(buildPs1[1]) == 0xBB);
     CHECK(static_cast<unsigned char>(buildPs1[2]) == 0xBF);
-    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.1\"") != std::string::npos);
+    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.2\"") != std::string::npos);
     CHECK(buildPs1.find("\"v3.1.0-backup\"") != std::string::npos);
     CHECK(buildPs1.find("Ensure-V310BackupRelease") != std::string::npos);
+    CHECK(buildPs1.find("\"v3.1.1-backup\"") != std::string::npos);
+    CHECK(buildPs1.find("Ensure-V311BackupRelease") != std::string::npos);
 
     const std::string backupManifest = LoadV311RepoFile(root, "docs/V3.1.0_RELEASE_BACKUP_MANIFEST.json");
     CHECK(backupManifest.find("\"v3.1.0-backup\"") != std::string::npos);
