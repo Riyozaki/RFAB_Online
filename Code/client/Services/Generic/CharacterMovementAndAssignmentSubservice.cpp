@@ -7,6 +7,7 @@
 #include <Forms/TESNPC.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESQuest.h>
+#include <Forms/TESRace.h>
 #include <Forms/TESWorldSpace.h>
 #include <Games/ActorExtension.h>
 #include <Games/TES.h>

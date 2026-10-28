@@ -458,17 +458,24 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
         if (!pActor->IsWearingBodyPiece() && pBase && pBase->outfits[0] != nullptr)
         {
             spdlog::debug(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pBaseName);
-            TESForm* const pSavedRightWeap = Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0));
-            TESForm* const pSavedLeftWeap = Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(1));
+            TESObjectWEAP* const pSavedRightWeap = Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0));
+            TESObjectWEAP* const pSavedLeftWeap = Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(1));
             ScopedEquipOverride equipGuard;
             ScopedInventoryOverride invGuard;
             pActor->EquipOutfit();
             if (EquipManager* pEquipMgr = EquipManager::Get())
             {
+                const auto& dom = DefaultObjectManager::Get();
                 if (pSavedRightWeap && pActor->GetEquippedWeapon(0) != pSavedRightWeap)
-                    pEquipMgr->Equip(pActor, pSavedRightWeap, nullptr, 1, DefaultEquipSlot::GetRightHandSlot(), false, true, false, false);
+                {
+                    TESForm* const pRightSlot = pSavedRightWeap->UsesSingleHandEquipSlot(dom) ? dom.rightEquipSlot : nullptr;
+                    pEquipMgr->Equip(pActor, pSavedRightWeap, nullptr, 1, pRightSlot, false, true, false, false);
+                }
                 if (pSavedLeftWeap && pActor->GetEquippedWeapon(1) != pSavedLeftWeap)
-                    pEquipMgr->Equip(pActor, pSavedLeftWeap, nullptr, 1, DefaultEquipSlot::GetLeftHandSlot(), false, true, false, false);
+                {
+                    TESForm* const pLeftSlot = pSavedLeftWeap->UsesSingleHandEquipSlot(dom) ? dom.leftEquipSlot : nullptr;
+                    pEquipMgr->Equip(pActor, pSavedLeftWeap, nullptr, 1, pLeftSlot, false, true, false, false);
+                }
             }
         }
     }
