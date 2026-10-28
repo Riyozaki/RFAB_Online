@@ -6,6 +6,7 @@
 #include <Components.h>
 #include <Forms/BGSColorForm.h>
 #include <Forms/BGSHeadPart.h>
+#include <Forms/BGSTextureSet.h>
 #include <Forms/TESNPC.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESQuest.h>

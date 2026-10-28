@@ -52,8 +52,10 @@ struct NotifyRelinquishControl;
 struct PartyJoinedEvent;
 
 struct Actor;
+struct TESNPC;
 struct TESObjectCELL;
 struct TESWorldSpace;
+struct Tints;
 struct World;
 struct TransportService;
 
