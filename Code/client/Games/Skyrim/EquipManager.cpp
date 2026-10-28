@@ -69,7 +69,9 @@ EquipManager* EquipManager::Get() noexcept
 
 void* EquipManager::Equip(Actor* apActor, TESForm* apItem, ExtraDataList* apExtraDataList, int aCount, TESForm* apSlot, bool abQueueEquip, bool abForceEquip, bool abPlaySound, bool abApplyNow)
 {
-    if (!apActor || !apItem || apActor->IsDeleted() || !apActor->currentProcess)
+    if (!apActor)
+        return nullptr;
+    if (!apItem || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TEquipInternal, void*, EquipManager, Actor* apActor, TESForm* apItem, ExtraDataList* apExtraDataList, int aCount, TESForm* apSlot, bool abQueueEquip, bool abForceEquip, bool abPlaySound, bool abApplyNow);
