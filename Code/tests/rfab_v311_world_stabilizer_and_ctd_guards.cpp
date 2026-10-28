@@ -10,9 +10,13 @@
 #include <sstream>
 #include <string>
 
-#include "../common/CoopTeleportGuard.h"
-#include "../common/CoopWorldStabilizer.h"
-#include "../server/Services/RfabProgressionService.h"
+#include <common/CoopTeleportGuard.h>
+#include <common/CoopWorldStabilizer.h>
+
+#include <entt/entt.hpp>
+#include <Server.hpp>
+
+#include <Services/RfabProgressionService.h>
 
 namespace
 {
