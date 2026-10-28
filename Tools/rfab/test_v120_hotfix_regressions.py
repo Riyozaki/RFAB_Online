@@ -318,8 +318,11 @@ def main() -> int:
     assert '"v3.1.0-backup"' in v310_backup_manifest and "425952399" in v310_backup_manifest
     v311_backup_manifest = (ROOT / "docs" / "V3.1.1_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
     assert '"v3.1.1-backup"' in v311_backup_manifest and "426193785" in v311_backup_manifest
+    v312_backup_manifest = (ROOT / "docs" / "V3.1.2_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    assert '"v3.1.2-backup"' in v312_backup_manifest and "427038318" in v312_backup_manifest
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
-    assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.2"' in build_txt
+    assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
+    assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.3"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -336,7 +339,28 @@ def main() -> int:
     assert "ScopedRemoteQuestUpdateGuard remoteSceneGuard" in cli_quest_cpp and "ignoring non-leader scene" in srv_quest_cpp
     assert "update.Status = RequestQuestUpdate::StageUpdateForced;" in cli_quest_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 architectural regression checks passed!")
+    # 21. v3.1.3 Carriage Fast-Travel & Main-Thread Shader Stability
+    skyrim_vm_cpp = (ROOT / "Code" / "client" / "SkyrimVM64.cpp").read_text(encoding="utf-8")
+    world_cpp = (ROOT / "Code" / "client" / "World.cpp").read_text(encoding="utf-8")
+    facegen_cpp = (ROOT / "Code" / "client" / "Systems" / "FaceGenSystem.cpp").read_text(encoding="utf-8")
+    cli_assign_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "CharacterMovementAndAssignmentSubservice.cpp").read_text(encoding="utf-8")
+    tp_guard_h = (ROOT / "Code" / "common" / "CoopTeleportGuard.h").read_text(encoding="utf-8")
+    tes_refr_h = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "TESObjectREFR.h").read_text(encoding="utf-8")
+    tes_refr_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "TESObjectREFR.cpp").read_text(encoding="utf-8")
+
+    assert "World::Get().OnMainThreadUpdate();" in skyrim_vm_cpp
+    assert "void World::OnMainThreadUpdate() noexcept" in world_cpp and "void World::QueueMainThreadTask(" in world_cpp
+    world_update_body = world_cpp.split("void World::Update() noexcept", 1)[1].split("RunnerService& World::GetRunner()", 1)[0]
+    assert "s_mainThreadId.store" not in world_update_body
+    assert "IsSafeMainThreadSceneGraphWindow()" in facegen_cpp and "ExecuteMainThreadPass(" in facegen_cpp
+    assert "Fader Menu" in facegen_cpp and "RestoreLocalHairTintDriftRecursive(" in facegen_cpp
+    assert "ScheduleMainThreadFaceGenPass()" in cli_char_cpp and "FaceGenSystem::Update(" not in cli_char_cpp
+    poll_body = cli_assign_cpp.split("void CharacterService::PollLocalPlayerAppearanceSync() noexcept", 1)[1].split("void CharacterService::ScheduleMainThreadFaceGenPass()", 1)[0]
+    assert "UpdateLocalPlayerHairTintIsolation" not in poll_body
+    assert "GetNiNode3rdPerson(" in tes_refr_h and "GetNiNode3rdPerson(false)" in facegen_cpp
+    assert "NoteLocalDirectPlayerTravelInteraction" in tp_guard_h and "NoteLocalDirectPlayerTravelInteraction" in tes_refr_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 architectural regression checks passed!")
     return 0
 
 

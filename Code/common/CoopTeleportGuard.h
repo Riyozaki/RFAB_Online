@@ -98,6 +98,7 @@ namespace CoopTeleportGuard
     public:
         static constexpr uint64_t kDefaultAsyncPapyrusHoldNs = 750'000'000ULL; // 750 ms post-SetStage async VM window
         static constexpr uint64_t kExtendedLateSessionPapyrusHoldNs = 4'500'000'000ULL; // 4.5 s late-session VM lag guard
+        static constexpr uint64_t kLocalPlayerTravelGraceNs = 8'000'000'000ULL; // 8.0 s carriage fade-out / scripted travel grace
 
         static void EnterScope(uint64_t aNowNs = NowSteadyNs(), uint64_t aAsyncHoldNs = kDefaultAsyncPapyrusHoldNs) noexcept
         {
@@ -119,10 +120,26 @@ namespace CoopTeleportGuard
                 s_holdUntilNs.store(0, std::memory_order_release);
         }
 
+        static void NoteLocalDirectPlayerTravelInteraction(uint64_t aNowNs = NowSteadyNs()) noexcept
+        {
+            ClearAsyncHoldForLocalInteraction();
+            const uint64_t candidateUntil = aNowNs + kLocalPlayerTravelGraceNs;
+            uint64_t cur = s_localTravelGraceUntilNs.load(std::memory_order_relaxed);
+            while (candidateUntil > cur &&
+                   !s_localTravelGraceUntilNs.compare_exchange_weak(
+                       cur, candidateUntil, std::memory_order_release, std::memory_order_relaxed))
+            {
+            }
+        }
+
         [[nodiscard]] static bool ShouldBlockUnauthorizedPlayerMoveTo(uint64_t aNowNs = NowSteadyNs()) noexcept
         {
             if (s_activeDepth.load(std::memory_order_acquire) > 0)
                 return true;
+
+            const uint64_t localGraceUntil = s_localTravelGraceUntilNs.load(std::memory_order_acquire);
+            if (localGraceUntil > 0 && aNowNs < localGraceUntil)
+                return false;
 
             const uint64_t holdUntil = s_holdUntilNs.load(std::memory_order_acquire);
             return holdUntil > 0 && aNowNs < holdUntil;
@@ -132,6 +149,7 @@ namespace CoopTeleportGuard
         {
             s_activeDepth.store(0, std::memory_order_release);
             s_holdUntilNs.store(0, std::memory_order_release);
+            s_localTravelGraceUntilNs.store(0, std::memory_order_release);
         }
 
     private:
@@ -146,6 +164,7 @@ namespace CoopTeleportGuard
 
         inline static std::atomic<uint32_t> s_activeDepth{0};
         inline static std::atomic<uint64_t> s_holdUntilNs{0};
+        inline static std::atomic<uint64_t> s_localTravelGraceUntilNs{0};
     };
 
     struct ScopedRemoteQuestMoveToSuppression

@@ -1425,7 +1425,17 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
     }
 
     if (!ScopedActivateOverride::IsOverriden() && apActivator && apActivator->formID == 0x14)
+    {
         CoopTeleportGuard::RemoteQuestMoveToGuard::ClearAsyncHoldForLocalInteraction();
+        if (apThis->formType == Actor::Type ||
+            (apThis->baseForm &&
+             (apThis->baseForm->formType == FormType::Furniture ||
+              apThis->baseForm->formType == FormType::Door ||
+              apThis->baseForm->formType == FormType::Activator)))
+        {
+            CoopTeleportGuard::RemoteQuestMoveToGuard::NoteLocalDirectPlayerTravelInteraction();
+        }
+    }
 
     const bool result = TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
 

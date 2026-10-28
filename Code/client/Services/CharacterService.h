@@ -8,6 +8,9 @@
 #include <CoopWorldStabilizer.h>
 #include <CoopWorldView.h>
 
+#include <atomic>
+#include <memory>
+
 struct ActorAddedEvent;
 struct ActorRemovedEvent;
 struct UpdateEvent;
@@ -178,6 +181,7 @@ private:
     void ReconcileRemoteWorldViews() const noexcept;
     void ApplyRemotePlayerHairColorForm(uint32_t aPlayerId, TESNPC* apNpc, const Tints& acFaceTints) const noexcept;
     void PollLocalPlayerAppearanceSync() noexcept;
+    void ScheduleMainThreadFaceGenPass() noexcept;
 
     bool RequestServerAssignment(entt::entity aEntity) const noexcept;
     void CleanupUnassignedActorEntity(entt::entity aEntity) const noexcept;
@@ -223,6 +227,8 @@ private:
     mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
     mutable Map<uint32_t, uint32_t> m_playerHairColorPool{};
     mutable CoopHairColorSync::AppearanceResyncTracker m_localAppearanceResync{};
+    mutable std::shared_ptr<std::atomic<bool>> m_spFaceGenMainThreadPending{std::make_shared<std::atomic<bool>>(false)};
+    mutable uint64_t m_nextFaceGenMainThreadScheduleMs{0};
     mutable Set<uint32_t> m_createdNetworkFormIds{};
     mutable CoopWorldView::EntityIndexTable<entt::entity> m_entityIndex{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};

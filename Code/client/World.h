@@ -22,6 +22,9 @@
 #include <CoopDamagePipeline.h>
 
 #include <atomic>
+#include <functional>
+#include <mutex>
+#include <vector>
 
 struct World : entt::registry
 {
@@ -29,6 +32,8 @@ struct World : entt::registry
     ~World();
 
     void Update() noexcept;
+    void OnMainThreadUpdate() noexcept;
+    void QueueMainThreadTask(std::function<void()> aTask) noexcept;
 
     RunnerService& GetRunner() noexcept;
     TransportService& GetTransport() noexcept;
@@ -114,4 +119,6 @@ private:
     ServerSettings m_serverSettings{};
 
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
+    std::mutex m_mainThreadTasksMutex{};
+    std::vector<std::function<void()>> m_mainThreadTasks{};
 };

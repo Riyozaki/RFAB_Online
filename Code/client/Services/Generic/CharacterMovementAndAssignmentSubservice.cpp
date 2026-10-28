@@ -820,8 +820,6 @@ void CharacterService::ApplyRemotePlayerHairColorForm(
 
 void CharacterService::PollLocalPlayerAppearanceSync() noexcept
 {
-    FaceGenSystem::UpdateLocalPlayerHairTintIsolation();
-
     if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
         return;
 
@@ -856,6 +854,49 @@ void CharacterService::PollLocalPlayerAppearanceSync() noexcept
         return;
 
     FaceGenSystem::InvalidateLocalPlayerHairTintIsolation();
-    FaceGenSystem::UpdateLocalPlayerHairTintIsolation();
+    m_nextFaceGenMainThreadScheduleMs = 0;
     (void)RequestServerAssignment(playerEntity);
+}
+
+void CharacterService::ScheduleMainThreadFaceGenPass() noexcept
+{
+    if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
+        return;
+
+    if (!m_spFaceGenMainThreadPending || m_spFaceGenMainThreadPending->load(std::memory_order_acquire))
+        return;
+
+    const uint64_t nowMs = NowSteadyWorldViewMs();
+    if (nowMs < m_nextFaceGenMainThreadScheduleMs)
+        return;
+
+    std::vector<FaceGenMainThreadEntry> remoteActors;
+    auto facegenView = m_world.view<FormIdComponent, FaceGenComponent>();
+    for (auto entity : facegenView)
+    {
+        const uint32_t formId = facegenView.get<FormIdComponent>(entity).Id;
+        if (formId == 0 || formId == 0x14)
+            continue;
+
+        FaceGenMainThreadEntry item{};
+        item.FormId = formId;
+        item.FaceTints = facegenView.get<FaceGenComponent>(entity).FaceTints;
+        remoteActors.push_back(std::move(item));
+    }
+
+    const bool hasRemoteHairPeers = !m_playerHairColorPool.empty() || !remoteActors.empty();
+    if (remoteActors.empty() && !hasRemoteHairPeers)
+        return;
+
+    m_nextFaceGenMainThreadScheduleMs = nowMs + 80ULL;
+    if (m_spFaceGenMainThreadPending->exchange(true, std::memory_order_acq_rel))
+        return;
+
+    auto spPending = m_spFaceGenMainThreadPending;
+    m_world.QueueMainThreadTask(
+        [spPending, remoteActors = std::move(remoteActors), hasRemoteHairPeers]()
+        {
+            FaceGenSystem::ExecuteMainThreadPass(remoteActors, hasRemoteHairPeers);
+            spPending->store(false, std::memory_order_release);
+        });
 }

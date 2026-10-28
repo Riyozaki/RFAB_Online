@@ -155,11 +155,11 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
         return;
 
     // Never execute TESObjectREFR::Delete() off the main game thread (Guest Crash G3 tbbmalloc race):
-    // bounce dynamic actor cleanup onto RunnerService::Queue so it always executes on the main thread.
+    // bounce dynamic actor cleanup onto World::QueueMainThreadTask (`HookMainLoop` SE 35565 `WinMain`)!
     if (!World::IsMainThread())
     {
         const uint32_t deferredFormId = apActor->formID;
-        World::Get().GetRunner().Queue(
+        World::Get().QueueMainThreadTask(
             [deferredFormId]()
             {
                 CharacterService::DeleteTempActor(deferredFormId);
@@ -750,7 +750,7 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
         if ((acEvent.FormId & 0xFF000000) == 0xFF000000)
             spdlog::debug("Dynamic actor {:X} already removed from form ids map", acEvent.FormId);
         else
-            spdlog::error("Actor to remove not found in form ids map {:X}", acEvent.FormId);
+            spdlog::debug("Actor {:X} already removed or unassigned from form ids map", acEvent.FormId);
         return;
     }
 
@@ -971,6 +971,8 @@ void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEve
 {
     ActorExtension::ClearAllLatestAnimations();
     m_localAppearanceResync.Reset();
+    FaceGenSystem::InvalidateLocalPlayerHairTintIsolation();
+    m_nextFaceGenMainThreadScheduleMs = 0;
 
     if (m_engineWorldLoadInProgress)
         return;
@@ -1646,6 +1648,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
                     FaceGenSystem::Setup(m_world, entity, acMessage.FaceTints);
                     if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(entity))
                         pFaceGen->ResetGenerationState();
+                    m_nextFaceGenMainThreadScheduleMs = 0;
                     pLiveActor->QueueUpdate();
                 }
             }
@@ -2346,6 +2349,7 @@ Actor* CharacterService::MaterializeRemoteView(
             FaceGenSystem::Setup(m_world, aEntity, acMessage.FaceTints);
             if (auto* pFaceGen = m_world.try_get<FaceGenComponent>(aEntity))
                 pFaceGen->ResetGenerationState();
+            m_nextFaceGenMainThreadScheduleMs = 0;
         }
 
         auto pCreated = Actor::CreateInCell(pNpc, apTargetCell, apTargetWorldSpace, spawnPos, spawnRot);
@@ -2683,21 +2687,7 @@ void CharacterService::RunRemoteUpdates() noexcept
     }
 
     PollLocalPlayerAppearanceSync();
-
-    auto facegenView = m_world.view<FormIdComponent, FaceGenComponent>();
-
-    for (auto entity : facegenView)
-    {
-        auto& formIdComponent = facegenView.get<FormIdComponent>(entity);
-        auto& faceGenComponent = facegenView.get<FaceGenComponent>(entity);
-
-        const auto* pForm = TESForm::GetById(formIdComponent.Id);
-        auto* pActor = Cast<Actor>(pForm);
-        if (!pActor)
-            continue;
-
-        FaceGenSystem::Update(m_world, pActor, faceGenComponent);
-    }
+    ScheduleMainThreadFaceGenPass();
 
     auto waitingView = m_world.view<FormIdComponent, WaitingFor3D>();
 

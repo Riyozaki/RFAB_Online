@@ -2278,7 +2278,7 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
             else
             {
                 const uint32_t matchFormId = pBestMatch->formID;
-                World::Get().GetRunner().Queue(
+                World::Get().QueueMainThreadTask(
                     [matchFormId]()
                     {
                         if (TESObjectREFR* pDeferred = Cast<TESObjectREFR>(TESForm::GetById(matchFormId)))
