@@ -34,6 +34,7 @@ public:
         float PosZ{};
         uint64_t SpawnedAtMs{};
         std::unordered_set<uint32_t> MatchedPeerPlayerIds{};
+        GameId WorldSpaceId{};
     };
 
     struct Snapshot
@@ -123,32 +124,60 @@ public:
         float aPosZ,
         uint64_t aNowMs,
         uint64_t aWindowMs,
-        float aRadiusUnits) noexcept
+        float aRadiusUnits,
+        const GameId& acWorldSpaceId = GameId{},
+        bool aAllowVariantBaseMatch = false) noexcept
     {
         PruneExpiredAmbushes(aNowMs, aWindowMs);
 
         const float maxDistSq = aRadiusUnits * aRadiusUnits;
-        for (auto& rec : m_recentAmbushes)
+        const bool isExteriorSpace = (acWorldSpaceId != GameId{});
+
+        auto tryFindPass = [&](bool aRequireExactBase) noexcept -> uint32_t
         {
-            if (rec.OwnerPlayerId == aRequestingPlayerId)
-                continue;
+            AmbushRecord* pBestRec = nullptr;
+            float bestDistSq = maxDistSq + 1.0f;
 
-            if (rec.MatchedPeerPlayerIds.contains(aRequestingPlayerId))
-                continue;
-
-            if (rec.CellId != acCellId || rec.BaseActorId != acBaseActorId)
-                continue;
-
-            const float dx = rec.PosX - aPosX;
-            const float dy = rec.PosY - aPosY;
-            const float dz = rec.PosZ - aPosZ;
-            const float distSq = dx * dx + dy * dy + dz * dz;
-            if (distSq <= maxDistSq)
+            for (auto& rec : m_recentAmbushes)
             {
-                rec.MatchedPeerPlayerIds.insert(aRequestingPlayerId);
-                return rec.ServerEntityId;
+                if (rec.OwnerPlayerId == aRequestingPlayerId)
+                    continue;
+                if (rec.MatchedPeerPlayerIds.contains(aRequestingPlayerId))
+                    continue;
+
+                const bool sameSpace = (isExteriorSpace && rec.WorldSpaceId != GameId{})
+                    ? (rec.WorldSpaceId == acWorldSpaceId)
+                    : (rec.CellId == acCellId);
+                if (!sameSpace)
+                    continue;
+
+                if (aRequireExactBase && rec.BaseActorId != acBaseActorId)
+                    continue;
+
+                const float dx = rec.PosX - aPosX;
+                const float dy = rec.PosY - aPosY;
+                const float dz = rec.PosZ - aPosZ;
+                const float distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq <= maxDistSq && distSq < bestDistSq)
+                {
+                    bestDistSq = distSq;
+                    pBestRec = &rec;
+                }
             }
-        }
+
+            if (pBestRec)
+            {
+                pBestRec->MatchedPeerPlayerIds.insert(aRequestingPlayerId);
+                return pBestRec->ServerEntityId;
+            }
+            return 0;
+        };
+
+        if (const uint32_t exactMatch = tryFindPass(true); exactMatch != 0)
+            return exactMatch;
+
+        if (aAllowVariantBaseMatch)
+            return tryFindPass(false);
 
         return 0;
     }
@@ -162,7 +191,8 @@ public:
         float aPosY,
         float aPosZ,
         uint64_t aNowMs,
-        uint64_t aWindowMs)
+        uint64_t aWindowMs,
+        const GameId& acWorldSpaceId = GameId{})
     {
         PruneExpiredAmbushes(aNowMs, aWindowMs);
         m_recentAmbushes.push_back(AmbushRecord{
@@ -175,6 +205,7 @@ public:
             aPosZ,
             aNowMs,
             {},
+            acWorldSpaceId,
         });
     }
 

@@ -314,7 +314,9 @@ def main() -> int:
     assert '"v2.1.0-backup"' in v210_backup_manifest and "424756541" in v210_backup_manifest
     v300_backup_manifest = (ROOT / "docs" / "V3.0.0_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
     assert '"v3.0.0-backup"' in v300_backup_manifest and "425670346" in v300_backup_manifest
-    assert '"v3.0.0-backup"' in build_txt and "Ensure-V300BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.0"' in build_txt
+    v310_backup_manifest = (ROOT / "docs" / "V3.1.0_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    assert '"v3.1.0-backup"' in v310_backup_manifest and "425952399" in v310_backup_manifest
+    assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.1"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")

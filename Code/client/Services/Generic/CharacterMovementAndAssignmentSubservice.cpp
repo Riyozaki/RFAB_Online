@@ -17,9 +17,11 @@
 #include <Messages/NotifySpawnData.h>
 #include <Messages/ServerReferencesMoveRequest.h>
 #include <PlayerCharacter.h>
+#include <Services/DiscoveryService.h>
 #include <Services/DownedStateService.h>
 #include <Services/PartyService.h>
 #include <Services/QuestService.h>
+#include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
 #include <Systems/CacheSystem.h>
 #include <Systems/InterpolationSystem.h>
@@ -467,4 +469,203 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 void CharacterService::RunSpawnUpdates() const noexcept
 {
     ReconcileRemoteWorldViews();
+}
+
+uint32_t CharacterService::LookupAuthoritativePlacedBaseFormId(const uint32_t aRefFormId) const noexcept
+{
+    return m_authoritativePlacedBases.LookupBaseFormId(aRefFormId);
+}
+
+void CharacterService::RecordAuthoritativePlacedBase(const GameId& acRefId, const GameId& acBaseId) const noexcept
+{
+    if (acRefId == GameId{} || acBaseId == GameId{} ||
+        acRefId.ModId == std::numeric_limits<uint32_t>::max() ||
+        acBaseId.ModId == std::numeric_limits<uint32_t>::max())
+    {
+        return;
+    }
+
+    const uint32_t refFormId = m_world.GetModSystem().GetGameId(acRefId);
+    const uint32_t baseFormId = m_world.GetModSystem().GetGameId(acBaseId);
+    m_authoritativePlacedBases.Record(refFormId, baseFormId);
+}
+
+bool CharacterService::IsRemotePlayerOrSummonServerId(const uint32_t aServerId) const noexcept
+{
+    if (aServerId == 0)
+        return false;
+
+    if (const auto modelIt = m_remoteModels.find(aServerId); modelIt != m_remoteModels.end())
+    {
+        if (modelIt->second.SpawnRequest.IsPlayer || modelIt->second.SpawnRequest.IsPlayerSummon)
+            return true;
+    }
+
+    if (const auto spawnIt = m_cachedRemoteSpawns.find(aServerId); spawnIt != m_cachedRemoteSpawns.end())
+    {
+        if (spawnIt->second.IsPlayer || spawnIt->second.IsPlayerSummon)
+            return true;
+    }
+
+    return false;
+}
+
+bool CharacterService::IsCachedServerActorDead(const uint32_t aServerId) const noexcept
+{
+    if (const auto modelIt = m_remoteModels.find(aServerId); modelIt != m_remoteModels.end())
+        return modelIt->second.SpawnRequest.IsDead;
+
+    if (const auto spawnIt = m_cachedRemoteSpawns.find(aServerId); spawnIt != m_cachedRemoteSpawns.end())
+        return spawnIt->second.IsDead;
+
+    return false;
+}
+
+bool CharacterService::ReconcileLoadedRemoteSpeciesMismatch(
+    Actor* apActor,
+    const GameId& acExpectedBaseId) const noexcept
+{
+    if (!World::IsMainThread() ||
+        !apActor ||
+        !apActor->GetNiNode() ||
+        apActor->IsTemporary() ||
+        apActor->formID == 0x14 ||
+        acExpectedBaseId == GameId{} ||
+        acExpectedBaseId.ModId == std::numeric_limits<uint32_t>::max())
+    {
+        return false;
+    }
+
+    const uint32_t expectedFormId = m_world.GetModSystem().GetGameId(acExpectedBaseId);
+    if (expectedFormId == 0 || (expectedFormId & 0xFF000000u) == 0xFF000000u || !apActor->baseForm)
+        return false;
+
+    TESNPC* pCurrentNpc = apActor->GetLeveledTemplateBase();
+    if (!pCurrentNpc)
+        pCurrentNpc = Cast<TESNPC>(apActor->baseForm);
+
+    if (apActor->baseForm->formID == expectedFormId ||
+        (pCurrentNpc && pCurrentNpc->formID == expectedFormId))
+    {
+        return false;
+    }
+
+    TESNPC* pExpectedNpc = Cast<TESNPC>(TESForm::GetById(expectedFormId));
+    if (!pExpectedNpc || pExpectedNpc->IsStillLoading() || pExpectedNpc->IsDeleted())
+        return false;
+
+    const entt::entity ownerEntity = FindActorEntityByFormId(apActor->formID);
+    const bool hasLocalComponent = (ownerEntity != entt::null && m_world.all_of<LocalComponent>(ownerEntity));
+
+    const uint32_t currentRaceFormId =
+        (pCurrentNpc && pCurrentNpc->raceForm.race) ? pCurrentNpc->raceForm.race->formID : 0u;
+    const uint32_t expectedRaceFormId =
+        pExpectedNpc->raceForm.race ? pExpectedNpc->raceForm.race->formID : 0u;
+
+    if (!CoopWorldStabilizer::ShouldForcePost3DSpeciesSwap(
+            false,
+            false,
+            hasLocalComponent,
+            apActor->IsDead(),
+            apActor->IsInCombat(),
+            currentRaceFormId,
+            expectedRaceFormId))
+    {
+        return false;
+    }
+
+    spdlog::info(
+        "[RFAB SpeciesSync] Reconciling loaded placed actor {:X} species mismatch (base {:X} -> {:X}, race {:X} -> {:X})",
+        apActor->formID,
+        apActor->baseForm->formID,
+        expectedFormId,
+        currentRaceFormId,
+        expectedRaceFormId);
+
+    // Arm a 3.5s DiscoveryService demotion hold BEFORE QueueUpdate() so the brief NiNode rebuild
+    // never dispatches ActorRemovedEvent or drops the entity's RemoteComponent!
+    m_world.GetDiscoveryService().HoldActorRemoval(
+        apActor->formID,
+        CoopWorldStabilizer::ActorDemotionHoldTracker::kDefaultDemotionHoldMs);
+
+    apActor->SetBaseForm(pExpectedNpc);
+    if (pExpectedNpc->raceForm.race)
+        apActor->race = pExpectedNpc->raceForm.race;
+    apActor->QueueUpdate();
+    return true;
+}
+
+bool CharacterService::DespawnSuppressedNonLeaderWildTempSpawn(Actor* apActor, const entt::entity aEntity) noexcept
+{
+    if (!apActor || !m_transport.IsOnline())
+        return false;
+
+    const bool isTemporaryFormId = ((apActor->formID & 0xFF000000u) == 0xFF000000u && apActor->formID != 0x14);
+    if (!isTemporaryFormId)
+        return false;
+
+    const auto& partyService = m_world.GetPartyService();
+    if (!partyService.IsInParty() || partyService.IsLeader())
+        return false;
+
+    const Actor* pCommandingActor = apActor->GetCommandingActor();
+    const bool isPlayerSummonOrTeammate =
+        (pCommandingActor && pCommandingActor->formID == 0x14) ||
+        apActor->IsPlayerSummon() ||
+        apActor->IsCommandedActor() ||
+        apActor->IsPlayerTeammate();
+
+    TiltedPhoques::Vector<uint32_t> peerFormIds;
+    m_world.GetRfabAdapterService().CollectPartyPeerActorFormIds(peerFormIds);
+
+    bool hasNearbyPartyPeer = false;
+    for (const uint32_t peerFormId : peerFormIds)
+    {
+        Actor* pPeer = Cast<Actor>(TESForm::GetById(peerFormId));
+        if (!pPeer || pPeer->IsDeleted())
+            continue;
+        if (pPeer->GetWorldSpace() != apActor->GetWorldSpace())
+            continue;
+        if (!apActor->GetWorldSpace() && pPeer->parentCell != apActor->parentCell)
+            continue;
+
+        const float dx = pPeer->position.x - apActor->position.x;
+        const float dy = pPeer->position.y - apActor->position.y;
+        if ((dx * dx + dy * dy) <= (7000.0f * 7000.0f))
+        {
+            hasNearbyPartyPeer = true;
+            break;
+        }
+    }
+
+    const bool isRemoteNetworkCreated =
+        (apActor->GetExtension() && apActor->GetExtension()->IsRemote()) ||
+        (m_createdNetworkFormIds.find(apActor->formID) != m_createdNetworkFormIds.end());
+
+    if (!CoopWorldStabilizer::ShouldSuppressNonLeaderTempWildSpawn(
+            isTemporaryFormId,
+            false,
+            partyService.IsInParty(),
+            partyService.IsLeader(),
+            isRemoteNetworkCreated,
+            isPlayerSummonOrTeammate,
+            apActor->IsMount(),
+            hasNearbyPartyPeer))
+    {
+        return false;
+    }
+
+    spdlog::info(
+        "[RFAB WildSync] Suppressing redundant non-leader local 0xFF encounter {:X} ({}) near party leader/peer",
+        apActor->formID,
+        apActor->baseForm ? apActor->baseForm->GetName() : "<null>");
+
+    m_world.remove<EarlyAnimationBufferComponent, FormIdComponent>(aEntity);
+    if (m_world.orphan(aEntity))
+        m_world.destroy(aEntity);
+
+    apActor->UnsetChanged(0xFFFFFFFF);
+    apActor->SetSkipSaveFlag(true);
+    apActor->Delete();
+    return true;
 }

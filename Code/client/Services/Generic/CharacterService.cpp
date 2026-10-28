@@ -154,6 +154,19 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
     if (!apActor || apActor->formID == 0x14)
         return;
 
+    // Never execute TESObjectREFR::Delete() off the main game thread (Guest Crash G3 tbbmalloc race):
+    // bounce dynamic actor cleanup onto RunnerService::Queue so it always executes on the main thread.
+    if (!World::IsMainThread())
+    {
+        const uint32_t deferredFormId = apActor->formID;
+        World::Get().GetRunner().Queue(
+            [deferredFormId]()
+            {
+                CharacterService::DeleteTempActor(deferredFormId);
+            });
+        return;
+    }
+
     apActor->UnsetChanged(0xFFFFFFFF);
     apActor->SetSkipSaveFlag(true);
     if (apActor->baseForm && (apActor->baseForm->formID & 0xFF000000u) == 0xFF000000u)
@@ -836,6 +849,8 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
             Actor* pPendingActor = Cast<Actor>(TESForm::GetById(formId));
             if (!pPendingActor || pPendingActor->IsDisabled())
                 continue;
+            if (DespawnSuppressedNonLeaderWildTempSpawn(pPendingActor, e))
+                continue;
             ProcessNewEntity(e);
         }
     }
@@ -1197,6 +1212,7 @@ void CharacterService::NotifySaveLoadReset() noexcept
 {
     m_cachedExperience = 0.f;
     m_rfabXpTracker.Reset();
+    m_authoritativePlacedBases.Clear();
     m_ownershipEpochTracker.Clear();
     m_cancelledCookies.Clear();
     m_pendingRemoteMounts.clear();
@@ -1385,7 +1401,8 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             syncClaim.NewActorData = BuildActorData(pActor);
             m_transport.Send(syncClaim);
         }
-        else if (std::fabs(waitingSnapshot.PendingHealthDelta) > 0.05f)
+
+        if (std::fabs(waitingSnapshot.PendingHealthDelta) > 0.05f)
         {
             RequestHealthChangeBroadcast hpSync{};
             hpSync.Id = acMessage.ServerId;
@@ -1401,7 +1418,9 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         if (const auto modelIt = m_remoteModels.find(acMessage.ServerId);
             modelIt != m_remoteModels.end() && acMessage.PlayerId == 0)
         {
-            (void)ReconcilePlacedActorBaseFormInPlace(pActor, modelIt->second.SpawnRequest.BaseId);
+            RecordAuthoritativePlacedBase(modelIt->second.SpawnRequest.FormId, modelIt->second.SpawnRequest.BaseId);
+            if (!ReconcilePlacedActorBaseFormInPlace(pActor, modelIt->second.SpawnRequest.BaseId))
+                (void)ReconcileLoadedRemoteSpeciesMismatch(pActor, modelIt->second.SpawnRequest.BaseId);
         }
 
         m_world.emplace_or_replace<RemoteComponent>(cEntity, acMessage.ServerId, formIdComponent->Id);
@@ -1494,6 +1513,9 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
         }
         m_playerServerIds[acMessage.PlayerId] = acMessage.ServerId;
     }
+
+    if (!acMessage.IsPlayer && acMessage.FormId != GameId{} && acMessage.BaseId != GameId{})
+        RecordAuthoritativePlacedBase(acMessage.FormId, acMessage.BaseId);
 
     const CoopWorldView::WorldOrCell incomingLoc = CoopWorldView::WorldOrCell::FromPacket(
         acMessage.WorldSpaceId, acMessage.CellId, acMessage.Position.x, acMessage.Position.y);
@@ -1626,7 +1648,10 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             }
 
             if (!acMessage.IsPlayer)
-                (void)ReconcilePlacedActorBaseFormInPlace(pLiveActor, acMessage.BaseId);
+            {
+                if (!ReconcilePlacedActorBaseFormInPlace(pLiveActor, acMessage.BaseId))
+                    (void)ReconcileLoadedRemoteSpeciesMismatch(pLiveActor, acMessage.BaseId);
+            }
 
             pLiveActor->SetActorValues(acMessage.InitialActorValues);
             m_world.emplace_or_replace<WaitingFor3D>(entity, acMessage);
@@ -2362,7 +2387,10 @@ Actor* CharacterService::MaterializeRemoteView(
         // Reconcile placed `TESLevCharacter` template IN PLACE on the real `0x00..0xFE` Actor reference
         // so RFAB quest aliases, `MasterAmbushScript`, boss barriers, `OnDeath`, and `Location Cleared` never break!
         if (!acMessage.IsPlayer)
-            (void)ReconcilePlacedActorBaseFormInPlace(pActor, acMessage.BaseId);
+        {
+            if (!ReconcilePlacedActorBaseFormInPlace(pActor, acMessage.BaseId))
+                (void)ReconcileLoadedRemoteSpeciesMismatch(pActor, acMessage.BaseId);
+        }
 
         if (pActor->IsDisabled() && !acMessage.IsDead)
             pActor->EnableImpl();

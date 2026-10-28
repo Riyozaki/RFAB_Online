@@ -281,6 +281,7 @@ struct Actor : TESObjectREFR
     void SetCombatTargetEx(Actor* apTarget) noexcept;
     void StartCombat(Actor* apTarget) noexcept;
     void StopCombat() noexcept;
+    [[nodiscard]] bool IsHostileToActor(Actor* apTarget) const noexcept;
     void EvaluatePackage() noexcept;
     bool PlayIdle(TESIdleForm* apIdle) noexcept;
     void FixVampireLordModel() noexcept;

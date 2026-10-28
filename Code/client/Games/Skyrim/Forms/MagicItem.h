@@ -15,6 +15,8 @@ struct MagicItem : TESBoundObject
     bool IsBuffSpell() const noexcept;
     bool IsBoundWeaponSpell() noexcept;
     bool HasSummonEffect() const noexcept;
+    bool IsConcentrationEffectSpell() const noexcept;
+    bool IsConstantEffectSpell() const noexcept;
 
     EffectItem* GetEffect(const uint32_t aEffectId) noexcept;
 

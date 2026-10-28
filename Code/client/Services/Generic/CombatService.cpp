@@ -18,6 +18,8 @@
 #include <PlayerCharacter.h>
 #include <Combat/CombatController.h>
 #include <Services/DownedStateService.h>
+#include <Services/RfabAdapterService.h>
+#include <common/CoopWorldStabilizer.h>
 #include <common/RfabModpackCompat.h>
 
 CombatService::CombatService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher)
@@ -337,4 +339,87 @@ void CombatService::RunTargetUpdates(const float acDelta) const noexcept
 
     for (const auto entity : toRemove)
         m_world.remove<CombatComponent>(entity);
+
+    // Symmetric party proximity aggro wakeup (every 750ms):
+    // When Host owns an active hostile enemy's AI while standing 30-50m back and Guest walks right in
+    // front of that enemy, Skyrim's native Aggro Radius Behavior primarily evaluates 0x14 rather than
+    // 0xFF00xxxx clones. Wake combat symmetrically against nearby non-sneaking, non-downed party peers
+    // while strictly skipping sleeping/furniture Draugr, ethereal/statue actors (`IsGhost`), and scenes.
+    static float s_peerProximityScanAccumSec = 0.0f;
+    s_peerProximityScanAccumSec += acDelta;
+    if (s_peerProximityScanAccumSec < 0.75f)
+        return;
+    s_peerProximityScanAccumSec = 0.0f;
+
+    PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
+    if (!pLocalPlayer)
+        return;
+
+    TiltedPhoques::Vector<uint32_t> peerFormIds;
+    m_world.GetRfabAdapterService().CollectPartyPeerActorFormIds(peerFormIds);
+    if (peerFormIds.empty())
+        return;
+
+    auto localActors = m_world.view<FormIdComponent, LocalComponent>();
+    for (const entt::entity npcEntity : localActors)
+    {
+        const uint32_t npcFormId = localActors.get<FormIdComponent>(npcEntity).Id;
+        if (npcFormId == 0 || npcFormId == 0x14)
+            continue;
+
+        Actor* pNpc = Cast<Actor>(TESForm::GetById(npcFormId));
+        if (!pNpc || !pNpc->GetNiNode() || pNpc->IsStillLoading() || pNpc->IsDeleted())
+            continue;
+
+        const auto* pNpcExt = pNpc->GetExtension();
+        const bool isNpcPlayer = pNpcExt && pNpcExt->IsPlayer();
+        const bool isTeammateOrCommanded =
+            pNpc->IsPlayerTeammate() || pNpc->IsPlayerSummon() || pNpc->IsCommandedActor();
+        if (pNpc->IsDead() || pNpc->IsInCombat() || isNpcPlayer || isTeammateOrCommanded)
+            continue;
+        if (pNpc->IsGhost() || pNpc->GetOccupiedFurniture() != nullptr || pNpc->IsSpeakingInScene())
+            continue;
+
+        for (const uint32_t peerFormId : peerFormIds)
+        {
+            Actor* pPeer = Cast<Actor>(TESForm::GetById(peerFormId));
+            if (!pPeer || !pPeer->GetNiNode() || pPeer->IsStillLoading() || pPeer->IsDeleted())
+                continue;
+            if (pPeer->GetWorldSpace() != pNpc->GetWorldSpace())
+                continue;
+            if (!pNpc->GetWorldSpace() && pPeer->parentCell != pNpc->parentCell)
+                continue;
+
+            const float dx = pPeer->position.x - pNpc->position.x;
+            const float dy = pPeer->position.y - pNpc->position.y;
+            const float absDz = std::abs(pPeer->position.z - pNpc->position.z);
+            const float planarDistSq = dx * dx + dy * dy;
+            if (planarDistSq > (570.0f * 570.0f) || absDz > 220.0f)
+                continue;
+
+            const bool peerDeadOrDowned =
+                pPeer->IsDead() || pPeer->actorState.IsBleedingOut() || downedService.IsActorDowned(peerFormId);
+            const bool isHostileToParty =
+                pNpc->IsHostileToActor(pPeer) || pNpc->IsHostileToActor(pLocalPlayer);
+
+            if (CoopWorldStabilizer::ShouldWakeLocalHostileNpcForPeer(
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    isHostileToParty,
+                    peerDeadOrDowned,
+                    pPeer->actorState.IsSneaking(),
+                    pPeer->IsGhost(),
+                    planarDistSq,
+                    absDz))
+            {
+                pNpc->StartCombatEx(pPeer);
+                break;
+            }
+        }
+    }
 }

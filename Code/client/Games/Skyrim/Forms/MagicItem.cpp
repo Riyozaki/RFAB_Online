@@ -1,6 +1,8 @@
 #include "MagicItem.h"
 #include <Forms/ActorValueInfo.h>
 #include <Forms/BGSListForm.h>
+#include <Forms/EnchantmentItem.h>
+#include <Forms/SpellItem.h>
 #include <Games/TES.h>
 #include <RfabModpackCompat.h>
 #include <Services/RfabAdapterService.h>
@@ -219,4 +221,36 @@ EffectItem* MagicItem::GetEffect(const uint32_t aEffectId) noexcept
     }
 
     return nullptr;
+}
+
+bool MagicItem::IsConcentrationEffectSpell() const noexcept
+{
+    if (const auto* pSpell = Cast<SpellItem>(this))
+        return pSpell->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+    if (const auto* pEnch = Cast<EnchantmentItem>(this))
+        return pEnch->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+
+    for (const EffectItem* pEffect : listOfEffects)
+    {
+        if (pEffect && pEffect->pEffectSetting)
+            return pEffect->pEffectSetting->castType == static_cast<uint32_t>(MagicSystem::CastingType::CONCENTRATION);
+    }
+
+    return false;
+}
+
+bool MagicItem::IsConstantEffectSpell() const noexcept
+{
+    if (const auto* pSpell = Cast<SpellItem>(this))
+        return pSpell->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT;
+    if (const auto* pEnch = Cast<EnchantmentItem>(this))
+        return pEnch->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT;
+
+    for (const EffectItem* pEffect : listOfEffects)
+    {
+        if (pEffect && pEffect->pEffectSetting)
+            return pEffect->pEffectSetting->castType == static_cast<uint32_t>(MagicSystem::CastingType::CONSTANT_EFFECT);
+    }
+
+    return false;
 }

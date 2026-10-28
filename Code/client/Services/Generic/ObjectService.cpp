@@ -1,5 +1,7 @@
 #include <Services/ObjectService.h>
 
+#include <common/CoopTeleportGuard.h>
+#include <common/CoopWorldStabilizer.h>
 #include <common/RfabModpackCompat.h>
 #include <Services/RfabAdapterService.h>
 #include <World.h>
@@ -464,11 +466,21 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
             return;
     }
 
+    const bool isTargetActor = (acEvent.pObject->formType == Actor::Type);
+    const bool isTempTarget = ((acEvent.pObject->formID & 0xFF000000u) == 0xFF000000u);
+    const bool isTeleportLoadDoor =
+        (acEvent.pObject->baseForm &&
+         acEvent.pObject->baseForm->formType == FormType::Door &&
+         acEvent.pObject->extraData.Contains(ExtraDataType::Teleport));
+    if (!CoopWorldStabilizer::ShouldBroadcastObjectActivation(isTargetActor, isTempTarget, isTeleportLoadDoor))
+        return;
+
     ActivateRequest request;
 
-    if (!m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, request.Id))
+    if (!m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, request.Id) ||
+        request.Id.ModId == 0xFFFFFFFFu)
     {
-        spdlog::error("Server form id not found for object form id {:X}", acEvent.pObject->formID);
+        spdlog::debug("Skipping non-static object activation form id {:X}", acEvent.pObject->formID);
         return;
     }
 
@@ -507,6 +519,28 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
     if (IsPersonalBlessingActivator(pObject))
         return;
 
+    const bool isTargetActor = (pObject->formType == Actor::Type);
+    const bool isTeleportLoadDoor =
+        (pObject->baseForm->formType == FormType::Door &&
+         pObject->extraData.Contains(ExtraDataType::Teleport));
+
+    // Never execute `Activate` on a Teleport Load Door from a remote packet!
+    // Previously, when a peer (or an unmaterialized remote NPC) activated a load door, `pActor` fell
+    // back to `PlayerCharacter::Get()` (`0x14`) and called `pObject->Activate(0x14, ...)`, spontaneously
+    // teleporting the local player through that nearby load door into another cell/location!
+    if (isTeleportLoadDoor)
+    {
+        if (Lock* pLock = pObject->GetLock(); pLock && pLock->IsLocked())
+        {
+            pLock->SetLock(false);
+            pObject->LockChange();
+        }
+        return;
+    }
+
+    if (!CoopWorldStabilizer::ShouldExecuteRemoteObjectActivate(isTargetActor, isTeleportLoadDoor))
+        return;
+
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.ActivatorId);
     if (!pActor)
     {
@@ -515,7 +549,7 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
 
         if (!pActor)
         {
-            spdlog::error("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ActivatorId);
+            spdlog::debug("{}: could not find actor server id {:X}", __FUNCTION__, acMessage.ActivatorId);
             return;
         }
     }
@@ -540,8 +574,11 @@ void ObjectService::OnActivateNotify(const NotifyActivate& acMessage) noexcept
         }
     }
 
-    // unsure if these flags are the best, but these are passed with the papyrus Activate fn
-    // might be an idea to have the client send the flags through NotifyActivate
+    // Suppress involuntary `Game.GetPlayer().MoveTo(...)` side effects from remote lever/portal/shrine
+    // `OnActivate` Papyrus scripts while preserving local direct player activations (`0x14` pressed E).
+    CoopTeleportGuard::ScopedRemoteQuestMoveToSuppression remoteActivateTeleportGuard(
+        CoopTeleportGuard::NowSteadyNs(),
+        CoopTeleportGuard::RemoteQuestMoveToGuard::kExtendedLateSessionPapyrusHoldNs);
     pObject->Activate(pActor, 0, nullptr, 1, 0);
 }
 

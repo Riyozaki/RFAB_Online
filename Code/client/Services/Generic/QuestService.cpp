@@ -35,7 +35,9 @@ struct ScopedRemoteQuestUpdateGuard
     }
     ~ScopedRemoteQuestUpdateGuard() noexcept { s_inRemoteQuestUpdate = m_prev; }
     bool m_prev{false};
-    CoopTeleportGuard::ScopedRemoteQuestMoveToSuppression m_moveToSuppression{};
+    CoopTeleportGuard::ScopedRemoteQuestMoveToSuppression m_moveToSuppression{
+        CoopTeleportGuard::NowSteadyNs(),
+        CoopTeleportGuard::RemoteQuestMoveToGuard::kExtendedLateSessionPapyrusHoldNs};
 };
 
 const char* ResolveQuestEditorId(TESQuest* apQuest) noexcept

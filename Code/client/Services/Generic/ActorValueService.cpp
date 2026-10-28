@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include <Services/ActorValueService.h>
+#include <CoopWorldStabilizer.h>
 #include <World.h>
 #include <Forms/ActorValueInfo.h>
 #include <Games/Overrides.h>
@@ -236,8 +237,13 @@ void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcep
         m_lastLocalPredictedHitMs[serverId] = ClientAvSteadyNowMs();
     }
 
+    Actor* pHittee = Cast<Actor>(TESForm::GetById(acEvent.HitteeId));
+    const bool isTargetLethallyDepleted =
+        pHittee && (pHittee->IsDead() || pHittee->GetActorValue(ActorValueInfo::kHealth) <= 0.0f);
+
     const bool hasImmediateImpact = std::isfinite(acEvent.StaggerMagnitude) && acEvent.StaggerMagnitude > 0.05f;
-    if (!hasImmediateImpact && acEvent.DeltaHealth > -1.0f && acEvent.DeltaHealth < 1.0f)
+    if (!hasImmediateImpact && !isTargetLethallyDepleted &&
+        acEvent.DeltaHealth > -1.0f && acEvent.DeltaHealth < 1.0f)
     {
         if (m_smallHealthChanges.find(serverId) == m_smallHealthChanges.end())
             m_smallHealthChanges[serverId] = acEvent.DeltaHealth;
@@ -528,6 +534,20 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
             const auto* pExt = pActor->GetExtension();
             const bool isRemoteNonPlayer = pExt && pExt->IsRemote() && !pExt->IsPlayer();
             const float localHp = pActor->GetActorValue(ActorValueInfo::kHealth);
+            const bool serverSaysDead = m_world.GetCharacterService().IsCachedServerActorDead(acMessage.Id);
+            if (CoopWorldStabilizer::ShouldResurrectPrematureLocalRemoteDeath(
+                    isRemoteNonPlayer,
+                    pActor->IsDead(),
+                    serverSaysDead,
+                    value,
+                    nowMs,
+                    lastPredHitMs))
+            {
+                const float targetHp = std::clamp(value, 1.0f, 100000.0f);
+                pActor->Resurrect(false);
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, targetHp);
+                continue;
+            }
             if (CoopDamagePipeline::ShouldReconcileRemoteActorHealthSnapshot(
                     isRemoteNonPlayer,
                     pActor->IsDead(),

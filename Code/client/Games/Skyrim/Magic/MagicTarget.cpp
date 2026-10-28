@@ -157,11 +157,8 @@ bool MagicTarget::AddTargetData::ShouldSync()
 
     // Constant-effect slow time abilities (e.g. Requiem/RFAB Evasion Quick Reflexes) are added and removed locally by
     // each client's own scripts, so syncing them would leave allies permanently stuck in slow motion.
-    if (pEffectItem->IsSlowEffect())
-    {
-        if (SpellItem* pSpellItem = Cast<SpellItem>(pSpell); pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT)
-            return false;
-    }
+    if (pEffectItem->IsSlowEffect() && pSpell->IsConstantEffectSpell())
+        return false;
 
     // Never sync player-cast `kScript` ActiveMagicEffects unless they are friendly non-SELF party support spells:
     //   1. SELF-delivered `kScript` effects (Spirit Toggle summons, Mirel_REUS tokens, Stances/Auras) corrupt puppets.
@@ -227,8 +224,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
 
     const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
-    const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
-    const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+    const bool isConcentration = arData.pSpell->IsConcentrationEffectSpell();
 
     const auto coopPolicy =
         arData.pCaster ? World::Get().GetRfabAdapterService().EvaluateCoopAction(arData.pCaster, pTargetActor, isFriendlySupport)

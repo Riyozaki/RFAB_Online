@@ -5,6 +5,7 @@
 #include <Havok/bhkCharacterController.h>
 #include <CoopOwnership.h>
 #include <CoopDamagePipeline.h>
+#include <CoopWorldStabilizer.h>
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
 #include <Forms/TESNPC.h>
@@ -502,6 +503,18 @@ void Actor::StopCombat() noexcept
         s_pStopCombat(this);
 }
 
+bool Actor::IsHostileToActor(Actor* apTarget) const noexcept
+{
+    if (!apTarget || IsDeleted() || apTarget->IsDeleted())
+        return false;
+
+    PAPYRUS_FUNCTION(bool, Actor, IsHostileToActor, Actor*);
+    if (!s_pIsHostileToActor)
+        return false;
+
+    return s_pIsHostileToActor(this, apTarget);
+}
+
 void Actor::EvaluatePackage() noexcept
 {
     PAPYRUS_FUNCTION(void, Actor, EvaluatePackage);
@@ -563,6 +576,9 @@ uint8_t Actor::GetPerkRank(uint32_t aPerkFormId) const noexcept
 
 bool TP_MAKE_THISCALL(HookRemoveSpell, Actor, MagicItem* apSpell)
 {
+    if (!apThis || !apSpell || apThis->IsDeleted())
+        return false;
+
     bool result = TiltedPhoques::ThisCall(RealRemoveSpell, apThis, apSpell);
     if (result && apThis && apSpell && World::IsCreated() && World::IsConnectedCached())
     {
@@ -887,7 +903,17 @@ Factions Actor::GetFactions() const noexcept
     auto* pNpc = Cast<TESNPC>(baseForm);
     if (pNpc)
     {
-        auto& factions = pNpc->actorData.factions;
+        const TESNPC* pFactionSourceNpc = pNpc;
+        if (pFactionSourceNpc->actorData.factions.length == 0)
+        {
+            if (const TESNPC* pTemplateNpc = GetLeveledTemplateBase();
+                pTemplateNpc && pTemplateNpc->actorData.factions.length > 0)
+            {
+                pFactionSourceNpc = pTemplateNpc;
+            }
+        }
+
+        const auto& factions = pFactionSourceNpc->actorData.factions;
 
         for (auto i = 0u; i < factions.length; ++i)
         {
@@ -1173,7 +1199,17 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
 
 void Actor::SetFactions(const Factions& acFactions) noexcept
 {
-    RemoveFromAllFactions();
+    const auto* pExt = GetExtension();
+    const bool isRemotePlayer = pExt && pExt->IsRemotePlayer();
+    const bool isLocalPlayer = pExt && pExt->IsLocalPlayer();
+
+    // NEVER call `RemoveFromAllFactions()` on world NPCs (`Bandits`, `Draugr`, `Vampires`, `Wildlife`, bosses):
+    // Skyrim NPCs inherit factions from `TESActorBaseData::kUseFactions` (`npcTemplate`) AND dynamic `BGSRefAlias`
+    // quest aliases, neither of which appears in `pNpc->actorData.factions`. Calling `RemoveFromAllFactions()`
+    // appended `-1` removal overrides into `ExtraFactionChanges`, permanently turning hostile enemies peaceful
+    // toward all players until console `resurrect` cleared `ExtraFactionChanges`!
+    if (!CoopWorldStabilizer::ShouldPreserveExistingNpcFactionsOnSync(isRemotePlayer, isLocalPlayer))
+        RemoveFromAllFactions();
 
     auto& modSystem = World::Get().GetModSystem();
 
@@ -1195,6 +1231,14 @@ void Actor::SetFactions(const Factions& acFactions) noexcept
         {
             SetFactionRank(pFaction, entry.Rank);
         }
+    }
+
+    // Guarantee every Remote Player Clone carries `PlayerFaction` (`0x00000DB1`, rank `0`) so faction-hostile
+    // enemies (`Enemy` to `PlayerFaction`) treat all party players symmetrically rather than ignoring one peer.
+    if (isRemotePlayer)
+    {
+        if (const auto* pPlayerFaction = Cast<TESFaction>(GetById(0x00000DB1u)))
+            SetFactionRank(pPlayerFaction, 0);
     }
 }
 
@@ -1507,6 +1551,33 @@ static TSpawnActorInWorld* RealSpawnActorInWorld = nullptr;
 // TODO: this isn't SpawnActorInWorld, this is TESObjectREFR::UpdateReference3D()
 bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
 {
+    if (!apThis || apThis->IsDeleted())
+        return false;
+
+    // Pre-3D authoritative `TESLevCharacter` reconciliation:
+    // Reconcile placed `0x00..0xFE` actors BEFORE `RealSpawnActorInWorld` builds their `NiNode` and
+    // `BShkbAnimationGraph` so every client constructs the exact same species/variant on pass 1
+    // with zero `NiNode` teardown and zero Havok/TBB worker-thread race.
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        World::IsMainThread() &&
+        apThis->formID != 0x14 &&
+        (apThis->formID & 0xFF000000u) != 0xFF000000u &&
+        !apThis->GetNiNode() &&
+        !apThis->IsDead())
+    {
+        const uint32_t authBaseId =
+            World::Get().GetCharacterService().LookupAuthoritativePlacedBaseFormId(apThis->formID);
+        if (authBaseId != 0 && (!apThis->baseForm || apThis->baseForm->formID != authBaseId))
+        {
+            if (TESNPC* pAuthNpc = Cast<TESNPC>(TESForm::GetById(authBaseId));
+                pAuthNpc && !pAuthNpc->IsTemporary())
+            {
+                apThis->SetBaseForm(pAuthNpc);
+            }
+        }
+    }
+
     const auto* pNpc = Cast<TESNPC>(apThis->baseForm);
     if (pNpc)
     {
@@ -1614,7 +1685,15 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
         const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
         const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
         const float healthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
-        const float actualDelta = healthAfter - healthBefore;
+        float actualDelta = healthAfter - healthBefore;
+        if (isRemoteNonPlayer && (apThis->IsDead() || healthAfter <= 0.0f) && actualDelta < 0.0f)
+        {
+            actualDelta = CoopWorldStabilizer::EnsureLethalOverkillDelta(
+                actualDelta,
+                -estimatedRealDamage,
+                healthBefore,
+                true);
+        }
 
         float capturedStaggerMag = 0.0f;
         float capturedStaggerDir = 0.0f;
@@ -1762,10 +1841,12 @@ void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float
     uint32_t localConcCasterFormId = 0;
     if (apThis && apThis->pSpell && apTarget)
     {
-        const SpellItem* pSpellItem = Cast<SpellItem>(apThis->pSpell);
-        if (pSpellItem &&
-            pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION &&
-            !pSpellItem->IsHealingSpell() &&
+        // Unified caster-authoritative hostile magic for `0x14` & local player summons across ALL `MagicItem`
+        // types (`SpellItem`, `EnchantmentItem` staves/weapons, `ScrollItem`, both `CONCENTRATION` and
+        // `FIRE_AND_FORGET`): evaluates damage on the caster's real `0x14` with 100% of RFAB Magic Penetration,
+        // Destruction perks, CustomSkills, Dual-Cast, and potions instead of a perkless `0xFF` puppet on Host!
+        if (!apThis->pSpell->IsHealingSpell() &&
+            !apThis->pSpell->IsBuffSpell() &&
             apThis->hCaster != 0)
         {
             if (GamePtr<Actor> spCaster = Actor::LookupByHandle(apThis->hCaster))
@@ -1909,7 +1990,15 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                         const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
                         TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
                         const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
-                        const float actualDelta = hpAfter - hpBefore;
+                        float actualDelta = hpAfter - hpBefore;
+                        if ((apThis->IsDead() || hpAfter <= 0.0f) && actualDelta < 0.0f)
+                        {
+                            actualDelta = CoopWorldStabilizer::EnsureLethalOverkillDelta(
+                                actualDelta,
+                                aValue,
+                                hpBefore,
+                                true);
+                        }
 
                         if (!apThis->IsDead() && hpAfter > 0.0f)
                         {
@@ -2181,8 +2270,24 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
         {
             pBestMatch->UnsetChanged(0xFFFFFFFF);
             pBestMatch->SetSkipSaveFlag(true);
-            pBestMatch->Disable();
-            pBestMatch->Delete();
+            if (World::IsMainThread())
+            {
+                pBestMatch->Disable();
+                pBestMatch->Delete();
+            }
+            else
+            {
+                const uint32_t matchFormId = pBestMatch->formID;
+                World::Get().GetRunner().Queue(
+                    [matchFormId]()
+                    {
+                        if (TESObjectREFR* pDeferred = Cast<TESObjectREFR>(TESForm::GetById(matchFormId)))
+                        {
+                            pDeferred->Disable();
+                            pDeferred->Delete();
+                        }
+                    });
+            }
         }
 
         AddOrRemoveItem(arEntry);
@@ -2262,6 +2367,9 @@ static TUnequipObject* RealUnequipObject = nullptr;
 
 void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* apObject, int32_t aUnk2, void* apUnk3)
 {
+    if (!apThis || !apObject || apThis->IsDeleted() || !apThis->currentProcess || !apThis->currentProcess->middleProcess)
+        return;
+
     TiltedPhoques::ThisCall(RealUnequipObject, apThis, apUnk1, apObject, aUnk2, apUnk3);
 }
 

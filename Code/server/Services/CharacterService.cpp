@@ -857,10 +857,10 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
     // across peers in the same cell & radius within 3s so 2 players fight 1x enemy with 3x HP instead of 2x clones,
     // while strictly preserving multi-actor ambushes from the SAME owner (PlaceActorAtMe(Wolf, 3)) and player summons!
     const bool isTemporarySpawn = (refId.ModId == std::numeric_limits<uint32_t>::max());
-    if (isTemporarySpawn && !isPlayer && !message.IsPlayerSummon && message.FormId != GameId{})
+    if (isTemporarySpawn && !isPlayer && !message.IsPlayerSummon && !message.IsMount && message.FormId != GameId{})
     {
-        constexpr uint64_t kAmbushDedupWindowMs = 3000;
-        constexpr float kAmbushDedupRadiusUnits = RfabCompat::MetersToSkyrimUnits(12.0f);
+        constexpr uint64_t kAmbushDedupWindowMs = 12000;
+        constexpr float kAmbushDedupRadiusUnits = RfabCompat::MetersToSkyrimUnits(20.0f);
         const uint64_t nowMs = SteadyClockMs();
 
         const uint32_t existingServerId = m_world.GetRfabProgressionService().GetLedger().FindMatchingRecentAmbush(
@@ -872,7 +872,9 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             message.Position.z,
             nowMs,
             kAmbushDedupWindowMs,
-            kAmbushDedupRadiusUnits);
+            kAmbushDedupRadiusUnits,
+            message.WorldSpaceId,
+            /*aAllowVariantBaseMatch=*/true);
 
         if (existingServerId != 0)
         {
@@ -888,6 +890,10 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
 
                 if (pChar && pAv && pInv && pMove && pCell)
                 {
+                    CharacterSpawnRequest spawnSync{};
+                    Serialize(m_world, existingEntity, &spawnSync);
+                    acMessage.pPlayer->Send(spawnSync);
+
                     AssignCharacterResponse response{};
                     response.Cookie = message.Cookie;
                     response.ServerId = existingServerId;
@@ -1503,9 +1509,9 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     response.Owner = true;
     response.OwnershipEpoch = ownerComponent.Epoch;
 
-    if (isTemporary && !isPlayer && !message.IsPlayerSummon && baseId != GameId{})
+    if (isTemporary && !isPlayer && !message.IsPlayerSummon && !message.IsMount && baseId != GameId{})
     {
-        constexpr uint64_t kAmbushDedupWindowMs = 3000;
+        constexpr uint64_t kAmbushDedupWindowMs = 12000;
         m_world.GetRfabProgressionService().GetLedger().RegisterAmbushSpawn(
             World::ToInteger(cEntity),
             acMessage.pPlayer->GetId(),
@@ -1515,7 +1521,8 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
             message.Position.y,
             message.Position.z,
             spawnNowMs,
-            kAmbushDedupWindowMs);
+            kAmbushDedupWindowMs,
+            message.WorldSpaceId);
     }
 
     pServer->Send(acMessage.pPlayer->GetConnectionId(), response);

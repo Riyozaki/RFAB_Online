@@ -97,6 +97,7 @@ namespace CoopTeleportGuard
     {
     public:
         static constexpr uint64_t kDefaultAsyncPapyrusHoldNs = 750'000'000ULL; // 750 ms post-SetStage async VM window
+        static constexpr uint64_t kExtendedLateSessionPapyrusHoldNs = 4'500'000'000ULL; // 4.5 s late-session VM lag guard
 
         static void EnterScope(uint64_t aNowNs = NowSteadyNs(), uint64_t aAsyncHoldNs = kDefaultAsyncPapyrusHoldNs) noexcept
         {
@@ -110,6 +111,12 @@ namespace CoopTeleportGuard
             const uint32_t prev = s_activeDepth.load(std::memory_order_acquire);
             if (prev > 0)
                 s_activeDepth.fetch_sub(1, std::memory_order_acq_rel);
+        }
+
+        static void ClearAsyncHoldForLocalInteraction() noexcept
+        {
+            if (s_activeDepth.load(std::memory_order_acquire) == 0)
+                s_holdUntilNs.store(0, std::memory_order_release);
         }
 
         [[nodiscard]] static bool ShouldBlockUnauthorizedPlayerMoveTo(uint64_t aNowNs = NowSteadyNs()) noexcept

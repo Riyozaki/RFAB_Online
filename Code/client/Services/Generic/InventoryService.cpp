@@ -410,11 +410,11 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
         const bool holdsRealWeapon =
             Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0)) != nullptr ||
             Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(1)) != nullptr;
-        if (pActor->IsInCombat() || holdsRealWeapon)
+        if ((pActor->IsInCombat() || holdsRealWeapon) && pActor->IsWearingBodyPiece())
         {
             pActorExt->nakedDeadline = cNoDeadline;
             spdlog::debug(
-                __FUNCTION__ ": actorId {:X} naked check skipped (in combat or armed) {}",
+                __FUNCTION__ ": actorId {:X} naked check skipped (dressed and in combat or armed) {}",
                 pActor->formID,
                 pBaseName);
             continue;
@@ -452,14 +452,24 @@ void InventoryService::RunNakedNPCBugChecks() noexcept
             continue;
         }
 
-        // Dress both local and remote humanoid NPCs whose body outfit was stripped during initial sync.
+        // Dress both local and remote humanoid NPCs whose body outfit was stripped during initial sync,
+        // while preserving any scripted main-hand / off-hand weapons already held by RFAB bosses/bandits.
         TESNPC* pBase = Cast<TESNPC>(pActor->baseForm);
         if (!pActor->IsWearingBodyPiece() && pBase && pBase->outfits[0] != nullptr)
         {
             spdlog::debug(__FUNCTION__ ": actorId {:X} naked check fires {}", pActor->formID, pBaseName);
+            TESForm* const pSavedRightWeap = Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(0));
+            TESForm* const pSavedLeftWeap = Cast<TESObjectWEAP>(pActor->GetEquippedWeapon(1));
             ScopedEquipOverride equipGuard;
             ScopedInventoryOverride invGuard;
             pActor->EquipOutfit();
+            if (EquipManager* pEquipMgr = EquipManager::Get())
+            {
+                if (pSavedRightWeap && pActor->GetEquippedWeapon(0) != pSavedRightWeap)
+                    pEquipMgr->Equip(pActor, pSavedRightWeap, nullptr, 1, DefaultEquipSlot::GetRightHandSlot(), false, true, false, false);
+                if (pSavedLeftWeap && pActor->GetEquippedWeapon(1) != pSavedLeftWeap)
+                    pEquipMgr->Equip(pActor, pSavedLeftWeap, nullptr, 1, DefaultEquipSlot::GetLeftHandSlot(), false, true, false, false);
+            }
         }
     }
 }
