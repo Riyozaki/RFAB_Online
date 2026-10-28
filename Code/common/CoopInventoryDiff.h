@@ -173,12 +173,10 @@ namespace CoopInventoryDiff
             {
                 TEntry add = tgtEntry;
                 add.Count = tgtEntry.Count - curEntry.Count; // positive delta
-                // If already worn in the desired hand, don't re-trigger Equip on stack increase alone
-                if (curEntry.ExtraWorn == tgtEntry.ExtraWorn && curEntry.ExtraWornLeft == tgtEntry.ExtraWornLeft)
-                {
-                    add.ExtraWorn = false;
-                    add.ExtraWornLeft = false;
-                }
+                // Never trigger `EquipManager::Equip` inside `ItemsToAdd` for an already-matched stack:
+                // any worn transition on matched stacks is emitted once below in `WornStateChanges`.
+                add.ExtraWorn = false;
+                add.ExtraWornLeft = false;
                 plan.ItemsToAdd.push_back(std::move(add));
             }
 

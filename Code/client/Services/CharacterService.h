@@ -3,8 +3,13 @@
 #include "Structs/ActorData.h"
 #include <Messages/CharacterSpawnRequest.h>
 #include <CoopExperienceLedger.h>
+#include <CoopHairColorSync.h>
 #include <CoopOwnership.h>
+#include <CoopWorldStabilizer.h>
 #include <CoopWorldView.h>
+
+#include <atomic>
+#include <memory>
 
 struct ActorAddedEvent;
 struct ActorRemovedEvent;
@@ -50,8 +55,10 @@ struct NotifyRelinquishControl;
 struct PartyJoinedEvent;
 
 struct Actor;
+struct TESNPC;
 struct TESObjectCELL;
 struct TESWorldSpace;
+struct Tints;
 struct World;
 struct TransportService;
 
@@ -120,6 +127,10 @@ struct CharacterService
     [[nodiscard]] entt::entity FindAnyEntityByFormId(uint32_t aFormId) const noexcept;
     [[nodiscard]] entt::entity FindEntityByServerId(uint32_t aServerId) const noexcept;
 
+    [[nodiscard]] uint32_t LookupAuthoritativePlacedBaseFormId(uint32_t aRefFormId) const noexcept;
+    [[nodiscard]] bool IsRemotePlayerOrSummonServerId(uint32_t aServerId) const noexcept;
+    [[nodiscard]] bool IsCachedServerActorDead(uint32_t aServerId) const noexcept;
+
     void SyncRemoteCachedInventory(uint32_t aServerId, const Inventory::Entry& acItem, bool aDrop) const noexcept;
     void SyncRemoteCachedEquipment(const struct NotifyEquipmentChanges& acMessage) const noexcept;
     void SyncRemoteCachedHealthDelta(uint32_t aServerId, float aDeltaHealth) const noexcept;
@@ -163,8 +174,14 @@ private:
     [[nodiscard]] TESObjectCELL* ResolveCompatibleTargetCell(const CoopWorldView::WorldOrCell& acTargetLoc, TESWorldSpace*& apOutWorldSpace, bool aAllowDistantWorldSpaceAnchor = false) const noexcept;
     void DematerializeRemoteView(entt::entity aEntity, RemoteEntityModel* apModel) const noexcept;
     bool ReconcilePlacedActorBaseFormInPlace(Actor* apActor, const GameId& acExpectedBaseId) const noexcept;
+    bool ReconcileLoadedRemoteSpeciesMismatch(Actor* apActor, const GameId& acExpectedBaseId) const noexcept;
+    void RecordAuthoritativePlacedBase(const GameId& acRefId, const GameId& acBaseId) const noexcept;
+    bool DespawnSuppressedNonLeaderWildTempSpawn(Actor* apActor, entt::entity aEntity) noexcept;
     Actor* MaterializeRemoteView(entt::entity aEntity, RemoteEntityModel& aModel, TESObjectCELL* apTargetCell, TESWorldSpace* apTargetWorldSpace) const noexcept;
     void ReconcileRemoteWorldViews() const noexcept;
+    void ApplyRemotePlayerHairColorForm(uint32_t aPlayerId, TESNPC* apNpc, const Tints& acFaceTints) const noexcept;
+    void PollLocalPlayerAppearanceSync() noexcept;
+    void ScheduleMainThreadFaceGenPass() noexcept;
 
     bool RequestServerAssignment(entt::entity aEntity) const noexcept;
     void CleanupUnassignedActorEntity(entt::entity aEntity) const noexcept;
@@ -203,10 +220,15 @@ private:
     CoopExperienceLedger::ClientRfabXpTracker m_rfabXpTracker{};
     mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
     mutable CoopWorldView::CancelledCookieTracker<64> m_cancelledCookies{};
+    mutable CoopWorldStabilizer::AuthoritativePlacedActorRegistry m_authoritativePlacedBases{};
     mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
     mutable Map<uint32_t, RemoteEntityModel> m_remoteModels{};
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};
     mutable Map<uint32_t, uint32_t> m_playerBaseNpcPool{};
+    mutable Map<uint32_t, uint32_t> m_playerHairColorPool{};
+    mutable CoopHairColorSync::AppearanceResyncTracker m_localAppearanceResync{};
+    mutable std::shared_ptr<std::atomic<bool>> m_spFaceGenMainThreadPending{std::make_shared<std::atomic<bool>>(false)};
+    mutable uint64_t m_nextFaceGenMainThreadScheduleMs{0};
     mutable Set<uint32_t> m_createdNetworkFormIds{};
     mutable CoopWorldView::EntityIndexTable<entt::entity> m_entityIndex{};
     mutable Map<entt::entity, uint8_t> m_pendingLocalTempSpawns{};

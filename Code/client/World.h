@@ -22,6 +22,9 @@
 #include <CoopDamagePipeline.h>
 
 #include <atomic>
+#include <functional>
+#include <mutex>
+#include <vector>
 
 struct World : entt::registry
 {
@@ -29,6 +32,8 @@ struct World : entt::registry
     ~World();
 
     void Update() noexcept;
+    void OnMainThreadUpdate() noexcept;
+    void QueueMainThreadTask(std::function<void()> aTask) noexcept;
 
     RunnerService& GetRunner() noexcept;
     TransportService& GetTransport() noexcept;
@@ -79,6 +84,7 @@ struct World : entt::registry
     [[nodiscard]] static World& Get() noexcept;
 
     // Lock-free main-thread state snapshots safe to query from Papyrus VM & AI worker threads
+    [[nodiscard]] static bool IsMainThread() noexcept;
     [[nodiscard]] static bool IsConnectedCached() noexcept { return s_isConnectedCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsContainerMenuOpenCached() noexcept { return s_isContainerMenuOpenCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsSyncPlayerHomesCached() noexcept { return s_syncPlayerHomesCached.load(std::memory_order_acquire); }
@@ -96,6 +102,7 @@ struct World : entt::registry
     static void SetContainerMenuOpenHint(bool aOpen) noexcept { s_isContainerMenuOpenCached.store(aOpen, std::memory_order_release); }
 
 private:
+    inline static std::atomic<uint32_t> s_mainThreadId{0};
     inline static std::atomic<bool> s_worldCreated{false};
     inline static std::atomic<bool> s_isConnectedCached{false};
     inline static std::atomic<bool> s_isContainerMenuOpenCached{false};
@@ -112,4 +119,6 @@ private:
     ServerSettings m_serverSettings{};
 
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
+    std::mutex m_mainThreadTasksMutex{};
+    std::vector<std::function<void()>> m_mainThreadTasks{};
 };

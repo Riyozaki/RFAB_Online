@@ -10,6 +10,7 @@ void NotifyAddTarget::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const
     Serialization::WriteBool(aWriter, IsDualCasting);
     Serialization::WriteBool(aWriter, ApplyHealPerkBonus);
     Serialization::WriteBool(aWriter, ApplyStaminaPerkBonus);
+    Serialization::WriteBool(aWriter, HasPreAdjustedPerks);
 }
 
 void NotifyAddTarget::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -24,4 +25,5 @@ void NotifyAddTarget::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noe
     IsDualCasting = Serialization::ReadBool(aReader);
     ApplyHealPerkBonus = Serialization::ReadBool(aReader);
     ApplyStaminaPerkBonus = Serialization::ReadBool(aReader);
+    HasPreAdjustedPerks = Serialization::ReadBool(aReader);
 }

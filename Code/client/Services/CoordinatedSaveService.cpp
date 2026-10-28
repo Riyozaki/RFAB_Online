@@ -7,6 +7,7 @@
 #include <Utils.h>
 #include <common/CoopCheckpointStore.h>
 #include <common/CoopOwnership.h>
+#include <common/CoopWorldStabilizer.h>
 #include <common/RfabModpackCompat.h>
 #include <Events/ConnectedEvent.h>
 #include <Events/DisconnectedEvent.h>
@@ -191,6 +192,8 @@ void CoordinatedSaveService::QueuePurgedAuthorizedSave(const std::string& acSlot
     // Allow 2 calm main-thread frames after marking all 0xFFxxxxxx dynamic actors & pooled TESNPCs
     // skip-save + UnsetChanged(0xFFFFFFFF) before executing Save_Impl inside BGSSaveLoadManager::ProcessEvents.
     m_pendingSavePurgeFrames = 2;
+    m_pendingSaveRetriesLeft = 8;
+    m_pendingSaveRetryDelaySec = 0.0;
 
     auto& charSvc = m_world.GetCharacterService();
     charSvc.PreSavePurgeDynamicActors();
@@ -201,16 +204,15 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
     if (!apMgr)
         return;
 
-    if (!m_pendingSaveSlot.empty() && m_pendingSavePurgeFrames == 0 && !IsLoadingMenuOpen())
+    if (!m_pendingSaveSlot.empty() &&
+        m_pendingSavePurgeFrames == 0 &&
+        m_pendingSaveRetryDelaySec <= 0.0 &&
+        !IsLoadingMenuOpen())
     {
-        const std::string slot = std::move(m_pendingSaveSlot);
+        const std::string slot = m_pendingSaveSlot;
         const uint64_t epochId = m_pendingSaveEpochId;
         const bool sendAck = m_pendingSaveSendAck;
         const bool wasPreJoinBackup = m_isExecutingPreJoinBackup;
-        m_pendingSaveSlot.clear();
-        m_pendingSaveEpochId = 0;
-        m_pendingSaveSendAck = false;
-        m_isExecutingPreJoinBackup = false;
 
         std::string failReason;
         bool saveOk = false;
@@ -224,6 +226,21 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
             saveOk = apMgr->ExecuteDirectSaveFromProcessEvents(slot.c_str());
             m_authorizedPendingSaveSlot.clear();
         }
+
+        if (!saveOk && m_pendingSaveRetriesLeft > 0)
+        {
+            --m_pendingSaveRetriesLeft;
+            m_pendingSaveRetryDelaySec = 0.25;
+            m_pendingSavePurgeFrames = 1;
+            return;
+        }
+
+        m_pendingSaveSlot.clear();
+        m_pendingSaveEpochId = 0;
+        m_pendingSaveSendAck = false;
+        m_pendingSaveRetriesLeft = 0;
+        m_pendingSaveRetryDelaySec = 0.0;
+        m_isExecutingPreJoinBackup = false;
 
         // Restore remote actor tracking after Save_Impl has completely finished writing .ess to disk.
         charSvc.SchedulePostSaveRemoteRestore();
@@ -240,6 +257,7 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
             }
             else
             {
+                m_lastWrittenCoopSlot = slot;
                 spdlog::info("[RFAB SaveLoad] Wrote coordinated .ess checkpoint '{}' (Epoch={})", slot, epochId);
             }
         }
@@ -432,24 +450,55 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
     if (ScopedSaveLoadAllowance::IsAllowed())
         return true;
 
+    const auto& menus = GetSaveMenus();
+    auto* pUi = UI::Get();
+    const bool isJournalMenuOpen = pUi && pUi->GetMenuOpen(menus.JournalMenu);
+#ifdef _WIN32
+    const bool isF9QuickloadKey = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+#else
+    const bool isF9QuickloadKey = false;
+#endif
+    const bool isQuickloadAttempt = rawName.empty() || isF9QuickloadKey || !isJournalMenuOpen;
+
+    // Post-disconnect / offline quickload guard:
+    // If the player presses F9 right after disconnecting (or before reconnecting), vanilla Skyrim's
+    // Quickload would otherwise load a hours-old solo `Quicksave0_...` or `RFAB_MP_PreJoin_Backup.ess`
+    // instead of the freshest co-op checkpoint written during this session!
     if (!m_transport.IsConnected() || !m_world.GetServerSettings().CoordinatedSavesEnabled)
+    {
+        if (isQuickloadAttempt)
+        {
+            const std::string& preferredCoopSlot =
+                !m_lastCommittedSlot.empty() ? m_lastCommittedSlot : m_lastWrittenCoopSlot;
+            if (!preferredCoopSlot.empty() &&
+                preferredCoopSlot != m_preJoinBackupSlot &&
+                BGSSaveLoadManager::VerifySavedSlotOnDisk(preferredCoopSlot.c_str()))
+            {
+                m_deferredLoadSlot = preferredCoopSlot;
+                return false;
+            }
+        }
         return true;
+    }
 
     if (IsLocalPlayerAuthorizedLeader())
     {
         if (m_lastInterceptNoticeCooldownSec <= 0.0)
         {
             m_lastInterceptNoticeCooldownSec = 1.5;
-            if (auto* pUi = UI::Get())
-            {
-                const auto& menus = GetSaveMenus();
-                if (pUi->GetMenuOpen(menus.JournalMenu))
-                    pUi->CloseAllMenus();
-            }
+            if (isJournalMenuOpen)
+                pUi->CloseAllMenus();
 
             RequestCoordinatedSaveLoad req{};
             const std::string cleanStem = RfabCompat::Detail::StripSaveSlotExtensionPreserveCase(rawName);
-            if (RfabCompat::Detail::StartsWithIgnoreCase(cleanStem, "RFAB_MP_"))
+            const std::string normPreJoin = RfabCompat::Detail::NormalizeSaveSlotStem(m_preJoinBackupSlot);
+            // CRITICAL: Only load a specific `RFAB_MP_Save_XXXX` slot when the leader explicitly clicked
+            // it inside `ESC -> Load` (`isJournalMenuOpen && !isF9QuickloadKey`), and NEVER treat
+            // `RFAB_MP_PreJoin_Backup` as `LoadSpecificSlot`! Pressing `F9` ALWAYS requests the server's
+            // newest committed party checkpoint (`LoadLatestCheckpoint`).
+            if (!isQuickloadAttempt &&
+                normName != normPreJoin &&
+                RfabCompat::Detail::StartsWithIgnoreCase(cleanStem, "RFAB_MP_"))
             {
                 req.Action = RequestCoordinatedSaveLoad::ActionType::LoadSpecificSlot;
                 req.SlotName = String(cleanStem.c_str());
@@ -496,14 +545,16 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     m_partyCheckpointSettleSec = 0.0;
     m_initialPartyCheckpointRetries = 0;
 
-    if (!reconnectedAfterAuthorizedLoad)
+    if (!reconnectedAfterAuthorizedLoad && !m_preJoinBackupWrittenThisSession)
     {
-        // Fresh session entry: ALWAYS overwrite RFAB_MP_PreJoin_Backup with the player's current state
-        // instead of trusting any stale RFAB_MP_PreJoin_Backup.ess left over from an earlier session!
+        // First session entry in this game run: write a fresh `RFAB_MP_PreJoin_Backup` instead of
+        // trusting any stale `RFAB_MP_PreJoin_Backup.ess` left over from a previous run, while
+        // preserving `m_lastCommittedSlot` / `m_preJoinBackupWrittenThisSession` across temporary
+        // mid-session Wi-Fi/UDP reconnects so `RFAB_MP_PreJoin_Backup` is never clobbered mid-run!
         m_writtenSlotsInSession.clear();
         m_lastCommittedEpoch = 0;
         m_lastCommittedSlot.clear();
-        m_preJoinBackupWrittenThisSession = false;
+        m_lastWrittenCoopSlot.clear();
         m_pendingPreJoinBackup = true;
         m_preJoinBackupDelaySec = 3.5;
     }
@@ -623,6 +674,9 @@ void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
 
     if (m_lastInterceptNoticeCooldownSec > 0.0)
         m_lastInterceptNoticeCooldownSec = std::max(0.0, m_lastInterceptNoticeCooldownSec - acEvent.Delta);
+
+    if (m_pendingSaveRetryDelaySec > 0.0)
+        m_pendingSaveRetryDelaySec = std::max(0.0, m_pendingSaveRetryDelaySec - acEvent.Delta);
 
     if (!m_pendingSaveSlot.empty() && m_pendingSavePurgeFrames > 0 && !IsLoadingMenuOpen())
         --m_pendingSavePurgeFrames;

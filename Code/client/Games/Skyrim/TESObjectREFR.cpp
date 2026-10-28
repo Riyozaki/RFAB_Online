@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <common/CoopInventoryDiff.h>
+#include <common/CoopWorldStabilizer.h>
 #include <Games/References.h>
 #include <Games/Overrides.h>
 #include <Games/Skyrim/Interface/UI.h>
@@ -1033,20 +1034,29 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
 
     if (arEntry.Count > 0)
     {
-        ExtraDataList* pExtraDataList = GetExtraDataFromItem(arEntry);
+        Actor* pActor = Cast<Actor>(this);
+        const bool isWorn = arEntry.ExtraWorn;
+        const bool isWornLeft = arEntry.ExtraWornLeft;
 
-        bool isWorn = false;
-        bool isWornLeft = false;
-        if (pExtraDataList)
+        // CRITICAL ENGINE SAFETY (Fixes Guest Crash G1 & G2 at `SkyrimSE.exe+0x1133D8` `BSExtraDataList` <-
+        // `Actor::RemoveSpell` <- `EquipManager::Equip`):
+        // NEVER inject raw `ExtraWorn` / `ExtraWornLeft` into `ExtraContainerChanges` via `AddObjectToContainer`
+        // BEFORE calling `EquipManager::Equip()` on an Actor! When `ExtraWorn` was pre-inserted manually,
+        // `EquipManager::Equip` saw an un-registered `ExtraWorn` node, treated it as an already-equipped
+        // enchanted item needing replacement, and invoked `Actor::RemoveSpell` on a non-applied enchantment while
+        // mutating the same `BSExtraDataList`. Always let `EquipManager::Equip` attach `ExtraWorn` cleanly!
+        Inventory::Entry containerEntry = arEntry;
+        if (pActor)
         {
-            isWorn = pExtraDataList->Contains(ExtraDataType::Worn);
-            isWornLeft = pExtraDataList->Contains(ExtraDataType::WornLeft);
+            containerEntry.ExtraWorn = false;
+            containerEntry.ExtraWornLeft = false;
         }
+
+        ExtraDataList* pExtraDataList = GetExtraDataFromItem(containerEntry);
 
         spdlog::debug("Adding item {:X}, count {}", pObject->formID, arEntry.Count);
         AddObjectToContainer(pObject, pExtraDataList, arEntry.Count, nullptr);
 
-        Actor* pActor = Cast<Actor>(this);
         if ((isWorn || isWornLeft) && pActor)
         {
             // Never equip Biped slot 36 rings (slotType & (1u << 6)) or RFAB's self-destructing Adventurer's Ring
@@ -1414,6 +1424,19 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
         RecordDirectObjectActivation(apThis->formID);
     }
 
+    if (!ScopedActivateOverride::IsOverriden() && apActivator && apActivator->formID == 0x14)
+    {
+        CoopTeleportGuard::RemoteQuestMoveToGuard::ClearAsyncHoldForLocalInteraction();
+        if (apThis->formType == Actor::Type ||
+            (apThis->baseForm &&
+             (apThis->baseForm->formType == FormType::Furniture ||
+              apThis->baseForm->formType == FormType::Door ||
+              apThis->baseForm->formType == FormType::Activator)))
+        {
+            CoopTeleportGuard::RemoteQuestMoveToGuard::NoteLocalDirectPlayerTravelInteraction();
+        }
+    }
+
     const bool result = TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
 
     if (shouldSyncActivate)
@@ -1431,9 +1454,18 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
             }
         }
 
-        World::Get().GetRunner().Trigger(
-            ActivateEvent(apThis, pActivator, apObjectToGet, aCount, aDefaultProcessing, aUnk1, openState)
-        );
+        const bool isTargetActor = (apThis->formType == Actor::Type);
+        const bool isTempTarget = ((apThis->formID & 0xFF000000u) == 0xFF000000u);
+        const bool isTeleportLoadDoor =
+            (apThis->baseForm->formType == FormType::Door &&
+             apThis->extraData.Contains(ExtraDataType::Teleport));
+
+        if (CoopWorldStabilizer::ShouldBroadcastObjectActivation(isTargetActor, isTempTarget, isTeleportLoadDoor))
+        {
+            World::Get().GetRunner().Trigger(
+                ActivateEvent(apThis, pActivator, apObjectToGet, aCount, aDefaultProcessing, aUnk1, openState)
+            );
+        }
     }
 
     return result;

@@ -69,7 +69,9 @@ EquipManager* EquipManager::Get() noexcept
 
 void* EquipManager::Equip(Actor* apActor, TESForm* apItem, ExtraDataList* apExtraDataList, int aCount, TESForm* apSlot, bool abQueueEquip, bool abForceEquip, bool abPlaySound, bool abApplyNow)
 {
-    if (!apActor || !apItem)
+    if (!apActor)
+        return nullptr;
+    if (!apItem || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TEquipInternal, void*, EquipManager, Actor* apActor, TESForm* apItem, ExtraDataList* apExtraDataList, int aCount, TESForm* apSlot, bool abQueueEquip, bool abForceEquip, bool abPlaySound, bool abApplyNow);
@@ -84,7 +86,7 @@ void* EquipManager::Equip(Actor* apActor, TESForm* apItem, ExtraDataList* apExtr
 
 void* EquipManager::UnEquip(Actor* apActor, TESForm* apItem, ExtraDataList* apExtraDataList, int aCount, TESForm* apSlot, bool abQueueEquip, bool abForceEquip, bool abPlaySound, bool abApplyNow, TESForm* apSlotToReplace)
 {
-    if (!apActor || !apItem)
+    if (!apActor || !apItem || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TUnEquipInternal, void*, EquipManager, Actor* apActor, TESForm* apItem, ExtraDataList* apExtraDataList, int aCount, TESForm* apSlot, bool abQueueEquip, bool abForceEquip, bool abPlaySound, bool abApplyNow, TESForm* apSlotToReplace);
@@ -99,7 +101,7 @@ void* EquipManager::UnEquip(Actor* apActor, TESForm* apItem, ExtraDataList* apEx
 
 void* EquipManager::EquipSpell(Actor* apActor, TESForm* apSpell, uint32_t aSlotId)
 {
-    if (!apActor || !apSpell)
+    if (!apActor || !apSpell || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TEquipSpellInternal, void*, EquipManager, Actor*, TESForm*, uint32_t);
@@ -112,7 +114,7 @@ void* EquipManager::EquipSpell(Actor* apActor, TESForm* apSpell, uint32_t aSlotI
 
 void* EquipManager::UnEquipSpell(Actor* apActor, TESForm* apSpell, uint32_t aSlotId)
 {
-    if (!apActor || !apSpell)
+    if (!apActor || !apSpell || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TUnEquipSpellInternal, void*, EquipManager, Actor*, TESForm*, uint32_t);
@@ -125,7 +127,7 @@ void* EquipManager::UnEquipSpell(Actor* apActor, TESForm* apSpell, uint32_t aSlo
 
 void* EquipManager::EquipShout(Actor* apActor, TESForm* apShout)
 {
-    if (!apActor || !apShout)
+    if (!apActor || !apShout || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TEquipShoutInternal, void*, EquipManager, Actor*, TESForm*);
@@ -138,7 +140,7 @@ void* EquipManager::EquipShout(Actor* apActor, TESForm* apShout)
 
 void* EquipManager::UnEquipShout(Actor* apActor, TESForm* apShout)
 {
-    if (!apActor || !apShout)
+    if (!apActor || !apShout || apActor->IsDeleted() || !apActor->currentProcess)
         return nullptr;
 
     TP_THIS_FUNCTION(TUnEquipShoutInternal, void*, EquipManager, Actor*, TESForm*);
@@ -151,7 +153,7 @@ void* EquipManager::UnEquipShout(Actor* apActor, TESForm* apShout)
 
 void EquipManager::UnequipAll(Actor* apActor)
 {
-    if (!apActor)
+    if (!apActor || apActor->IsDeleted() || !apActor->currentProcess)
         return;
 
     TP_THIS_FUNCTION(TUnEquipAll, void, EquipManager, Actor*);

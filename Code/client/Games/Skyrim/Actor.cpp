@@ -5,6 +5,7 @@
 #include <Havok/bhkCharacterController.h>
 #include <CoopOwnership.h>
 #include <CoopDamagePipeline.h>
+#include <CoopWorldStabilizer.h>
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
 #include <Forms/TESNPC.h>
@@ -502,6 +503,18 @@ void Actor::StopCombat() noexcept
         s_pStopCombat(this);
 }
 
+bool Actor::IsHostileToActor(Actor* apTarget) const noexcept
+{
+    if (!apTarget || IsDeleted() || apTarget->IsDeleted())
+        return false;
+
+    PAPYRUS_FUNCTION(bool, Actor, IsHostileToActor, Actor*);
+    if (!s_pIsHostileToActor)
+        return false;
+
+    return s_pIsHostileToActor(this, apTarget);
+}
+
 void Actor::EvaluatePackage() noexcept
 {
     PAPYRUS_FUNCTION(void, Actor, EvaluatePackage);
@@ -563,6 +576,9 @@ uint8_t Actor::GetPerkRank(uint32_t aPerkFormId) const noexcept
 
 bool TP_MAKE_THISCALL(HookRemoveSpell, Actor, MagicItem* apSpell)
 {
+    if (!apThis || !apSpell || apThis->IsDeleted())
+        return false;
+
     bool result = TiltedPhoques::ThisCall(RealRemoveSpell, apThis, apSpell);
     if (result && apThis && apSpell && World::IsCreated() && World::IsConnectedCached())
     {
@@ -887,7 +903,17 @@ Factions Actor::GetFactions() const noexcept
     auto* pNpc = Cast<TESNPC>(baseForm);
     if (pNpc)
     {
-        auto& factions = pNpc->actorData.factions;
+        const TESNPC* pFactionSourceNpc = pNpc;
+        if (pFactionSourceNpc->actorData.factions.length == 0)
+        {
+            if (const TESNPC* pTemplateNpc = GetLeveledTemplateBase();
+                pTemplateNpc && pTemplateNpc->actorData.factions.length > 0)
+            {
+                pFactionSourceNpc = pTemplateNpc;
+            }
+        }
+
+        const auto& factions = pFactionSourceNpc->actorData.factions;
 
         for (auto i = 0u; i < factions.length; ++i)
         {
@@ -1173,7 +1199,17 @@ void Actor::SetActorValues(const ActorValues& acActorValues) noexcept
 
 void Actor::SetFactions(const Factions& acFactions) noexcept
 {
-    RemoveFromAllFactions();
+    const auto* pExt = GetExtension();
+    const bool isRemotePlayer = pExt && pExt->IsRemotePlayer();
+    const bool isLocalPlayer = pExt && pExt->IsLocalPlayer();
+
+    // NEVER call `RemoveFromAllFactions()` on world NPCs (`Bandits`, `Draugr`, `Vampires`, `Wildlife`, bosses):
+    // Skyrim NPCs inherit factions from `TESActorBaseData::kUseFactions` (`npcTemplate`) AND dynamic `BGSRefAlias`
+    // quest aliases, neither of which appears in `pNpc->actorData.factions`. Calling `RemoveFromAllFactions()`
+    // appended `-1` removal overrides into `ExtraFactionChanges`, permanently turning hostile enemies peaceful
+    // toward all players until console `resurrect` cleared `ExtraFactionChanges`!
+    if (!CoopWorldStabilizer::ShouldPreserveExistingNpcFactionsOnSync(isRemotePlayer, isLocalPlayer))
+        RemoveFromAllFactions();
 
     auto& modSystem = World::Get().GetModSystem();
 
@@ -1195,6 +1231,14 @@ void Actor::SetFactions(const Factions& acFactions) noexcept
         {
             SetFactionRank(pFaction, entry.Rank);
         }
+    }
+
+    // Guarantee every Remote Player Clone carries `PlayerFaction` (`0x00000DB1`, rank `0`) so faction-hostile
+    // enemies (`Enemy` to `PlayerFaction`) treat all party players symmetrically rather than ignoring one peer.
+    if (isRemotePlayer)
+    {
+        if (const auto* pPlayerFaction = Cast<TESFaction>(GetById(0x00000DB1u)))
+            SetFactionRank(pPlayerFaction, 0);
     }
 }
 
@@ -1335,6 +1379,10 @@ namespace
 {
 CoopDamagePipeline::ScriptDamageAuthLedger<64> s_scriptDamageAuthLedger{};
 thread_local bool s_inApplyActorEffect = false;
+thread_local bool s_inLocalCasterConcentrationEffect = false;
+thread_local uint32_t s_localConcentrationCasterFormId = 0;
+thread_local Actor* s_remoteHitReactionTarget = nullptr;
+thread_local float s_capturedHitStaggerMag = 0.0f;
 
 [[nodiscard]] uint64_t NowActorSteadyMs() noexcept
 {
@@ -1346,13 +1394,42 @@ thread_local bool s_inApplyActorEffect = false;
 
 struct ScopedApplyActorEffectGuard
 {
-    ScopedApplyActorEffectGuard() noexcept
+    explicit ScopedApplyActorEffectGuard(bool aLocalConcentration = false, uint32_t aCasterFormId = 0) noexcept
         : m_prev(s_inApplyActorEffect)
+        , m_prevLocalConc(s_inLocalCasterConcentrationEffect)
+        , m_prevCasterId(s_localConcentrationCasterFormId)
     {
         s_inApplyActorEffect = true;
+        s_inLocalCasterConcentrationEffect = aLocalConcentration;
+        s_localConcentrationCasterFormId = aLocalConcentration ? aCasterFormId : 0;
     }
-    ~ScopedApplyActorEffectGuard() noexcept { s_inApplyActorEffect = m_prev; }
+    ~ScopedApplyActorEffectGuard() noexcept
+    {
+        s_inApplyActorEffect = m_prev;
+        s_inLocalCasterConcentrationEffect = m_prevLocalConc;
+        s_localConcentrationCasterFormId = m_prevCasterId;
+    }
     bool m_prev{false};
+    bool m_prevLocalConc{false};
+    uint32_t m_prevCasterId{0};
+};
+
+struct ScopedRemoteHitReactionCapture
+{
+    explicit ScopedRemoteHitReactionCapture(Actor* apTarget) noexcept
+        : m_prevTarget(s_remoteHitReactionTarget)
+        , m_prevMag(s_capturedHitStaggerMag)
+    {
+        s_remoteHitReactionTarget = apTarget;
+        s_capturedHitStaggerMag = 0.0f;
+    }
+    ~ScopedRemoteHitReactionCapture() noexcept
+    {
+        s_remoteHitReactionTarget = m_prevTarget;
+        s_capturedHitStaggerMag = m_prevMag;
+    }
+    Actor* m_prevTarget{nullptr};
+    float m_prevMag{0.0f};
 };
 } // namespace
 
@@ -1364,6 +1441,29 @@ void Actor::ArmLocalPlayerScriptDamageWindow(uint32_t aTargetFormId, uint64_t aD
 bool Actor::HasLocalPlayerScriptDamageWindow(uint32_t aTargetFormId) noexcept
 {
     return s_scriptDamageAuthLedger.IsAuthorized(aTargetFormId, NowActorSteadyMs());
+}
+
+bool Actor::TryAcceptRemoteHitReactionAction(Actor* apActor, const char* acActionKeyword) noexcept
+{
+    if (!apActor || apActor != s_remoteHitReactionTarget || !acActionKeyword || acActionKeyword[0] == '\0')
+        return false;
+
+    if (std::strncmp(acActionKeyword, "ActionStagger", 13) == 0)
+    {
+        s_capturedHitStaggerMag = std::max(s_capturedHitStaggerMag, 0.35f);
+        return true;
+    }
+    if (std::strncmp(acActionKeyword, "ActionRecoilLarge", 17) == 0)
+    {
+        s_capturedHitStaggerMag = std::max(s_capturedHitStaggerMag, 0.25f);
+        return true;
+    }
+    if (std::strncmp(acActionKeyword, "ActionRecoil", 12) == 0)
+    {
+        s_capturedHitStaggerMag = std::max(s_capturedHitStaggerMag, 0.15f);
+        return true;
+    }
+    return false;
 }
 
 bool Actor::IsVampireLord() const noexcept
@@ -1451,6 +1551,33 @@ static TSpawnActorInWorld* RealSpawnActorInWorld = nullptr;
 // TODO: this isn't SpawnActorInWorld, this is TESObjectREFR::UpdateReference3D()
 bool TP_MAKE_THISCALL(HookSpawnActorInWorld, Actor)
 {
+    if (!apThis || apThis->IsDeleted())
+        return false;
+
+    // Pre-3D authoritative `TESLevCharacter` reconciliation:
+    // Reconcile placed `0x00..0xFE` actors BEFORE `RealSpawnActorInWorld` builds their `NiNode` and
+    // `BShkbAnimationGraph` so every client constructs the exact same species/variant on pass 1
+    // with zero `NiNode` teardown and zero Havok/TBB worker-thread race.
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        World::IsMainThread() &&
+        apThis->formID != 0x14 &&
+        (apThis->formID & 0xFF000000u) != 0xFF000000u &&
+        !apThis->GetNiNode() &&
+        !apThis->IsDead())
+    {
+        const uint32_t authBaseId =
+            World::Get().GetCharacterService().LookupAuthoritativePlacedBaseFormId(apThis->formID);
+        if (authBaseId != 0 && (!apThis->baseForm || apThis->baseForm->formID != authBaseId))
+        {
+            if (TESNPC* pAuthNpc = Cast<TESNPC>(TESForm::GetById(authBaseId));
+                pAuthNpc && !pAuthNpc->IsTemporary())
+            {
+                apThis->SetBaseForm(pAuthNpc);
+            }
+        }
+    }
+
     const auto* pNpc = Cast<TESNPC>(apThis->baseForm);
     if (pNpc)
     {
@@ -1545,10 +1672,51 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
             apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, -1.0f);
         }
 
+        const bool captureRemoteImpact = isRemoteNonPlayer && !apThis->IsDead() && apHitter != nullptr;
+        ScopedRemoteHitReactionCapture hitCapture(captureRemoteImpact ? apThis : nullptr);
+        if (captureRemoteImpact &&
+            (apThis->actorState.flags2 & (1u << 13)) == 0 &&
+            apThis->animationGraphHolder.IsReady())
+        {
+            BSFixedString staggerMagVar("staggerMagnitude");
+            apThis->animationGraphHolder.SetVariableFloat(&staggerMagVar, 0.0f);
+        }
+
         const float healthBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
         const bool result = TiltedPhoques::ThisCall(RealDamageActor, apThis, aDamage, apHitter, aKillMove);
         const float healthAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
-        const float actualDelta = healthAfter - healthBefore;
+        float actualDelta = healthAfter - healthBefore;
+        if (isRemoteNonPlayer && (apThis->IsDead() || healthAfter <= 0.0f) && actualDelta < 0.0f)
+        {
+            actualDelta = CoopWorldStabilizer::EnsureLethalOverkillDelta(
+                actualDelta,
+                -estimatedRealDamage,
+                healthBefore,
+                true);
+        }
+
+        float capturedStaggerMag = 0.0f;
+        float capturedStaggerDir = 0.0f;
+        if (captureRemoteImpact && !apThis->IsDead() && healthAfter > 0.0f)
+        {
+            float graphStaggerMag = 0.0f;
+            if (apThis->animationGraphHolder.IsReady())
+            {
+                BSFixedString staggerMagVar("staggerMagnitude");
+                (void)apThis->animationGraphHolder.GetVariableFloat(&staggerMagVar, &graphStaggerMag);
+            }
+            const float rawStagger = std::max(s_capturedHitStaggerMag, graphStaggerMag);
+            if (std::isfinite(rawStagger) && rawStagger > 0.05f)
+            {
+                capturedStaggerMag = std::clamp(rawStagger, 0.15f, 1.0f);
+                capturedStaggerDir = CoopDamagePipeline::ComputeNormalizedStaggerDirection(
+                    apHitter->position.x,
+                    apHitter->position.y,
+                    apThis->position.x,
+                    apThis->position.y,
+                    apThis->rotation.z);
+            }
+        }
 
         // If the remote NPC survived this hit, immediately restore kInfamy >= 0 so if ownership later transfers
         // to this client (TakeOwnership), RFAB_XP_Alias::OnActorKilled will still award full kill XP!
@@ -1558,10 +1726,17 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
             apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, std::max(0.0f, prevInfamy));
         }
 
-        // Broadcast the exact delta produced by SkyrimSE.exe + RFAB.dll so invulnerable/ethereal
-        // boss phases, Requiem armor/expertise/silver modifiers, damage caps, and ScriptDamage stay 100% synced.
-        if (actualDelta != 0.f)
-            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+        // Broadcast the exact delta + native Requiem/RFAB poise/bash stagger produced by SkyrimSE.exe + RFAB.dll
+        // so invulnerable/ethereal boss phases, armor/silver modifiers, interrupts, and ScriptDamage stay 100% synced.
+        if (actualDelta != 0.f || capturedStaggerMag > 0.05f)
+        {
+            World::Get().GetRunner().Trigger(HealthChangeEvent(
+                apThis->formID,
+                actualDelta,
+                apHitter ? apHitter->formID : 0,
+                capturedStaggerMag,
+                capturedStaggerDir));
+        }
 
         return result;
     };
@@ -1659,30 +1834,54 @@ static TApplyActorEffect* RealApplyActorEffect = nullptr;
 
 void TP_MAKE_THISCALL(HookApplyActorEffect, ActiveEffect, Actor* apTarget, float aEffectValue, unsigned int unk1)
 {
-    ScopedApplyActorEffectGuard effectScope;
     if (!World::IsCreated() || !World::IsConnectedCached())
         return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
 
-    const auto* pValueModEffect = Cast<ValueModifierEffect>(apThis);
-
-    if (pValueModEffect)
+    bool isLocalCasterHostileConcentration = false;
+    uint32_t localConcCasterFormId = 0;
+    if (apThis && apThis->pSpell && apTarget)
     {
-        if (pValueModEffect->actorValueIndex == ActorValueInfo::kHealth && aEffectValue > 0.0f)
+        // Unified caster-authoritative hostile magic for `0x14` & local player summons across ALL `MagicItem`
+        // types (`SpellItem`, `EnchantmentItem` staves/weapons, `ScrollItem`, both `CONCENTRATION` and
+        // `FIRE_AND_FORGET`): evaluates damage on the caster's real `0x14` with 100% of RFAB Magic Penetration,
+        // Destruction perks, CustomSkills, Dual-Cast, and potions instead of a perkless `0xFF` puppet on Host!
+        if (!apThis->pSpell->IsHealingSpell() &&
+            !apThis->pSpell->IsBuffSpell() &&
+            apThis->hCaster != 0)
         {
-            if (apTarget && apTarget->GetExtension())
+            if (GamePtr<Actor> spCaster = Actor::LookupByHandle(apThis->hCaster))
             {
-                const auto pExTarget = apTarget->GetExtension();
-                if (pExTarget->IsLocal())
+                const auto* pCasterExt = spCaster->GetExtension();
+                const Actor* pCasterCmd = spCaster->GetCommandingActor();
+                const bool isLocalCaster =
+                    (pCasterExt && pCasterExt->IsLocalPlayer()) ||
+                    (pCasterCmd && pCasterCmd->formID == 0x14) ||
+                    (pCasterExt && !pCasterExt->IsRemote() && spCaster->IsPlayerSummon());
+                if (isLocalCaster)
                 {
-                    if (pExTarget->IsLocalPlayer() &&
-                        World::Get().GetDownedStateService().ShouldBlockPlayerHealthMutation(aEffectValue))
-                    {
-                        return;
-                    }
-
-                    World::Get().GetRunner().Trigger(HealthChangeEvent(apTarget->formID, aEffectValue));
-                    return TiltedPhoques::ThisCall(RealApplyActorEffect, apThis, apTarget, aEffectValue, unk1);
+                    isLocalCasterHostileConcentration = true;
+                    localConcCasterFormId = spCaster->formID;
                 }
+            }
+        }
+    }
+
+    ScopedApplyActorEffectGuard effectScope(isLocalCasterHostileConcentration, localConcCasterFormId);
+
+    const auto* pValueModEffect = Cast<ValueModifierEffect>(apThis);
+    if (pValueModEffect && pValueModEffect->actorValueIndex == ActorValueInfo::kHealth && aEffectValue > 0.0f)
+    {
+        if (apTarget && apTarget->GetExtension())
+        {
+            const auto pExTarget = apTarget->GetExtension();
+            if (pExTarget->IsRemote())
+            {
+                // Passive regeneration and ActiveEffect heals on remote actors are authoritative on their owner.
+                return;
+            }
+            if (pExTarget->IsLocalPlayer() &&
+                World::Get().GetDownedStateService().ShouldBlockPlayerHealthMutation(aEffectValue))
+            {
                 return;
             }
         }
@@ -1726,20 +1925,36 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
     if (aMode == ActorValueOwner::ForceMode::DAMAGE && aId == ActorValueInfo::kHealth && apThis)
     {
         const float rawDeltaValue = aValue;
-        if (!ScopedActorValueOverride::IsOverriden() && aValue < 0.0f)
+        if (!ScopedActorValueOverride::IsOverriden() && aValue != 0.0f)
         {
             if (const auto* pScaleExt = apThis->GetExtension())
             {
-                const bool shouldScaleEnemyDamage = CoopDamagePipeline::ShouldScaleIncomingEnemyDamage(
+                const bool shouldScaleEnemyTarget = CoopDamagePipeline::ShouldScaleIncomingEnemyDamage(
                     pScaleExt->IsPlayer(),
                     apThis->IsPlayerTeammate(),
                     apThis->IsPlayerSummon(),
                     apThis->IsCommandedActor(),
                     apThis->IsMount());
-                aValue = CoopDamagePipeline::ScaleIncomingEnemyDamageDelta(
-                    aValue,
-                    World::GetEnemyHealthMultiplierCached(),
-                    shouldScaleEnemyDamage);
+                const float enemyMult = World::GetEnemyHealthMultiplierCached();
+                if (aValue < 0.0f)
+                {
+                    aValue = CoopDamagePipeline::ScaleIncomingEnemyDamageDelta(
+                        aValue,
+                        enemyMult,
+                        shouldScaleEnemyTarget);
+                }
+                else
+                {
+                    const float nativeMaxHp = std::max(
+                        apThis->GetActorPermanentValue(ActorValueInfo::kHealth),
+                        apThis->GetActorValue(ActorValueInfo::kHealth));
+                    aValue = CoopDamagePipeline::ScaleIncomingEnemyHealDelta(
+                        aValue,
+                        nativeMaxHp,
+                        enemyMult,
+                        shouldScaleEnemyTarget,
+                        s_inApplyActorEffect);
+                }
             }
         }
 
@@ -1749,15 +1964,22 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
             {
                 if (!ScopedActorValueOverride::IsOverriden() && !s_inAuthoritativeDamageHook)
                 {
-                    // Caster-authoritative RFAB `kScript` / `RFAB_PapyrusFunctions.ScriptDamage` / Perk `OnHit` path:
-                    // Only executes when the Local Player (or a Local Player Summon) recently armed an active hit/kScript
-                    // authorization window on this remote non-player NPC, and NEVER inside `HookApplyActorEffect`
-                    // (which is already synced via `AddTargetEvent`), preventing both 2x spell damage and quest-script dupes!
-                    if (!s_inApplyActorEffect &&
-                        !pExt->IsPlayer() &&
-                        !apThis->IsGhost() &&
+                    // Caster-authoritative remote NPC damage paths:
+                    // 1) RFAB `kScript` / `RFAB_PapyrusFunctions.ScriptDamage` / Perk `OnHit` (`!s_inApplyActorEffect`)
+                    //    when the Local Player (or Summon) armed an active hit/kScript authorization window.
+                    // 2) Hostile `CONCENTRATION` spells (`Flames`, `Sparks`, `Frostbite`, `Lightning Ray`) actively
+                    //    channeled by `0x14` (or a local player summon), whose puppet stream on Host is visual-only.
+                    const bool allowScriptDamage =
+                        !s_inApplyActorEffect &&
                         rawDeltaValue < -0.05f &&
-                        Actor::HasLocalPlayerScriptDamageWindow(apThis->formID))
+                        Actor::HasLocalPlayerScriptDamageWindow(apThis->formID);
+                    const bool allowConcentrationBeam =
+                        s_inLocalCasterConcentrationEffect &&
+                        rawDeltaValue < -0.0005f;
+
+                    if (!pExt->IsPlayer() &&
+                        !apThis->IsGhost() &&
+                        (allowScriptDamage || allowConcentrationBeam))
                     {
                         const float prevInfamy = apThis->GetActorValue(ActorValueInfo::kInfamy);
                         {
@@ -1768,7 +1990,15 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                         const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
                         TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
                         const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
-                        const float actualDelta = hpAfter - hpBefore;
+                        float actualDelta = hpAfter - hpBefore;
+                        if ((apThis->IsDead() || hpAfter <= 0.0f) && actualDelta < 0.0f)
+                        {
+                            actualDelta = CoopWorldStabilizer::EnsureLethalOverkillDelta(
+                                actualDelta,
+                                aValue,
+                                hpBefore,
+                                true);
+                        }
 
                         if (!apThis->IsDead() && hpAfter > 0.0f)
                         {
@@ -1776,8 +2006,12 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                             apThis->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kInfamy, std::max(0.0f, prevInfamy));
                         }
 
-                        if (actualDelta < -0.005f)
-                            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
+                        const float minEmitMag = allowConcentrationBeam ? -0.0001f : -0.005f;
+                        if (actualDelta < minEmitMag)
+                        {
+                            const uint32_t attackerFormId = allowConcentrationBeam ? s_localConcentrationCasterFormId : 0x14u;
+                            World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta, attackerFormId));
+                        }
                     }
                     return;
                 }
@@ -1825,29 +2059,32 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                 }
             }
 
-            if (!s_inAuthoritativeDamageHook && !ScopedActorValueOverride::IsOverriden() && aValue != 0.0f)
-                World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, aValue));
-
+            const float hpBefore = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
             TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
+            const float hpAfter = pLocalPlayer->GetActorValue(ActorValueInfo::kHealth);
+            const float actualDelta = hpAfter - hpBefore;
+
+            if (!s_inAuthoritativeDamageHook && !ScopedActorValueOverride::IsOverriden() && std::abs(actualDelta) > 0.0005f)
+                World::Get().GetRunner().Trigger(HealthChangeEvent(pLocalPlayer->formID, actualDelta));
             return;
         }
 
-        // RFAB.dll applies spell/poison/bleed/ScriptDamage AND scripted boss phase/potion heals directly via
-        // RestoreActorValue(DAMAGE, kHealth, delta), bypassing Actor::DamageActor and ValueModifierEffect.
-        // Broadcast actual negative HP deltas AND significant in-combat positive scripted heals on locally-owned NPCs!
+        // Single authoritative owner HP delta measurement for locally-owned non-player NPCs:
+        // Covers BOTH `ValueModifierEffect` (`s_inApplyActorEffect`: Destruction spells, poisons, weapon enchants,
+        // `1/M`-scaled troll/spriggan/dragon-priest regen, enemy healing spells/potions) AND direct `RestoreActorValue`
+        // (`RFAB.dll` ScriptDamage, bleeds, and scripted boss phase heals), coalescing small ticks cleanly via 250ms batching.
         if (auto* pExt = apThis->GetExtension();
             pExt &&
             pExt->IsLocal() &&
             !s_inAuthoritativeDamageHook &&
-            !s_inApplyActorEffect &&
             !ScopedActorValueOverride::IsOverriden() &&
-            (rawDeltaValue < -0.05f || (rawDeltaValue > 1.0f && apThis->IsInCombat())))
+            aValue != 0.0f)
         {
             const float hpBefore = apThis->GetActorValue(ActorValueInfo::kHealth);
             TiltedPhoques::ThisCall(RealRestoreActorValue, apThis, aMode, aId, aValue);
             const float hpAfter = apThis->GetActorValue(ActorValueInfo::kHealth);
             const float actualDelta = hpAfter - hpBefore;
-            if (actualDelta < -0.005f || actualDelta > 1.0f)
+            if (std::abs(actualDelta) > 0.0005f)
                 World::Get().GetRunner().Trigger(HealthChangeEvent(apThis->formID, actualDelta));
             return;
         }
@@ -2033,8 +2270,24 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
         {
             pBestMatch->UnsetChanged(0xFFFFFFFF);
             pBestMatch->SetSkipSaveFlag(true);
-            pBestMatch->Disable();
-            pBestMatch->Delete();
+            if (World::IsMainThread())
+            {
+                pBestMatch->Disable();
+                pBestMatch->Delete();
+            }
+            else
+            {
+                const uint32_t matchFormId = pBestMatch->formID;
+                World::Get().QueueMainThreadTask(
+                    [matchFormId]()
+                    {
+                        if (TESObjectREFR* pDeferred = Cast<TESObjectREFR>(TESForm::GetById(matchFormId)))
+                        {
+                            pDeferred->Disable();
+                            pDeferred->Delete();
+                        }
+                    });
+            }
         }
 
         AddOrRemoveItem(arEntry);
@@ -2114,6 +2367,9 @@ static TUnequipObject* RealUnequipObject = nullptr;
 
 void TP_MAKE_THISCALL(HookUnequipObject, Actor, void* apUnk1, TESBoundObject* apObject, int32_t aUnk2, void* apUnk3)
 {
+    if (!apThis || !apObject || apThis->IsDeleted() || !apThis->currentProcess || !apThis->currentProcess->middleProcess)
+        return;
+
     TiltedPhoques::ThisCall(RealUnequipObject, apThis, apUnk1, apObject, aUnk2, apUnk3);
 }
 

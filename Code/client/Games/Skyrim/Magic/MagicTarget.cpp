@@ -86,6 +86,27 @@ static TGetPerkRank* RealGetPerkRank = nullptr;
 static thread_local bool s_autoSucceedEffectCheck = false;
 static thread_local bool s_applyHealPerkBonus = false;
 static thread_local bool s_applyStaminaPerkBonus = false;
+static thread_local bool s_remotePreAdjustedPerks = false;
+static thread_local bool s_captureLocalCasterPerkRatio = false;
+static thread_local float s_capturedPerkMagnitudeRatio = 1.0f;
+
+struct ScopedLocalCasterPerkCapture
+{
+    ScopedLocalCasterPerkCapture() noexcept
+        : m_prevCapture(s_captureLocalCasterPerkRatio)
+        , m_prevRatio(s_capturedPerkMagnitudeRatio)
+    {
+        s_captureLocalCasterPerkRatio = true;
+        s_capturedPerkMagnitudeRatio = 1.0f;
+    }
+    ~ScopedLocalCasterPerkCapture() noexcept
+    {
+        s_captureLocalCasterPerkRatio = m_prevCapture;
+        s_capturedPerkMagnitudeRatio = m_prevRatio;
+    }
+    bool m_prevCapture{false};
+    float m_prevRatio{1.0f};
+};
 
 void MagicTarget::DispelAllSpells(bool aNow) noexcept
 {
@@ -94,29 +115,37 @@ void MagicTarget::DispelAllSpells(bool aNow) noexcept
     TiltedPhoques::ThisCall(dispelAllSpells, this, aNow);
 }
 
-bool MagicTarget::AddTarget(AddTargetData& arData, bool aApplyHealPerkBonus, bool aApplyStaminaPerkBonus) noexcept
+bool MagicTarget::AddTarget(
+    AddTargetData& arData,
+    bool aApplyHealPerkBonus,
+    bool aApplyStaminaPerkBonus,
+    bool aHasPreAdjustedPerks) noexcept
 {
     struct ScopedRemoteAddTargetState
     {
-        ScopedRemoteAddTargetState(bool aHealPerk, bool aStaminaPerk) noexcept
+        ScopedRemoteAddTargetState(bool aHealPerk, bool aStaminaPerk, bool aPreAdjustedPerks) noexcept
             : m_prevAutoSucceed(s_autoSucceedEffectCheck)
             , m_prevHealPerk(s_applyHealPerkBonus)
             , m_prevStaminaPerk(s_applyStaminaPerkBonus)
+            , m_prevPreAdjusted(s_remotePreAdjustedPerks)
         {
             s_autoSucceedEffectCheck = true;
-            s_applyHealPerkBonus = aHealPerk;
+            s_applyHealPerkBonus = aHealPerk && !aPreAdjustedPerks;
             s_applyStaminaPerkBonus = aStaminaPerk;
+            s_remotePreAdjustedPerks = aPreAdjustedPerks;
         }
         ~ScopedRemoteAddTargetState() noexcept
         {
             s_autoSucceedEffectCheck = m_prevAutoSucceed;
             s_applyHealPerkBonus = m_prevHealPerk;
             s_applyStaminaPerkBonus = m_prevStaminaPerk;
+            s_remotePreAdjustedPerks = m_prevPreAdjusted;
         }
         bool m_prevAutoSucceed;
         bool m_prevHealPerk;
         bool m_prevStaminaPerk;
-    } stateGuard(aApplyHealPerkBonus, aApplyStaminaPerkBonus);
+        bool m_prevPreAdjusted;
+    } stateGuard(aApplyHealPerkBonus, aApplyStaminaPerkBonus, aHasPreAdjustedPerks);
 
     return TiltedPhoques::ThisCall(RealAddTarget, this, arData);
 }
@@ -128,11 +157,8 @@ bool MagicTarget::AddTargetData::ShouldSync()
 
     // Constant-effect slow time abilities (e.g. Requiem/RFAB Evasion Quick Reflexes) are added and removed locally by
     // each client's own scripts, so syncing them would leave allies permanently stuck in slow motion.
-    if (pEffectItem->IsSlowEffect())
-    {
-        if (SpellItem* pSpellItem = Cast<SpellItem>(pSpell); pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT)
-            return false;
-    }
+    if (pEffectItem->IsSlowEffect() && pSpell->IsConstantEffectSpell())
+        return false;
 
     // Never sync player-cast `kScript` ActiveMagicEffects unless they are friendly non-SELF party support spells:
     //   1. SELF-delivered `kScript` effects (Spirit Toggle summons, Mirel_REUS tokens, Stances/Auras) corrupt puppets.
@@ -198,8 +224,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
 
     const bool isFriendlySupport = arData.pSpell->IsHealingSpell() || arData.pSpell->IsBuffSpell();
-    const SpellItem* pSpellItem = Cast<SpellItem>(arData.pSpell);
-    const bool isConcentration = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION;
+    const bool isConcentration = arData.pSpell->IsConcentrationEffectSpell();
 
     const auto coopPolicy =
         arData.pCaster ? World::Get().GetRfabAdapterService().EvaluateCoopAction(arData.pCaster, pTargetActor, isFriendlySupport)
@@ -217,8 +242,35 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
     if (arData.pEffectItem->IsVampireLordEffect())
         pTargetActorEx->GraphDescriptorHash = AnimationGraphDescriptor_VampireLordBehavior::m_key;
 
-    if (ScopedSpellCastOverride::IsOverriden() || s_autoSucceedEffectCheck)
+    if (s_autoSucceedEffectCheck)
         return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+
+    if (ScopedSpellCastOverride::IsOverriden())
+    {
+        // Guard Frame-0 of `OnNotifySpellCast -> CastSpellImmediate` for RemotePlayer (or remote player summon) casts:
+        // hostile player magic on NPCs is 100% caster-authoritative (via `NotifyAddTarget` or `HealthChangeBroadcast`),
+        // so Frame-0 `CastSpellImmediate` must never attach a duplicate damaging `ActiveEffect` onto local/remote NPCs!
+        if (arData.pCaster && !isFriendlySupport && pTargetActor != arData.pCaster)
+        {
+            const ActorExtension* pCasterExt = arData.pCaster->GetExtension();
+            const Actor* pCasterCmd = arData.pCaster->GetCommandingActor();
+            const auto* pCasterCmdExt = pCasterCmd ? pCasterCmd->GetExtension() : nullptr;
+            const bool isRemotePlayerOrSummon =
+                (pCasterExt && pCasterExt->IsRemotePlayer()) ||
+                (pCasterCmdExt && pCasterCmdExt->IsRemotePlayer()) ||
+                (pCasterExt && pCasterExt->IsRemote() && arData.pCaster->IsPlayerSummon());
+            if (isRemotePlayerOrSummon)
+            {
+                const bool allowLocalPlayerPvpBeam =
+                    pTargetActorEx->IsLocalPlayer() &&
+                    isConcentration &&
+                    (World::Get().GetServerSettings().PvpEnabled || coopPolicy.AllowPartySparring);
+                if (!allowLocalPlayerPvpBeam)
+                    return false;
+            }
+        }
+        return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+    }
 
     AddTargetEvent addTargetEvent{};
     addTargetEvent.TargetID = pTargetActor->formID;
@@ -266,12 +318,18 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
 
         if (arData.pSpell && arData.pSpell->IsHealingSpell())
         {
-            addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
+            addTargetEvent.ApplyHealPerkBonus = false;
             addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
         }
 
         ScopedCoopPartyTeammateFlags teammateGuard(isFriendlySupport);
+        ScopedLocalCasterPerkCapture perkCapture;
         bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+        if (result)
+        {
+            addTargetEvent.Magnitude *= s_capturedPerkMagnitudeRatio;
+            addTargetEvent.HasPreAdjustedPerks = true;
+        }
         // Concentration spells (e.g. Healing Hands / Sparks) are channeled continuously via SpellCastRequest/InterruptCastRequest;
         // Fire-and-Forget heals/buffs/spells sync deterministically via AddTargetEvent.
         if (result && !isConcentration && arData.ShouldSync())
@@ -338,7 +396,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         {
             if (arData.pSpell && arData.pSpell->IsHealingSpell())
             {
-                addTargetEvent.ApplyHealPerkBonus = arData.pCaster->HasPerk(0x581f8);
+                addTargetEvent.ApplyHealPerkBonus = false;
                 addTargetEvent.ApplyStaminaPerkBonus = arData.pCaster->HasPerk(0x581f9);
             }
 
@@ -352,7 +410,13 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 Actor::ArmLocalPlayerScriptDamageWindow(pTargetActor->formID, durationMs);
             }
 
+            ScopedLocalCasterPerkCapture perkCapture;
             bool result = TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
+            if (result)
+            {
+                addTargetEvent.Magnitude *= s_capturedPerkMagnitudeRatio;
+                addTargetEvent.HasPreAdjustedPerks = true;
+            }
             if (result && (!isFriendlySupport || !isConcentration) && arData.ShouldSync())
             {
                 const bool allowPacket = !isConcentration ||
@@ -418,7 +482,26 @@ bool TP_MAKE_THISCALL(HookFindTargets, MagicCaster, float afEffectivenessMult, i
 
 void TP_MAKE_THISCALL(HookAdjustForPerks, ActiveEffect, Actor* apCaster, MagicTarget* apTarget)
 {
+    if (s_remotePreAdjustedPerks)
+    {
+        // Outgoing caster perks (and static TESNPC target perks for NPCs) were already evaluated on the casting client.
+        // Only run AdjustForPerks when a RemotePlayer clone (fresh 0xFF00xxxx TESNPC with 0 outgoing perks) targets
+        // LocalPlayer (0x14), so 0x14's dynamic incoming perks (RFAB Vampire/Lich heal rules, Atronach, Elemental Protection)
+        // evaluate 1x with zero duplicate caster perk multiplication!
+        Actor* pTargetActor = apTarget ? apTarget->GetTargetAsActor() : nullptr;
+        const ActorExtension* pCasterExt = apCaster ? apCaster->GetExtension() : nullptr;
+        if (!pTargetActor || pTargetActor != PlayerCharacter::Get() || !pCasterExt || !pCasterExt->IsRemotePlayer())
+            return;
+    }
+
+    const float magBefore = apThis ? apThis->fMagnitude : 0.0f;
     TiltedPhoques::ThisCall(RealAdjustForPerks, apThis, apCaster, apTarget);
+
+    if (s_captureLocalCasterPerkRatio && apThis)
+    {
+        s_capturedPerkMagnitudeRatio =
+            CoopDamagePipeline::ComputeCasterOutgoingPerkMultiplier(magBefore, apThis->fMagnitude);
+    }
 
     if (s_applyHealPerkBonus && apThis)
     {

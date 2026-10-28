@@ -4,8 +4,13 @@
 extern std::unique_ptr<TiltedOnlineApp> g_appInstance;
 
 #include <GameVM.h>
+#include <World.h>
 
-struct Main;
+struct Main
+{
+    uint8_t pad00[0x10];
+    bool quitGame; // 0x10 (RE::Main::quitGame)
+};
 struct VMContext
 {
     char pad[0x680];
@@ -30,7 +35,8 @@ int TP_MAKE_THISCALL(HookVMUpdate, VMContext, float a2)
 
 short TP_MAKE_THISCALL(HookMainLoop, Main)
 {
-    TP_EMPTY_HOOK_PLACEHOLDER
+    if (apThis && !apThis->quitGame && World::IsCreated())
+        World::Get().OnMainThreadUpdate();
 
     return TiltedPhoques::ThisCall(MainLoop, apThis);
 }

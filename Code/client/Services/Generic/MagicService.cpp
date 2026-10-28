@@ -35,6 +35,8 @@
 
 #include <Games/Overrides.h>
 
+#include <Forms/ActorValueInfo.h>
+#include <Forms/EffectSetting.h>
 #include <Forms/SpellItem.h>
 #include <PlayerCharacter.h>
 
@@ -75,8 +77,12 @@ bool TryRefreshOrDeduplicateActiveEffect(Actor* apActor, MagicItem* apSpell, Eff
         return false;
     }
 
-    const SpellItem* pSpellItem = Cast<SpellItem>(apSpell);
-    const bool isConstantEffect = pSpellItem && pSpellItem->eCastingType == MagicSystem::CastingType::CONSTANT_EFFECT;
+    const bool isConstantEffect = apSpell->IsConstantEffectSpell();
+    const bool isConcentrationSecondaryEffect =
+        apSpell->IsConcentrationEffectSpell() &&
+        !apSpell->IsHealingSpell() &&
+        apEffect->pEffectSetting &&
+        apEffect->pEffectSetting->primaryAV != ActorValueInfo::kHealth;
     const bool isNonHostileBuffOrCloak =
         apSpell->iHostileCount <= 0 &&
         apEffect->pEffectSetting &&
@@ -85,7 +91,7 @@ bool TryRefreshOrDeduplicateActiveEffect(Actor* apActor, MagicItem* apSpell, Eff
          apEffect->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kCloak ||
          apEffect->data.iDuration >= 10);
 
-    if (!isConstantEffect && !isNonHostileBuffOrCloak)
+    if (!isConstantEffect && !isConcentrationSecondaryEffect && !isNonHostileBuffOrCloak)
         return false;
 
     for (ActiveEffect* pActive : *apActor->currentProcess->middleProcess->ActiveEffects)
@@ -98,7 +104,7 @@ bool TryRefreshOrDeduplicateActiveEffect(Actor* apActor, MagicItem* apSpell, Eff
             continue;
 
         pActive->fElapsedSeconds = 0.0f;
-        if (std::isfinite(aMagnitude) && aMagnitude > 0.0f && isConstantEffect)
+        if (std::isfinite(aMagnitude) && aMagnitude > 0.0f && (isConstantEffect || isConcentrationSecondaryEffect))
             pActive->fMagnitude = aMagnitude;
         return true;
     }
@@ -130,6 +136,7 @@ void MagicService::OnUpdate(const UpdateEvent& acEvent) noexcept
     if (!m_transport.IsConnected())
     {
         m_activeLocalPlayerSpells.clear();
+        m_concentrationClaimKeepaliveMs.clear();
         return;
     }
 
@@ -263,29 +270,21 @@ void MagicService::OnNotifySpellCast(const NotifySpellCast& acMessage) const noe
 
     MagicItem* pSpell = nullptr;
 
-    pSpell = pActor->magicItems[acMessage.CastingSource];
+    // Resolve the explicit SpellFormId carried by NotifySpellCast FIRST so fast SkyUI/Wheeler hotkey swaps
+    // never cast a stale previously-equipped magicItems[CastingSource] entry before equipment sync arrives.
+    if (acMessage.SpellFormId.ModId == std::numeric_limits<uint32_t>::max())
+    {
+        pSpell = pActor->magicItems[acMessage.CastingSource];
+    }
+    else if (acMessage.SpellFormId != GameId{})
+    {
+        const uint32_t cSpellFormId = World::Get().GetModSystem().GetGameId(acMessage.SpellFormId);
+        if (cSpellFormId != 0)
+            pSpell = Cast<MagicItem>(TESForm::GetById(cSpellFormId));
+    }
 
     if (!pSpell)
-    {
-        if (acMessage.SpellFormId.ModId == std::numeric_limits<uint32_t>::max())
-            return;
-
-        const uint32_t cSpellFormId = World::Get().GetModSystem().GetGameId(acMessage.SpellFormId);
-        if (cSpellFormId == 0)
-        {
-            spdlog::error("Could not find spell form id for GameId base {:X}, mod {:X}", acMessage.SpellFormId.BaseId, acMessage.SpellFormId.ModId);
-            return;
-        }
-
-        TESForm* pSpellForm = TESForm::GetById(cSpellFormId);
-        if (!pSpellForm)
-        {
-            spdlog::error("Cannot find spell form, id: {:X}.", cSpellFormId);
-            return;
-        }
-
-        pSpell = Cast<MagicItem>(pSpellForm);
-    }
+        pSpell = pActor->magicItems[acMessage.CastingSource];
 
     if (!pSpell || pSpell->HasSummonEffect())
     {
@@ -398,14 +397,32 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
             m_world.GetDownedStateService().RequestAllySpellReviveOnActor(acEvent.TargetID, acEvent.Magnitude);
         }
 
-        if (pMagicItem->HasSummonEffect())
-            return;
-
-        if (SpellItem* pSpellItem = Cast<SpellItem>(pMagicItem))
+        if (pMagicItem->HasSummonEffect() || pMagicItem->IsWardSpell() ||
+            pMagicItem->IsInvisibilitySpell() || pMagicItem->IsBoundWeaponSpell())
         {
-            if ((pSpellItem->eCastingType == MagicSystem::CastingType::CONCENTRATION && !pSpellItem->IsHealingSpell()) || pSpellItem->IsWardSpell() || pSpellItem->IsInvisibilitySpell() || pSpellItem->IsBoundWeaponSpell())
+            return;
+        }
+
+        if (pMagicItem->IsConcentrationEffectSpell() && !pMagicItem->IsHealingSpell())
+        {
+            const auto* pMgef = Cast<EffectSetting>(TESForm::GetById(acEvent.EffectID));
+            const bool isPrimaryHealthBeam = pMgef && pMgef->primaryAV == ActorValueInfo::kHealth;
+            if (isPrimaryHealthBeam)
             {
-                return;
+                // Hostile concentration health damage is streamed smoothly via 250ms caster-authoritative
+                // HealthChangeBroadcasts; forward a lightweight target-bound keepalive every 2000ms so sustained
+                // >6s beams (`Flames`, `Sparks`, `Lightning Ray`, staves) refresh ServerCombatAuthorityLedger & Host aggro!
+                const uint64_t nowMs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+                const uint64_t pairKey = (static_cast<uint64_t>(acEvent.CasterID) << 32) | static_cast<uint64_t>(acEvent.TargetID);
+                if (m_concentrationClaimKeepaliveMs.size() > 128)
+                    m_concentrationClaimKeepaliveMs.clear();
+                const auto it = m_concentrationClaimKeepaliveMs.find(pairKey);
+                if (it != m_concentrationClaimKeepaliveMs.end() && nowMs >= it->second && (nowMs - it->second) < 2000ULL)
+                    return;
+                m_concentrationClaimKeepaliveMs[pairKey] = nowMs;
             }
         }
     }
@@ -470,6 +487,7 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
     request.IsDualCasting = acEvent.IsDualCasting;
     request.ApplyHealPerkBonus = acEvent.ApplyHealPerkBonus;
     request.ApplyStaminaPerkBonus = acEvent.ApplyStaminaPerkBonus;
+    request.HasPreAdjustedPerks = acEvent.HasPreAdjustedPerks;
 
     if (acEvent.TargetID == 0x14 && acEvent.SpellID != 0)
         m_activeLocalPlayerSpells.insert(acEvent.SpellID);
@@ -522,11 +540,27 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
 
     Actor* pCaster{};
     acMessage.CasterId && (pCaster = Utils::GetByServerId<Actor>(acMessage.CasterId));
+
+    const bool isPrimaryHealthHostile =
+        !pSpell->IsHealingSpell() &&
+        !pSpell->IsBuffSpell() &&
+        pEffect->pEffectSetting &&
+        pEffect->pEffectSetting->primaryAV == ActorValueInfo::kHealth;
+    const bool isCasterPlayerInWorldModel =
+        acMessage.CasterId != 0 &&
+        m_world.GetCharacterService().IsRemotePlayerOrSummonServerId(acMessage.CasterId);
+
     if (acMessage.CasterId && (!pCaster || !pCaster->GetNiNode() || pCaster->IsStillLoading() || pCaster->IsDeleted()))
     {
-        MagicQueue::Spdlog("{}: could not find caster Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.CasterId);
-        m_queuedRemoteEffects.push(acMessage);
-        return;
+        // Do not block aggro/claim keepalive handling for caster-authoritative player hostile health magic
+        // on non-player NPCs if the distant peer's 3D NiNode hasn't streamed into view yet.
+        if (!(isPrimaryHealthHostile && isCasterPlayerInWorldModel &&
+              pActor->GetExtension() && !pActor->GetExtension()->IsPlayer()))
+        {
+            MagicQueue::Spdlog("{}: could not find caster Actor for serverID {:X}, queueing", __FUNCTION__, acMessage.CasterId);
+            m_queuedRemoteEffects.push(acMessage);
+            return;
+        }
     }
 
     if (pCaster && pActor)
@@ -573,10 +607,40 @@ void MagicService::OnNotifyAddTarget(const NotifyAddTarget& acMessage) noexcept
     if (!pActor)
         return;
 
+    const bool isFromRemotePlayerOrSummon =
+        isCasterPlayerInWorldModel ||
+        (pCaster && pCaster->GetExtension() &&
+         (pCaster->GetExtension()->IsRemotePlayer() ||
+          (pCaster->GetExtension()->IsRemote() && pCaster->IsPlayerSummon())));
+
+    // Hostile `kHealth` magic cast by a player or player summon against non-player NPCs (Fire-and-Forget,
+    // Concentration, Staves, Scrolls, Weapon Enchantments, Shouts) executes caster-authoritatively on the
+    // caster's real `0x14` via `HookApplyActorEffect` + `HookRestoreActorValue` -> `HealthChangeBroadcast`.
+    // Here on peers/Host we wake AI combat aggro without applying a duplicate `kHealth` ActiveEffect, while
+    // non-`kHealth` secondary effects (Frost slow/stamina, Shock magicka, Paralyze, Soul Trap) apply below!
+    if (isPrimaryHealthHostile &&
+        pActor->GetExtension() &&
+        !pActor->GetExtension()->IsPlayer() &&
+        (pSpell->IsConcentrationEffectSpell() || isFromRemotePlayerOrSummon))
+    {
+        if (pCaster &&
+            pActor->GetExtension()->IsLocal() &&
+            !pActor->IsDead() &&
+            !pActor->IsInCombat())
+        {
+            pActor->StartCombatEx(pCaster);
+        }
+        return;
+    }
+
     if (TryRefreshOrDeduplicateActiveEffect(pActor, pSpell, pEffect, acMessage.Magnitude))
         return;
 
-    pActor->magicTarget.AddTarget(data, acMessage.ApplyHealPerkBonus, acMessage.ApplyStaminaPerkBonus);
+    pActor->magicTarget.AddTarget(
+        data,
+        acMessage.ApplyHealPerkBonus,
+        acMessage.ApplyStaminaPerkBonus,
+        acMessage.HasPreAdjustedPerks);
     spdlog::debug("Applied remote magic effect");
 }
 
@@ -585,12 +649,16 @@ void MagicService::OnRemoveSpellEvent(const RemoveSpellEvent& acEvent) noexcept
     if (acEvent.TargetId == 0x14)
         m_activeLocalPlayerSpells.erase(acEvent.SpellId);
 
-    if (!m_transport.IsConnected() || ScopedSpellCastOverride::IsOverriden())
+    if (!m_transport.IsConnected() ||
+        ScopedSpellCastOverride::IsOverriden() ||
+        m_world.GetCharacterService().IsEngineWorldLoading())
+    {
         return;
+    }
 
     // Never echo RemoveSpell triggered on remote puppets back across the network!
     Actor* pTargetActor = Cast<Actor>(TESForm::GetById(acEvent.TargetId));
-    if (!pTargetActor || pTargetActor->GetExtension()->IsRemote())
+    if (!pTargetActor || !pTargetActor->GetExtension() || pTargetActor->GetExtension()->IsRemote())
         return;
 
     RemoveSpellRequest request{};
@@ -905,6 +973,7 @@ void MagicService::ResyncLocalPlayerActiveBuffs() noexcept
         resyncEvt.EffectID = pEffectItem->pEffectSetting->formID;
         resyncEvt.Magnitude = pActive->fMagnitude;
         resyncEvt.IsDualCasting = false;
+        resyncEvt.HasPreAdjustedPerks = true;
         OnAddTargetEvent(resyncEvt);
     }
 }
@@ -914,6 +983,7 @@ void MagicService::ResetForWorldReload() noexcept
     m_queuedEffects = {};
     m_queuedRemoteEffects = {};
     m_activeLocalPlayerSpells.clear();
+    m_concentrationClaimKeepaliveMs.clear();
     m_buffPollAccumulatorSec = 0.0;
 }
 

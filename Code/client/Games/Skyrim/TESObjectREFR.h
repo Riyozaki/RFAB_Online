@@ -122,7 +122,7 @@ struct TESObjectREFR : TESForm
     virtual void sub_6C();
     virtual void sub_6D();
     virtual void sub_6E();
-    virtual void sub_6F();
+    virtual NiNode* GetNiNode3rdPerson(bool aFirstPerson = false);
     virtual NiNode* GetNiNode();
     virtual void sub_71();
     virtual void sub_72();

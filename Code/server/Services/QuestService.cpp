@@ -236,6 +236,20 @@ void QuestService::OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate
         return;
 
     Player* pLeader = isLeader ? pPlayer : m_world.GetPlayerManager().GetById(pParty->LeaderPlayerId);
+    if (pLeader != nullptr && !isLeader)
+    {
+        // Host-canonical BGSScene authority: never allow a non-leader guest who walked into a scene trigger
+        // early to hijack SceneMaster and block the Party Leader's authoritative SceneEnd + StageUpdateForced!
+        spdlog::debug(
+            "{}: ignoring non-leader scene {} update quest {:X}, scene {:X} from player {}",
+            __FUNCTION__,
+            sceneTypeString,
+            message.QuestId.LogFormat(),
+            message.SceneId.LogFormat(),
+            pPlayer->GetId());
+        return;
+    }
+
     auto& dedupHistory = pParty->GetQuestStageDedupHistory();
 
     // Make sure party knows scene state.
@@ -244,64 +258,41 @@ void QuestService::OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate
     notify.QuestId = message.QuestId;
     notify.SceneType = message.SceneType;
 
-    // Scene Begin
-    // Set as SceneMaster if there isn't one for this scene.
-    // Checking for a recent scene change in history keeps us unstuck in case scene end event is missed
-    // Or in the case where the scene changes without a scene end, we should get a new scenemaster.
-    // Neither of those should happen, but, Bethesda + STR == flakes
-    if (message.SceneType == 0) // BEGIN
+    if (message.SceneType == 0) // BEGIN (Party Leader authoritative)
     {
-        bool needSceneMaster = dedupHistory.NeedSceneMaster() || !dedupHistory.Found(message.SceneId, 0, RequestQuestUpdate::StatusCode::SceneUpdate);
-        // if (needSceneMaster || pPlayer->GetId() == dedupHistory.GetSceneMaster())
         dedupHistory.Add(message.SceneId, 0, RequestQuestUpdate::StatusCode::SceneUpdate, pPlayer->GetId());
-
-        if (!needSceneMaster)
-            spdlog::debug(
-                "{}: quest {:X}, scene {:X}, sceneType {}, {} {} already have SceneMaster player {}", __FUNCTION__, message.QuestId.LogFormat(), message.SceneId.LogFormat(),
-                sceneTypeString, playerTypeString, pPlayer->GetId(), dedupHistory.GetSceneMaster());
-        else
-        {
-            dedupHistory.SetSceneMaster(pPlayer->GetId());
-            spdlog::debug(
-                "{}: quest {:X}, scene {:X}, sceneType {}, {} {} is now SceneMaster", __FUNCTION__, message.QuestId.LogFormat(), message.SceneId.LogFormat(), sceneTypeString,
-                playerTypeString, pPlayer->GetId());
-
-            spdlog::debug(
-                "{}: sending scene {} update quest {:X}, scene {:X}, by {} {}", __FUNCTION__, sceneTypeString, notify.QuestId.LogFormat(), notify.SceneId.LogFormat(),
-                playerTypeString, pPlayer->GetId());
-            GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
-        }
+        dedupHistory.SetSceneMaster(pPlayer->GetId());
+        spdlog::debug(
+            "{}: leader {} is SceneMaster, sending scene {} update quest {:X}, scene {:X}",
+            __FUNCTION__,
+            pPlayer->GetId(),
+            sceneTypeString,
+            notify.QuestId.LogFormat(),
+            notify.SceneId.LogFormat());
+        GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
     }
-
-    else // END scene
+    else // END scene (Party Leader authoritative)
     {
-        if (dedupHistory.GetSceneMaster() == pPlayer->GetId())
-        {
-            spdlog::debug(
-                "{}: sending scene {} update quest {:X}, scene {:X}, by {} {}", __FUNCTION__, sceneTypeString, notify.QuestId.LogFormat(), notify.SceneId.LogFormat(),
-                playerTypeString, pPlayer->GetId());
-            GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+        spdlog::debug(
+            "{}: sending scene {} update quest {:X}, scene {:X}, by {} {}",
+            __FUNCTION__,
+            sceneTypeString,
+            notify.QuestId.LogFormat(),
+            notify.SceneId.LogFormat(),
+            playerTypeString,
+            pPlayer->GetId());
+        GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
 
-            spdlog::debug(
-                "{}: quest {:X}, scene {:X}, scenetype {}, {} {} removing SceneMaster player {}", __FUNCTION__, message.QuestId.LogFormat(), message.SceneId.LogFormat(),
-                sceneTypeString, playerTypeString, pPlayer->GetId(), dedupHistory.GetSceneMaster());
-            // dedupHistory.ResetSceneMaster();
+        // Force an update out to bring anyone behind to the leader's current quest stage.
+        RequestQuestUpdate newUpdate;
+        newUpdate.Id = message.QuestId;
+        newUpdate.Stage = message.Stage;
+        newUpdate.Status = RequestQuestUpdate::StageUpdateForced;
+        newUpdate.ClientQuestType = message.ClientQuestType;
+        const PacketEvent<RequestQuestUpdate> newMessage(&newUpdate, pPlayer);
+        QuestService::OnQuestChanges(newMessage);
 
-            // Force an update out to bring anyone behind to current quest stage.
-            spdlog::debug(
-                "{}: SceneMaster {} {} sending force current quest stage {} to party quest {:X}, scene {:X}, scenetype {}", __FUNCTION__, playerTypeString, pPlayer->GetId(),
-                message.Stage, message.QuestId.LogFormat(), message.SceneId.LogFormat(), sceneTypeString);
-
-            RequestQuestUpdate newUpdate;
-            newUpdate.Id = message.QuestId;
-            newUpdate.Stage = message.Stage;
-            newUpdate.Status = RequestQuestUpdate::StageUpdateForced;
-            newUpdate.ClientQuestType = message.ClientQuestType;
-            const PacketEvent<RequestQuestUpdate> newMessage(&newUpdate, pPlayer);
-            QuestService::OnQuestChanges(newMessage);
-
-            dedupHistory.ResetSceneMaster();
-        }
+        dedupHistory.ResetSceneMaster();
     }
 }
 

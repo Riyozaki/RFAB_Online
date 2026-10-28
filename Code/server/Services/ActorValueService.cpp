@@ -165,7 +165,17 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
 void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthChangeBroadcast>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
-    if (!std::isfinite(message.DeltaHealth) || message.DeltaHealth == 0.f)
+    if (!std::isfinite(message.DeltaHealth))
+        return;
+
+    const float sanitizedStagger = std::isfinite(message.StaggerMagnitude)
+        ? std::clamp(message.StaggerMagnitude, 0.0f, 1.0f)
+        : 0.0f;
+    const float sanitizedDir = std::isfinite(message.StaggerDirection)
+        ? std::clamp(message.StaggerDirection, 0.0f, 0.9999f)
+        : 0.0f;
+
+    if (message.DeltaHealth == 0.f && sanitizedStagger <= 0.05f)
         return;
 
     const float sanitizedDelta = std::clamp(message.DeltaHealth, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
@@ -196,6 +206,20 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
             return;
     }
 
+    uint32_t sanitizedSourceId = 0;
+    if (message.SourceServerId != 0 && acMessage.pPlayer)
+    {
+        const auto srcEntity = static_cast<entt::entity>(message.SourceServerId);
+        if (m_world.valid(srcEntity))
+        {
+            if (const auto* pSrcOwner = m_world.try_get<OwnerComponent>(srcEntity);
+                pSrcOwner && pSrcOwner->GetOwner() == acMessage.pPlayer)
+            {
+                sanitizedSourceId = message.SourceServerId;
+            }
+        }
+    }
+
     if (!isOwner)
     {
         const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
@@ -218,10 +242,11 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
 
         const bool isPvpEnabled = static_cast<bool>(bEnablePvp);
         const bool isTargetDead = pCharacterComponent && pCharacterComponent->IsDead();
+        const float authDelta = (sanitizedDelta != 0.0f) ? sanitizedDelta : -0.01f;
         if (!m_combatAuthorityLedger.ValidateNonOwnerHealthDelta(
                 senderId,
                 message.Id,
-                sanitizedDelta,
+                authDelta,
                 isSenderInRange,
                 isSenderDowned,
                 isTargetDead,
@@ -247,18 +272,21 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     }
 
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-    if (sanitizedDelta < 0.f && !isOwner)
+    if ((sanitizedDelta < 0.f || sanitizedStagger > 0.05f) && !isOwner)
         actorValuesComponent.LastExternalDamageAtMs = nowMs;
 
-    const float currentHealth = actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex];
     const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
     const float maxHealth = (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() && std::isfinite(maxIt->second))
         ? maxIt->second
         : 0.f;
+    const auto curIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
+    const float currentHealth = (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end() && std::isfinite(curIt->second))
+        ? curIt->second
+        : maxHealth;
 
     const auto applied = CoopDamagePipeline::ApplyAuthoritativeServerHealthDelta(
         currentHealth,
-        maxHealth,
+        std::max(maxHealth, currentHealth),
         sanitizedDelta);
 
     actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = applied.UpdatedHealth;
@@ -266,6 +294,9 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     NotifyHealthChangeBroadcast notify;
     notify.Id = message.Id;
     notify.DeltaHealth = applied.ClampedBroadcastDelta;
+    notify.SourceServerId = sanitizedSourceId;
+    notify.StaggerMagnitude = (!isOwner) ? sanitizedStagger : 0.0f;
+    notify.StaggerDirection = (!isOwner) ? sanitizedDir : 0.0f;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))

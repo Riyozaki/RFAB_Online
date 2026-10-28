@@ -16,6 +16,7 @@
 #include <Structs/GridCellCoords.h>
 #include <CoopAnimationState.h>
 #include <CoopDamagePipeline.h>
+#include <CoopWorldStabilizer.h>
 #include <World.h>
 
 void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick, const RemoteAnimationComponent* apAnimComponent) noexcept
@@ -79,6 +80,18 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     // Don't try to move a null actor
     if (!apActor)
         return;
+
+    // Freeze continuous ForcePosition / SetRotation / LoadAnimationVariables on dead ragdoll corpses:
+    // moving TESObjectREFR every frame after death pulls its loot-interaction bounding box away from
+    // the visible Havok ragdoll skeleton (causing corpse pixel-hunting) and mutates BShkbAnimationGraph
+    // variables during ragdoll teardown.
+    if (CoopWorldStabilizer::ShouldFreezeCorpseInterpolation(apActor->IsDead()))
+    {
+        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
+        while (movements.size() > 2)
+            movements.pop_front();
+        return;
+    }
 
     bool movedViaCellTransfer = false;
     if (apActor->formID != 0x14)

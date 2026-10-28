@@ -19,7 +19,8 @@ struct NotifyAddTarget final : ServerMessage
     {
         return GetOpcode() == acRhs.GetOpcode() && TargetId == acRhs.TargetId && CasterId == acRhs.CasterId && SpellId == acRhs.SpellId &&
                EffectId == acRhs.EffectId && Magnitude == acRhs.Magnitude && IsDualCasting == acRhs.IsDualCasting &&
-               ApplyHealPerkBonus == acRhs.ApplyHealPerkBonus && ApplyStaminaPerkBonus == acRhs.ApplyStaminaPerkBonus;
+               ApplyHealPerkBonus == acRhs.ApplyHealPerkBonus && ApplyStaminaPerkBonus == acRhs.ApplyStaminaPerkBonus &&
+               HasPreAdjustedPerks == acRhs.HasPreAdjustedPerks;
     }
 
     uint32_t TargetId{};
@@ -30,4 +31,5 @@ struct NotifyAddTarget final : ServerMessage
     bool IsDualCasting{};
     bool ApplyHealPerkBonus{};
     bool ApplyStaminaPerkBonus{};
+    bool HasPreAdjustedPerks{};
 };

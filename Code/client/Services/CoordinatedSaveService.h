@@ -124,6 +124,8 @@ private:
     uint64_t m_pendingSaveEpochId{0};
     bool m_pendingSaveSendAck{false};
     uint8_t m_pendingSavePurgeFrames{0};
+    uint8_t m_pendingSaveRetriesLeft{0};
+    double m_pendingSaveRetryDelaySec{0.0};
 
     std::string m_authorizedPendingSaveSlot{};
     std::string m_authorizedPendingLoadSlot{};
@@ -132,6 +134,7 @@ private:
 
     uint64_t m_lastCommittedEpoch{0};
     std::string m_lastCommittedSlot{};
+    std::string m_lastWrittenCoopSlot{};
     std::unordered_set<std::string> m_writtenSlotsInSession{};
 
     entt::scoped_connection m_connectedConnection;

@@ -1,8 +1,74 @@
 #include <Structs/Tints.h>
+#include <common/CoopHairColorSync.h>
 #include <TiltedCore/Serialization.hpp>
+#include <cstring>
 #include <stdexcept>
 
 using TiltedPhoques::Serialization;
+
+bool Tints::IsHairColorEntry(const Entry& acEntry) noexcept
+{
+    if (acEntry.Type == kHairColorEntryType)
+        return true;
+
+    const char* pName = acEntry.Name.c_str();
+    return pName && std::strcmp(pName, kHairColorEntryName) == 0;
+}
+
+void Tints::SetHairColor(const uint8_t aRed, const uint8_t aGreen, const uint8_t aBlue) noexcept
+{
+    const uint32_t packedRgb = CoopHairColorSync::PackHairColorRgb(aRed, aGreen, aBlue);
+
+    for (size_t i = 0; i < Entries.size(); ++i)
+    {
+        if (IsHairColorEntry(Entries[i]))
+        {
+            Entries[i].Type = kHairColorEntryType;
+            Entries[i].Color = packedRgb;
+            Entries[i].Alpha = 1.0f;
+            Entries[i].Name = kHairColorEntryName;
+            // Ensure the hair color entry sits within the 255-entry wire serialization window.
+            if (i >= 255u)
+                std::swap(Entries[254], Entries[i]);
+            return;
+        }
+    }
+
+    Entry hairEntry{};
+    hairEntry.Name = kHairColorEntryName;
+    hairEntry.Alpha = 1.0f;
+    hairEntry.Color = packedRgb;
+    hairEntry.Type = kHairColorEntryType;
+
+    if (Entries.size() >= 255u)
+        Entries[254] = std::move(hairEntry);
+    else
+        Entries.push_back(std::move(hairEntry));
+}
+
+bool Tints::TryGetHairColor(uint8_t& aOutRed, uint8_t& aOutGreen, uint8_t& aOutBlue) const noexcept
+{
+    for (const auto& entry : Entries)
+    {
+        if (IsHairColorEntry(entry))
+        {
+            CoopHairColorSync::UnpackHairColorRgb(entry.Color, aOutRed, aOutGreen, aOutBlue);
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t Tints::CountFaceTintEntries() const noexcept
+{
+    size_t count = 0;
+    for (const auto& entry : Entries)
+    {
+        if (!IsHairColorEntry(entry))
+            ++count;
+    }
+    return count;
+}
 
 bool Tints::Entry::operator==(const Entry& acRhs) const noexcept
 {

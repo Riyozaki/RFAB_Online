@@ -35,6 +35,7 @@ World::World()
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
 {
+    s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     ctx().emplace<ImguiService>();
     m_pRfabAdapterService = &ctx().emplace<RfabAdapterService>(*this, m_dispatcher, m_transport);
     m_pDownedStateService = &ctx().emplace<DownedStateService>(*this, m_dispatcher, m_transport);
@@ -65,6 +66,10 @@ World::World()
 
 World::~World()
 {
+    {
+        std::lock_guard<std::mutex> lock(m_mainThreadTasksMutex);
+        m_mainThreadTasks.clear();
+    }
     s_isConnectedCached.store(false, std::memory_order_release);
     s_isContainerMenuOpenCached.store(false, std::memory_order_release);
     s_syncPlayerHomesCached.store(false, std::memory_order_release);
@@ -75,6 +80,9 @@ World::~World()
 
 void World::Update() noexcept
 {
+    // NOTE: `World::Update()` runs inside `HookVMUpdate` (`SE 53115`) on Skyrim's `BSJobs` Papyrus
+    // worker pool — NEVER overwrite `s_mainThreadId` here! `s_mainThreadId` belongs exclusively to
+    // Skyrim's real `WinMain`/D3D11 main thread (`World::World()` + `HookMainLoop` `SE 35565`).
     const bool isConn = m_transport.IsConnected();
     s_isConnectedCached.store(isConn, std::memory_order_release);
     if (isConn)
@@ -133,4 +141,39 @@ void World::Create() noexcept
 World& World::Get() noexcept
 {
     return entt::locator<World>::value();
+}
+
+void World::OnMainThreadUpdate() noexcept
+{
+    s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
+
+    std::vector<std::function<void()>> tasksToRun;
+    {
+        std::lock_guard<std::mutex> lock(m_mainThreadTasksMutex);
+        if (m_mainThreadTasks.empty())
+            return;
+        tasksToRun.swap(m_mainThreadTasks);
+    }
+
+    for (auto& task : tasksToRun)
+    {
+        if (task)
+            task();
+    }
+}
+
+void World::QueueMainThreadTask(std::function<void()> aTask) noexcept
+{
+    if (!aTask)
+        return;
+
+    std::lock_guard<std::mutex> lock(m_mainThreadTasksMutex);
+    if (m_mainThreadTasks.size() < 4096)
+        m_mainThreadTasks.push_back(std::move(aTask));
+}
+
+bool World::IsMainThread() noexcept
+{
+    const uint32_t mainTid = s_mainThreadId.load(std::memory_order_acquire);
+    return mainTid != 0 && GetCurrentThreadId() == mainTid;
 }

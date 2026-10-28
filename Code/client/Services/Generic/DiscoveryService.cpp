@@ -23,6 +23,19 @@
 #include <World.h>
 #include <Components.h>
 
+#include <chrono>
+
+namespace
+{
+[[nodiscard]] uint64_t NowDiscoverySteadyMs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+} // namespace
+
 DiscoveryService::DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
@@ -214,6 +227,7 @@ void DiscoveryService::VisitForms() noexcept
         if (pRefr->GetNiNode())
         {
             m_niNodeFlickerGraceFrames.erase(pRefr->formID);
+            m_demotionHoldTracker.NotifyPresentInHigh(pRefr->formID);
             visitor(pRefr);
         }
         else if (m_forms.count(pRefr->formID) != 0 &&
@@ -238,9 +252,31 @@ void DiscoveryService::VisitForms() noexcept
     if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
         visitor(pPlayer);
 
-    // We dispatch removal events first to prevent needless reallocations
+    // We dispatch removal events first to prevent needless reallocations.
+    // Actors that genuinely unloaded, detached, disabled, or were deleted are removed immediately (0ms),
+    // whereas live actors still in an attached cell that merely dipped from `High` into `Middle-High` AI
+    // process (or are rebuilding 3D) are held for 3.5s so boundary oscillation never thrashes ServerId.
+    const uint64_t nowMs = NowDiscoverySteadyMs();
     for (uint32_t formId : s_previousForms)
     {
+        TESObjectREFR* pStillLoaded = Cast<TESObjectREFR>(TESForm::GetById(formId));
+        const bool isDisabledOrDeleted =
+            !pStillLoaded || pStillLoaded->IsDisabled() || pStillLoaded->IsDeleted();
+        const bool existsInAttachedLoadedCell =
+            pStillLoaded &&
+            pStillLoaded->parentCell &&
+            pStillLoaded->parentCell->loadedCellData != nullptr &&
+            !pStillLoaded->parentCell->cellDetached;
+
+        if (m_demotionHoldTracker.ShouldRetainMissingFromHigh(
+                formId,
+                existsInAttachedLoadedCell,
+                isDisabledOrDeleted,
+                nowMs))
+        {
+            continue;
+        }
+
         m_niNodeFlickerGraceFrames.erase(formId);
         m_dispatcher.trigger(ActorRemovedEvent(formId));
         m_forms.erase(formId);
@@ -250,10 +286,16 @@ void DiscoveryService::VisitForms() noexcept
     m_dispatcher.update<ActorAddedEvent>();
 }
 
+void DiscoveryService::HoldActorRemoval(uint32_t aFormId, uint64_t aDurationMs) noexcept
+{
+    m_demotionHoldTracker.ArmExplicitHold(aFormId, NowDiscoverySteadyMs(), aDurationMs);
+}
+
 void DiscoveryService::ResetLoadedForms() noexcept
 {
     m_forms.clear();
     m_niNodeFlickerGraceFrames.clear();
+    m_demotionHoldTracker.Clear();
     m_interiorCellId = 0;
     m_pLocation = nullptr;
     ResetCachedCellData();

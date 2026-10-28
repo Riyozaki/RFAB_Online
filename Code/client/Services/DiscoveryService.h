@@ -2,6 +2,7 @@
 
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
+#include <CoopWorldStabilizer.h>
 
 #include <Structs/GridCellCoords.h>
 
@@ -30,6 +31,7 @@ struct DiscoveryService final : BSTEventSink<TESLoadGameEvent>
     void ResetLoadedForms() noexcept;
     void ReconcileMissingWorldEntities() noexcept;
     void VisitCell(bool aForceTrigger = false) noexcept;
+    void HoldActorRemoval(uint32_t aFormId, uint64_t aDurationMs = CoopWorldStabilizer::ActorDemotionHoldTracker::kDefaultDemotionHoldMs) noexcept;
 
 protected:
     /**
@@ -88,6 +90,8 @@ private:
     Set<uint32_t> m_forms;
     //! @brief Per-actor hysteresis counter preventing 1-frame NiNode rebuilds from dropping ownership.
     Map<uint32_t, uint8_t> m_niNodeFlickerGraceFrames;
+    //! @brief Hysteresis hold preventing High <-> Middle-High AI boundary oscillation (`8433C`) & rapid teardown crashes.
+    CoopWorldStabilizer::ActorDemotionHoldTracker m_demotionHoldTracker{};
     /**
      * The center grid coordinates are the coordinates of the cell in the cell grid
      * where the cells around it in a 5 by 5 grid (by default) are loaded.

@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <SaveLoad.h>
+#include <common/CoopWorldStabilizer.h>
 #include <common/RfabModpackCompat.h>
 #include <Games/IFormFactory.h>
 #include <Games/Memory.h>
@@ -277,6 +278,11 @@ void TP_MAKE_THISCALL(HookQueueSaveLoadTask, BGSSaveLoadManager, uint32_t aTaskM
             return;
         break;
     default:
+        if (CoopWorldStabilizer::IsQuickloadTaskMask(aTaskMask))
+        {
+            if (!coord.HandleEngineLoadAttempt(""))
+                return;
+        }
         break;
     }
 

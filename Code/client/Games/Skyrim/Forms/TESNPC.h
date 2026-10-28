@@ -99,6 +99,7 @@ struct TESNPC : TESActorBase
 
 #ifdef _MSC_VER
 static_assert(offsetof(TESNPC, npcClass) == 0x1C0);
+static_assert(offsetof(TESNPC, headData) == 0x1C8);
 static_assert(offsetof(TESNPC, color) == 0x246);
 static_assert(offsetof(TESNPC, relationships) == 0x250);
 #else
