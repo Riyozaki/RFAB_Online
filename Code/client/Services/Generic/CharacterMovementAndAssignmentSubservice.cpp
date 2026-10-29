@@ -445,15 +445,13 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
                 if (!pTint)
                     continue;
 
-                FaceGenTints::Entry entry{};
+                auto& entry = entries.emplace_back();
                 entry.Alpha = pTint->alpha;
                 entry.Color = pTint->color;
                 entry.Type = pTint->type;
 
                 if (pTint->texture && pTint->texture->name.AsAscii())
                     entry.Name = pTint->texture->name.AsAscii();
-
-                entries.push_back(std::move(entry));
             }
         }
 
