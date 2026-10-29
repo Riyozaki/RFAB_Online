@@ -5,6 +5,7 @@
 #include <World.h>
 
 #include <Events/UpdateEvent.h>
+#include <Events/DisconnectedEvent.h>
 #include <Events/CellChangeEvent.h>
 #include <Events/PartyJoinedEvent.h>
 #include <Events/SpellCastEvent.h>
@@ -119,6 +120,7 @@ MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
     , m_transport(aTransport)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&MagicService::OnUpdate>(this);
+    m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&MagicService::OnDisconnected>(this);
     m_cellChangeConnection = m_dispatcher.sink<CellChangeEvent>().connect<&MagicService::OnCellChangeEvent>(this);
     m_partyJoinedConnection = m_dispatcher.sink<PartyJoinedEvent>().connect<&MagicService::OnPartyJoinedEvent>(this);
     m_spellCastEventConnection = m_dispatcher.sink<SpellCastEvent>().connect<&MagicService::OnSpellCastEvent>(this);
@@ -135,8 +137,7 @@ void MagicService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     if (!m_transport.IsConnected())
     {
-        m_activeLocalPlayerSpells.clear();
-        m_concentrationClaimKeepaliveMs.clear();
+        ResetForWorldReload();
         return;
     }
 
@@ -841,7 +842,11 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
     static std::chrono::steady_clock::time_point revealStartTimePoint;
     static std::chrono::steady_clock::time_point lastSendTimePoint;
 
-    const bool shouldActivate = aForceTrigger || GetAsyncKeyState(VK_F4) & 0x01;
+    DWORD foregroundPid = 0;
+    const HWND foregroundWindow = GetForegroundWindow();
+    const bool isGameWindowForeground =
+        foregroundWindow && GetWindowThreadProcessId(foregroundWindow, &foregroundPid) && foregroundPid == GetCurrentProcessId();
+    const bool shouldActivate = aForceTrigger || (isGameWindowForeground && ((GetAsyncKeyState(VK_F4) & 0x01) != 0));
 
     if (shouldActivate && !m_revealingOtherPlayers)
     {
@@ -867,7 +872,11 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
 
     // When active
 
-    Mod* pSkyrimTogether = ModManager::Get()->GetByName("SkyrimTogether.esp");
+    ModManager* pModManager = ModManager::Get();
+    if (!pModManager)
+        return;
+
+    Mod* pSkyrimTogether = pModManager->GetByName("SkyrimTogether.esp");
     if (!pSkyrimTogether)
         return;
 
@@ -893,7 +902,7 @@ void MagicService::UpdateRevealOtherPlayersEffect(bool aForceTrigger) noexcept
             continue;
 
         auto* pRemotePlayer = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
-        if (!pRemotePlayer)
+        if (!pRemotePlayer || !pRemotePlayer->GetNiNode() || pRemotePlayer->IsStillLoading() || pRemotePlayer->IsDeleted())
             continue;
 
         pRemotePlayer->magicTarget.AddTarget(data, false, false);
@@ -985,6 +994,11 @@ void MagicService::ResetForWorldReload() noexcept
     m_activeLocalPlayerSpells.clear();
     m_concentrationClaimKeepaliveMs.clear();
     m_buffPollAccumulatorSec = 0.0;
+}
+
+void MagicService::OnDisconnected(const DisconnectedEvent&) noexcept
+{
+    ResetForWorldReload();
 }
 
 void MagicService::OnCellChangeEvent(const CellChangeEvent&) noexcept

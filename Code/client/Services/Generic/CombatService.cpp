@@ -12,6 +12,7 @@
 #include <World.h>
 
 #include <Projectiles/Projectile.h>
+#include <Forms/TESObjectCELL.h>
 #include <Forms/TESObjectWEAP.h>
 #include <Forms/TESAmmo.h>
 #include <Games/ActorExtension.h>
@@ -153,26 +154,32 @@ void CombatService::OnNotifyProjectileLaunch(const NotifyProjectileLaunch& acMes
         return;
     }
 
-    // Projectile::Launch relies on pParentCell being valid.
+    // Projectile::Launch relies on pParentCell being valid and attached to Havok (`IsAttachedAndLoaded()`).
     // Exterior wilderness cells have dynamic 0xFFxxxxxx FormIDs that differ across clients;
-    // fall back to the remote shooter's active local parentCell (or local player's parentCell) when lookup returns null.
+    // fall back to the remote shooter's active local parentCell (or local player's parentCell) when lookup returns null or detached.
     if (acMessage.ParentCellID && acMessage.ParentCellID.ModId != 0xFFFFFFFF)
     {
         const uint32_t cParentCellId = modSystem.GetGameId(acMessage.ParentCellID);
-        launchData.pParentCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
+        TESObjectCELL* pCandidateCell = Cast<TESObjectCELL>(TESForm::GetById(cParentCellId));
+        if (pCandidateCell && pCandidateCell->IsAttachedAndLoaded())
+            launchData.pParentCell = pCandidateCell;
     }
-    if (!launchData.pParentCell)
+    if (!launchData.pParentCell && launchData.pShooter->parentCell && launchData.pShooter->parentCell->IsAttachedAndLoaded())
     {
         launchData.pParentCell = launchData.pShooter->parentCell;
     }
-    if (!launchData.pParentCell && PlayerCharacter::Get())
+    if (!launchData.pParentCell)
     {
-        launchData.pParentCell = PlayerCharacter::Get()->parentCell;
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get();
+            pPlayer && pPlayer->parentCell && pPlayer->parentCell->IsAttachedAndLoaded())
+        {
+            launchData.pParentCell = pPlayer->parentCell;
+        }
     }
 
     if (!launchData.pParentCell)
     {
-        spdlog::warn("Cannot launch projectile, invalid parent cell for shooter {:X}", formIdComponent.Id);
+        spdlog::warn("Cannot launch projectile, invalid or detached parent cell for shooter {:X}", formIdComponent.Id);
         return;
     }
 

@@ -5,6 +5,7 @@
 #include <Services/PartyService.h>
 #include <Services/CharacterService.h>
 #include <Services/ActorValueService.h>
+#include <Services/InventoryService.h>
 #include <Services/OverlayService.h>
 #include <Services/CharacterService.h>
 #include <Services/MagicService.h>
@@ -32,8 +33,11 @@ struct World : entt::registry
     ~World();
 
     void Update() noexcept;
+    void UpdatePausedPump() noexcept;
     void OnMainThreadUpdate() noexcept;
     void QueueMainThreadTask(std::function<void()> aTask) noexcept;
+
+    [[nodiscard]] bool IsPausedPumpActive() const noexcept { return m_isPausedPumpActive; }
 
     RunnerService& GetRunner() noexcept;
     TransportService& GetTransport() noexcept;
@@ -45,6 +49,8 @@ struct World : entt::registry
     const CharacterService& GetCharacterService() const noexcept { return ctx().at<const CharacterService>(); }
     ActorValueService& GetActorValueService() noexcept { return ctx().at<ActorValueService>(); }
     const ActorValueService& GetActorValueService() const noexcept { return ctx().at<const ActorValueService>(); }
+    InventoryService& GetInventoryService() noexcept { return ctx().at<InventoryService>(); }
+    const InventoryService& GetInventoryService() const noexcept { return ctx().at<const InventoryService>(); }
     OverlayService& GetOverlayService() noexcept { return ctx().at<OverlayService>(); }
     const OverlayService& GetOverlayService() const noexcept { return ctx().at<const OverlayService>(); }
     DebugService& GetDebugService() noexcept { return ctx().at<DebugService>(); }
@@ -90,6 +96,8 @@ struct World : entt::registry
     [[nodiscard]] static bool IsSyncPlayerHomesCached() noexcept { return s_syncPlayerHomesCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsPvpEnabledCached() noexcept { return s_pvpEnabledCached.load(std::memory_order_acquire); }
     [[nodiscard]] static float GetEnemyHealthMultiplierCached() noexcept { return s_enemyHealthMultiplierCached.load(std::memory_order_acquire); }
+    [[nodiscard]] static uint64_t GetTickCached() noexcept { return s_currentTickCached.load(std::memory_order_acquire); }
+    static void RecordMainThreadId() noexcept { s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release); }
     static void SetConnectedHint(bool aConnected) noexcept
     {
         s_isConnectedCached.store(aConnected, std::memory_order_release);
@@ -97,6 +105,7 @@ struct World : entt::registry
         {
             s_pvpEnabledCached.store(false, std::memory_order_release);
             s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
+            s_currentTickCached.store(0, std::memory_order_release);
         }
     }
     static void SetContainerMenuOpenHint(bool aOpen) noexcept { s_isContainerMenuOpenCached.store(aOpen, std::memory_order_release); }
@@ -109,6 +118,7 @@ private:
     inline static std::atomic<bool> s_syncPlayerHomesCached{false};
     inline static std::atomic<bool> s_pvpEnabledCached{false};
     inline static std::atomic<float> s_enemyHealthMultiplierCached{1.0f};
+    inline static std::atomic<uint64_t> s_currentTickCached{0};
 
     entt::dispatcher m_dispatcher;
     RunnerService m_runner;
@@ -119,6 +129,8 @@ private:
     ServerSettings m_serverSettings{};
 
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
+    std::chrono::high_resolution_clock::time_point m_lastPausedPumpTime;
+    bool m_isPausedPumpActive{false};
     std::mutex m_mainThreadTasksMutex{};
     std::vector<std::function<void()>> m_mainThreadTasks{};
 };

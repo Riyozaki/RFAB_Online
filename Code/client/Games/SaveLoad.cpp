@@ -2,6 +2,7 @@
 
 #include <SaveLoad.h>
 #include <Games/Overrides.h>
+#include <common/CoopWorldStabilizer.h>
 
 #include <Forms/TESForm.h>
 
@@ -9,6 +10,7 @@
 
 #include <TiltedCore/Serialization.hpp>
 #include <TiltedCore/Buffer.hpp>
+#include <algorithm>
 
 using TiltedPhoques::Serialization;
 using TiltedPhoques::ViewBuffer;
@@ -26,10 +28,14 @@ BGSSaveFormBuffer::BGSSaveFormBuffer()
 
 void BGSSaveFormBuffer::WriteId(uint32_t aId) noexcept
 {
+    if (!CoopWorldStabilizer::CanWriteFormIdVarIntsToSaveBuffer(buffer, position, capacity))
+        return;
+
     uint32_t modId = 0;
     uint32_t baseId = 0;
 
-    World::Get().GetModSystem().GetServerModId(aId, modId, baseId);
+    if (World::IsCreated())
+        World::Get().GetModSystem().GetServerModId(aId, modId, baseId);
 
     auto pWriteLocation = reinterpret_cast<uint8_t*>(buffer + position);
 
@@ -39,7 +45,7 @@ void BGSSaveFormBuffer::WriteId(uint32_t aId) noexcept
     Serialization::WriteVarInt(writer, modId);
     Serialization::WriteVarInt(writer, baseId);
 
-    position += writer.Size() & 0xFFFFFFFF;
+    position = static_cast<uint32_t>(std::min<size_t>(capacity, static_cast<size_t>(position) + writer.Size()));
 }
 
 BGSLoadFormBuffer::BGSLoadFormBuffer(const uint32_t aChangeFlags)
@@ -95,7 +101,7 @@ bool TP_MAKE_THISCALL(BGSLoadFormBuffer_LoadFormId, BGSLoadFormBuffer, uint32_t&
         return TiltedPhoques::ThisCall(RealBGSLoadFormBuffer_ReadFormId, apThis, aFormId);
     }
 
-    if (!apThis->buffer || apThis->position >= apThis->capacity)
+    if (!apThis || !apThis->buffer || apThis->position >= apThis->capacity)
     {
         aFormId = 0;
         return false;
@@ -111,14 +117,14 @@ bool TP_MAKE_THISCALL(BGSLoadFormBuffer_LoadFormId, BGSLoadFormBuffer, uint32_t&
 
     aFormId = 0;
 
-    if (modId != 0 || baseId != 0)
+    if ((modId != 0 || baseId != 0) && World::IsCreated())
     {
         aFormId = World::Get().GetModSystem().GetGameId(modId, baseId);
         if (aFormId == 0)
             spdlog::warn("Failed to resolve form {:X}:{:X} while loading form {:X}", modId, baseId, apThis->formId);
     }
 
-    apThis->position += reader.Size() & 0xFFFFFFFF;
+    apThis->position = static_cast<uint32_t>(std::min<size_t>(apThis->capacity, static_cast<size_t>(apThis->position) + reader.Size()));
 
     return true;
 }

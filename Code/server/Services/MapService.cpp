@@ -1,5 +1,6 @@
 #include <Services/MapService.h>
 #include <GameServer.h>
+#include <common/CoopPacketSafety.h>
 
 #include <Messages/NotifyRemoveWaypoint.h>
 #include <Messages/NotifySetWaypoint.h>
@@ -17,7 +18,15 @@ MapService::MapService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
 
 void MapService::OnSetWaypointRequest(const PacketEvent<RequestSetWaypoint>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     auto& message = acMessage.Packet;
+    if (!message.WorldSpaceFormID || message.WorldSpaceFormID.ModId == 0xFFFFFFFFu ||
+        !CoopPacketSafety::AreWorldCoordinatesValid(message.Position.x, message.Position.y, message.Position.z))
+    {
+        return;
+    }
 
     NotifySetWaypoint notify{};
     notify.Position = message.Position;
@@ -32,6 +41,9 @@ void MapService::OnSetWaypointRequest(const PacketEvent<RequestSetWaypoint>& acM
 
 void MapService::OnRemoveWaypointRequest(const PacketEvent<RequestRemoveWaypoint>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer)
+        return;
+
     NotifyRemoveWaypoint notify{};
 
     const auto& partyComponent = acMessage.pPlayer->GetParty();

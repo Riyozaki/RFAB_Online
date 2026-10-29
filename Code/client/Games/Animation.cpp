@@ -122,6 +122,9 @@ bool ActorMediator::PerformAction(TESActionData* apAction) noexcept
 
 bool ActorMediator::ForceAction(TESActionData* apAction) noexcept
 {
+    if (!apAction)
+        return false;
+
     TP_THIS_FUNCTION(TAnimationStep, uint8_t, ActorMediator, TESActionData*);
     using TApplyAnimationVariables = void*(void*, TESActionData*);
 
@@ -139,7 +142,7 @@ bool ActorMediator::ForceAction(TESActionData* apAction) noexcept
         ApplyAnimationVariables(*qword_142F271B8.Get(), apAction);
     }
 
-    return result;
+    return result != 0;
 }
 
 ActionInput::ActionInput(uint32_t aParam1, Actor* apActor, BGSAction* apAction, TESObjectREFR* apTarget)

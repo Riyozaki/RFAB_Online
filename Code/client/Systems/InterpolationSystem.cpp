@@ -112,9 +112,9 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
 
                 TESObjectCELL* pParentCell = apActor->parentCell;
                 const bool hasAttachedParentCell =
-                    pParentCell && pParentCell->loadedCellData && !pParentCell->cellDetached && pParentCell->worldspace == pLocalWs;
+                    pParentCell && pParentCell->IsAttachedAndLoaded() && pParentCell->worldspace == pLocalWs;
                 const bool hasLoadedDestCell =
-                    pDestCell && pDestCell->loadedCellData && !pDestCell->cellDetached;
+                    pDestCell && pDestCell->IsAttachedAndLoaded();
 
                 if (hasAttachedParentCell &&
                     (!aInterpolationComponent.HasTrackedParentGrid || aInterpolationComponent.TrackedParentCell != pParentCell))

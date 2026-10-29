@@ -98,6 +98,8 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 void PlayerService::RestoreMultiplayerGlobalsAfterWorldReload() noexcept
 {
     m_respawnTeleportGuard.NotifyConnected(NowSteadyMsForPlayerService());
+    if (m_godmodeStart)
+        PlayerCharacter::SetGodMode(false);
     m_respawnTimer = 0.0;
     m_knockdownStart = false;
     m_godmodeStart = false;
@@ -141,6 +143,8 @@ void PlayerService::RestoreMultiplayerGlobalsAfterWorldReload() noexcept
 void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
     m_respawnTeleportGuard.NotifyDisconnected(NowSteadyMsForPlayerService());
+    if (m_godmodeStart)
+        PlayerCharacter::SetGodMode(false);
     m_respawnTimer = 0.0;
     m_knockdownStart = false;
     m_godmodeStart = false;
@@ -385,6 +389,8 @@ void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
     if (!m_transport.IsConnected() || !m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled ||
         m_respawnTeleportGuard.ShouldSuppressLegacyRespawnTeleport(NowSteadyMsForPlayerService()))
     {
+        if (m_godmodeStart)
+            PlayerCharacter::SetGodMode(false);
         m_knockdownStart = false;
         m_godmodeStart = false;
         return;
@@ -445,6 +451,9 @@ void PlayerService::RunDifficultyUpdates() const noexcept
 
 void PlayerService::RunLevelUpdates() const noexcept
 {
+    if (!m_transport.IsConnected())
+        return;
+
     // The LevelUp hook is kinda weird, so ehh, just check periodically, doesn't really cost anything.
 
     static std::chrono::steady_clock::time_point lastSendTimePoint;

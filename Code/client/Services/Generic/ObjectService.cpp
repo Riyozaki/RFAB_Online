@@ -400,9 +400,23 @@ bool IsPersonalBlessingActivator(const TESObjectREFR* apObject) noexcept
 
 void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
 {
+    if (acEvent.ObjectId == 0)
+        return;
+
+    TESObjectREFR* pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.ObjectId));
+    if (!pObject || pObject->IsDeleted() || !pObject->baseForm)
+        return;
+
     if (acEvent.ActivateFlag)
     {
-        acEvent.pObject->Activate(acEvent.pActivator, acEvent.Unk1, acEvent.pObjectToGet, acEvent.Count, acEvent.DefaultProcessing);
+        Actor* pActivator = acEvent.ActivatorId ? Cast<Actor>(TESForm::GetById(acEvent.ActivatorId)) : nullptr;
+        TESBoundObject* pObjectToGet = acEvent.ObjectToGetId ? Cast<TESBoundObject>(TESForm::GetById(acEvent.ObjectToGetId)) : nullptr;
+        if (pActivator && !pActivator->IsDeleted())
+            pObject->Activate(pActivator, acEvent.Unk1, pObjectToGet, acEvent.Count, acEvent.DefaultProcessing);
+
+        pObject = Cast<TESObjectREFR>(TESForm::GetById(acEvent.ObjectId));
+        if (!pObject || pObject->IsDeleted() || !pObject->baseForm)
+            return;
     }
 
     if (!m_transport.IsConnected())
@@ -411,29 +425,28 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
     // Personal RFAB Aedra/Daedra shrines, Universal Altars, and Standing Stones are strictly per-character:
     // forwarding Activate to peers triggers RFAB_BA_UniversalShrine.psc / TempleBlessingScript on Game.GetPlayer()
     // or locks the shrine in its cooldown state on peer clients before they can pray!
-    if (IsPersonalBlessingActivator(acEvent.pObject))
+    if (IsPersonalBlessingActivator(pObject))
         return;
 
     // On-demand registration for containers/doors activated across exterior cell boundaries or before OnCellChange.
-    if (acEvent.pObject && acEvent.pObject->baseForm &&
-        (acEvent.pObject->baseForm->formType == FormType::Container ||
-         acEvent.pObject->baseForm->formType == FormType::Door) &&
-        ShouldSyncObject(acEvent.pObject))
+    if ((pObject->baseForm->formType == FormType::Container ||
+         pObject->baseForm->formType == FormType::Door) &&
+        ShouldSyncObject(pObject))
     {
         const auto objView = m_world.view<FormIdComponent, ObjectComponent>();
         const bool alreadyAssigned = std::any_of(
             objView.begin(),
             objView.end(),
-            [objView, formId = acEvent.pObject->formID](entt::entity e)
+            [objView, formId = pObject->formID](entt::entity e)
             { return objView.get<FormIdComponent>(e).Id == formId; });
 
         if (!alreadyAssigned)
         {
             ObjectData objectData{};
-            if (m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, objectData.Id) &&
+            if (m_world.GetModSystem().GetServerModId(pObject->formID, objectData.Id) &&
                 objectData.Id.ModId != 0xFFFFFFFF)
             {
-                if (TESObjectCELL* pObjCell = acEvent.pObject->GetParentCellEx())
+                if (TESObjectCELL* pObjCell = pObject->GetParentCellEx())
                     m_world.GetModSystem().GetServerModId(pObjCell->formID, objectData.CellId);
                 if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
                 {
@@ -441,14 +454,14 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
                         m_world.GetModSystem().GetServerModId(pWs->formID, objectData.WorldSpaceId);
                 }
                 objectData.CurrentCoords = GridCellCoords::CalculateGridCellCoords(
-                    acEvent.pObject->position.x, acEvent.pObject->position.y);
-                if (Lock* pObjLock = acEvent.pObject->GetLock())
+                    pObject->position.x, pObject->position.y);
+                if (Lock* pObjLock = pObject->GetLock())
                 {
                     objectData.CurrentLockData.IsLocked = pObjLock->IsLocked();
                     objectData.CurrentLockData.LockLevel = pObjLock->lockLevel;
                 }
-                if (acEvent.pObject->baseForm->formType == FormType::Container)
-                    objectData.CurrentInventory = acEvent.pObject->GetInventory();
+                if (pObject->baseForm->formType == FormType::Container)
+                    objectData.CurrentInventory = pObject->GetInventory();
 
                 AssignObjectsRequest assignReq{};
                 assignReq.Objects.push_back(std::move(objectData));
@@ -457,7 +470,7 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
         }
     }
 
-    if (Lock* pLock = acEvent.pObject->GetLock())
+    if (Lock* pLock = pObject->GetLock())
     {
         // IMPORTANT: Check pLock->IsLocked() (Flag::kLocked = 1 << 0), NOT (pLock->flags & 0xFF)!
         // Leveled locks keep Flag::kLeveled (1 << 2 = 0x04) set in pLock->flags even after being unlocked,
@@ -466,33 +479,33 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
             return;
     }
 
-    const bool isTargetActor = (acEvent.pObject->formType == Actor::Type);
-    const bool isTempTarget = ((acEvent.pObject->formID & 0xFF000000u) == 0xFF000000u);
+    const bool isTargetActor = (pObject->formType == Actor::Type);
+    const bool isTempTarget = ((pObject->formID & 0xFF000000u) == 0xFF000000u);
     const bool isTeleportLoadDoor =
-        (acEvent.pObject->baseForm &&
-         acEvent.pObject->baseForm->formType == FormType::Door &&
-         acEvent.pObject->extraData.Contains(ExtraDataType::Teleport));
+        (pObject->baseForm &&
+         pObject->baseForm->formType == FormType::Door &&
+         pObject->extraData.Contains(ExtraDataType::Teleport));
     if (!CoopWorldStabilizer::ShouldBroadcastObjectActivation(isTargetActor, isTempTarget, isTeleportLoadDoor))
         return;
 
     ActivateRequest request;
 
-    if (!m_world.GetModSystem().GetServerModId(acEvent.pObject->formID, request.Id) ||
+    if (!m_world.GetModSystem().GetServerModId(pObject->formID, request.Id) ||
         request.Id.ModId == 0xFFFFFFFFu)
     {
-        spdlog::debug("Skipping non-static object activation form id {:X}", acEvent.pObject->formID);
+        spdlog::debug("Skipping non-static object activation form id {:X}", pObject->formID);
         return;
     }
 
-    if (TESObjectCELL* pCell = acEvent.pObject->GetParentCellEx())
+    if (TESObjectCELL* pCell = pObject->GetParentCellEx())
     {
         m_world.GetModSystem().GetServerModId(pCell->formID, request.CellId);
     }
 
-    if (!acEvent.pActivator)
+    if (acEvent.ActivatorId == 0)
         return;
 
-    const entt::entity activatorEntity = m_world.GetCharacterService().FindAnyEntityByFormId(acEvent.pActivator->formID);
+    const entt::entity activatorEntity = m_world.GetCharacterService().FindAnyEntityByFormId(acEvent.ActivatorId);
     if (activatorEntity == entt::null)
         return;
 

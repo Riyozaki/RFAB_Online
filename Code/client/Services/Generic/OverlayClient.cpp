@@ -11,6 +11,8 @@
 #include <Messages/TeleportRequest.h>
 
 #include <Events/SetTimeCommandEvent.h>
+#include <Games/Skyrim/Interface/UI.h>
+#include <Misc/BSFixedString.h>
 #include <PlayerCharacter.h>
 #include <Utils.h>
 #include <common/RfabModpackCompat.h>
@@ -31,6 +33,9 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
 {
     if (message->GetName() == "ui-event")
     {
+        if (!World::IsCreated())
+            return true;
+
         auto pArguments = message->GetArgumentList();
 
         auto eventName = pArguments->GetString(0).ToString();
@@ -53,29 +58,29 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
         else if (eventName == "setTime")
             ProcessSetTimeCommand(eventArgs);
         else if (eventName == "launchParty")
-            World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().CreateParty(); });
+            World::Get().QueueMainThreadTask([]() { World::Get().GetPartyService().CreateParty(); });
         else if (eventName == "leaveParty")
-            World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().LeaveParty(); });
+            World::Get().QueueMainThreadTask([]() { World::Get().GetPartyService().LeaveParty(); });
         else if (eventName == "createPartyInvite")
         {
             const uint32_t playerId = eventArgs->GetInt(0);
-            World::Get().GetRunner().Queue([playerId]() { World::Get().GetPartyService().CreateInvite(playerId); });
+            World::Get().QueueMainThreadTask([playerId]() { World::Get().GetPartyService().CreateInvite(playerId); });
         }
         else if (eventName == "acceptPartyInvite")
         {
             const uint32_t inviterId = eventArgs->GetInt(0);
-            // push to main thread because the party service has to check validity of invite thread safely
-            World::Get().GetRunner().Queue([inviterId]() { World::Get().GetPartyService().AcceptInvite(inviterId); });
+            // Push to WinMain via QueueMainThreadTask so invites work even while ESC / StatsMenu / MapMenu is open.
+            World::Get().QueueMainThreadTask([inviterId]() { World::Get().GetPartyService().AcceptInvite(inviterId); });
         }
         else if (eventName == "kickPartyMember")
         {
             const uint32_t playerId = eventArgs->GetInt(0);
-            World::Get().GetRunner().Queue([playerId]() { World::Get().GetPartyService().KickPartyMember(playerId); });
+            World::Get().QueueMainThreadTask([playerId]() { World::Get().GetPartyService().KickPartyMember(playerId); });
         }
         else if (eventName == "changePartyLeader")
         {
             const uint32_t playerId = eventArgs->GetInt(0);
-            World::Get().GetRunner().Queue([playerId]() { World::Get().GetPartyService().ChangePartyLeader(playerId); });
+            World::Get().QueueMainThreadTask([playerId]() { World::Get().GetPartyService().ChangePartyLeader(playerId); });
         }
         else if (eventName == "teleportToPlayer")
             ProcessTeleportMessage(eventArgs);
@@ -85,7 +90,7 @@ bool OverlayClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefR
         {
             const bool enabled = eventArgs->GetSize() > 0 ? eventArgs->GetBool(0) : true;
             const bool notifyHud = eventArgs->GetSize() > 1 ? eventArgs->GetBool(1) : false;
-            World::Get().GetRunner().Queue([enabled, notifyHud]() {
+            World::Get().QueueMainThreadTask([enabled, notifyHud]() {
                 World::Get().GetRfabAdapterService().SetLocalAllyProtectionEnabled(enabled, notifyHud);
             });
         }
@@ -105,7 +110,7 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
     const std::string endpoint = RfabCompat::NormalizeServerEndpoint(rawIp, fallbackPort);
     spdlog::info("[RFAB Connect] Normalized connect target '{}' (port={}) -> '{}'", rawIp, fallbackPort, endpoint);
 
-    World::Get().GetRunner().Queue(
+    World::Get().QueueMainThreadTask(
         [endpoint, password]()
         {
             World::Get().GetTransport().SetServerPassword(password);
@@ -116,13 +121,27 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
                 Utils::ShowHudMessage(String("Сначала загрузите сохранение или начните новую игру, затем нажмите F2 -> Connect"));
                 return;
             }
+            if (auto* pUi = UI::Get())
+            {
+                static const BSFixedString* s_pStatsMenu = new BSFixedString("StatsMenu");
+                static const BSFixedString* s_pJournalMenu = new BSFixedString("Journal Menu");
+                static const BSFixedString* s_pTweenMenu = new BSFixedString("TweenMenu");
+                static const BSFixedString* s_pMapMenu = new BSFixedString("MapMenu");
+                if (!pUi->GetMenuOpen(*s_pStatsMenu) &&
+                    (pUi->GetMenuOpen(*s_pJournalMenu) ||
+                     pUi->GetMenuOpen(*s_pTweenMenu) ||
+                     pUi->GetMenuOpen(*s_pMapMenu)))
+                {
+                    pUi->CloseAllMenus();
+                }
+            }
             World::Get().GetTransport().ConnectToServer(endpoint, password);
         });
 }
 
 void OverlayClient::ProcessDisconnectMessage()
 {
-    World::Get().GetRunner().Queue([]() { World::Get().GetTransport().Close(); });
+    World::Get().QueueMainThreadTask([]() { World::Get().GetTransport().Close(); });
 }
 
 void OverlayClient::ProcessRevealPlayersMessage()
@@ -139,7 +158,7 @@ void OverlayClient::ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs)
         RfabCompat::TacticalChatCommand tacCmd{};
         if (RfabCompat::ParseTacticalChatCommand(contents, tacCmd))
         {
-            World::Get().GetRunner().Queue(
+            World::Get().QueueMainThreadTask(
                 [tacCmd = std::move(tacCmd)]()
                 {
                     World::Get().GetRfabAdapterService().ExecuteTacticalChatCommand(tacCmd);
@@ -150,7 +169,7 @@ void OverlayClient::ProcessChatMessage(CefRefPtr<CefListValue> aEventArgs)
         const auto msgType = static_cast<ChatMessageType>(aEventArgs->GetInt(0));
         spdlog::info(L"Send chat message of type {}: '{}' ", msgType, aEventArgs->GetString(1).ToWString());
 
-        World::Get().GetRunner().Queue(
+        World::Get().QueueMainThreadTask(
             [msgType, contents = std::move(contents)]()
             {
                 SendChatMessageRequest messageRequest;
@@ -176,7 +195,7 @@ void OverlayClient::ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs)
 void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 {
     const uint32_t playerId = aEventArgs->GetInt(0);
-    World::Get().GetRunner().Queue(
+    World::Get().QueueMainThreadTask(
         [playerId]()
         {
             TeleportRequest request{};
@@ -187,7 +206,7 @@ void OverlayClient::ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs)
 
 void OverlayClient::ProcessToggleDebugUI()
 {
-    World::Get().GetRunner().Queue(
+    World::Get().QueueMainThreadTask(
         []() { World::Get().GetDebugService().m_showDebugStuff = !World::Get().GetDebugService().m_showDebugStuff; });
 }
 

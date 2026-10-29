@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+
+#include <encoding/Opcodes.h>
 
 namespace CoopWorldStabilizer
 {
@@ -356,5 +359,201 @@ namespace CoopWorldStabilizer
             return false;
         }
         return true;
+    }
+    /**
+     * Prevents 100ms exterior cell-border ownership ping-pong (`DC568` Wolf / `105A3C` Rabbit):
+     * after a client relinquishes a locally owned actor (`CancelServerAssignment` -> `RequestOwnershipTransfer`),
+     * suppress automatic party-leader ownership re-claims on that FormID for `kDefaultCooldownMs` so an actor
+     * straddling the 5x5 `uGridsToLoad` seam cannot bounce `Local -> Remote -> Claim -> Drop` 10x/sec.
+     */
+    class RelinquishClaimCooldownTracker
+    {
+    public:
+        static constexpr uint64_t kDefaultCooldownMs = 3000ULL;
+
+        void RecordRelinquished(uint32_t aFormId, uint64_t aNowMs, uint64_t aCooldownMs = kDefaultCooldownMs) noexcept
+        {
+            if (aFormId == 0 || aFormId == 0x14)
+                return;
+            if (m_cooldownUntilMs.size() > 2048)
+                m_cooldownUntilMs.clear();
+            m_cooldownUntilMs[aFormId] = aNowMs + aCooldownMs;
+        }
+
+        [[nodiscard]] bool IsInCooldown(uint32_t aFormId, uint64_t aNowMs) noexcept
+        {
+            if (aFormId == 0)
+                return false;
+            const auto it = m_cooldownUntilMs.find(aFormId);
+            if (it == m_cooldownUntilMs.end())
+                return false;
+            if (aNowMs >= it->second)
+            {
+                m_cooldownUntilMs.erase(it);
+                return false;
+            }
+            return true;
+        }
+
+        void Clear() noexcept
+        {
+            m_cooldownUntilMs.clear();
+        }
+
+    private:
+        std::unordered_map<uint32_t, uint64_t> m_cooldownUntilMs{};
+    };
+
+    /**
+     * Pure predicate deciding whether a materialized remote world actor is safe to detached-sanitize
+     * (`SendAnimationEvent("attackStop")` + `EvaluatePackage()`) during `DematerializeRemoteView` or
+     * `CancelServerAssignment`. Unloading/detached cells or actors without live 3D must NEVER receive
+     * `BShkbAnimationGraph` notifications or AI package evaluations while `TES::PurgeExteriorCells` runs.
+     */
+    [[nodiscard]] constexpr bool CanTouchActorGraphDuringDetach(
+        bool aCellAttachedAndLoaded,
+        bool aHasNiNode3D,
+        bool aIsStillLoading,
+        bool aIsDisabled,
+        bool aIsDeleted) noexcept
+    {
+        return aCellAttachedAndLoaded &&
+               aHasNiNode3D &&
+               !aIsStillLoading &&
+               !aIsDisabled &&
+               !aIsDeleted;
+    }
+
+    /**
+     * Maximum number of reliable world-mutating packets buffered in FIFO order while Skyrim's
+     * simulation is paused (`Main::freezeTime == true`, e.g. reading RFAB perk trees in `StatsMenu`,
+     * viewing `MapMenu`, or pausing in `Journal Menu`).
+     */
+    inline constexpr size_t kMaxPausedInboundQueueSize = 4096;
+
+    enum class MainLoopUpdateMode : uint8_t
+    {
+        kSkip = 0,
+        kFullSimulationUpdate,
+        kPausedNetworkAndSavePump,
+    };
+
+    /**
+     * Selects how `HookMainLoop` (`WinMain`) should drive client updates on the current frame:
+     * - `kSkip`: engine shutting down/resetting, or on `Main Menu` / `Loading Menu`, or world not loaded yet.
+     * - `kFullSimulationUpdate`: world simulation is unpaused (`!freezeTime`) and `SkyrimVM` ticked normally.
+     * - `kPausedNetworkAndSavePump`: player is in a loaded world (`StatsMenu` RFAB perks, `MapMenu`,
+     *   `Journal Menu` ESC, or `Console`), keeping GNS socket heartbeats, connection handshakes, party/chat UI,
+     *   and coordinated save/load barriers alive without touching paused 3D actors, Havok, or `Sky`.
+     */
+    [[nodiscard]] constexpr MainLoopUpdateMode SelectMainLoopUpdateMode(
+        bool aQuitGame,
+        bool aResetGame,
+        bool aFullReset,
+        bool aReloadContent,
+        bool aMainOrLoadingMenuOpen,
+        bool aSimulationUnpaused,
+        bool aVmWasActive,
+        bool aHasLoadedPlayerWorld) noexcept
+    {
+        if (aQuitGame || aResetGame || aFullReset || aReloadContent || aMainOrLoadingMenuOpen || !aHasLoadedPlayerWorld)
+            return MainLoopUpdateMode::kSkip;
+
+        if (!aSimulationUnpaused)
+            return MainLoopUpdateMode::kPausedNetworkAndSavePump;
+
+        if (aVmWasActive)
+            return MainLoopUpdateMode::kFullSimulationUpdate;
+
+        return MainLoopUpdateMode::kSkip;
+    }
+
+    enum class PausedInboundPacketAction : uint8_t
+    {
+        kRejectOutOfRange = 0,
+        kDropStaleUnreliable,
+        kDispatchImmediately,
+        kQueueUntilUnpaused,
+    };
+
+    /**
+     * Classifies inbound server packets received while local Skyrim simulation is paused (`freezeTime == true`):
+     * - `kRejectOutOfRange`: corrupted/unknown opcode `>= kServerOpcodeMax`.
+     * - `kDropStaleUnreliable`: 30 Hz unreliable movement frames (`kServerReferencesMoveRequest`) that would
+     *   otherwise pile up thousands of stale snapshots during multi-minute RFAB `StatsMenu` perk planning.
+     * - `kDispatchImmediately`: pure overlay chat and coordinated save/load barrier control messages that have
+     *   zero ordering coupling to player join/leave or world entity lifecycles.
+     * - `kQueueUntilUnpaused`: ALL other reliable packets (`AuthenticationResponse`, `StringCacheUpdate`,
+     *   `NotifyPlayerList`, `NotifyPlayerJoined`, `NotifyPlayerLeft`, `NotifyParty*`, `NotifySpawnData`, etc.)
+     *   queued in strict single-stream causal FIFO order so `PlayerJoined` can never overtake `PlayerLeft`
+     *   and `ConnectedEvent` never mutates cells/globals while `freezeTime == true`.
+     */
+    [[nodiscard]] constexpr PausedInboundPacketAction ClassifyPausedInboundPacket(uint32_t aOpcode) noexcept
+    {
+        if (aOpcode >= static_cast<uint32_t>(kServerOpcodeMax))
+            return PausedInboundPacketAction::kRejectOutOfRange;
+
+        switch (static_cast<ServerOpcode>(aOpcode))
+        {
+        case kServerReferencesMoveRequest:
+            return PausedInboundPacketAction::kDropStaleUnreliable;
+
+        case kNotifyChatMessageBroadcast:
+        case kNotifyPrepareSave:
+        case kNotifyCommitSave:
+        case kNotifyExecuteLoad:
+            return PausedInboundPacketAction::kDispatchImmediately;
+
+        default:
+            return PausedInboundPacketAction::kQueueUntilUnpaused;
+        }
+    }
+
+    /**
+     * Bounds check for `BGSSaveFormBuffer::WriteId`: writing two `uint32_t` VarInts (`modId` + `baseId`)
+     * requires up to `5 + 5 = 10` bytes remaining in `[aPosition, aCapacity)`.
+     */
+    [[nodiscard]] constexpr bool CanWriteFormIdVarIntsToSaveBuffer(
+        const void* apBuffer,
+        uint32_t aPosition,
+        uint32_t aCapacity) noexcept
+    {
+        return apBuffer != nullptr && aPosition < aCapacity && (aCapacity - aPosition) >= 10u;
+    }
+
+    /**
+     * `ActorMagicCaster::HookSpellCast` execution policy:
+     * Organic AI/input spell casts on remote-owned actors (`aIsRemoteActor && !aIsSpellCastOverridden`)
+     * must be suppressed, whereas programmatic remote casts initiated inside `ScopedSpellCastOverride`
+     * (`MagicService::OnNotifySpellCast -> CastSpellImmediate`) MUST run `RealSpellCast` so release FX,
+     * sound, and concentration channel state initialize properly.
+     */
+    [[nodiscard]] constexpr bool ShouldAllowHookSpellCastExecution(
+        bool aIsRemoteActor,
+        bool aIsSpellCastOverridden) noexcept
+    {
+        return !aIsRemoteActor || aIsSpellCastOverridden;
+    }
+
+    [[nodiscard]] constexpr bool ShouldTriggerLocalSpellCastEvent(
+        bool aIsLocalActor,
+        bool aIsSpellCastOverridden,
+        bool aHasResolvedSpell) noexcept
+    {
+        return aIsLocalActor && !aIsSpellCastOverridden && aHasResolvedSpell;
+    }
+
+    /**
+     * `SubtitleManager::HookShowSubtitle` sync filter:
+     * Only broadcast subtitles spoken by locally owned non-player NPCs while connected — never echo
+     * subtitles originating from remote-owned puppets (`aIsRemoteActor == true`) or local/remote players.
+     */
+    [[nodiscard]] constexpr bool ShouldTriggerSubtitleSync(
+        bool aWorldReadyAndConnected,
+        bool aHasActorAndExtension,
+        bool aIsRemoteActor,
+        bool aIsPlayerActor) noexcept
+    {
+        return aWorldReadyAndConnected && aHasActorAndExtension && !aIsRemoteActor && !aIsPlayerActor;
     }
 } // namespace CoopWorldStabilizer

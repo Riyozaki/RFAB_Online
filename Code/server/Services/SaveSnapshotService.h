@@ -34,7 +34,7 @@ struct CoordinatedSaveAck;
 class SaveSnapshotCoordinator
 {
 public:
-    static constexpr uint64_t kDefaultBarrierTimeoutMs = 8000;
+    static constexpr uint64_t kDefaultBarrierTimeoutMs = 12000;
     static constexpr size_t kDefaultRingSize = 3;
     static constexpr size_t kMaxSnapshotHistory = 8;
 

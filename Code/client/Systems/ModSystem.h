@@ -22,6 +22,7 @@ struct ModSystem
 
 protected:
     void HandleMods(const Mods& acMods) noexcept;
+    void OnDisconnected(const struct DisconnectedEvent&) noexcept;
 
 private:
     struct GameMod
@@ -32,6 +33,7 @@ private:
 
     mutable std::shared_mutex m_mutex;
     entt::scoped_connection m_modsConnection;
+    entt::scoped_connection m_disconnectedConnection;
     Map<uint16_t, uint32_t> m_liteToServer;
     Map<uint32_t, GameMod> m_serverToGame;
     uint32_t m_standardToServer[0x100];

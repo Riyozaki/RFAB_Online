@@ -26,6 +26,7 @@
 #include <ScriptExtender.h>
 #include <Services/DiscordService.h>
 #include <common/CoopPacketSafety.h>
+#include <common/CoopWorldStabilizer.h>
 #include <Utils.h>
 
 // #include <imgui_internal.h>
@@ -116,7 +117,39 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
         return;
     }
 
-    m_messageHandlers[pMessage->GetOpcode()](pMessage);
+    const uint32_t opcode = static_cast<uint32_t>(pMessage->GetOpcode());
+    if (opcode >= static_cast<uint32_t>(kServerOpcodeMax) || !m_messageHandlers[opcode])
+    {
+        spdlog::error("[RFAB Transport] Rejecting inbound server packet with invalid/unhandled opcode {}", opcode);
+        return;
+    }
+
+    if (m_pollingWhilePaused)
+    {
+        switch (CoopWorldStabilizer::ClassifyPausedInboundPacket(opcode))
+        {
+        case CoopWorldStabilizer::PausedInboundPacketAction::kRejectOutOfRange:
+        case CoopWorldStabilizer::PausedInboundPacketAction::kDropStaleUnreliable:
+            return;
+
+        case CoopWorldStabilizer::PausedInboundPacketAction::kDispatchImmediately:
+            m_messageHandlers[opcode](pMessage);
+            return;
+
+        case CoopWorldStabilizer::PausedInboundPacketAction::kQueueUntilUnpaused:
+            if (m_pausedInboundQueue.size() >= CoopWorldStabilizer::kMaxPausedInboundQueueSize)
+            {
+                spdlog::warn(
+                    "[RFAB Transport] Paused inbound queue reached cap ({}); dropping oldest queued packet",
+                    CoopWorldStabilizer::kMaxPausedInboundQueueSize);
+                m_pausedInboundQueue.pop_front();
+            }
+            m_pausedInboundQueue.push_back(std::move(pMessage));
+            return;
+        }
+    }
+
+    m_messageHandlers[opcode](pMessage);
 }
 
 void TransportService::OnConnected()
@@ -193,6 +226,7 @@ void TransportService::OnConnected()
 void TransportService::OnDisconnected(EDisconnectReason aReason)
 {
     m_connected = false;
+    ClearPausedInboundPackets();
     World::SetConnectedHint(false);
     World::SetContainerMenuOpenHint(false);
 
@@ -210,8 +244,50 @@ double TransportService::GetMessageReceiveTime() const noexcept
     return static_cast<double>(GetCurrentMessageReceiveTime()) / 1000.0;
 }
 
+void TransportService::PollWhileSimulationPaused() noexcept
+{
+    if (auto* pUtils = SteamNetworkingUtils())
+        m_lastPollTime = static_cast<double>(pUtils->GetLocalTimestamp()) / 1000.0;
+
+    const bool prevPaused = m_pollingWhilePaused;
+    m_pollingWhilePaused = true;
+    Update();
+    m_pollingWhilePaused = prevPaused;
+}
+
+void TransportService::FlushPausedInboundPackets() noexcept
+{
+    if (m_pausedInboundQueue.empty())
+        return;
+
+    std::deque<UniquePtr<ServerMessage>> pending;
+    pending.swap(m_pausedInboundQueue);
+
+    for (auto& pMessage : pending)
+    {
+        // Check underlying GNS transport (`Client::IsConnected()`), NOT `m_connected`:
+        // `m_connected` only becomes `true` inside `HandleAuthenticationResponse()`, so checking
+        // `m_connected` here would drop a queued `AuthenticationResponse` handshake packet!
+        if (!IsConnected())
+            break;
+        if (!pMessage)
+            continue;
+
+        const uint32_t opcode = static_cast<uint32_t>(pMessage->GetOpcode());
+        if (opcode < static_cast<uint32_t>(kServerOpcodeMax) && m_messageHandlers[opcode])
+            m_messageHandlers[opcode](pMessage);
+    }
+}
+
+void TransportService::ClearPausedInboundPackets() noexcept
+{
+    m_pausedInboundQueue.clear();
+}
+
 void TransportService::HandleUpdate(const UpdateEvent& acEvent) noexcept
 {
+    FlushPausedInboundPackets();
+
     if (auto* pUtils = SteamNetworkingUtils())
         m_lastPollTime = static_cast<double>(pUtils->GetLocalTimestamp()) / 1000.0;
 

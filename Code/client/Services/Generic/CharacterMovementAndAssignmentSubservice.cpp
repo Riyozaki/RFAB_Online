@@ -323,9 +323,26 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 
     if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity); pRemoteComponent)
     {
-        // Never steal actor ownership onto a downed party leader or from a remote player summon!
+        const TES* pTes = TES::Get();
+        const bool cellAttached = pActor->parentCell != nullptr && pActor->parentCell->IsAttachedAndLoaded();
+        const bool insideSafeClaimMargin =
+            cellAttached &&
+            (pActor->GetWorldSpace() == nullptr ||
+             (pTes != nullptr &&
+              CoopWorldView::IsInsideExteriorEntryMargin(
+                  GridCellCoords(pTes->centerGridX, pTes->centerGridY),
+                  pActor->position.x,
+                  pActor->position.y,
+                  pActor->IsDragon())));
+        const bool inRelinquishCooldown =
+            m_relinquishClaimCooldowns.IsInCooldown(pActor->formID, NowSteadyWorldViewMs());
+
+        // Never steal actor ownership onto a downed party leader, from a remote player summon, or across a
+        // 5x5 exterior border seam right after relinquishing (`DC568` Wolf / `105A3C` Rabbit ping-pong guard)!
         if (m_world.GetPartyService().IsLeader() &&
             !m_world.GetDownedStateService().IsLocalPlayerDowned() &&
+            insideSafeClaimMargin &&
+            !inRelinquishCooldown &&
             !pActor->IsInCombat() &&
             !pActor->IsTemporary() &&
             !pActor->IsMount() &&
@@ -415,18 +432,27 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 
     if (isPlayer)
     {
-        auto& entries = message.FaceTints.Entries;
-        const auto& tints = PlayerCharacter::Get()->GetTints();
-        entries.resize(tints.length);
-
-        for (auto i = 0u; i < tints.length; ++i)
+        if (auto* pLocalPlayer = PlayerCharacter::Get())
         {
-            entries[i].Alpha = tints[i]->alpha;
-            entries[i].Color = tints[i]->color;
-            entries[i].Type = tints[i]->type;
+            auto& entries = message.FaceTints.Entries;
+            const auto& tints = pLocalPlayer->GetTints();
+            entries.clear();
+            entries.reserve(tints.length);
 
-            if (tints[i]->texture)
-                entries[i].Name = tints[i]->texture->name.AsAscii();
+            for (auto i = 0u; i < tints.length; ++i)
+            {
+                const auto* pTint = tints[i];
+                if (!pTint)
+                    continue;
+
+                auto& entry = entries.emplace_back();
+                entry.Alpha = pTint->alpha;
+                entry.Color = pTint->color;
+                entry.Type = pTint->type;
+
+                if (pTint->texture && pTint->texture->name.AsAscii())
+                    entry.Name = pTint->texture->name.AsAscii();
+            }
         }
 
         // Capture exact runtime RGB hair color (both vanilla BGSColorForm and RaceMenu custom HairColorCustom)

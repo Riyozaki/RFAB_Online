@@ -1,9 +1,13 @@
 #pragma once
 
+#include <Structs/Inventory.h>
+#include <unordered_map>
+
 struct World;
 struct TransportService;
 
 struct UpdateEvent;
+struct DisconnectedEvent;
 struct NotifyObjectInventoryChanges;
 struct NotifyInventoryChanges;
 struct InventoryChangeEvent;
@@ -51,8 +55,20 @@ struct InventoryService
      */
     void OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept;
     void OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept;
+    void ResetForWorldReload() noexcept;
 
 private:
+    struct PendingNpcAmmoDelta
+    {
+        uint32_t ServerId{0};
+        uint32_t ActorFormId{0};
+        Inventory::Entry Item{};
+        bool UpdateClients{true};
+    };
+
+    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+    void FlushPendingNpcAmmoDeltas(bool aForceFlushAll) noexcept;
+
     /**
      * Checks whether local actors their weapon draw states have changed,
      * and if so, send the new states to the server.
@@ -68,7 +84,11 @@ private:
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
 
+    double m_npcAmmoFlushAccumSec{0.0};
+    std::unordered_map<uint64_t, PendingNpcAmmoDelta> m_pendingNpcAmmoDeltas{};
+
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_inventoryConnection;
     entt::scoped_connection m_equipmentConnection;
     entt::scoped_connection m_inventoryChangeConnection;

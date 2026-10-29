@@ -10,6 +10,7 @@
 #include <Messages/NotifyDrawWeapon.h>
 
 #include <Events/UpdateEvent.h>
+#include <Events/DisconnectedEvent.h>
 #include <Events/InventoryChangeEvent.h>
 #include <Events/EquipmentChangeEvent.h>
 
@@ -37,6 +38,7 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     , m_transport(aTransport)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&InventoryService::OnUpdate>(this);
+    m_disconnectConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&InventoryService::OnDisconnected>(this);
     m_inventoryConnection = m_dispatcher.sink<InventoryChangeEvent>().connect<&InventoryService::OnInventoryChangeEvent>(this);
     m_equipmentConnection = m_dispatcher.sink<EquipmentChangeEvent>().connect<&InventoryService::OnEquipmentChangeEvent>(this);
     m_inventoryChangeConnection = m_dispatcher.sink<NotifyInventoryChanges>().connect<&InventoryService::OnNotifyInventoryChanges>(this);
@@ -44,8 +46,72 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     m_drawWeaponChangeConnection = m_dispatcher.sink<NotifyDrawWeapon>().connect<&InventoryService::OnNotifyDrawWeapon>(this);
 }
 
+void InventoryService::OnDisconnected(const DisconnectedEvent&) noexcept
+{
+    ResetForWorldReload();
+}
+
+void InventoryService::ResetForWorldReload() noexcept
+{
+    m_pendingNpcAmmoDeltas.clear();
+    m_npcAmmoFlushAccumSec = 0.0;
+}
+
+void InventoryService::FlushPendingNpcAmmoDeltas(const bool aForceFlushAll) noexcept
+{
+    if (m_pendingNpcAmmoDeltas.empty())
+        return;
+
+    if (!m_transport.IsConnected())
+    {
+        m_pendingNpcAmmoDeltas.clear();
+        return;
+    }
+
+    for (auto it = m_pendingNpcAmmoDeltas.begin(); it != m_pendingNpcAmmoDeltas.end();)
+    {
+        const PendingNpcAmmoDelta& entry = it->second;
+        const Actor* pActor = Cast<Actor>(TESForm::GetById(entry.ActorFormId));
+        const bool flushNow = aForceFlushAll || !pActor || pActor->IsDead() || pActor->IsDeleted();
+        if (!flushNow)
+        {
+            ++it;
+            continue;
+        }
+
+        if (entry.Item.Count != 0)
+        {
+            RequestInventoryChanges request{};
+            request.ServerId = entry.ServerId;
+            request.Item = entry.Item;
+            request.Drop = false;
+            request.UpdateClients = entry.UpdateClients;
+            m_transport.Send(request);
+
+            spdlog::debug(
+                "FlushPendingNpcAmmoDeltas: flushed batched NPC ammo delta, item: {:X}, count: {}, actor: {:X}",
+                entry.Item.BaseId.LogFormat(),
+                entry.Item.Count,
+                entry.ActorFormId);
+        }
+
+        it = m_pendingNpcAmmoDeltas.erase(it);
+    }
+}
+
 void InventoryService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 {
+    m_npcAmmoFlushAccumSec += acUpdateEvent.Delta;
+    if (m_npcAmmoFlushAccumSec >= 1.5)
+    {
+        m_npcAmmoFlushAccumSec = 0.0;
+        FlushPendingNpcAmmoDeltas(true);
+    }
+    else if (!m_pendingNpcAmmoDeltas.empty())
+    {
+        FlushPendingNpcAmmoDeltas(false);
+    }
+
     RunWeaponStateUpdates();
     RunNakedNPCBugChecks();
 }
@@ -92,6 +158,37 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
             __FUNCTION__ ": skipping inventory change for unassigned form id: {:X}, isLeader: {}, item id: {:X}, count: {}", acEvent.FormId,
             isLeader, acEvent.Item.BaseId.LogFormat(), acEvent.Item.Count);
         return;
+    }
+
+    // Coalesce per-shot arrow/bolt expenditure (`count < 0`, `!Drop`) on live non-player NPC archers
+    // over a 1.5s window so multi-archer fights don't flood reliable packets, container mutations, and info logs.
+    if (acEvent.FormId != 0x14 && !acEvent.Drop && acEvent.Item.Count < 0)
+    {
+        Actor* pLiveNpc = Cast<Actor>(TESForm::GetById(acEvent.FormId));
+        if (pLiveNpc && !pLiveNpc->IsDead())
+        {
+            const uint32_t itemFormId = m_world.GetModSystem().GetGameId(acEvent.Item.BaseId);
+            const TESForm* pItemForm = itemFormId != 0 ? TESForm::GetById(itemFormId) : nullptr;
+            if (pItemForm && pItemForm->formType == FormType::Ammo)
+            {
+                const uint64_t batchKey =
+                    (static_cast<uint64_t>(serverIdRes.value()) << 32) ^ static_cast<uint64_t>(itemFormId);
+                auto& pending = m_pendingNpcAmmoDeltas[batchKey];
+                if (pending.ServerId == 0)
+                {
+                    pending.ServerId = serverIdRes.value();
+                    pending.ActorFormId = acEvent.FormId;
+                    pending.Item = acEvent.Item;
+                    pending.UpdateClients = acEvent.UpdateClients;
+                }
+                else
+                {
+                    pending.Item.Count += acEvent.Item.Count;
+                    pending.UpdateClients = pending.UpdateClients || acEvent.UpdateClients;
+                }
+                return;
+            }
+        }
     }
 
     RequestInventoryChanges request;

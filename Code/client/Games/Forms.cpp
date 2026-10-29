@@ -41,18 +41,25 @@ void BGSListForm::AddForm(TESForm* apForm) noexcept
 
 void TESNPC::Serialize(String* apSaveBuffer) const noexcept
 {
+    if (!apSaveBuffer)
+        return;
+
     ScopedSaveLoadOverride saveLoadOverride;
 
-    char buffer[1 << 15];
+    constexpr uint32_t kNpcSerializeScratchCapacity = 1u << 18; // 256 KB reusable TLS scratch (prevents 32 KB stack overflow & engine heap-free on realloc)
+    static thread_local std::vector<char> s_npcSerializeScratch;
+    if (s_npcSerializeScratch.size() < kNpcSerializeScratchCapacity)
+        s_npcSerializeScratch.resize(kNpcSerializeScratchCapacity, '\0');
 
     BGSSaveFormBuffer saveBuffer;
-    saveBuffer.buffer = buffer;
-    saveBuffer.capacity = 1 << 15;
+    saveBuffer.buffer = s_npcSerializeScratch.data();
+    saveBuffer.capacity = kNpcSerializeScratchCapacity;
     saveBuffer.changeFlags = GetChangeFlags();
 
     Save(&saveBuffer);
 
-    apSaveBuffer->assign(saveBuffer.buffer, saveBuffer.position);
+    const uint32_t safeLength = std::min(saveBuffer.position, saveBuffer.capacity);
+    apSaveBuffer->assign(saveBuffer.buffer, safeLength);
 
     saveBuffer.buffer = nullptr;
 }
@@ -136,6 +143,8 @@ uint32_t TESForm::GetChangeFlags() const noexcept
     POINTER_SKYRIMSE(Unk*, s_singleton, 516851);
 
     const auto pUnk = *(s_singleton.Get());
+    if (!pUnk || !pUnk->unk330)
+        return 0;
 
     ChangeFlags changeFlags;
     const auto cResult = TiltedPhoques::ThisCall(internalGetChangeFlags, pUnk->unk330, formID, changeFlags);
@@ -148,6 +157,8 @@ uint32_t TESForm::GetChangeFlags() const noexcept
 TESNPC* TESNPC::Create(const String& acBuffer, const uint32_t aChangeFlags) noexcept
 {
     auto pNpc = IFormFactory::Create<TESNPC>();
+    if (!pNpc)
+        return nullptr;
 
     pNpc->Initialize();
     pNpc->Deserialize(acBuffer, aChangeFlags);

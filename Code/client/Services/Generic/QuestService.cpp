@@ -118,7 +118,7 @@ void QuestService::OnConnected(const ConnectedEvent& apEvent) noexcept
 BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent,
                                      const EventDispatcher<TESQuestStartStopEvent>*)
 {
-    if (s_inRemoteQuestUpdate || !apEvent)
+    if (s_inRemoteQuestUpdate || !apEvent || !World::IsCreated() || !World::IsConnectedCached() || ScopedSaveLoadOverride::IsOverriden())
         return BSTEventResult::kOk;
 
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
@@ -166,7 +166,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent,
 
 BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const EventDispatcher<TESQuestStageEvent>*)
 {
-    if (s_inRemoteQuestUpdate || !apEvent)
+    if (s_inRemoteQuestUpdate || !apEvent || !World::IsCreated() || !World::IsConnectedCached() || ScopedSaveLoadOverride::IsOverriden())
         return BSTEventResult::kOk;
 
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
@@ -224,7 +224,7 @@ BSTEventResult QuestService::OnEvent(const TESQuestStageEvent* apEvent, const Ev
 
 BSTEventResult QuestService::OnEvent(const TESSceneEvent* apEvent, const EventDispatcher<TESSceneEvent>*)
 {
-    if (s_inRemoteQuestUpdate || !apEvent)
+    if (s_inRemoteQuestUpdate || !apEvent || !World::IsCreated() || !World::IsConnectedCached() || ScopedSaveLoadOverride::IsOverriden())
         return BSTEventResult::kOk;
     auto pScene = Cast<BGSScene>(TESForm::GetById(apEvent->sceneFormId));
     if (!pScene)
@@ -272,7 +272,7 @@ BSTEventResult QuestService::OnEvent(const TESSceneActionEvent* apEvent, const E
 
 BSTEventResult QuestService::OnEvent(const TESScenePhaseEvent* apEvent, const EventDispatcher<TESScenePhaseEvent>*)
 {
-    if (!apEvent)
+    if (s_inRemoteQuestUpdate || !apEvent || !World::IsCreated() || !World::IsConnectedCached() || ScopedSaveLoadOverride::IsOverriden())
         return BSTEventResult::kOk;
 
     const TESSceneEvent event = {nullptr, apEvent->sceneFormId, 0};
@@ -296,6 +296,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
     const bool isLeader = m_world.Get().GetPartyService().IsLeader();
     const auto playerString = isLeader ? "leader" : "player";
     const auto isSceneMaster = aUpdate.SceneMaster == PlayerId();
+    const char* questName = pQuest->fullName.value.AsAscii() ? pQuest->fullName.value.AsAscii() : "";
 
     // Quest OnEvent()s send updates to the server where the Leader deduplicates them,
     // so most remote updates (QuestService::OnQuestUpdate) are coming from the Leader.
@@ -320,7 +321,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
                          "questStage: {}, questStatus: {}, questType: {}, SceneMaster {}, "
                          "isAnyCutscenePlaying {}, player {}, formId: {:X}, name: {}",
             aUpdate.Id.LogFormat(), formId, aUpdate.Stage, aUpdate.Status, aUpdate.ClientQuestType, PlayerId() == aUpdate.SceneMaster, pQuest->IsAnyCutscenePlaying(), PlayerId(),
-            formId, pQuest->fullName.value.AsAscii());
+            formId, questName);
         return;
     }
 
@@ -337,7 +338,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
                 __FUNCTION__ ": suppressing duplicate start {} formId: {:X}, questStage: {}, "
                              "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
                 miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-                pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+                pQuest->flags, playerString, PlayerId(), questName);
         }
         else
         {
@@ -345,7 +346,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
                 __FUNCTION__ ": remotely started {} formId: {:X}, questStage: {}, "
                              "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
                 miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-                pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+                pQuest->flags, playerString, PlayerId(), questName);
 
             bool started = false;
             pQuest->EnsureQuestStarted(started, false);
@@ -361,7 +362,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
             __FUNCTION__ ": REPORT THIS LOG, experimental remote reset {} formId: {:X}, questStage: {}, questType: {}, "
                          "isStopped: {}, flags: {:X}, {} {}, name: {}",
             miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-            pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            pQuest->flags, playerString, PlayerId(), questName);
 
         pQuest->ScriptResetAndUpdate();
         wasUpdated = true;
@@ -372,7 +373,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
             __FUNCTION__ ": remotely updated {} formId: {:X}, questStage: {}, questType: {}, "
                          "isStopped: {}, flags: {:X}, {} {}, name: {}",
             miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-            pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            pQuest->flags, playerString, PlayerId(), questName);
 
         if (pQuest->IsStageDone(aUpdate.Stage) && pQuest->currentStage >= aUpdate.Stage)
         {
@@ -394,7 +395,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
             __FUNCTION__ ": remotely stopped {} formId: {:X}, questStage: {}, questType: {}, "
                          "isStopped: {}, flags: {:X}, {} {}, name: {}",
             miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type), pQuest->IsStopped(),
-            pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            pQuest->flags, playerString, PlayerId(), questName);
         wasUpdated = StopQuest(formId);
         break;
 
@@ -403,7 +404,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
             __FUNCTION__ ": unknown remote status {} {} formId: {:X}, questStage: {}, "
                          "questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
             aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
-            pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), questName);
         break;
     }
 
@@ -412,7 +413,7 @@ void QuestService::OnQuestUpdate(const NotifyQuestUpdate& aUpdate) noexcept
             __FUNCTION__ ": failed to remotely update status {} {} formId: {:X}, questStage: "
                          "{}, questType: {}, isStopped: {}, flags: {:X}, {} {}, name: {}",
             aUpdate.Status, miscQuest, formId, aUpdate.Stage, static_cast<std::underlying_type_t<TESQuest::Type>>(pQuest->type),
-            pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), pQuest->fullName.value.AsAscii());
+            pQuest->IsStopped(), pQuest->flags, playerString, PlayerId(), questName);
     else
         m_world.GetCharacterService().NotifyRemoteQuestStageApplied();
 }
@@ -471,9 +472,10 @@ bool QuestService::StopQuest(uint32_t aformId)
     {
         if (pQuest->getState() == TESQuest::State::Stopped) // Supress duplicate or loopback quest stop
         {
+            const char* questName = pQuest->fullName.value.AsAscii() ? pQuest->fullName.value.AsAscii() : "";
             spdlog::debug(
                 __FUNCTION__ ": suppressing duplicate quest stop formId: {:X}, questStage: {}, questFlags: {:X}, questType: {}, formId: {:X}, name: {}", aformId,
-                pQuest->currentStage, static_cast<uint8_t>(pQuest->flags), static_cast<uint16_t>(pQuest->type), aformId, pQuest->fullName.value.AsAscii());
+                pQuest->currentStage, static_cast<uint8_t>(pQuest->flags), static_cast<uint16_t>(pQuest->type), aformId, questName);
         }
         else
         {
@@ -521,7 +523,16 @@ bool QuestService::IsNonSyncableQuest(TESQuest* apQuest)
 
 void QuestService::DebugDumpQuests()
 {
-    auto& quests = ModManager::Get()->quests;
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
+        return;
+
+    auto& quests = pModManager->quests;
     for (TESQuest* pQuest : quests)
-        spdlog::info("{:X}|{}|{}|{}", pQuest->formID, (uint8_t)pQuest->type, pQuest->priority, pQuest->idName.AsAscii());
+    {
+        if (!pQuest)
+            continue;
+        const char* idStr = pQuest->idName.AsAscii() ? pQuest->idName.AsAscii() : "";
+        spdlog::info("{:X}|{}|{}|{}", pQuest->formID, (uint8_t)pQuest->type, pQuest->priority, idStr);
+    }
 }

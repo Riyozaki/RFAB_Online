@@ -18,6 +18,8 @@ struct WeatherService
 
     TP_NOCOPYMOVE(WeatherService);
 
+    void OnPartyLeadershipChanged(bool aIsLeader) noexcept;
+
 protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;

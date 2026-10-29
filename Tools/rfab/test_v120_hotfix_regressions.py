@@ -320,9 +320,13 @@ def main() -> int:
     assert '"v3.1.1-backup"' in v311_backup_manifest and "426193785" in v311_backup_manifest
     v312_backup_manifest = (ROOT / "docs" / "V3.1.2_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
     assert '"v3.1.2-backup"' in v312_backup_manifest and "427038318" in v312_backup_manifest
+    v313_backup_manifest = (ROOT / "docs" / "V3.1.3_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    assert '"v3.1.3-backup"' in v313_backup_manifest and "427269248" in v313_backup_manifest
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
     assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
-    assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.3"' in build_txt
+    assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt
+    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.7"' in build_txt
+    assert '"v3.1.4"' in build_txt and '"v3.1.5"' in build_txt and '"v3.1.6"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -360,7 +364,93 @@ def main() -> int:
     assert "GetNiNode3rdPerson(" in tes_refr_h and "GetNiNode3rdPerson(false)" in facegen_cpp
     assert "NoteLocalDirectPlayerTravelInteraction" in tp_guard_h and "NoteLocalDirectPlayerTravelInteraction" in tes_refr_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 architectural regression checks passed!")
+    # 22. v3.1.4 Single-Thread WinMain Frame Architecture, Cell-Seam Stabilization & Worker-Hook Thread Safety
+    tes_cell_h = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Forms" / "TESObjectCELL.h").read_text(encoding="utf-8")
+    stabilizer_h = (ROOT / "Code" / "common" / "CoopWorldStabilizer.h").read_text(encoding="utf-8")
+    main_cpp = (ROOT / "Code" / "client" / "main.cpp").read_text(encoding="utf-8")
+    launcher_cpp = (ROOT / "Code" / "immersive_launcher" / "Launcher.cpp").read_text(encoding="utf-8")
+    downed_cpp = (ROOT / "Code" / "client" / "Services" / "DownedStateService.cpp").read_text(encoding="utf-8")
+    party_h = (ROOT / "Code" / "client" / "Services" / "PartyService.h").read_text(encoding="utf-8")
+    inv_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "InventoryService.cpp").read_text(encoding="utf-8")
+
+    vm_hook_body = skyrim_vm_cpp.split("int TP_MAKE_THISCALL(HookVMUpdate", 1)[1].split("short TP_MAKE_THISCALL(HookMainLoop", 1)[0]
+    main_hook_body = skyrim_vm_cpp.split("short TP_MAKE_THISCALL(HookMainLoop", 1)[1].split("uintptr_t TP_MAKE_THISCALL(HookVMDestructor", 1)[0]
+    assert "g_appInstance->Update()" not in vm_hook_body
+    assert "s_vmActiveSinceLastMainLoop.store(true" in vm_hook_body
+    assert "g_appInstance->Update()" in main_hook_body and "!apThis->freezeTime" in main_hook_body
+    assert "IsAttachedAndLoaded()" in tes_cell_h
+    assert "CanTouchActorGraphDuringDetach" in stabilizer_h and "RelinquishClaimCooldownTracker" in stabilizer_h
+    assert "IsActorLiveInAttachedCellWith3D" in cli_char_cpp and "m_relinquishClaimCooldowns" in cli_assign_cpp
+    assert "AtomicOrActorFlags1" in magic_target_cpp and "s_scopedTeammateRefCounts" in magic_target_cpp
+    assert "GetServerSettings().PvpEnabled" not in magic_target_cpp
+    assert "std::atomic<bool> m_isLeader" in party_h
+    assert "if (!World::IsMainThread())" in downed_cpp and "if (!World::IsMainThread())" in rfab_adapter_cpp
+    assert "FlushPendingNpcAmmoDeltas" in inv_cpp
+    assert "TiltedTrampoline" in main_cpp and "s_crashDedupMutex" in main_cpp
+    assert "mo2FromExe" in launcher_cpp
+
+    # 23. v3.1.5 Long-Session Paused-Menu Pump, Scalar ActivateEvent & Hook Hardening
+    activate_evt_h = (ROOT / "Code" / "client" / "Events" / "ActivateEvent.h").read_text(encoding="utf-8")
+    transport_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "TransportService.cpp").read_text(encoding="utf-8")
+    overlay_client_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "OverlayClient.cpp").read_text(encoding="utf-8")
+    coord_save_cpp = (ROOT / "Code" / "client" / "Services" / "CoordinatedSaveService.cpp").read_text(encoding="utf-8")
+    invis_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Effects" / "InvisibilityEffect.cpp").read_text(encoding="utf-8")
+    refs_cpp = (ROOT / "Code" / "client" / "Games" / "References.cpp").read_text(encoding="utf-8")
+
+    assert "SelectMainLoopUpdateMode" in stabilizer_h and "ClassifyPausedInboundPacket" in stabilizer_h
+    assert "UpdatePausedPump()" in main_hook_body and "void World::UpdatePausedPump() noexcept" in world_cpp
+    assert "PollWhileSimulationPaused()" in transport_cpp and "FlushPausedInboundPackets()" in transport_cpp
+    assert "opcode >= static_cast<uint32_t>(kServerOpcodeMax) || !m_messageHandlers[opcode]" in transport_cpp
+    assert "QueueMainThreadTask" in overlay_client_cpp
+    assert 'BSFixedString("StatsMenu")' in coord_save_cpp and 'BSFixedString("Console")' in coord_save_cpp
+    assert "void CoordinatedSaveService::TickWhilePaused(" in coord_save_cpp
+    assert "TESObjectREFR* pObject" not in activate_evt_h and "uint32_t ObjectId{0};" in activate_evt_h
+    assert "IsAttachedAndLoaded()" in invis_cpp
+    assert "s_cachedRfabActive" in refs_cpp and "ResolveRfabPluginMod" not in refs_cpp
+
+    # 24. v3.1.6 Adversarial Audit: Causal-FIFO Paused Queue, High-Hz MainLoop Mode, NonActorMagicCaster & Reload Polish
+    world_h = (ROOT / "Code" / "client" / "World.h").read_text(encoding="utf-8")
+    player_char_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "PlayerCharacter.cpp").read_text(encoding="utf-8")
+    assert "if (!m_connected)" not in transport_cpp and "if (!IsConnected())" in transport_cpp
+    assert "m_lastPausedPumpTime" in world_h and "cNow - m_lastPausedPumpTime" in world_cpp
+    assert "IsPausedPumpActive()" in world_h and "GetInventoryService()" in world_h
+    assert "static_cast<const ActorMagicCaster*>(apThis)" not in magic_target_cpp
+    assert "apThis->GetCasterAsActor()" in magic_target_cpp
+    pickup_slice = player_char_cpp.split("HookPickUpObject", 1)[1][:420]
+    assert "World::IsCreated()" in pickup_slice and "World::IsConnectedCached()" in pickup_slice
+    assert "!ScopedInventoryOverride::IsOverriden()" in pickup_slice
+    assert "Cast<TESObjectREFR>(TESForm::GetById(objectFormId)) : apThis" not in tes_refr_cpp
+    assert "checkUnlockedAndEmit" in tes_refr_cpp
+    assert "void InventoryService::ResetForWorldReload() noexcept" in inv_cpp
+    assert "m_world.GetInventoryService().ResetForWorldReload();" in coord_save_cpp
+    assert "statsOpen || m_world.IsPausedPumpActive()" in coord_save_cpp
+    assert "m_deferredLoadMenuCloseFrames" in coord_save_cpp
+
+    # 25. v3.1.7 Full-Codebase Critical Audit: ModSystem FormID Isolation, TESNPC Heap Buffer, Hooks, Services, Wire Bounds & Launcher
+    mod_mgr_cpp = (ROOT / "Code" / "client" / "Games" / "ModManager.cpp").read_text(encoding="utf-8")
+    mod_sys_cpp = (ROOT / "Code" / "client" / "Systems" / "ModSystem.cpp").read_text(encoding="utf-8")
+    mods_comp_cpp = (ROOT / "Code" / "server" / "Components" / "ModsComponent.cpp").read_text(encoding="utf-8")
+    forms_cpp = (ROOT / "Code" / "client" / "Games" / "Forms.cpp").read_text(encoding="utf-8")
+    save_load_cpp = (ROOT / "Code" / "client" / "Games" / "SaveLoad.cpp").read_text(encoding="utf-8")
+    actor_magic_caster_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Magic" / "ActorMagicCaster.cpp").read_text(encoding="utf-8")
+    subtitle_mgr_cpp = (ROOT / "Code" / "client" / "Games" / "Misc" / "SubtitleManager.cpp").read_text(encoding="utf-8")
+    discord_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "DiscordService.cpp").read_text(encoding="utf-8")
+    srv_overlay_cpp = (ROOT / "Code" / "server" / "Services" / "OverlayService.cpp").read_text(encoding="utf-8")
+    launcher_cpp = (ROOT / "Code" / "immersive_launcher" / "Launcher.cpp").read_text(encoding="utf-8")
+    str_cache_cpp = (ROOT / "Code" / "encoding" / "Messages" / "StringCacheUpdate.cpp").read_text(encoding="utf-8")
+    assert "pEntry->data->IsLoaded()" in mod_mgr_cpp and "if (!acpName" in mod_mgr_cpp
+    assert "kUnmappedServerModId" in mod_sys_cpp and "OnDisconnected" in mod_sys_cpp
+    assert "NormalizeModFilenameKey" in mods_comp_cpp
+    assert "kNpcSerializeScratchCapacity" in forms_cpp and "char buffer[1 << 15]" not in forms_cpp
+    assert "CanWriteFormIdVarIntsToSaveBuffer" in save_load_cpp
+    assert "ShouldAllowHookSpellCastExecution" in actor_magic_caster_cpp
+    assert "ShouldTriggerSubtitleSync" in subtitle_mgr_cpp
+    assert "_TRUNCATE" in discord_cpp
+    assert "StripHtmlTagsNoThrow" in srv_overlay_cpp and "std::regex" not in srv_overlay_cpp
+    assert "DIE_STARTUP_NOW" in launcher_cpp and "oobe::PathArgument(aArgv[++i])" in launcher_cpp
+    assert "kMaxStringCacheBatch" in str_cache_cpp and "!aReader.Eof()" in str_cache_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 + v3.1.5 + v3.1.6 + v3.1.7 architectural regression checks passed!")
     return 0
 
 

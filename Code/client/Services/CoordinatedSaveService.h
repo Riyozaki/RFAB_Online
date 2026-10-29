@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_set>
 
@@ -49,7 +50,7 @@ public:
     };
 
     CoordinatedSaveService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
-    ~CoordinatedSaveService() = default;
+    ~CoordinatedSaveService() noexcept;
 
     TP_NOCOPYMOVE(CoordinatedSaveService);
 
@@ -59,6 +60,7 @@ public:
     void NotifyEngineSaveCompleted(const char* acpFileName) noexcept;
     void NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept;
     void ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* apMgr) noexcept;
+    void TickWhilePaused(double aDeltaSeconds) noexcept;
 
     [[nodiscard]] bool IsHoldingWorldDiscoveryForHostBarrier() const noexcept
     {
@@ -130,6 +132,8 @@ private:
     std::string m_authorizedPendingSaveSlot{};
     std::string m_authorizedPendingLoadSlot{};
     std::string m_deferredLoadSlot{};
+    uint8_t m_deferredLoadMenuCloseFrames{0};
+    std::unique_ptr<NotifyExecuteLoad> m_deferredInSessionRollback{};
     double m_lastInterceptNoticeCooldownSec{0.0};
 
     uint64_t m_lastCommittedEpoch{0};

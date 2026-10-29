@@ -18,7 +18,7 @@ static TActorMagicCasterFire* RealActorMagicCasterFire = nullptr;
 
 extern "C" bool ShouldBlockRemoteMagicProjectile(MagicCaster* apCaster) noexcept
 {
-    if (!apCaster)
+    if (!apCaster || !World::IsCreated() || !World::IsConnectedCached())
         return false;
 
     const auto* pActorCaster = Cast<ActorMagicCaster>(apCaster);
@@ -62,6 +62,9 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
 
 BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projectile>, Projectile::LaunchData& arData)
 {
+    if (!World::IsCreated() || !World::IsConnectedCached())
+        return TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
+
     // sync concentration spells through spell cast sync, the rest through projectile sync
     if (arData.pSpell)
     {
@@ -82,7 +85,8 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
             ActorExtension* pExtendedActor = pActor->GetExtension();
             if (pExtendedActor && pExtendedActor->IsRemote())
             {
-                apThis->handle.iBits = 0;
+                if (apThis)
+                    apThis->handle.iBits = 0;
                 return apThis;
             }
         }

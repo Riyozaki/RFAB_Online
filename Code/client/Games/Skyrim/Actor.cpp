@@ -616,11 +616,10 @@ Actor* TP_MAKE_THISCALL(HookCharacterDestructor, Actor)
 {
     TP_EMPTY_HOOK_PLACEHOLDER;
 
-    auto pExtension = apThis->GetExtension();
-
-    if (pExtension)
+    if (apThis)
     {
-        pExtension->~ActorExtension();
+        if (auto pExtension = apThis->GetExtension())
+            pExtension->~ActorExtension();
     }
 
     TiltedPhoques::ThisCall(RealCharacterDestructor, apThis);
@@ -1509,7 +1508,10 @@ void Actor::FixVampireLordModel() noexcept
 
 char TP_MAKE_THISCALL(HookSetPosition, Actor, NiPoint3& aPosition)
 {
-    const auto pExtension = apThis ? apThis->GetExtension() : nullptr;
+    if (!apThis)
+        return 0;
+
+    const auto pExtension = apThis->GetExtension();
     const auto bIsRemote = pExtension && pExtension->IsRemote();
 
     if (bIsRemote && !ScopedReferencesOverride::IsOverriden())
@@ -2180,7 +2182,8 @@ void Actor::PickUpObject(TESObjectREFR* apObject, int32_t aCount, bool aUnk1, fl
 
 void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation)
 {
-    if (World::IsConnectedCached() &&
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
         apThis &&
         apObject &&
         apThis->GetExtension() &&
@@ -2356,8 +2359,15 @@ uint64_t TP_MAKE_THISCALL(HookProcessResponse, void, DialogueItem* apVoice, Acto
 
 bool TP_MAKE_THISCALL(HookInitiateMountPackage, Actor, Actor* apMount)
 {
-    if (apThis && apMount && apThis->GetExtension() && apThis->GetExtension()->IsLocal())
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        apThis &&
+        apMount &&
+        apThis->GetExtension() &&
+        apThis->GetExtension()->IsLocal())
+    {
         World::Get().GetRunner().Trigger(MountEvent(apThis->formID, apMount->formID));
+    }
 
     return TiltedPhoques::ThisCall(RealInitiateMountPackage, apThis, apMount);
 }
@@ -2452,9 +2462,12 @@ bool Actor::IsSpeakingInScene()
 
 char TP_MAKE_THISCALL(HookActorProcess, Actor, float aDeltaTime)
 {
+    if (!apThis)
+        return 0;
+
     // Suppress local AI movement for remote actors while keeping Havok stepInfo valid
     // so SetPositionImpl never divides by 0 / stale deltaTime.
-    if (apThis->GetExtension()->IsRemote())
+    if (const auto* pExt = apThis->GetExtension(); pExt && pExt->IsRemote())
     {
         if (apThis->currentProcess)
         {
@@ -2472,7 +2485,10 @@ static TAddDeathItems* RealAddDeathItems = nullptr;
 
 void TP_MAKE_THISCALL(HookAddDeathItems, Actor)
 {
-    if (apThis->GetExtension()->IsRemote())
+    if (!apThis)
+        return;
+
+    if (const auto* pExt = apThis->GetExtension(); pExt && pExt->IsRemote())
         return;
 
     TiltedPhoques::ThisCall(RealAddDeathItems, apThis);
@@ -2483,11 +2499,14 @@ static TIsFleeing* RealIsFleeing = nullptr;
 
 bool TP_MAKE_THISCALL(HookIsFleeing, Actor)
 {
+    if (!apThis)
+        return false;
+
     // TODO: Player or RemotePlayer? Can players be in fleeing mode in skyrim?
     // TODO: investigate why the flee flag is set at all on remote players sometimes.
-    if (apThis->GetExtension()->IsPlayer())
+    if (const auto* pExt = apThis->GetExtension(); pExt && pExt->IsPlayer())
         return false;
-    
+
     return TiltedPhoques::ThisCall(RealIsFleeing, apThis);
 }
 

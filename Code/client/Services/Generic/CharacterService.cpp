@@ -213,6 +213,17 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
     }
 }
 
+bool IsActorLiveInAttachedCellWith3D(Actor* apActor) noexcept
+{
+    return apActor != nullptr &&
+           CoopWorldStabilizer::CanTouchActorGraphDuringDetach(
+               apActor->parentCell != nullptr && apActor->parentCell->IsAttachedAndLoaded(),
+               apActor->GetNiNode() != nullptr,
+               apActor->IsStillLoading(),
+               apActor->IsDisabled(),
+               apActor->IsDeleted());
+}
+
 void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
 {
     if (!apActor || apActor->formID == 0x14 || apActor->IsDead())
@@ -226,6 +237,9 @@ void SanitizeActorCombatStateForLocalOwnership(Actor* apActor) noexcept
         apActor->actorState.flags1,
         apActor->actorState.flags2,
         apActor->HasValidNearbyFurniture());
+
+    if (!IsActorLiveInAttachedCellWith3D(apActor))
+        return;
 
     // Repair poisoned near-zero or negative WeaponSpeedMult left over from prior modifier drift.
     for (uint32_t avId : {static_cast<uint32_t>(ActorValueInfo::kWeaponSpeedMult),
@@ -1219,6 +1233,7 @@ void CharacterService::NotifySaveLoadReset() noexcept
     m_cachedExperience = 0.f;
     m_rfabXpTracker.Reset();
     m_authoritativePlacedBases.Clear();
+    m_relinquishClaimCooldowns.Clear();
     m_ownershipEpochTracker.Clear();
     m_cancelledCookies.Clear();
     m_pendingRemoteMounts.clear();
@@ -1953,9 +1968,12 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
                 {
                     pExt->SetRemote(false);
                     pExt->SetDownedPlayer(false);
-                    SanitizeActorCombatStateForLocalOwnership(pActor);
-                    if (!pActor->IsDead() && pActor->formID != 0x14)
-                        pActor->EvaluatePackage();
+                    if (IsActorLiveInAttachedCellWith3D(pActor))
+                    {
+                        SanitizeActorCombatStateForLocalOwnership(pActor);
+                        if (!pActor->IsDead() && pActor->formID != 0x14)
+                            pActor->EvaluatePackage();
+                    }
                 }
             }
             DeleteRemoteEntityComponents(aEntity);
@@ -1979,6 +1997,7 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
     if (m_world.all_of<LocalComponent>(aEntity))
     {
         auto& localComponent = m_world.get<LocalComponent>(aEntity);
+        m_relinquishClaimCooldowns.RecordRelinquished(aFormId, NowSteadyWorldViewMs());
 
         RequestOwnershipTransfer request{};
         request.ServerId = localComponent.Id;
@@ -2038,7 +2057,7 @@ CoopWorldView::ObserverState CharacterService::BuildLocalObserverState() const n
 
     PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
     TES* pTES = TES::Get();
-    if (!pLocalPlayer || !pLocalPlayer->parentCell || !pLocalPlayer->parentCell->loadedCellData || !pTES)
+    if (!pLocalPlayer || !pLocalPlayer->parentCell || !pLocalPlayer->parentCell->IsAttachedAndLoaded() || !pTES)
         return state;
 
     auto& modSystem = m_world.GetModSystem();
@@ -2080,7 +2099,7 @@ TESObjectCELL* CharacterService::ResolveCompatibleTargetCell(
 
     PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
     TES* pTES = TES::Get();
-    if (!pLocalPlayer || !pLocalPlayer->parentCell || !pLocalPlayer->parentCell->loadedCellData || !pTES)
+    if (!pLocalPlayer || !pLocalPlayer->parentCell || !pLocalPlayer->parentCell->IsAttachedAndLoaded() || !pTES)
         return nullptr;
 
     auto& modSystem = m_world.GetModSystem();
@@ -2107,24 +2126,26 @@ TESObjectCELL* CharacterService::ResolveCompatibleTargetCell(
 
     apOutWorldSpace = pLocalWs;
 
-    // Prefer exact loaded cell from ModManager 5x5 grid; only allow distant same-WorldSpace fallback
-    // for flying dragons (never for pre-placed persistent world NPCs outside the 5x5 grid!).
-    if (ModManager* pModMgr = ModManager::Get())
-    {
-        if (TESObjectCELL* pGridCell = pModMgr->GetCellFromCoordinates(
-                acTargetLoc.GridCoords.X,
-                acTargetLoc.GridCoords.Y,
-                pLocalWs,
-                false);
-            pGridCell && pGridCell->loadedCellData)
-        {
-            return pGridCell;
-        }
-    }
-
+    // Prefer exact attached+loaded cell inside the active 5x5 uGridsToLoad window; NEVER materialize
+    // into a detached `uExterior Cell Buffer` cell (`loadedCellData != nullptr && cellDetached == true`),
+    // which previously caused 100ms Wolf/Rabbit ownership ping-pong (`DC568`, `105A3C`) with DiscoveryService!
     const GridCellCoords centerGrid(pTES->centerGridX, pTES->centerGridY);
     if (GridCellCoords::IsCellInGridCell(acTargetLoc.GridCoords, centerGrid, false))
-        return nullptr; // Within 5x5 grid, wait until TES finishes streaming that grid cell's loadedCellData!
+    {
+        if (ModManager* pModMgr = ModManager::Get())
+        {
+            if (TESObjectCELL* pGridCell = pModMgr->GetCellFromCoordinates(
+                    acTargetLoc.GridCoords.X,
+                    acTargetLoc.GridCoords.Y,
+                    pLocalWs,
+                    false);
+                pGridCell && pGridCell->IsAttachedAndLoaded())
+            {
+                return pGridCell;
+            }
+        }
+        return nullptr; // Within 5x5 grid, wait until TES finishes attaching that grid cell!
+    }
 
     return aAllowDistantWorldSpaceAnchor ? pLocalPlayer->parentCell : nullptr;
 }
@@ -2155,9 +2176,14 @@ void CharacterService::DematerializeRemoteView(entt::entity aEntity, RemoteEntit
         {
             pExt->SetRemote(false);
             pExt->SetDownedPlayer(false);
-            SanitizeActorCombatStateForLocalOwnership(pActor);
-            if (!pActor->IsDead() && pActor->formID != 0x14)
-                pActor->EvaluatePackage();
+            // Only notify animation graph / re-evaluate AI packages when the placed world actor is STILL
+            // alive in an attached cell with 3D; NEVER touch unloading exterior actors during PurgeExteriorCells!
+            if (IsActorLiveInAttachedCellWith3D(pActor))
+            {
+                SanitizeActorCombatStateForLocalOwnership(pActor);
+                if (!pActor->IsDead() && pActor->formID != 0x14)
+                    pActor->EvaluatePackage();
+            }
         }
     }
 
@@ -2258,7 +2284,7 @@ Actor* CharacterService::MaterializeRemoteView(
     TESObjectCELL* apTargetCell,
     TESWorldSpace* apTargetWorldSpace) const noexcept
 {
-    if (!m_world.valid(aEntity) || !apTargetCell || !apTargetCell->loadedCellData)
+    if (!m_world.valid(aEntity) || !apTargetCell || !apTargetCell->IsAttachedAndLoaded())
         return nullptr;
 
     const auto& acMessage = aModel.SpawnRequest;
@@ -2522,11 +2548,11 @@ void CharacterService::ReconcileRemoteWorldViews() const noexcept
         Actor* pLiveActor = pFormComp ? Cast<Actor>(TESForm::GetById(pFormComp->Id)) : nullptr;
 
         // Persistent pre-placed world refs (e.g. Skyrim.esm exterior bandits E5F72-E5F77) stay in TESForm::GetById
-        // even when their cell unloads! Treat non-network, non-dragon refs as unmaterialized if parentCell unloaded.
+        // even when their cell unloads or detaches into uExterior Cell Buffer!
         const bool requiresLoadedParentCell =
             pLiveActor && !IsNetworkCreatedActor(pLiveActor) && !model.SpawnRequest.IsDragon;
         const bool cellActuallyLoaded = !requiresLoadedParentCell ||
-            (pLiveActor->parentCell != nullptr && pLiveActor->parentCell->loadedCellData != nullptr);
+            (pLiveActor->parentCell != nullptr && pLiveActor->parentCell->IsAttachedAndLoaded());
         const bool isMaterialized = (pFormComp != nullptr && pLiveActor != nullptr && cellActuallyLoaded);
 
         // Clean up stale FormIdComponent if engine natively unloaded the underlying TESForm or cell

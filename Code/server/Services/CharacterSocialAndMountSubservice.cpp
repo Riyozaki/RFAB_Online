@@ -96,12 +96,20 @@ void CharacterService::OnMountRequest(const PacketEvent<MountRequest>& acMessage
 void CharacterService::OnNewPackageRequest(const PacketEvent<NewPackageRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity cEntity = static_cast<entt::entity>(message.ActorId);
+    if (!m_world.valid(cEntity))
+        return;
+
+    if (const auto* pOwner = m_world.try_get<OwnerComponent>(cEntity))
+    {
+        if (pOwner->GetOwner() != acMessage.pPlayer)
+            return;
+    }
 
     NotifyNewPackage notify;
     notify.ActorId = message.ActorId;
     notify.PackageId = message.PackageId;
 
-    const entt::entity cEntity = static_cast<entt::entity>(message.ActorId);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }

@@ -4,6 +4,7 @@
 #include "Events/DisconnectedEvent.h"
 
 #include <atomic>
+#include <deque>
 #include <Client.hpp>
 
 struct ImguiService;
@@ -65,6 +66,11 @@ struct TransportService : Client
     [[nodiscard]] double GetMessageReceiveTime() const noexcept;
     [[nodiscard]] double GetLastPollTime() const noexcept { return m_lastPollTime; }
 
+    void PollWhileSimulationPaused() noexcept;
+    void FlushPausedInboundPackets() noexcept;
+    void ClearPausedInboundPackets() noexcept;
+    [[nodiscard]] size_t GetPausedInboundQueueSize() const noexcept { return m_pausedInboundQueue.size(); }
+
 protected:
     // Event handlers
     void HandleUpdate(const UpdateEvent& acEvent) noexcept;
@@ -90,5 +96,7 @@ private:
     entt::scoped_connection m_settingsChangeConnection;
     entt::scoped_connection m_connectedConnection;
     entt::scoped_connection m_disconnectedConnection;
+    bool m_pollingWhilePaused{false};
+    std::deque<UniquePtr<ServerMessage>> m_pausedInboundQueue{};
     std::function<void(UniquePtr<ServerMessage>&)> m_messageHandlers[kServerOpcodeMax];
 };

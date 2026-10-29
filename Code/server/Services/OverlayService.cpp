@@ -14,8 +14,43 @@
 #include <Messages/NotifyPlayerHealthUpdate.h>
 
 #include "Game/Player.h"
+#include <common/CoopPacketSafety.h>
 
-#include <regex>
+#include <algorithm>
+#include <cmath>
+
+namespace
+{
+constexpr size_t kMaxSanitizedChatLength = 1024;
+
+String StripHtmlTagsNoThrow(const String& acInput) noexcept
+{
+    String out;
+    const size_t maxBytes = std::min(acInput.size(), kMaxSanitizedChatLength);
+    out.reserve(maxBytes);
+
+    size_t i = 0;
+    while (i < maxBytes)
+    {
+        if (acInput[i] == '<')
+        {
+            const size_t closePos = acInput.find('>', i + 1);
+            if (closePos != String::npos && closePos < maxBytes)
+            {
+                i = closePos + 1;
+                continue;
+            }
+            // Unclosed '<': skip literal '<' to prevent HTML injection without regex backtracking.
+            ++i;
+            continue;
+        }
+        out.push_back(acInput[i]);
+        ++i;
+    }
+
+    return out;
+}
+} // namespace
 
 
 OverlayService::OverlayService(World& aWorld, entt::dispatcher& aDispatcher)
@@ -29,12 +64,13 @@ OverlayService::OverlayService(World& aWorld, entt::dispatcher& aDispatcher)
 
 void sendPlayerMessage(const ChatMessageType acType, const String acContent, Player* aSendingPlayer) noexcept
 {
-    NotifyChatMessageBroadcast notifyMessage{};
+    if (!aSendingPlayer)
+        return;
 
-    std::regex escapeHtml{"<[^>]+>\\s+(?=<)|<[^>]+>"};
+    NotifyChatMessageBroadcast notifyMessage{};
     notifyMessage.MessageType = acType;
-    notifyMessage.PlayerName = std::regex_replace(aSendingPlayer->GetUsername(), escapeHtml, "");
-    notifyMessage.ChatMessage = std::regex_replace(acContent, escapeHtml, "");
+    notifyMessage.PlayerName = StripHtmlTagsNoThrow(aSendingPlayer->GetUsername());
+    notifyMessage.ChatMessage = StripHtmlTagsNoThrow(acContent);
 
     auto character = aSendingPlayer->GetCharacter();
 
@@ -92,12 +128,14 @@ void OverlayService::OnTeleport(const PacketEvent<TeleportRequest>& acMessage) c
         return;
 
     auto character = pTargetPlayer->GetCharacter();
-    if (!character)
+    if (!character || !m_world.valid(*character))
         return;
 
     const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
     const auto& cellComponent = pTargetPlayer->GetCellComponent();
-    if (!pMovementComponent || (!cellComponent.Cell && !cellComponent.WorldSpaceId))
+    if (!pMovementComponent ||
+        !CoopPacketSafety::IsFiniteVec3(pMovementComponent->Position) ||
+        (!cellComponent.Cell && !cellComponent.WorldSpaceId))
         return;
 
     NotifyTeleport response{};
@@ -110,9 +148,12 @@ void OverlayService::OnTeleport(const PacketEvent<TeleportRequest>& acMessage) c
 
 void OverlayService::OnPlayerHealthUpdate(const PacketEvent<RequestPlayerHealthUpdate>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer || !std::isfinite(acMessage.Packet.Percentage))
+        return;
+
     NotifyPlayerHealthUpdate notify{};
     notify.PlayerId = acMessage.pPlayer->GetId();
-    notify.Percentage = acMessage.Packet.Percentage;
+    notify.Percentage = std::clamp(acMessage.Packet.Percentage, 0.0f, 100.0f);
 
     GameServer::Get()->SendToParty(notify, acMessage.pPlayer->GetParty(), acMessage.GetSender());
 }

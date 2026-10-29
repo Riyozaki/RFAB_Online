@@ -12,6 +12,7 @@
 #include <Services/SaveSnapshotService.h>
 #include <Setting.h>
 #include <World.h>
+#include <common/CoopPacketSafety.h>
 
 #include <chrono>
 
@@ -40,10 +41,10 @@ EncounterService::EncounterService(World& aWorld, entt::dispatcher& aDispatcher)
     , m_combatReportConnection(aDispatcher.sink<PacketEvent<CombatEncounterStateReport>>().connect<&EncounterService::OnCombatEncounterStateReport>(this))
 {
     EncounterCoordinator::Config cfg{};
-    cfg.ReviveDurationSec = std::clamp(fReviveDurationSec.as_float(), 0.5f, 30.0f);
-    cfg.ReviveHealthFraction = std::clamp(fReviveHealthFraction.as_float(), 0.05f, 1.0f);
-    cfg.PostReviveGraceSec = std::clamp(fPostReviveGraceSec.as_float(), 0.0f, 15.0f);
-    cfg.LeashRadiusMeters = std::clamp(fCombatLeashRadiusMeters.as_float(), 15.0f, 500.0f);
+    cfg.ReviveDurationSec = CoopPacketSafety::SanitizeFiniteFloat(fReviveDurationSec.as_float(), 0.5f, 30.0f, 4.0f);
+    cfg.ReviveHealthFraction = CoopPacketSafety::SanitizeFiniteFloat(fReviveHealthFraction.as_float(), 0.05f, 1.0f, 0.30f);
+    cfg.PostReviveGraceSec = CoopPacketSafety::SanitizeFiniteFloat(fPostReviveGraceSec.as_float(), 0.0f, 15.0f, 3.0f);
+    cfg.LeashRadiusMeters = CoopPacketSafety::SanitizeFiniteFloat(fCombatLeashRadiusMeters.as_float(), 15.0f, 500.0f, 120.0f);
     m_coordinator.SetConfig(cfg);
 }
 
@@ -86,16 +87,23 @@ void EncounterService::OnSyncPlayerDownedState(const PacketEvent<SyncPlayerDowne
         return;
 
     const auto& pkt = acMessage.Packet;
+    const float safeX = CoopPacketSafety::SanitizeFiniteFloat(
+        pkt.PositionX, -CoopPacketSafety::kWorldCoordinateMaxAbs, CoopPacketSafety::kWorldCoordinateMaxAbs, 0.0f);
+    const float safeY = CoopPacketSafety::SanitizeFiniteFloat(
+        pkt.PositionY, -CoopPacketSafety::kWorldCoordinateMaxAbs, CoopPacketSafety::kWorldCoordinateMaxAbs, 0.0f);
+    const float safeZ = CoopPacketSafety::SanitizeFiniteFloat(
+        pkt.PositionZ, -CoopPacketSafety::kWorldCoordinateMaxAbs, CoopPacketSafety::kWorldCoordinateMaxAbs, 0.0f);
+
     m_coordinator.SetPlayerDowned(
         pSender->GetId(),
         pkt.IsDowned,
-        pkt.PositionX,
-        pkt.PositionY,
-        pkt.PositionZ,
+        safeX,
+        safeY,
+        safeZ,
         pkt.NearbyHostileCount,
         NowEncounterMs());
 
-    BroadcastPlayerDownedState(pSender, pkt.IsDowned, pkt.PositionX, pkt.PositionY, pkt.PositionZ);
+    BroadcastPlayerDownedState(pSender, pkt.IsDowned, safeX, safeY, safeZ);
 }
 
 void EncounterService::OnReviveActionRequest(const PacketEvent<ReviveActionRequest>& acMessage) noexcept
@@ -175,15 +183,23 @@ void EncounterService::OnCombatEncounterStateReport(const PacketEvent<CombatEnco
         return;
 
     const auto& pkt = acMessage.Packet;
+    const float safeDist = CoopPacketSafety::SanitizeFiniteFloat(pkt.NearestHostileDistanceMeters, 0.0f, 100000.0f, 9999.0f);
+    const float safeX = CoopPacketSafety::SanitizeFiniteFloat(
+        pkt.PositionX, -CoopPacketSafety::kWorldCoordinateMaxAbs, CoopPacketSafety::kWorldCoordinateMaxAbs, 0.0f);
+    const float safeY = CoopPacketSafety::SanitizeFiniteFloat(
+        pkt.PositionY, -CoopPacketSafety::kWorldCoordinateMaxAbs, CoopPacketSafety::kWorldCoordinateMaxAbs, 0.0f);
+    const float safeZ = CoopPacketSafety::SanitizeFiniteFloat(
+        pkt.PositionZ, -CoopPacketSafety::kWorldCoordinateMaxAbs, CoopPacketSafety::kWorldCoordinateMaxAbs, 0.0f);
+
     m_coordinator.UpdatePlayerCombatReport(
         pSender->GetId(),
         pkt.InCombat,
         pkt.NearbyHostileCount,
-        pkt.NearestHostileDistanceMeters,
+        safeDist,
         pkt.BossDefeatedInEncounter,
-        pkt.PositionX,
-        pkt.PositionY,
-        pkt.PositionZ,
+        safeX,
+        safeY,
+        safeZ,
         NowEncounterMs());
 }
 
@@ -207,10 +223,10 @@ void EncounterService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) noexcept
 void EncounterService::OnUpdate(const UpdateEvent&) noexcept
 {
     EncounterCoordinator::Config cfg = m_coordinator.GetConfig();
-    cfg.ReviveDurationSec = std::clamp(fReviveDurationSec.as_float(), 0.5f, 30.0f);
-    cfg.ReviveHealthFraction = std::clamp(fReviveHealthFraction.as_float(), 0.05f, 1.0f);
-    cfg.PostReviveGraceSec = std::clamp(fPostReviveGraceSec.as_float(), 0.0f, 15.0f);
-    cfg.LeashRadiusMeters = std::clamp(fCombatLeashRadiusMeters.as_float(), 15.0f, 500.0f);
+    cfg.ReviveDurationSec = CoopPacketSafety::SanitizeFiniteFloat(fReviveDurationSec.as_float(), 0.5f, 30.0f, 4.0f);
+    cfg.ReviveHealthFraction = CoopPacketSafety::SanitizeFiniteFloat(fReviveHealthFraction.as_float(), 0.05f, 1.0f, 0.30f);
+    cfg.PostReviveGraceSec = CoopPacketSafety::SanitizeFiniteFloat(fPostReviveGraceSec.as_float(), 0.0f, 15.0f, 3.0f);
+    cfg.LeashRadiusMeters = CoopPacketSafety::SanitizeFiniteFloat(fCombatLeashRadiusMeters.as_float(), 15.0f, 500.0f, 120.0f);
     m_coordinator.SetConfig(cfg);
 
     const auto events = m_coordinator.Tick(NowEncounterMs());

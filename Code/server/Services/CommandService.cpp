@@ -3,6 +3,7 @@
 #include <Components.h>
 #include <GameServer.h>
 #include <World.h>
+#include <common/CoopPacketSafety.h>
 
 #include <Messages/SetTimeCommandRequest.h>
 #include <Messages/NotifySetTimeResult.h>
@@ -46,7 +47,8 @@ void CommandService::OnSetTimeCommand(const PacketEvent<SetTimeCommandRequest>& 
         const auto cHours = static_cast<int>(acMessage.Packet.Hours);
         const auto cMinutes = static_cast<int>(acMessage.Packet.Minutes);
 
-        m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale());
+        if (!m_world.GetCalendarService().SetTime(cHours, cMinutes, m_world.GetCalendarService().GetTimeScale()))
+            return;
 
         response.Result = NotifySetTimeResult::SetTimeResult::kSuccess;
         acMessage.pPlayer->Send(response);
@@ -73,11 +75,13 @@ void CommandService::OnTeleportCommandRequest(const PacketEvent<TeleportCommandR
     if (pTargetPlayer)
     {
         auto character = pTargetPlayer->GetCharacter();
-        if (character)
+        if (character && m_world.valid(*character))
         {
             const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
             const auto& cellComponent = pTargetPlayer->GetCellComponent();
-            if (pMovementComponent && (cellComponent.Cell || cellComponent.WorldSpaceId))
+            if (pMovementComponent &&
+                CoopPacketSafety::IsFiniteVec3(pMovementComponent->Position) &&
+                (cellComponent.Cell || cellComponent.WorldSpaceId))
             {
                 response.CellId = cellComponent.Cell;
                 response.Position = pMovementComponent->Position;

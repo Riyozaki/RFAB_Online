@@ -15,6 +15,7 @@ struct World;
 struct TransportService;
 
 struct UpdateEvent;
+struct DisconnectedEvent;
 struct CellChangeEvent;
 struct PartyJoinedEvent;
 struct SpellCastEvent;
@@ -86,6 +87,7 @@ struct MagicService
      * @brief Handles removal of a spell
      */
     void OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexcept;
+    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnCellChangeEvent(const CellChangeEvent& acEvent) noexcept;
     void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
 
@@ -115,6 +117,7 @@ struct MagicService
     std::unordered_map<uint64_t, uint64_t> m_concentrationClaimKeepaliveMs{};
 
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_cellChangeConnection;
     entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_spellCastEventConnection;
@@ -185,4 +188,4 @@ struct MagicService
 
 // Exposed so we can increase log level of just this tricky code, in debugger or a build.
 // Non-const has to be initialized outside of class.
-spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};
+inline spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};

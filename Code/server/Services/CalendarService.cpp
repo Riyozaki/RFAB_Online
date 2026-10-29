@@ -2,6 +2,7 @@
 
 #include <GameServer.h>
 #include <World.h>
+#include <common/CoopPacketSafety.h>
 #include <common/RfabModpackCompat.h>
 
 #include <Events/PlayerJoinEvent.h>
@@ -43,10 +44,17 @@ void CalendarService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
     // authoritative checkpoint calendar restored by SaveSnapshotService::ApplyWorldSnapshot.
     if (initializedFromHost)
     {
-        m_dateTime.m_timeModel.Time = acEvent.PlayerTime.m_timeModel.Time;
-        m_dateTime.m_timeModel.Day = acEvent.PlayerTime.m_timeModel.Day;
-        m_dateTime.m_timeModel.Month = acEvent.PlayerTime.m_timeModel.Month;
-        m_dateTime.m_timeModel.Year = acEvent.PlayerTime.m_timeModel.Year;
+        TimeModel hostTime = acEvent.PlayerTime.m_timeModel;
+        CoopPacketSafety::SanitizeSkyrimCalendarValues(
+            hostTime.TimeScale,
+            hostTime.Time,
+            hostTime.Day,
+            hostTime.Month,
+            hostTime.Year);
+        m_dateTime.m_timeModel.Time = hostTime.Time;
+        m_dateTime.m_timeModel.Day = hostTime.Day;
+        m_dateTime.m_timeModel.Month = hostTime.Month;
+        m_dateTime.m_timeModel.Year = hostTime.Year;
         m_timeSetFromFirstPlayer = true;
     }
 
@@ -64,10 +72,12 @@ void CalendarService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
 
 bool CalendarService::SetTime(int aHours, int aMinutes, float aScale) noexcept
 {
-    m_dateTime.m_timeModel.TimeScale = aScale;
+    if (!std::isfinite(aScale) || aScale < 0.f || aScale > 1000.f)
+        return false;
 
     if (aHours >= 0 && aHours <= 23 && aMinutes >= 0 && aMinutes <= 59)
     {
+        m_dateTime.m_timeModel.TimeScale = aScale;
         m_dateTime.m_timeModel.Time = RfabCompat::EncodeSkyrimGameHour(aHours, aMinutes);
         m_timeSetFromFirstPlayer = true;
 
@@ -81,14 +91,14 @@ bool CalendarService::SetTime(int aHours, int aMinutes, float aScale) noexcept
 
 bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
 {
-    if (aMonth >= 0 && aMonth < 12 && aYear >= 0 && aYear <= 999)
+    if (std::isfinite(aYear) && aMonth >= 0 && aMonth < 12 && aYear >= 0 && aYear <= 999)
     {
         auto maxDays = m_dateTime.GetNumberOfDaysByMonthIndex(aMonth);
         if (aDay >= 0 && aDay < maxDays)
         {
             m_dateTime.m_timeModel.Day = aDay;
             m_dateTime.m_timeModel.Month = aMonth;
-            m_dateTime.m_timeModel.Year = aYear;
+            m_dateTime.m_timeModel.Year = static_cast<uint32_t>(aYear);
             m_timeSetFromFirstPlayer = true;
             SendTimeResync();
             return true;
@@ -131,7 +141,7 @@ CalendarService::TDate CalendarService::GetDate() const noexcept
 
 bool CalendarService::SetTimeScale(float aScale) noexcept
 {
-    if (aScale >= 0.f && aScale <= 1000.f)
+    if (std::isfinite(aScale) && aScale >= 0.f && aScale <= 1000.f)
     {
         m_dateTime.m_timeModel.TimeScale = aScale;
 

@@ -1,17 +1,18 @@
 #include <Messages/NotifyFactionsChanges.h>
 #include <TiltedCore/Serialization.hpp>
-#include <cassert>
-
-static const uint64_t kMaxChangeCount = 0x400;
+#include <common/CoopPacketSafety.h>
+#include <algorithm>
 
 void NotifyFactionsChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    assert(Changes.size() < 0x400);
+    const size_t count = std::min(Changes.size(), CoopPacketSafety::kMaxFactionChanges);
+    Serialization::WriteVarInt(aWriter, count);
 
-    Serialization::WriteVarInt(aWriter, Changes.size());
-
+    size_t written = 0;
     for (auto& change : Changes)
     {
+        if (written++ >= count)
+            break;
         Serialization::WriteVarInt(aWriter, change.first);
         change.second.Serialize(aWriter);
     }
@@ -21,13 +22,11 @@ void NotifyFactionsChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
 {
     ServerMessage::DeserializeRaw(aReader);
 
-    uint64_t count = Serialization::ReadVarInt(aReader);
+    const size_t count = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        CoopPacketSafety::kMaxFactionChanges);
 
-    // Early abort as we don't want to allocate a ton of memory
-    if (count >= kMaxChangeCount)
-        return;
-
-    for (auto i = 0u; i < count; ++i)
+    for (size_t i = 0; i < count && !aReader.Eof(); ++i)
     {
         auto& change = Changes[Serialization::ReadVarInt(aReader) & 0xFFFFFFFF];
         change.Deserialize(aReader);

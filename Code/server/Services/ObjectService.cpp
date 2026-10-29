@@ -250,6 +250,9 @@ void ObjectService::OnAssignObjectsRequest(const PacketEvent<AssignObjectsReques
 
 void ObjectService::OnActivate(const PacketEvent<ActivateRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer || !acMessage.Packet.Id)
+        return;
+
     NotifyActivate notifyActivate;
     notifyActivate.Id = acMessage.Packet.Id;
     notifyActivate.ActivatorId = acMessage.Packet.ActivatorId;
@@ -272,6 +275,9 @@ void ObjectService::OnActivate(const PacketEvent<ActivateRequest>& acMessage) co
 
 void ObjectService::OnLockChange(const PacketEvent<LockChangeRequest>& acMessage) noexcept
 {
+    if (!acMessage.pPlayer || !acMessage.Packet.Id)
+        return;
+
     NotifyLockChange notifyLockChange;
     notifyLockChange.Id = acMessage.Packet.Id;
     notifyLockChange.IsLocked = acMessage.Packet.IsLocked;

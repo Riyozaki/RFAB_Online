@@ -40,6 +40,9 @@ uint32_t& TP_MAKE_THISCALL(SpawnNewREFR, ModManager, uint32_t& aRefHandleOut, TE
 
 uint32_t ModManager::Spawn(NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCELL* apParentCell, TESWorldSpace* apWorldSpace, Actor* apCharacter) noexcept
 {
+    if (!apCharacter)
+        return 0;
+
     uint32_t refrHandle = 0;
 
     TiltedPhoques::ThisCall(RealSpawnNewREFR, this, refrHandle, apCharacter->baseForm, &aPosition, &aRotation, apParentCell, apWorldSpace, apCharacter, 0, 0, static_cast<char>(0), static_cast<char>(1));
@@ -49,11 +52,14 @@ uint32_t ModManager::Spawn(NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCE
 
 Mod* ModManager::GetByName(const char* acpName) const noexcept
 {
+    if (!acpName || acpName[0] == '\0')
+        return nullptr;
+
     auto pEntry = &mods.entry;
 
     while (pEntry && pEntry->data)
     {
-        if (_stricmp(acpName, pEntry->data->filename) == 0)
+        if (pEntry->data->IsLoaded() && _stricmp(acpName, pEntry->data->filename) == 0)
             return pEntry->data;
 
         pEntry = pEntry->next;

@@ -68,7 +68,7 @@ TEST_CASE("v2.1.0 Phase 0: Immutable v2.0.3 backup manifest, release pipeline pr
     REQUIRE(manifest.find("143758f14c3dead27271638b2f44b48a4e64111059296a00c5e4ad1cc35fe1ee") != std::string::npos);
 
     const std::string buildPs1 = LoadV210RepoFile(root, "Tools/rfab/Build-CloudRelease.ps1");
-    REQUIRE(buildPs1.find("[string]$VersionTag = \"v3.1.3\"") != std::string::npos);
+    REQUIRE(buildPs1.find("[string]$VersionTag = \"v3.1.7\"") != std::string::npos);
     REQUIRE(buildPs1.find("Ensure-V203BackupRelease") != std::string::npos);
     REQUIRE(buildPs1.find("$script:V203BackupReady") != std::string::npos);
     REQUIRE(buildPs1.find("\"v2.0.3-backup\"") != std::string::npos);

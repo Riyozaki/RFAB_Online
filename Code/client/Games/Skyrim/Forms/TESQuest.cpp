@@ -96,8 +96,9 @@ bool TESQuest::SetStage(uint16_t stageIndex)
     bool bSuccess = SetStage(this, stageIndex);
     if (!bSuccess)
     {
+        const char* questName = fullName.value.AsAscii() ? fullName.value.AsAscii() : "";
         spdlog::warn(__FUNCTION__ ": returned false quest formId {:X}, currentStage {}, newStage {}, name {}", 
-                     formID, currentStage, stageIndex, fullName.value.AsAscii());
+                     formID, currentStage, stageIndex, questName);
     }
     return bSuccess;
 }
@@ -117,7 +118,8 @@ bool TESQuest::ScriptSetStage(uint16_t stageIndex, bool bForce)
 
     if (!bSuccess)
     {
-        spdlog::warn(__FUNCTION__ ": returned false quest formId {:X}, currentStage {}, newStage {}, name {}", formID, currentStage, stageIndex, fullName.value.AsAscii());
+        const char* questName = fullName.value.AsAscii() ? fullName.value.AsAscii() : "";
+        spdlog::warn(__FUNCTION__ ": returned false quest formId {:X}, currentStage {}, newStage {}, name {}", formID, currentStage, stageIndex, questName);
     }
 
     return bSuccess;

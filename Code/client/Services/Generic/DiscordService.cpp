@@ -61,12 +61,15 @@ void DiscordService::OnLocationChangeEvent() noexcept
         bool updateTimestamp = false;
 
         if (pLocation)
-            strncpy_s(m_ActivityState.details, pLocation->GetName(), sizeof(DiscordActivity::details));
+        {
+            if (const char* locName = pLocation->GetName())
+                strncpy_s(m_ActivityState.details, locName, _TRUNCATE);
+        }
 
         if (pWorldspace)
         {
-            if (pWorldspace->fullName.value.data)
-                strncpy_s(m_ActivityState.state, pWorldspace->fullName.value.AsAscii(), sizeof(DiscordActivity::state));
+            if (const char* wsName = pWorldspace->fullName.value.AsAscii())
+                strncpy_s(m_ActivityState.state, wsName, _TRUNCATE);
 
             if (m_lastWorldspaceId != pWorldspace->formID)
             {

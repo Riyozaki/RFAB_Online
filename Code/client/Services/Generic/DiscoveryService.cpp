@@ -265,8 +265,7 @@ void DiscoveryService::VisitForms() noexcept
         const bool existsInAttachedLoadedCell =
             pStillLoaded &&
             pStillLoaded->parentCell &&
-            pStillLoaded->parentCell->loadedCellData != nullptr &&
-            !pStillLoaded->parentCell->cellDetached;
+            pStillLoaded->parentCell->IsAttachedAndLoaded();
 
         if (m_demotionHoldTracker.ShouldRetainMissingFromHigh(
                 formId,

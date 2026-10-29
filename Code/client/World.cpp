@@ -34,6 +34,7 @@ World::World()
     , m_transport(*this, m_dispatcher)
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
+    , m_lastPausedPumpTime{m_lastFrameTime}
 {
     s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     ctx().emplace<ImguiService>();
@@ -75,32 +76,40 @@ World::~World()
     s_syncPlayerHomesCached.store(false, std::memory_order_release);
     s_pvpEnabledCached.store(false, std::memory_order_release);
     s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
+    s_currentTickCached.store(0, std::memory_order_release);
     s_worldCreated.store(false, std::memory_order_release);
 }
 
 void World::Update() noexcept
 {
-    // NOTE: `World::Update()` runs inside `HookVMUpdate` (`SE 53115`) on Skyrim's `BSJobs` Papyrus
-    // worker pool — NEVER overwrite `s_mainThreadId` here! `s_mainThreadId` belongs exclusively to
-    // Skyrim's real `WinMain`/D3D11 main thread (`World::World()` + `HookMainLoop` `SE 35565`).
+    // Architectural invariant: `World::Update()` is driven strictly from `HookMainLoop` (`SE 35565`)
+    // on Skyrim's real `WinMain` thread BEFORE `RealMainLoop` dispatches `BSJobs` workers or runs
+    // `TES::PurgeExteriorCells`. `s_mainThreadId` is anchored exclusively in `World::World()` and
+    // `World::OnMainThreadUpdate()`.
     const bool isConn = m_transport.IsConnected();
     s_isConnectedCached.store(isConn, std::memory_order_release);
     if (isConn)
     {
+        static const BSFixedString* s_pContainerMenu = new BSFixedString("ContainerMenu");
         auto* const pUi = UI::Get();
-        const bool containerOpen = pUi && pUi->GetMenuOpen(BSFixedString("ContainerMenu"));
+        const bool containerOpen = pUi && pUi->GetMenuOpen(*s_pContainerMenu);
         s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
+        s_currentTickCached.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
     }
     else
     {
         s_isContainerMenuOpenCached.store(false, std::memory_order_release);
+        s_currentTickCached.store(0, std::memory_order_release);
     }
 
     const auto cNow = std::chrono::high_resolution_clock::now();
     const auto cDelta = cNow - m_lastFrameTime;
     m_lastFrameTime = cNow;
 
-    const auto cDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
+    const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
+    const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
+
+    m_transport.FlushPausedInboundPackets();
 
     m_dispatcher.trigger(PreUpdateEvent(cDeltaSeconds));
 
@@ -126,7 +135,9 @@ ModSystem& World::GetModSystem() noexcept
 
 uint64_t World::GetTick() const noexcept
 {
-    return m_transport.GetClock().GetCurrentTick();
+    if (IsMainThread())
+        return m_transport.GetClock().GetCurrentTick();
+    return s_currentTickCached.load(std::memory_order_acquire);
 }
 
 void World::Create() noexcept
@@ -141,6 +152,41 @@ void World::Create() noexcept
 World& World::Get() noexcept
 {
     return entt::locator<World>::value();
+}
+
+void World::UpdatePausedPump() noexcept
+{
+    // Safe WinMain-only paused-menu pump (`StatsMenu` RFAB perks, `MapMenu`, `Journal Menu` ESC, `Console`):
+    // keeps GameNetworkingSockets heartbeats/handshakes, party/chat UI packets, and CoordinatedSaveService
+    // barriers alive without running world simulation services (`DiscoveryService`, `CharacterService`,
+    // `InterpolationSystem`, `Sky`, `TimeData`, or `m_runner` gameplay hooks).
+    const bool isConn = m_transport.IsConnected();
+    s_isConnectedCached.store(isConn, std::memory_order_release);
+    if (isConn)
+    {
+        static const BSFixedString* s_pContainerMenu = new BSFixedString("ContainerMenu");
+        auto* const pUi = UI::Get();
+        const bool containerOpen = pUi && pUi->GetMenuOpen(*s_pContainerMenu);
+        s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
+        s_currentTickCached.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
+    }
+    else
+    {
+        s_isContainerMenuOpenCached.store(false, std::memory_order_release);
+        s_currentTickCached.store(0, std::memory_order_release);
+    }
+
+    const auto cNow = std::chrono::high_resolution_clock::now();
+    const auto cDelta = cNow - m_lastPausedPumpTime;
+    m_lastPausedPumpTime = cNow;
+
+    const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
+    const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
+
+    m_isPausedPumpActive = true;
+    m_transport.PollWhileSimulationPaused();
+    GetCoordinatedSaveService().TickWhilePaused(cDeltaSeconds);
+    m_isPausedPumpActive = false;
 }
 
 void World::OnMainThreadUpdate() noexcept

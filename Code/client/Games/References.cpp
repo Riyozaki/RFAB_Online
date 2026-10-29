@@ -33,6 +33,8 @@
 #include <Combat/CombatTargetSelector.h>
 #include <RfabModpackCompat.h>
 
+#include <atomic>
+
 namespace Settings
 {
 int32_t* GetDifficulty() noexcept
@@ -49,17 +51,54 @@ float* GetGreetDistance() noexcept
 
 bool IsRfabModpackActive() noexcept
 {
-    if (auto* pModManager = ModManager::Get())
+    // Lock-free O(1) atomic cache safe for concurrent combat & magic worker threads (`HookDamageActor`,
+    // `HookAddTarget`): once `ModManager` has loaded plugins, scan the immutable plugin list once without
+    // touching non-thread-safe `RfabFormResolver` state on worker threads.
+    static std::atomic<int8_t> s_cachedRfabActive{-1};
+    const int8_t cached = s_cachedRfabActive.load(std::memory_order_acquire);
+    if (cached >= 0)
+        return cached == 1;
+
+#ifdef _WIN32
+    if (GetModuleHandleW(L"RFAB.dll") != nullptr)
     {
-        if (pModManager->GetByName("RFAB.esp") != nullptr ||
-            pModManager->GetByName("Requiem for a Balance.esp") != nullptr ||
-            pModManager->GetByName("Requiem.esp") != nullptr)
+        s_cachedRfabActive.store(1, std::memory_order_release);
+        return true;
+    }
+#endif
+
+    auto* const pModManager = ModManager::Get();
+    if (!pModManager)
+        return false;
+
+    if (pModManager->GetByName("RFAB.esp") != nullptr ||
+        pModManager->GetByName("Requiem for a Balance.esp") != nullptr ||
+        pModManager->GetByName("Requiem.esp") != nullptr)
+    {
+        s_cachedRfabActive.store(1, std::memory_order_release);
+        return true;
+    }
+
+    bool hasAnyLoadedMod = false;
+    bool detectedRfab = false;
+    for (auto* pMod : pModManager->mods)
+    {
+        if (!pMod || !pMod->IsLoaded() || pMod->filename[0] == '\0')
+            continue;
+
+        hasAnyLoadedMod = true;
+        if (RfabCompat::Detail::StartsWithIgnoreCase(pMod->filename, "rfab") ||
+            RfabCompat::Detail::StartsWithIgnoreCase(pMod->filename, "requiem"))
         {
-            return true;
+            detectedRfab = true;
+            break;
         }
     }
 
-    return World::Get().GetRfabAdapterService().ResolveRfabPluginMod() != nullptr;
+    if (hasAnyLoadedMod)
+        s_cachedRfabActive.store(detectedRfab ? 1 : 0, std::memory_order_release);
+
+    return detectedRfab;
 }
 
 float GetRfabOutgoingDamageMult() noexcept
@@ -91,7 +130,8 @@ namespace GameplayFormulas
 
 float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexcept
 {
-    bool isPlayer = apHittee == PlayerCharacter::Get();
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    bool isPlayer = pPlayer && apHittee == pPlayer;
     float multiplier = 1.0f;
 
     if (Settings::IsRfabModpackActive())
@@ -100,11 +140,11 @@ float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexce
         // corresponding to Странник (x2/x0.5), Довакин (x1/x1), Легенда (x1/x2), and Проклятый (x0.5 outgoing).
         multiplier = isPlayer ? Settings::GetRfabIncomingDamageMult() : Settings::GetRfabOutgoingDamageMult();
     }
-    else
+    else if (pPlayer)
     {
         using TGetDifficultyMultiplier = float(int32_t, int32_t, bool);
         POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 25920);
-        multiplier = s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ActorValueInfo::kHealth, isPlayer);
+        multiplier = s_getDifficultyMultiplier(pPlayer->difficulty, ActorValueInfo::kHealth, isPlayer);
     }
 
     float realDamage = aDamage * multiplier;

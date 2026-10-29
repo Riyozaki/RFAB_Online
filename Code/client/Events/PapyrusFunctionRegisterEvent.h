@@ -8,8 +8,8 @@ using TiltedPhoques::String;
 struct PapyrusFunctionRegisterEvent
 {
     explicit PapyrusFunctionRegisterEvent(const char* acpFunctionName, const char* acpNamespace, void* apFunctionAddress)
-        : Name(acpFunctionName)
-        , Namespace(acpNamespace)
+        : Name(acpFunctionName ? acpFunctionName : "")
+        , Namespace(acpNamespace ? acpNamespace : "")
         , Function(apFunctionAddress)
     {
     }
