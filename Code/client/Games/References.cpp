@@ -130,7 +130,8 @@ namespace GameplayFormulas
 
 float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexcept
 {
-    bool isPlayer = apHittee == PlayerCharacter::Get();
+    PlayerCharacter* pPlayer = PlayerCharacter::Get();
+    bool isPlayer = pPlayer && apHittee == pPlayer;
     float multiplier = 1.0f;
 
     if (Settings::IsRfabModpackActive())
@@ -139,11 +140,11 @@ float CalculateRealDamage(Actor* apHittee, float aDamage, bool aKillMove) noexce
         // corresponding to Странник (x2/x0.5), Довакин (x1/x1), Легенда (x1/x2), and Проклятый (x0.5 outgoing).
         multiplier = isPlayer ? Settings::GetRfabIncomingDamageMult() : Settings::GetRfabOutgoingDamageMult();
     }
-    else
+    else if (pPlayer)
     {
         using TGetDifficultyMultiplier = float(int32_t, int32_t, bool);
         POINTER_SKYRIMSE(TGetDifficultyMultiplier, s_getDifficultyMultiplier, 25920);
-        multiplier = s_getDifficultyMultiplier(PlayerCharacter::Get()->difficulty, ActorValueInfo::kHealth, isPlayer);
+        multiplier = s_getDifficultyMultiplier(pPlayer->difficulty, ActorValueInfo::kHealth, isPlayer);
     }
 
     float realDamage = aDamage * multiplier;

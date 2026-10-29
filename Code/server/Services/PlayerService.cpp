@@ -2,6 +2,9 @@
 #include "Events/CharacterExteriorCellChangeEvent.h"
 #include "Events/PlayerLeaveCellEvent.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <Services/PlayerService.h>
 #include <Services/CharacterService.h>
 #include <GameServer.h>
@@ -36,6 +39,9 @@ PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher) noexc
 
 void SendPlayerCellChanged(const Player* apPlayer) noexcept
 {
+    if (!apPlayer)
+        return;
+
     auto& cellComponent = apPlayer->GetCellComponent();
 
     NotifyPlayerCellChanged notify{};
@@ -138,10 +144,16 @@ void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellR
 
 void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnRequest>& acMessage) const noexcept
 {
-    float goldLossFactor = fGoldLossFactor.as_float();
+    if (!acMessage.pPlayer)
+        return;
+
+    const float rawGoldLossFactor = fGoldLossFactor.as_float();
+    const float goldLossFactor = std::isfinite(rawGoldLossFactor)
+        ? std::clamp(rawGoldLossFactor, 0.0f, 1.0f)
+        : 0.0f;
 
     auto character = acMessage.pPlayer->GetCharacter();
-    if (!character)
+    if (!character || !m_world.valid(*character))
         return;
 
     auto view = m_world.view<InventoryComponent>();
@@ -150,28 +162,34 @@ void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnReques
 
     if (it != view.end())
     {
-        if (goldLossFactor != 0.0)
+        if (goldLossFactor > 0.0f)
         {
             auto& inventoryComponent = view.get<InventoryComponent>(*it);
 
             GameId goldId(0, 0xF);
-            int32_t goldCount = inventoryComponent.Content.GetEntryCountById(goldId);
-            int32_t goldToRemove = static_cast<int32_t>(goldCount * goldLossFactor);
+            int32_t goldCount = std::max<int32_t>(0, inventoryComponent.Content.GetEntryCountById(goldId));
+            int32_t goldToRemove = std::clamp<int32_t>(
+                static_cast<int32_t>(static_cast<double>(goldCount) * static_cast<double>(goldLossFactor)),
+                0,
+                goldCount);
 
-            Inventory::Entry entry{};
-            entry.BaseId = goldId;
-            entry.Count = -goldToRemove;
+            if (goldToRemove > 0)
+            {
+                Inventory::Entry entry{};
+                entry.BaseId = goldId;
+                entry.Count = -goldToRemove;
 
-            inventoryComponent.Content.AddOrRemoveEntry(entry);
+                inventoryComponent.Content.AddOrRemoveEntry(entry);
 
-            NotifyInventoryChanges notifyInventoryChanges{};
-            notifyInventoryChanges.ServerId = World::ToInteger(*character);
-            notifyInventoryChanges.Item = entry;
-            notifyInventoryChanges.Drop = false;
+                NotifyInventoryChanges notifyInventoryChanges{};
+                notifyInventoryChanges.ServerId = World::ToInteger(*character);
+                notifyInventoryChanges.Item = entry;
+                notifyInventoryChanges.Drop = false;
 
-            // Exclude respawned player from inventory changes notification...
-            if (!GameServer::Get()->SendToPlayersInRange(notifyInventoryChanges, *character, acMessage.GetSender()))
-                spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+                // Exclude respawned player from inventory changes notification...
+                if (!GameServer::Get()->SendToPlayersInRange(notifyInventoryChanges, *character, acMessage.GetSender()))
+                    spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
+            }
 
             // ...and instead, send NotifyPlayerRespawn so that the client can print a message.
             NotifyPlayerRespawn notifyPlayerRespawn{};
@@ -191,6 +209,9 @@ void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnReques
 
 void PlayerService::OnPlayerLevelRequest(const PacketEvent<PlayerLevelRequest>& acMessage) const noexcept
 {
+    if (!acMessage.pPlayer || acMessage.Packet.NewLevel == 0 || acMessage.Packet.NewLevel > 10000)
+        return;
+
     acMessage.pPlayer->SetLevel(acMessage.Packet.NewLevel);
 
     NotifyPlayerLevel notify{};

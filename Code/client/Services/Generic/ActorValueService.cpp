@@ -502,8 +502,8 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
         if (const auto* pExt = pActor->GetExtension(); pExt && !pExt->IsPlayer())
         {
             const auto hpIt = acMessage.Values.find(ActorValueInfo::kHealth);
-            if (hpIt != acMessage.Values.end())
-                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, hpIt->second);
+            if (hpIt != acMessage.Values.end() && std::isfinite(hpIt->second))
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, std::clamp(hpIt->second, 0.0f, 100000.0f));
         }
         return;
     }
@@ -515,6 +515,8 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
 
     for (const auto& [key, value] : acMessage.Values)
     {
+        if (key >= ActorValueInfo::kActorValueCount || !std::isfinite(value))
+            continue;
         // Syncing dragon souls triggers "Dragon soul collected" event.
         // Never overwrite locally computed movement/attack speed multipliers (SpeedMult = 30, WeaponSpeedMult = 85,
         // LeftWeaponSpeedMult = 132) or kInfamy (37, used by RFAB_XP_Alias.psc as duplicate-XP suppression marker):
@@ -591,6 +593,9 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
 
     for (const auto& [key, value] : acMessage.Values)
     {
+        if (key >= ActorValueInfo::kActorValueCount || !std::isfinite(value))
+            continue;
+
         if (key == ActorValueInfo::kDragonSouls ||
             key == ActorValueInfo::kSpeedMult ||
             key == ActorValueInfo::kInfamy ||

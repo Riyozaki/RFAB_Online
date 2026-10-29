@@ -325,8 +325,8 @@ def main() -> int:
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
     assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
     assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt
-    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.6"' in build_txt
-    assert '"v3.1.4"' in build_txt and '"v3.1.5"' in build_txt
+    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.7"' in build_txt
+    assert '"v3.1.4"' in build_txt and '"v3.1.5"' in build_txt and '"v3.1.6"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -426,7 +426,31 @@ def main() -> int:
     assert "statsOpen || m_world.IsPausedPumpActive()" in coord_save_cpp
     assert "m_deferredLoadMenuCloseFrames" in coord_save_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 + v3.1.5 + v3.1.6 architectural regression checks passed!")
+    # 25. v3.1.7 Full-Codebase Critical Audit: ModSystem FormID Isolation, TESNPC Heap Buffer, Hooks, Services, Wire Bounds & Launcher
+    mod_mgr_cpp = (ROOT / "Code" / "client" / "Games" / "ModManager.cpp").read_text(encoding="utf-8")
+    mod_sys_cpp = (ROOT / "Code" / "client" / "Systems" / "ModSystem.cpp").read_text(encoding="utf-8")
+    mods_comp_cpp = (ROOT / "Code" / "server" / "Components" / "ModsComponent.cpp").read_text(encoding="utf-8")
+    forms_cpp = (ROOT / "Code" / "client" / "Games" / "Forms.cpp").read_text(encoding="utf-8")
+    save_load_cpp = (ROOT / "Code" / "client" / "Games" / "SaveLoad.cpp").read_text(encoding="utf-8")
+    actor_magic_caster_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Magic" / "ActorMagicCaster.cpp").read_text(encoding="utf-8")
+    subtitle_mgr_cpp = (ROOT / "Code" / "client" / "Games" / "Misc" / "SubtitleManager.cpp").read_text(encoding="utf-8")
+    discord_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "DiscordService.cpp").read_text(encoding="utf-8")
+    srv_overlay_cpp = (ROOT / "Code" / "server" / "Services" / "OverlayService.cpp").read_text(encoding="utf-8")
+    launcher_cpp = (ROOT / "Code" / "immersive_launcher" / "Launcher.cpp").read_text(encoding="utf-8")
+    str_cache_cpp = (ROOT / "Code" / "encoding" / "Messages" / "StringCacheUpdate.cpp").read_text(encoding="utf-8")
+    assert "pEntry->data->IsLoaded()" in mod_mgr_cpp and "if (!acpName" in mod_mgr_cpp
+    assert "kUnmappedServerModId" in mod_sys_cpp and "OnDisconnected" in mod_sys_cpp
+    assert "NormalizeModFilenameKey" in mods_comp_cpp
+    assert "kNpcSerializeScratchCapacity" in forms_cpp and "char buffer[1 << 15]" not in forms_cpp
+    assert "CanWriteFormIdVarIntsToSaveBuffer" in save_load_cpp
+    assert "ShouldAllowHookSpellCastExecution" in actor_magic_caster_cpp
+    assert "ShouldTriggerSubtitleSync" in subtitle_mgr_cpp
+    assert "_TRUNCATE" in discord_cpp
+    assert "StripHtmlTagsNoThrow" in srv_overlay_cpp and "std::regex" not in srv_overlay_cpp
+    assert "DIE_STARTUP_NOW" in launcher_cpp and "oobe::PathArgument(aArgv[++i])" in launcher_cpp
+    assert "kMaxStringCacheBatch" in str_cache_cpp and "!aReader.Eof()" in str_cache_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 + v3.1.5 + v3.1.6 + v3.1.7 architectural regression checks passed!")
     return 0
 
 

@@ -29,6 +29,7 @@ namespace
 {
 constexpr uint32_t kHealthActorValueIndex = 24;
 constexpr uint32_t kInfamyActorValueIndex = 37;
+constexpr uint32_t kActorValueCount = 164;
 constexpr float kMaxSanitizedActorValue = 100000.0f;
 constexpr uint64_t kExternalDamageReconcileWindowMs = 650ULL;
 
@@ -73,9 +74,12 @@ void ActorValueService::OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noe
 void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueChanges>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity targetEntity = static_cast<entt::entity>(message.Id);
+    if (!acMessage.pPlayer || !m_world.valid(targetEntity))
+        return;
 
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
-    auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+    auto it = actorValuesView.find(targetEntity);
     if (it == actorValuesView.end())
         return;
 
@@ -92,7 +96,7 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
     const uint64_t nowMs = SteadyActorValueNowMs();
     for (const auto& [id, value] : message.Values)
     {
-        if (id == kInfamyActorValueIndex || !std::isfinite(value))
+        if (id >= kActorValueCount || id == kInfamyActorValueIndex || !std::isfinite(value))
             continue;
 
         const float sanitized = std::clamp(value, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
@@ -129,9 +133,12 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMaxValueChanges>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity targetEntity = static_cast<entt::entity>(message.Id);
+    if (!acMessage.pPlayer || !m_world.valid(targetEntity))
+        return;
 
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
-    auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+    auto it = actorValuesView.find(targetEntity);
     if (it == actorValuesView.end())
         return;
 
@@ -146,7 +153,7 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
     for (const auto& [id, value] : message.Values)
     {
-        if (id == kInfamyActorValueIndex || !std::isfinite(value))
+        if (id >= kActorValueCount || id == kInfamyActorValueIndex || !std::isfinite(value))
             continue;
 
         const float sanitized = std::clamp(value, 0.0f, kMaxSanitizedActorValue);
@@ -165,7 +172,8 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
 void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthChangeBroadcast>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
-    if (!std::isfinite(message.DeltaHealth))
+    const entt::entity targetEntity = static_cast<entt::entity>(message.Id);
+    if (!acMessage.pPlayer || !m_world.valid(targetEntity) || !std::isfinite(message.DeltaHealth))
         return;
 
     const float sanitizedStagger = std::isfinite(message.StaggerMagnitude)
@@ -181,7 +189,7 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     const float sanitizedDelta = std::clamp(message.DeltaHealth, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
 
     auto actorValuesView = m_world.view<ActorValuesComponent, OwnerComponent>();
-    auto it = actorValuesView.find(static_cast<entt::entity>(message.Id));
+    auto it = actorValuesView.find(targetEntity);
     if (it == actorValuesView.end())
         return;
 
@@ -306,9 +314,12 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
 void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateChange>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity targetEntity = static_cast<entt::entity>(message.Id);
+    if (!acMessage.pPlayer || !m_world.valid(targetEntity))
+        return;
 
     auto characterView = m_world.view<CharacterComponent, OwnerComponent>();
-    const auto it = characterView.find(static_cast<entt::entity>(message.Id));
+    const auto it = characterView.find(targetEntity);
     if (it == characterView.end())
         return;
 

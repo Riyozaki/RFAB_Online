@@ -222,9 +222,12 @@ void InventoryService::OnEquipmentChanges(const PacketEvent<RequestEquipmentChan
 void InventoryService::OnWeaponDrawnRequest(const PacketEvent<DrawWeaponRequest>& acMessage) noexcept
 {
     auto& message = acMessage.Packet;
+    const entt::entity targetEntity = static_cast<entt::entity>(message.Id);
+    if (!acMessage.pPlayer || !m_world.valid(targetEntity))
+        return;
 
     auto characterView = m_world.view<CharacterComponent, OwnerComponent>();
-    const auto it = characterView.find(static_cast<entt::entity>(message.Id));
+    const auto it = characterView.find(targetEntity);
 
     if (it != std::end(characterView) && characterView.get<OwnerComponent>(*it).GetOwner() == acMessage.pPlayer)
     {

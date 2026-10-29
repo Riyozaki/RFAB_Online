@@ -1,6 +1,7 @@
 #include <Services/PartyService.h>
 #include <Services/RfabAdapterService.h>
 #include <Services/TransportService.h>
+#include <Services/WeatherService.h>
 
 #include <Events/UpdateEvent.h>
 #include <Events/DisconnectedEvent.h>
@@ -128,16 +129,17 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
     if (m_inParty)
     {
         spdlog::debug("[PartyService]: Got party info update");
+        const bool wasLeader = m_isLeader.load(std::memory_order_relaxed);
         m_isLeader = acPartyInfo.IsLeader;
         m_leaderPlayerId = acPartyInfo.LeaderPlayerId;
         m_partyMembers = acPartyInfo.PlayerIds;
 
-        // TODO: this can be done a bit prettier
-        if (m_isLeader)
-        {
-            if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
-                pWorldEncountersEnabled->f = 1.f;
-        }
+        // Only the active party leader spawns random wilderness encounters; demoted leaders must reset to 0
+        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
+            pWorldEncountersEnabled->f = acPartyInfo.IsLeader ? 1.f : 0.f;
+
+        if (wasLeader != acPartyInfo.IsLeader && m_world.ctx().contains<WeatherService>())
+            m_world.ctx().at<WeatherService>().OnPartyLeadershipChanged(acPartyInfo.IsLeader);
 
         auto pArguments = CefListValue::Create();
 

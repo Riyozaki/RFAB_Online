@@ -86,8 +86,8 @@ TEST_CASE("v3.1.4 Single-thread WinMain frame execution, worker-hook safety & v3
     CHECK(static_cast<unsigned char>(pkgPs1[0]) == 0xEF);
     CHECK(static_cast<unsigned char>(pkgPs1[1]) == 0xBB);
     CHECK(static_cast<unsigned char>(pkgPs1[2]) == 0xBF);
-    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.6\"") != std::string::npos);
-    CHECK(pkgPs1.find("[string]$VersionTag = \"v3.1.6\"") != std::string::npos);
+    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.7\"") != std::string::npos);
+    CHECK(pkgPs1.find("[string]$VersionTag = \"v3.1.7\"") != std::string::npos);
     CHECK(buildPs1.find("Ensure-V313BackupRelease") != std::string::npos);
     CHECK(buildPs1.find("\"v3.1.3-backup\"") != std::string::npos);
 

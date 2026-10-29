@@ -1,12 +1,15 @@
 #include <Messages/StringCacheUpdate.h>
+#include <common/CoopPacketSafety.h>
+#include <algorithm>
 
 void StringCacheUpdate::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
+    const size_t count = std::min(Values.size(), CoopPacketSafety::kMaxStringCacheBatch);
     Serialization::WriteVarInt(aWriter, StartId);
-    Serialization::WriteVarInt(aWriter, Values.size() & 0xFFFF);
-    for (const auto& value : Values)
+    Serialization::WriteVarInt(aWriter, count);
+    for (size_t i = 0; i < count; ++i)
     {
-        Serialization::WriteString(aWriter, value);
+        Serialization::WriteString(aWriter, Values[i]);
     }
 }
 
@@ -14,13 +17,14 @@ void StringCacheUpdate::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) n
 {
     StartId = Serialization::ReadVarInt(aReader) & 0xFFFF;
 
-    const auto count = Serialization::ReadVarInt(aReader) & 0xFFFF;
-    Values.resize(count);
+    const size_t count = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader) & 0xFFFF,
+        CoopPacketSafety::kMaxStringCacheBatch);
+    Values.clear();
+    Values.reserve(std::min<size_t>(count, 256));
 
-    for (auto i = 0ull; i < count; ++i)
+    for (size_t i = 0; i < count && !aReader.Eof(); ++i)
     {
-        auto value = Serialization::ReadString(aReader);
-
-        Values[i] = std::move(value);
+        Values.push_back(Serialization::ReadString(aReader));
     }
 }

@@ -57,6 +57,12 @@ bool LaunchContext::GetLoaded()
         return false; \
     }
 
+#define DIE_STARTUP_NOW(err) \
+    {                        \
+        Die(err);            \
+        return -1;           \
+    }
+
 void SetMaxstdio()
 {
     const auto handle = GetModuleHandleW(L"API-MS-WIN-CRT-STDIO-L1-1-0.DLL");
@@ -88,7 +94,7 @@ int StartUp(int argc, char** argv)
     InstallRfabBootDiagnostics({}, "launcher_startup");
 
     if (!EarlyInstallSucceeded())
-        DIE_NOW(L"Early load install failed. Tell Force about this.");
+        DIE_STARTUP_NOW(L"Early load install failed. Tell Force about this.");
 
     auto LC = std::make_unique<LaunchContext>();
     g_context = LC.get();
@@ -103,11 +109,11 @@ int StartUp(int argc, char** argv)
         }
 
         if (ec)
-            DIE_NOW(ec);
+            DIE_STARTUP_NOW(ec);
     }
 
     if (!oobe::SelectInstall(askSelect))
-        DIE_NOW(L"Failed to select game install.");
+        DIE_STARTUP_NOW(L"Failed to select game install.");
 
     // Ensure EngineFixes.toml (including MO2 overrides like RFAB's "Disable Quick Saves/skse/plugins/EngineFixes.toml")
     // disables conflicting allocators and sets MaxStdio = 8192 while preserving RegularQuicksaves = true.
@@ -181,18 +187,21 @@ bool HandleArguments(int aArgc, char** aArgv, bool& aAskSelect)
 {
     for (int i = 1; i < aArgc; i++)
     {
+        if (!aArgv[i])
+            continue;
+
         if (std::strcmp(aArgv[i], "-r") == 0)
             aAskSelect = true;
         else if (std::strcmp(aArgv[i], "--exePath") == 0)
         {
-            if (i + 1 >= aArgc)
+            if (i + 1 >= aArgc || !aArgv[i + 1])
             {
                 SetLastError(ERROR_BAD_PATHNAME);
                 Die(L"No exe path specified", true);
                 return false;
             }
 
-            if (!oobe::PathArgument(aArgv[i + 1]))
+            if (!oobe::PathArgument(aArgv[++i]))
             {
                 SetLastError(ERROR_BAD_ARGUMENTS);
                 Die(L"Failed to parse path argument", true);

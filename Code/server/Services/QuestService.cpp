@@ -50,6 +50,8 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
 {
     const auto& message = acMessage.Packet;
     auto* pPlayer = acMessage.pPlayer;
+    if (!pPlayer || !message.Id)
+        return;
 
     // We'll want to know the player party status for messaging & decisions
     // We want the leader to change things whenever possible, if a Member
@@ -123,9 +125,9 @@ void QuestService::OnQuestChanges(const PacketEvent<RequestQuestUpdate>& acMessa
 
     default:
         spdlog::error(
-            "{}: unknown quest status {} quest: {:X}, stage: {}, status {}, by {} {:X}", __FUNCTION__, notify.Status, message.Id.LogFormat(), notify.Stage, notify.Status,
+            "{}: unknown quest status {} quest: {:X}, stage: {}, status {}, by {} {:X}", __FUNCTION__, message.Status, message.Id.LogFormat(), notify.Stage, notify.Status,
             playerTypeString, pPlayer->GetId());
-        break;
+        return;
     }
 
     const uint32_t partyNumber = partyId.value_or(0);
@@ -222,6 +224,8 @@ void QuestService::OnQuestSceneChanges(const PacketEvent<RequestQuestSceneUpdate
     const auto& message = acMessage.Packet;
 
     auto* pPlayer = acMessage.pPlayer;
+    if (!pPlayer || !message.QuestId || !message.SceneId)
+        return;
     auto& partyService = m_world.GetPartyService();
     bool isLeader = partyService.IsPlayerLeader(pPlayer);
     auto playerTypeString = isLeader ? "leader" : "player";

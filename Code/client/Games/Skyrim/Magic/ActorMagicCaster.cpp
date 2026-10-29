@@ -5,6 +5,8 @@
 
 #include <Games/Skyrim/Actor.h>
 #include <Games/ActorExtension.h>
+#include <Games/Overrides.h>
+#include <common/CoopWorldStabilizer.h>
 
 #include <World.h>
 
@@ -23,30 +25,34 @@ void TP_MAKE_THISCALL(HookSpellCast, ActorMagicCaster, bool abSuccess, int32_t a
         return;
     if (!abSuccess)
         return;
-    if (!apSpell && !apThis->pCurrentSpell)
+
+    MagicItem* pResolvedSpell = apSpell ? apSpell : apThis->pCurrentSpell;
+    if (!pResolvedSpell)
         return;
 
     const ActorExtension* pExtended = apThis->pCasterActor->GetExtension();
-    if (!pExtended || pExtended->IsRemote())
+    if (!pExtended)
         return;
 
-    uint32_t targetFormId = 0;
+    const bool isSpellOverride = ScopedSpellCastOverride::IsOverriden();
+    if (!CoopWorldStabilizer::ShouldAllowHookSpellCastExecution(pExtended->IsRemote(), isSpellOverride))
+        return;
 
-    if (apThis->hDesiredTarget)
+    if (World::IsCreated() && World::IsConnectedCached() && apThis->pCasterActor->formID != 0 &&
+        CoopWorldStabilizer::ShouldTriggerLocalSpellCastEvent(pExtended->IsLocal(), isSpellOverride, pResolvedSpell != nullptr))
     {
-        if (GamePtr<TESObjectREFR> spDesiredTarget = TESObjectREFR::LookupByHandle(apThis->hDesiredTarget))
+        uint32_t targetFormId = 0;
+        if (apThis->hDesiredTarget)
         {
-            targetFormId = spDesiredTarget->formID;
+            if (GamePtr<TESObjectREFR> spDesiredTarget = TESObjectREFR::LookupByHandle(apThis->hDesiredTarget))
+                targetFormId = spDesiredTarget->formID;
         }
-    }
 
-    if (World::IsCreated() && World::IsConnectedCached() && apSpell && apThis->pCasterActor->formID != 0)
-    {
         World::Get().GetRunner().Trigger(SpellCastEvent(
             apThis->pCasterActor->formID,
             apThis->GetCastingSource(),
             apThis->GetIsDualCasting(),
-            apSpell->formID,
+            pResolvedSpell->formID,
             targetFormId));
     }
 

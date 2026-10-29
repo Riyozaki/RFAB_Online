@@ -69,16 +69,24 @@ const PartyService::Party* PartyService::GetById(uint32_t aId) const noexcept
 
 bool PartyService::IsPlayerInParty(Player* const apPlayer) const noexcept
 {
-    return apPlayer->GetParty().JoinedPartyId.has_value();
+    if (!apPlayer)
+        return false;
+
+    const auto& partyComp = apPlayer->GetParty();
+    return partyComp.JoinedPartyId.has_value() && m_parties.find(*partyComp.JoinedPartyId) != m_parties.end();
 }
 
 bool PartyService::IsPlayerLeader(Player* const apPlayer) noexcept
 {
+    if (!apPlayer)
+        return false;
+
     auto& inviterPartyComponent = apPlayer->GetParty();
     if (inviterPartyComponent.JoinedPartyId)
     {
-        Party& party = m_parties[*inviterPartyComponent.JoinedPartyId];
-        return party.LeaderPlayerId == apPlayer->GetId();
+        const auto partyIt = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+        if (partyIt != m_parties.end())
+            return partyIt->second.LeaderPlayerId == apPlayer->GetId();
     }
 
     return false;
@@ -86,10 +94,15 @@ bool PartyService::IsPlayerLeader(Player* const apPlayer) noexcept
 
 PartyService::Party* PartyService::GetPlayerParty(Player* const apPlayer) noexcept
 {
+    if (!apPlayer)
+        return nullptr;
+
     auto& inviterPartyComponent = apPlayer->GetParty();
     if (inviterPartyComponent.JoinedPartyId)
     {
-        return &m_parties[*inviterPartyComponent.JoinedPartyId];
+        const auto partyIt = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+        if (partyIt != m_parties.end())
+            return &partyIt->second;
     }
 
     return nullptr;
@@ -259,11 +272,14 @@ void PartyService::OnPlayerJoin(const PlayerJoinEvent& acEvent) noexcept
         if (reconnect.RestoreAsLeader || party.Members.size() == 1 || party.LeaderPlayerId == 0)
             party.LeaderPlayerId = acEvent.pPlayer->GetId();
 
+        const bool becameLeader = (party.LeaderPlayerId == acEvent.pPlayer->GetId());
         m_sessionLedger.RecordPartyJoin(
             identityKey,
             partyId,
-            reconnect.RestoreAsLeader,
+            becameLeader,
             nowMs);
+        if (becameLeader)
+            m_sessionLedger.RecordPartyLeaderChange(partyId, identityKey);
 
         spdlog::info(
             "[PartyService]: Restored reconnecting player {} to co-op party {} (leader={})",

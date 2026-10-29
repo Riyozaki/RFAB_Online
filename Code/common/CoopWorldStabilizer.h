@@ -508,4 +508,52 @@ namespace CoopWorldStabilizer
             return PausedInboundPacketAction::kQueueUntilUnpaused;
         }
     }
+
+    /**
+     * Bounds check for `BGSSaveFormBuffer::WriteId`: writing two `uint32_t` VarInts (`modId` + `baseId`)
+     * requires up to `5 + 5 = 10` bytes remaining in `[aPosition, aCapacity)`.
+     */
+    [[nodiscard]] constexpr bool CanWriteFormIdVarIntsToSaveBuffer(
+        const void* apBuffer,
+        uint32_t aPosition,
+        uint32_t aCapacity) noexcept
+    {
+        return apBuffer != nullptr && aPosition < aCapacity && (aCapacity - aPosition) >= 10u;
+    }
+
+    /**
+     * `ActorMagicCaster::HookSpellCast` execution policy:
+     * Organic AI/input spell casts on remote-owned actors (`aIsRemoteActor && !aIsSpellCastOverridden`)
+     * must be suppressed, whereas programmatic remote casts initiated inside `ScopedSpellCastOverride`
+     * (`MagicService::OnNotifySpellCast -> CastSpellImmediate`) MUST run `RealSpellCast` so release FX,
+     * sound, and concentration channel state initialize properly.
+     */
+    [[nodiscard]] constexpr bool ShouldAllowHookSpellCastExecution(
+        bool aIsRemoteActor,
+        bool aIsSpellCastOverridden) noexcept
+    {
+        return !aIsRemoteActor || aIsSpellCastOverridden;
+    }
+
+    [[nodiscard]] constexpr bool ShouldTriggerLocalSpellCastEvent(
+        bool aIsLocalActor,
+        bool aIsSpellCastOverridden,
+        bool aHasResolvedSpell) noexcept
+    {
+        return aIsLocalActor && !aIsSpellCastOverridden && aHasResolvedSpell;
+    }
+
+    /**
+     * `SubtitleManager::HookShowSubtitle` sync filter:
+     * Only broadcast subtitles spoken by locally owned non-player NPCs while connected — never echo
+     * subtitles originating from remote-owned puppets (`aIsRemoteActor == true`) or local/remote players.
+     */
+    [[nodiscard]] constexpr bool ShouldTriggerSubtitleSync(
+        bool aWorldReadyAndConnected,
+        bool aHasActorAndExtension,
+        bool aIsRemoteActor,
+        bool aIsPlayerActor) noexcept
+    {
+        return aWorldReadyAndConnected && aHasActorAndExtension && !aIsRemoteActor && !aIsPlayerActor;
+    }
 } // namespace CoopWorldStabilizer

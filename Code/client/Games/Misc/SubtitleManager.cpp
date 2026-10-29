@@ -8,6 +8,7 @@
 
 #include <Forms/TESTopicInfo.h>
 #include <Misc/BSFixedString.h>
+#include <common/CoopWorldStabilizer.h>
 
 SubtitleManager* SubtitleManager::Get() noexcept
 {
@@ -32,9 +33,15 @@ void* SubtitleManager::HideSubtitle(TESObjectREFR* apSpeaker) noexcept
 
 void TP_MAKE_THISCALL(HookShowSubtitle, SubtitleManager, TESObjectREFR* apSpeaker, const char* apSubtitleText, bool aIsInDialogue)
 {
-    Actor* pActor = apSpeaker ? Cast<Actor>(apSpeaker) : nullptr;
-    if (World::IsCreated() && World::IsConnectedCached() && apSubtitleText && apSubtitleText[0] != '\0' &&
-        pActor && pActor->formID != 0 && pActor->GetExtension() && !pActor->GetExtension()->IsPlayer())
+    const bool worldReady = World::IsCreated() && World::IsConnectedCached();
+    Actor* pActor = (worldReady && apSpeaker) ? Cast<Actor>(apSpeaker) : nullptr;
+    const ActorExtension* pExt = (pActor && pActor->formID != 0) ? pActor->GetExtension() : nullptr;
+    if (apSubtitleText && apSubtitleText[0] != '\0' &&
+        CoopWorldStabilizer::ShouldTriggerSubtitleSync(
+            worldReady,
+            pExt != nullptr,
+            pExt && pExt->IsRemote(),
+            pExt && pExt->IsPlayer()))
     {
         String safeSubtitle(apSubtitleText);
         World::Get().GetRunner().Trigger(SubtitleEvent(pActor->formID, std::move(safeSubtitle)));

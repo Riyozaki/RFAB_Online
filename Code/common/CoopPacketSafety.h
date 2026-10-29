@@ -54,6 +54,13 @@ namespace CoopPacketSafety
     inline constexpr size_t kMaxTints = 256;
     inline constexpr size_t kMaxFactions = 512;
     inline constexpr size_t kMaxGridCells = 256;
+    inline constexpr size_t kMaxPlayerListEntries = 256;
+    inline constexpr size_t kMaxObjectInventoryChanges = 255;
+    inline constexpr size_t kMaxFactionChanges = 0x3FF;
+    inline constexpr size_t kMaxStringCacheBatch = 0xFFFF;
+    inline constexpr float kWorldCoordinateMaxAbs = 2097152.0f;
+    inline constexpr uint32_t kUnmappedServerModId = 0xFFFFFFFEu;
+    inline constexpr uint32_t kRuntimeDynamicModId = 0xFFFFFFFFu;
 
     [[nodiscard]] inline constexpr size_t ClampCollectionCount(uint64_t aRawCount, size_t aMaxAllowed) noexcept
     {
@@ -67,6 +74,85 @@ namespace CoopPacketSafety
         if (!std::isfinite(aValue))
             return aFallback;
         return std::clamp(aValue, aMin, aMax);
+    }
+
+    [[nodiscard]] inline bool AreWorldCoordinatesValid(float aX, float aY, float aZ) noexcept
+    {
+        return std::isfinite(aX) && std::isfinite(aY) && std::isfinite(aZ) &&
+               std::abs(aX) <= kWorldCoordinateMaxAbs &&
+               std::abs(aY) <= kWorldCoordinateMaxAbs &&
+               std::abs(aZ) <= kWorldCoordinateMaxAbs;
+    }
+
+    template <class TVec3>
+    [[nodiscard]] inline bool IsFiniteVec3(const TVec3& aVec) noexcept
+    {
+        return AreWorldCoordinatesValid(aVec.x, aVec.y, aVec.z);
+    }
+
+    /**
+     * Sanitizes Skyrim calendar / time-of-day components so non-finite `NaN`/`Inf` or out-of-range
+     * wire values can never poison `Sky::Update` shadow matrices (`GameHour`) or server time ticks.
+     */
+    inline void SanitizeSkyrimCalendarValues(
+        float& aTimeScale,
+        float& aGameHour,
+        uint32_t& aDay,
+        uint32_t& aMonth,
+        uint32_t& aYear) noexcept
+    {
+        aTimeScale = SanitizeFiniteFloat(aTimeScale, 0.0f, 1000.0f, 20.0f);
+        if (!std::isfinite(aGameHour))
+        {
+            aGameHour = 8.0f;
+        }
+        else
+        {
+            aGameHour = std::fmod(aGameHour, 24.0f);
+            if (aGameHour < 0.0f)
+                aGameHour += 24.0f;
+        }
+
+        if (aMonth > 11u)
+            aMonth = 7u;
+        if (aDay > 31u)
+            aDay = 17u;
+        if (aYear > 9999u)
+            aYear = 201u;
+    }
+
+    /**
+     * Translates a non-ESL (`hiByte != 0xFE`) Skyrim SE 32-bit FormID through `m_standardToServer[0x100]`:
+     * - `aGameId == 0` -> null FormID `(0, 0)`, returns `true`.
+     * - Unmapped standard slot (`kUnmappedServerModId`) -> `(0, 0)`, returns `false` so local-only `.esp`
+     *   forms NEVER alias onto `Skyrim.esm` (`ServerModId == 0`) and cause type-confusion vtable crashes!
+     * - Mapped standard slot (`0..0xFD`) or `0xFF` (`kRuntimeDynamicModId`) -> `(mapped, aGameId & 0x00FFFFFFu)`.
+     */
+    [[nodiscard]] inline constexpr bool TranslateStandardFormToServerModId(
+        uint32_t aGameId,
+        const uint32_t (&aStandardToServer)[0x100],
+        uint32_t& aOutModId,
+        uint32_t& aOutBaseId) noexcept
+    {
+        if (aGameId == 0u)
+        {
+            aOutModId = 0u;
+            aOutBaseId = 0u;
+            return true;
+        }
+
+        const uint32_t hiByte = (aGameId >> 24) & 0xFFu;
+        const uint32_t mapped = aStandardToServer[hiByte];
+        if (mapped == kUnmappedServerModId)
+        {
+            aOutModId = 0u;
+            aOutBaseId = 0u;
+            return false;
+        }
+
+        aOutModId = mapped;
+        aOutBaseId = aGameId & 0x00FFFFFFu;
+        return true;
     }
 
     [[nodiscard]] inline int32_t SanitizeItemCountDelta(int32_t aCount, int32_t aMaxAbs = 1'000'000) noexcept

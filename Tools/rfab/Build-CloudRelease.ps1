@@ -1,15 +1,15 @@
 ﻿param(
-    [string]$VersionTag = "v3.1.6",
+    [string]$VersionTag = "v3.1.7",
     [string]$BuildMode = "releasedbg",
     [bool]$PublishRelease = $true,
     [switch]$SkipPublish
 )
 if ($SkipPublish) { $PublishRelease = $false }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6")
 if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v3.1.6' (previous releases are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v3.1.6"
+    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v3.1.7' (previous releases are preserved untouched)." -ForegroundColor Yellow
+    $VersionTag = "v3.1.7"
 }
 if ($VersionTag -in $ProtectedTags) {
     throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"

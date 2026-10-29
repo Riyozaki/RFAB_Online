@@ -26,6 +26,13 @@ uint32_t ModsComponent::AddStandard(const String& acpFilename) noexcept
         return itor->second.id;
     }
 
+    const auto liteItor = m_liteMods.find(key);
+    if (liteItor != std::end(m_liteMods))
+    {
+        liteItor.value().refCount++;
+        return liteItor->second.id;
+    }
+
     const auto id = m_seed++;
     m_standardMods.emplace(key, Entry{id, 1});
 
@@ -40,6 +47,13 @@ uint32_t ModsComponent::AddLite(const String& acpFilename) noexcept
     {
         itor.value().refCount++;
         return itor->second.id;
+    }
+
+    const auto stdItor = m_standardMods.find(key);
+    if (stdItor != std::end(m_standardMods))
+    {
+        stdItor.value().refCount++;
+        return stdItor->second.id;
     }
 
     const auto id = m_seed++;

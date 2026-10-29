@@ -117,13 +117,21 @@ void WeatherService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 
 void WeatherService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept
 {
-    if (!acEvent.IsLeader)
+    OnPartyLeadershipChanged(acEvent.IsLeader);
+}
+
+void WeatherService::OnPartyLeadershipChanged(bool aIsLeader) noexcept
+{
+    if (!aIsLeader)
     {
         auto view = m_world.view<PlayerComponent>();
         const auto& partyService = m_world.GetPartyService();
 
         for (auto entity : view)
         {
+            if (m_world.any_of<WaitingFor3D>(entity))
+                continue;
+
             const auto& playerComponent = view.get<PlayerComponent>(entity);
             if (playerComponent.Id == partyService.GetLeaderPlayerId())
             {
@@ -134,6 +142,9 @@ void WeatherService::OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcep
     }
     else
     {
+        // Release any previous remote weather lock before sampling and broadcasting leader weather
+        ToggleGameWeatherSystem(true);
+
         Sky* pSky = Sky::Get();
         if (!CanMutateOutdoorSkyWeather(pSky))
         {

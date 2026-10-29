@@ -432,18 +432,29 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
 
     if (isPlayer)
     {
-        auto& entries = message.FaceTints.Entries;
-        const auto& tints = PlayerCharacter::Get()->GetTints();
-        entries.resize(tints.length);
-
-        for (auto i = 0u; i < tints.length; ++i)
+        if (auto* pLocalPlayer = PlayerCharacter::Get())
         {
-            entries[i].Alpha = tints[i]->alpha;
-            entries[i].Color = tints[i]->color;
-            entries[i].Type = tints[i]->type;
+            auto& entries = message.FaceTints.Entries;
+            const auto& tints = pLocalPlayer->GetTints();
+            entries.clear();
+            entries.reserve(tints.length);
 
-            if (tints[i]->texture)
-                entries[i].Name = tints[i]->texture->name.AsAscii();
+            for (auto i = 0u; i < tints.length; ++i)
+            {
+                const auto* pTint = tints[i];
+                if (!pTint)
+                    continue;
+
+                FaceGenTints::Entry entry{};
+                entry.Alpha = pTint->alpha;
+                entry.Color = pTint->color;
+                entry.Type = pTint->type;
+
+                if (pTint->texture && pTint->texture->name.AsAscii())
+                    entry.Name = pTint->texture->name.AsAscii();
+
+                entries.push_back(std::move(entry));
+            }
         }
 
         // Capture exact runtime RGB hair color (both vanilla BGSColorForm and RaceMenu custom HairColorCustom)

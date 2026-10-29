@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$VersionTag = "v3.1.6",
+    [string]$VersionTag = "v3.1.7",
     [string]$BuildMode = "releasedbg"
 )
 
