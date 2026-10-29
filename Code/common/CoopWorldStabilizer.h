@@ -456,14 +456,14 @@ namespace CoopWorldStabilizer
         bool aVmWasActive,
         bool aHasLoadedPlayerWorld) noexcept
     {
-        if (aQuitGame || aResetGame || aFullReset || aReloadContent || aMainOrLoadingMenuOpen)
+        if (aQuitGame || aResetGame || aFullReset || aReloadContent || aMainOrLoadingMenuOpen || !aHasLoadedPlayerWorld)
             return MainLoopUpdateMode::kSkip;
 
-        if (aSimulationUnpaused && aVmWasActive)
-            return MainLoopUpdateMode::kFullSimulationUpdate;
-
-        if (aHasLoadedPlayerWorld)
+        if (!aSimulationUnpaused)
             return MainLoopUpdateMode::kPausedNetworkAndSavePump;
+
+        if (aVmWasActive)
+            return MainLoopUpdateMode::kFullSimulationUpdate;
 
         return MainLoopUpdateMode::kSkip;
     }
@@ -481,10 +481,12 @@ namespace CoopWorldStabilizer
      * - `kRejectOutOfRange`: corrupted/unknown opcode `>= kServerOpcodeMax`.
      * - `kDropStaleUnreliable`: 30 Hz unreliable movement frames (`kServerReferencesMoveRequest`) that would
      *   otherwise pile up thousands of stale snapshots during multi-minute RFAB `StatsMenu` perk planning.
-     * - `kDispatchImmediately`: pure handshake, party, overlay chat, string-cache, settings, and save/load
-     *   barrier control messages that never spawn/despawn/mutate 3D world `Actor`s while paused.
-     * - `kQueueUntilUnpaused`: all reliable world-state deltas (`NotifySpawnData`, `NotifyPlayerLeft`,
-     *   `NotifyInventoryChanges`, `NotifySpellCast`, etc.) replayed in exact FIFO order once unpaused.
+     * - `kDispatchImmediately`: pure overlay chat and coordinated save/load barrier control messages that have
+     *   zero ordering coupling to player join/leave or world entity lifecycles.
+     * - `kQueueUntilUnpaused`: ALL other reliable packets (`AuthenticationResponse`, `StringCacheUpdate`,
+     *   `NotifyPlayerList`, `NotifyPlayerJoined`, `NotifyPlayerLeft`, `NotifyParty*`, `NotifySpawnData`, etc.)
+     *   queued in strict single-stream causal FIFO order so `PlayerJoined` can never overtake `PlayerLeft`
+     *   and `ConnectedEvent` never mutates cells/globals while `freezeTime == true`.
      */
     [[nodiscard]] constexpr PausedInboundPacketAction ClassifyPausedInboundPacket(uint32_t aOpcode) noexcept
     {
@@ -496,18 +498,7 @@ namespace CoopWorldStabilizer
         case kServerReferencesMoveRequest:
             return PausedInboundPacketAction::kDropStaleUnreliable;
 
-        case kAuthenticationResponse:
-        case kNotifyPlayerList:
-        case kNotifyPartyInfo:
-        case kNotifyPartyInvite:
-        case kNotifyPartyJoined:
-        case kNotifyPartyLeft:
         case kNotifyChatMessageBroadcast:
-        case kStringCacheUpdate:
-        case kNotifyPlayerJoined:
-        case kNotifyPlayerLevel:
-        case kNotifyPlayerCellChanged:
-        case kNotifySettingsChange:
         case kNotifyPrepareSave:
         case kNotifyCommitSave:
         case kNotifyExecuteLoad:

@@ -1453,19 +1453,28 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
 
     if (shouldSyncActivate && objectFormId != 0 && activatorFormId != 0)
     {
-        // Re-validate `objectFormId` via `TESForm::GetById` in case `RealActivate` deleted/consumed the object.
+        // Never touch raw `apThis` after `RealActivate` on ANY thread (`RealActivate` may delete/consume it):
+        // re-resolve `objectFormId` via `TESForm::GetById` on `WinMain` (queueing if called from a worker thread).
         if (wasLockedBefore)
         {
-            TESObjectREFR* pLiveObject = World::IsMainThread() ? Cast<TESObjectREFR>(TESForm::GetById(objectFormId)) : apThis;
-            if (pLiveObject && !pLiveObject->IsDeleted())
+            auto checkUnlockedAndEmit = [objectFormId]() noexcept
             {
-                const auto* pLockAfter = pLiveObject->GetLock();
-                if (!pLockAfter || !pLockAfter->IsLocked())
+                TESObjectREFR* pLiveObject = Cast<TESObjectREFR>(TESForm::GetById(objectFormId));
+                if (pLiveObject && !pLiveObject->IsDeleted())
                 {
-                    World::Get().GetRunner().Trigger(
-                        LockChangeEvent(objectFormId, false, pLockAfter ? pLockAfter->lockLevel : 0));
+                    const auto* pLockAfter = pLiveObject->GetLock();
+                    if (!pLockAfter || !pLockAfter->IsLocked())
+                    {
+                        World::Get().GetRunner().Trigger(
+                            LockChangeEvent(objectFormId, false, pLockAfter ? pLockAfter->lockLevel : 0));
+                    }
                 }
-            }
+            };
+
+            if (World::IsMainThread())
+                checkUnlockedAndEmit();
+            else
+                World::Get().GetRunner().Queue(std::move(checkUnlockedAndEmit));
         }
 
         if (CoopWorldStabilizer::ShouldBroadcastObjectActivation(isTargetActor, isTempTarget, isTeleportLoadDoor))

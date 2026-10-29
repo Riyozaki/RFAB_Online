@@ -28,6 +28,7 @@
 #include <Services/CharacterService.h>
 #include <Services/DiscoveryService.h>
 #include <Services/DownedStateService.h>
+#include <Services/InventoryService.h>
 #include <Services/MagicService.h>
 #include <Services/PartyService.h>
 #include <Services/PlayerService.h>
@@ -308,6 +309,17 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
 
     if (!m_deferredLoadSlot.empty() && !IsLoadingMenuOpen())
     {
+        if (m_deferredLoadMenuCloseFrames > 0)
+        {
+            auto* pUi = UI::Get();
+            if (pUi && pUi->GetMenuOpen(GetSaveMenus().StatsMenu))
+            {
+                --m_deferredLoadMenuCloseFrames;
+                return;
+            }
+            m_deferredLoadMenuCloseFrames = 0;
+        }
+
         const std::string slot = std::move(m_deferredLoadSlot);
         m_deferredLoadSlot.clear();
 
@@ -343,6 +355,7 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_pendingSavePurgeFrames = 0;
     m_hasDeferredPrepareSave = false;
     m_isExecutingPreJoinBackup = false;
+    m_deferredLoadMenuCloseFrames = 0;
     m_deferredInSessionRollback.reset();
 
     m_transport.ClearPausedInboundPackets();
@@ -353,6 +366,7 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_world.GetObjectService().ResetForWorldReload();
     m_world.GetMagicService().ResetForWorldReload();
     m_world.GetActorValueService().ResetForWorldReload();
+    m_world.GetInventoryService().ResetForWorldReload();
 
     // Phase 3 (`WorldReloadBarrier`): when executing an authorized coordinated `.ess` reload (Party Wipe
     // or manual `F9`), KEEP `m_transport`, `PlayerId`, and `PartyService` open instead of calling
@@ -554,6 +568,7 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
+    m_deferredLoadMenuCloseFrames = 0;
     m_deferredInSessionRollback.reset();
     m_autoReconnectPendingAfterLoad = false;
     m_wasAutoReconnecting = false;
@@ -612,6 +627,7 @@ void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
+    m_deferredLoadMenuCloseFrames = 0;
     m_deferredInSessionRollback.reset();
 }
 
@@ -695,6 +711,9 @@ void CoordinatedSaveService::TickWhilePaused(double aDeltaSeconds) noexcept
 
     if (m_pendingSaveRetryDelaySec > 0.0)
         m_pendingSaveRetryDelaySec = std::max(0.0, m_pendingSaveRetryDelaySec - aDeltaSeconds);
+
+    if (!m_pendingSaveSlot.empty() && m_pendingSavePurgeFrames > 0 && !IsLoadingMenuOpen())
+        --m_pendingSavePurgeFrames;
 
     if (m_autoReconnectPendingAfterLoad && !m_transport.IsOnline())
     {
@@ -1089,7 +1108,7 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
         const bool statsOpen = pUi && pUi->GetMenuOpen(GetSaveMenus().StatsMenu);
         if (pUi)
             pUi->CloseAllMenus();
-        if (statsOpen)
+        if (statsOpen || m_world.IsPausedPumpActive())
         {
             m_deferredInSessionRollback = std::make_unique<NotifyExecuteLoad>(aMsg);
             return;
@@ -1153,8 +1172,12 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
         return;
     }
 
+    bool statsWasOpen = false;
     if (auto* pUi = UI::Get())
+    {
+        statsWasOpen = pUi->GetMenuOpen(GetSaveMenus().StatsMenu);
         pUi->CloseAllMenus();
+    }
 
     m_liveSessionWorldReloadPending = true;
     m_liveSessionWorldReloadInFlight = false;
@@ -1162,6 +1185,7 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
     m_waitingForHostBarrierRelease = false;
     m_activeReloadBarrierEpoch = acMessage.EpochId;
     m_activeReloadBarrierSlot = targetSlot;
+    m_deferredLoadMenuCloseFrames = statsWasOpen ? 15 : 0;
 
     // Immediately gate incoming remote actor materialization before `ExecuteDirectLoadFromProcessEvents` runs.
     m_world.GetCharacterService().BeginEngineWorldLoad();

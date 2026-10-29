@@ -119,7 +119,7 @@ TEST_CASE("Stage 0: Immutable v2.0.1-backup manifest and CI release protection",
     REQUIRE(ps1.find("\"v2.1.0\"") != std::string::npos);
     REQUIRE(ps1.find("\"v3.0.0-backup\"") != std::string::npos);
     REQUIRE(ps1.find("\"v3.0.0\"") != std::string::npos);
-    REQUIRE(ps1.find("[string]$VersionTag = \"v3.1.5\"") != std::string::npos);
+    REQUIRE(ps1.find("[string]$VersionTag = \"v3.1.6\"") != std::string::npos);
     REQUIRE(ps1.find("[switch]$SkipPublish") != std::string::npos);
 }
 

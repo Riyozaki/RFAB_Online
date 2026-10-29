@@ -30,7 +30,7 @@ struct PartyService
     [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId.load(std::memory_order_acquire); }
     [[nodiscard]] bool IsPlayerInParty(const uint32_t aPlayerId) const noexcept
     {
-        if (!m_inParty || aPlayerId == 0)
+        if (!m_inParty.load(std::memory_order_acquire) || aPlayerId == 0)
             return false;
         for (const uint32_t memberId : m_partyMembers)
         {

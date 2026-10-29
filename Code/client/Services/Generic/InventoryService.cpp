@@ -48,6 +48,11 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
 
 void InventoryService::OnDisconnected(const DisconnectedEvent&) noexcept
 {
+    ResetForWorldReload();
+}
+
+void InventoryService::ResetForWorldReload() noexcept
+{
     m_pendingNpcAmmoDeltas.clear();
     m_npcAmmoFlushAccumSec = 0.0;
 }

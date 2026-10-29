@@ -11,6 +11,8 @@
 #include <Messages/TeleportRequest.h>
 
 #include <Events/SetTimeCommandEvent.h>
+#include <Games/Skyrim/Interface/UI.h>
+#include <Misc/BSFixedString.h>
 #include <PlayerCharacter.h>
 #include <Utils.h>
 #include <common/RfabModpackCompat.h>
@@ -118,6 +120,20 @@ void OverlayClient::ProcessConnectMessage(CefRefPtr<CefListValue> aEventArgs)
                 spdlog::warn("[RFAB Connect] Connect requested before save loaded into world; prompting player.");
                 Utils::ShowHudMessage(String("Сначала загрузите сохранение или начните новую игру, затем нажмите F2 -> Connect"));
                 return;
+            }
+            if (auto* pUi = UI::Get())
+            {
+                static const BSFixedString* s_pStatsMenu = new BSFixedString("StatsMenu");
+                static const BSFixedString* s_pJournalMenu = new BSFixedString("Journal Menu");
+                static const BSFixedString* s_pTweenMenu = new BSFixedString("TweenMenu");
+                static const BSFixedString* s_pMapMenu = new BSFixedString("MapMenu");
+                if (!pUi->GetMenuOpen(*s_pStatsMenu) &&
+                    (pUi->GetMenuOpen(*s_pJournalMenu) ||
+                     pUi->GetMenuOpen(*s_pTweenMenu) ||
+                     pUi->GetMenuOpen(*s_pMapMenu)))
+                {
+                    pUi->CloseAllMenus();
+                }
             }
             World::Get().GetTransport().ConnectToServer(endpoint, password);
         });

@@ -60,14 +60,20 @@ TEST_CASE("v3.1.5 MainLoop update mode & paused-menu inbound packet classificati
           MainLoopUpdateMode::kFullSimulationUpdate);
 
     // Paused in StatsMenu (RFAB Perk Tree), MapMenu, ESC Journal Menu, or Console in a loaded world:
-    // keep GNS heartbeats, party/chat UI, and save/load barriers alive without mutating 3D world actors!
+    // keep GNS heartbeats, chat UI, and save/load barriers alive without mutating 3D world actors!
     CHECK(SelectMainLoopUpdateMode(false, false, false, false, false, false, false, true) ==
           MainLoopUpdateMode::kPausedNetworkAndSavePump);
-    CHECK(SelectMainLoopUpdateMode(false, false, false, false, false, true, false, true) ==
+    CHECK(SelectMainLoopUpdateMode(false, false, false, false, false, false, true, true) ==
           MainLoopUpdateMode::kPausedNetworkAndSavePump);
 
-    // Before a world/save is loaded, never run the paused pump
+    // Unpaused high-Hz frame between SkyrimVM ticks (or unpause transition frame): NEVER drop live movement!
+    CHECK(SelectMainLoopUpdateMode(false, false, false, false, false, true, false, true) ==
+          MainLoopUpdateMode::kSkip);
+
+    // Before a world/save is loaded, never run either simulation update or paused pump
     CHECK(SelectMainLoopUpdateMode(false, false, false, false, false, false, false, false) ==
+          MainLoopUpdateMode::kSkip);
+    CHECK(SelectMainLoopUpdateMode(false, false, false, false, false, true, true, false) ==
           MainLoopUpdateMode::kSkip);
 
     // 2. PausedInboundPacketAction classification
@@ -79,16 +85,18 @@ TEST_CASE("v3.1.5 MainLoop update mode & paused-menu inbound packet classificati
     CHECK(ClassifyPausedInboundPacket(kServerReferencesMoveRequest) ==
           PausedInboundPacketAction::kDropStaleUnreliable);
 
-    // Handshake, party, chat, string-cache, settings, and save/load barrier control packets run immediately
-    CHECK(ClassifyPausedInboundPacket(kAuthenticationResponse) == PausedInboundPacketAction::kDispatchImmediately);
-    CHECK(ClassifyPausedInboundPacket(kNotifyPartyInvite) == PausedInboundPacketAction::kDispatchImmediately);
-    CHECK(ClassifyPausedInboundPacket(kNotifyPartyJoined) == PausedInboundPacketAction::kDispatchImmediately);
+    // Independent chat & coordinated save/load barrier control packets run immediately while paused
     CHECK(ClassifyPausedInboundPacket(kNotifyChatMessageBroadcast) == PausedInboundPacketAction::kDispatchImmediately);
     CHECK(ClassifyPausedInboundPacket(kNotifyPrepareSave) == PausedInboundPacketAction::kDispatchImmediately);
     CHECK(ClassifyPausedInboundPacket(kNotifyCommitSave) == PausedInboundPacketAction::kDispatchImmediately);
     CHECK(ClassifyPausedInboundPacket(kNotifyExecuteLoad) == PausedInboundPacketAction::kDispatchImmediately);
 
-    // Reliable world-mutating packets queue in FIFO order until simulation unpauses
+    // ALL reliable handshake, party, join/leave, and world-state packets queue in strict single-stream causal FIFO
+    // order until simulation unpauses (so NotifyPlayerJoined can never overtake NotifyPlayerLeft!)
+    CHECK(ClassifyPausedInboundPacket(kAuthenticationResponse) == PausedInboundPacketAction::kQueueUntilUnpaused);
+    CHECK(ClassifyPausedInboundPacket(kNotifyPartyInvite) == PausedInboundPacketAction::kQueueUntilUnpaused);
+    CHECK(ClassifyPausedInboundPacket(kNotifyPartyJoined) == PausedInboundPacketAction::kQueueUntilUnpaused);
+    CHECK(ClassifyPausedInboundPacket(kNotifyPlayerJoined) == PausedInboundPacketAction::kQueueUntilUnpaused);
     CHECK(ClassifyPausedInboundPacket(kAssignCharacterResponse) == PausedInboundPacketAction::kQueueUntilUnpaused);
     CHECK(ClassifyPausedInboundPacket(kNotifySpawnData) == PausedInboundPacketAction::kQueueUntilUnpaused);
     CHECK(ClassifyPausedInboundPacket(kNotifyPlayerLeft) == PausedInboundPacketAction::kQueueUntilUnpaused);
@@ -112,9 +120,10 @@ TEST_CASE("v3.1.5 Paused-pump wiring, scalar ActivateEvent & hook hardening cont
     CHECK(static_cast<unsigned char>(pkgPs1[0]) == 0xEF);
     CHECK(static_cast<unsigned char>(pkgPs1[1]) == 0xBB);
     CHECK(static_cast<unsigned char>(pkgPs1[2]) == 0xBF);
-    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.5\"") != std::string::npos);
-    CHECK(pkgPs1.find("[string]$VersionTag = \"v3.1.5\"") != std::string::npos);
+    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.6\"") != std::string::npos);
+    CHECK(pkgPs1.find("[string]$VersionTag = \"v3.1.6\"") != std::string::npos);
     CHECK(buildPs1.find("\"v3.1.4\"") != std::string::npos);
+    CHECK(buildPs1.find("\"v3.1.5\"") != std::string::npos);
 
     // 1. Paused-menu pump & opcode bounds safety
     const std::string skyrimVmCpp = LoadV315RepoFile(root, "Code/client/SkyrimVM64.cpp");

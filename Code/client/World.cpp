@@ -34,6 +34,7 @@ World::World()
     , m_transport(*this, m_dispatcher)
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
+    , m_lastPausedPumpTime{m_lastFrameTime}
 {
     s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     ctx().emplace<ImguiService>();
@@ -176,14 +177,16 @@ void World::UpdatePausedPump() noexcept
     }
 
     const auto cNow = std::chrono::high_resolution_clock::now();
-    const auto cDelta = cNow - m_lastFrameTime;
-    m_lastFrameTime = cNow;
+    const auto cDelta = cNow - m_lastPausedPumpTime;
+    m_lastPausedPumpTime = cNow;
 
     const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
     const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
 
+    m_isPausedPumpActive = true;
     m_transport.PollWhileSimulationPaused();
     GetCoordinatedSaveService().TickWhilePaused(cDeltaSeconds);
+    m_isPausedPumpActive = false;
 }
 
 void World::OnMainThreadUpdate() noexcept

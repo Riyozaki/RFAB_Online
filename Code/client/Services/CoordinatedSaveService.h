@@ -132,6 +132,7 @@ private:
     std::string m_authorizedPendingSaveSlot{};
     std::string m_authorizedPendingLoadSlot{};
     std::string m_deferredLoadSlot{};
+    uint8_t m_deferredLoadMenuCloseFrames{0};
     std::unique_ptr<NotifyExecuteLoad> m_deferredInSessionRollback{};
     double m_lastInterceptNoticeCooldownSec{0.0};
 

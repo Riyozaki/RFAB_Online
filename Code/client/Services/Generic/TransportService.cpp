@@ -265,7 +265,10 @@ void TransportService::FlushPausedInboundPackets() noexcept
 
     for (auto& pMessage : pending)
     {
-        if (!m_connected)
+        // Check underlying GNS transport (`Client::IsConnected()`), NOT `m_connected`:
+        // `m_connected` only becomes `true` inside `HandleAuthenticationResponse()`, so checking
+        // `m_connected` here would drop a queued `AuthenticationResponse` handshake packet!
+        if (!IsConnected())
             break;
         if (!pMessage)
             continue;

@@ -5,6 +5,7 @@
 #include <Services/PartyService.h>
 #include <Services/CharacterService.h>
 #include <Services/ActorValueService.h>
+#include <Services/InventoryService.h>
 #include <Services/OverlayService.h>
 #include <Services/CharacterService.h>
 #include <Services/MagicService.h>
@@ -36,6 +37,8 @@ struct World : entt::registry
     void OnMainThreadUpdate() noexcept;
     void QueueMainThreadTask(std::function<void()> aTask) noexcept;
 
+    [[nodiscard]] bool IsPausedPumpActive() const noexcept { return m_isPausedPumpActive; }
+
     RunnerService& GetRunner() noexcept;
     TransportService& GetTransport() noexcept;
     ModSystem& GetModSystem() noexcept;
@@ -46,6 +49,8 @@ struct World : entt::registry
     const CharacterService& GetCharacterService() const noexcept { return ctx().at<const CharacterService>(); }
     ActorValueService& GetActorValueService() noexcept { return ctx().at<ActorValueService>(); }
     const ActorValueService& GetActorValueService() const noexcept { return ctx().at<const ActorValueService>(); }
+    InventoryService& GetInventoryService() noexcept { return ctx().at<InventoryService>(); }
+    const InventoryService& GetInventoryService() const noexcept { return ctx().at<const InventoryService>(); }
     OverlayService& GetOverlayService() noexcept { return ctx().at<OverlayService>(); }
     const OverlayService& GetOverlayService() const noexcept { return ctx().at<const OverlayService>(); }
     DebugService& GetDebugService() noexcept { return ctx().at<DebugService>(); }
@@ -124,6 +129,8 @@ private:
     ServerSettings m_serverSettings{};
 
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
+    std::chrono::high_resolution_clock::time_point m_lastPausedPumpTime;
+    bool m_isPausedPumpActive{false};
     std::mutex m_mainThreadTasksMutex{};
     std::vector<std::function<void()>> m_mainThreadTasks{};
 };

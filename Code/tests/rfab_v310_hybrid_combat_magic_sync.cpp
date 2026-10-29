@@ -312,7 +312,7 @@ TEST_CASE("v3.1 Architectural Source Contracts across Client & Server Services",
     CHECK(v300Manifest.find("0b6977459bc9e6e62d8bf6f36925cba2f3a83b486c3a67f6edcad0aaeb8aa298") != std::string::npos);
     CHECK(v300Manifest.find("dbb8aa7294af29ba16cb1291f8bbb6027a3825c148e4c0ae2b748f74418c1fe9") != std::string::npos);
     CHECK(buildPs1.find("Ensure-V300BackupRelease") != std::string::npos);
-    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.5\"") != std::string::npos);
+    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.6\"") != std::string::npos);
 
     // 1. Destruction ValueModifierEffect & Concentration beam fixes + 1/M enemy heal scaling:
     CHECK(actorCpp.find("ScaleIncomingEnemyHealDelta") != std::string::npos);

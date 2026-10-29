@@ -529,10 +529,17 @@ bool TP_MAKE_THISCALL(HookCheckAddEffectTargetData, MagicTarget::AddTargetData, 
 bool TP_MAKE_THISCALL(HookFindTargets, MagicCaster, float afEffectivenessMult, int32_t* aruiTargetCount, TESBoundObject* apSource, char abLoadCast, char abAdjust)
 {
     bool enablePartyTeammateAuras = false;
-    if (apThis && apThis->pCurrentSpell && (apThis->pCurrentSpell->IsHealingSpell() || apThis->pCurrentSpell->IsBuffSpell()))
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        apThis &&
+        apThis->pCurrentSpell &&
+        (apThis->pCurrentSpell->IsHealingSpell() || apThis->pCurrentSpell->IsBuffSpell()))
     {
-        const auto* pActorCaster = static_cast<const ActorMagicCaster*>(apThis);
-        if (pActorCaster->pCasterActor && pActorCaster->pCasterActor->formID == 0x14)
+        // Query virtual `MagicCaster::GetCasterAsActor()` instead of blind-casting to `ActorMagicCaster*`:
+        // shrines, altars, standing stones, and traps use `NonActorMagicCaster` (`sizeof == 0x48`), which has
+        // no `pCasterActor` field and returns `0` (`nullptr`) from `GetCasterAsActor()`.
+        const auto* pCasterActor = reinterpret_cast<const Actor*>(apThis->GetCasterAsActor());
+        if (pCasterActor && pCasterActor == PlayerCharacter::Get())
             enablePartyTeammateAuras = true;
     }
 

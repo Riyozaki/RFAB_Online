@@ -55,6 +55,7 @@ struct InventoryService
      */
     void OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept;
     void OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept;
+    void ResetForWorldReload() noexcept;
 
 private:
     struct PendingNpcAmmoDelta

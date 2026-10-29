@@ -176,7 +176,12 @@ void PlayerCharacter::RemoveWaypoint() noexcept
 
 char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, bool aUnk2)
 {
-    if (apObject && apObject->baseForm)
+    if (World::IsCreated() &&
+        World::IsConnectedCached() &&
+        !ScopedInventoryOverride::IsOverriden() &&
+        apThis &&
+        apObject &&
+        apObject->baseForm)
     {
         auto& modSystem = World::Get().GetModSystem();
 

@@ -325,7 +325,8 @@ def main() -> int:
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
     assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
     assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt
-    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.5"' in build_txt
+    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.6"' in build_txt
+    assert '"v3.1.4"' in build_txt and '"v3.1.5"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -407,7 +408,25 @@ def main() -> int:
     assert "IsAttachedAndLoaded()" in invis_cpp
     assert "s_cachedRfabActive" in refs_cpp and "ResolveRfabPluginMod" not in refs_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 + v3.1.5 architectural regression checks passed!")
+    # 24. v3.1.6 Adversarial Audit: Causal-FIFO Paused Queue, High-Hz MainLoop Mode, NonActorMagicCaster & Reload Polish
+    world_h = (ROOT / "Code" / "client" / "World.h").read_text(encoding="utf-8")
+    player_char_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "PlayerCharacter.cpp").read_text(encoding="utf-8")
+    assert "if (!m_connected)" not in transport_cpp and "if (!IsConnected())" in transport_cpp
+    assert "m_lastPausedPumpTime" in world_h and "cNow - m_lastPausedPumpTime" in world_cpp
+    assert "IsPausedPumpActive()" in world_h and "GetInventoryService()" in world_h
+    assert "static_cast<const ActorMagicCaster*>(apThis)" not in magic_target_cpp
+    assert "apThis->GetCasterAsActor()" in magic_target_cpp
+    pickup_slice = player_char_cpp.split("HookPickUpObject", 1)[1][:420]
+    assert "World::IsCreated()" in pickup_slice and "World::IsConnectedCached()" in pickup_slice
+    assert "!ScopedInventoryOverride::IsOverriden()" in pickup_slice
+    assert "Cast<TESObjectREFR>(TESForm::GetById(objectFormId)) : apThis" not in tes_refr_cpp
+    assert "checkUnlockedAndEmit" in tes_refr_cpp
+    assert "void InventoryService::ResetForWorldReload() noexcept" in inv_cpp
+    assert "m_world.GetInventoryService().ResetForWorldReload();" in coord_save_cpp
+    assert "statsOpen || m_world.IsPausedPumpActive()" in coord_save_cpp
+    assert "m_deferredLoadMenuCloseFrames" in coord_save_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 + v3.1.5 + v3.1.6 architectural regression checks passed!")
     return 0
 
 
