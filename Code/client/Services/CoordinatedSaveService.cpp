@@ -47,7 +47,7 @@ bool IsAutosaveName(std::string_view aName) noexcept
 
 struct CachedSaveBlockedMenus
 {
-    std::array<BSFixedString, 8> HardBlocked{
+    std::array<BSFixedString, 10> HardBlocked{
         BSFixedString("Dialogue Menu"),
         BSFixedString("Lockpicking Menu"),
         BSFixedString("BarterMenu"),
@@ -56,11 +56,15 @@ struct CachedSaveBlockedMenus
         BSFixedString("RaceSex Menu"),
         BSFixedString("Sleep/Wait Menu"),
         BSFixedString("Training Menu"),
+        BSFixedString("StatsMenu"),
+        BSFixedString("Console"),
     };
     BSFixedString LoadingMenu{"Loading Menu"};
     BSFixedString MainMenu{"Main Menu"};
     BSFixedString JournalMenu{"Journal Menu"};
     BSFixedString TweenMenu{"TweenMenu"};
+    BSFixedString MapMenu{"MapMenu"};
+    BSFixedString StatsMenu{"StatsMenu"};
 };
 
 const CachedSaveBlockedMenus& GetSaveMenus() noexcept
@@ -82,6 +86,8 @@ CoordinatedSaveService::CoordinatedSaveService(World& aWorld, entt::dispatcher& 
     , m_executeLoadConnection(aDispatcher.sink<NotifyExecuteLoad>().connect<&CoordinatedSaveService::OnNotifyExecuteLoad>(this))
 {
 }
+
+CoordinatedSaveService::~CoordinatedSaveService() noexcept = default;
 
 bool CoordinatedSaveService::IsLocalPlayerAuthorizedLeader() const noexcept
 {
@@ -181,9 +187,15 @@ void CoordinatedSaveService::QueuePurgedAuthorizedSave(const std::string& acSlot
 
     if (auto* pUi = UI::Get())
     {
+        std::string blockedMenuReason;
         const auto& menus = GetSaveMenus();
-        if (pUi->GetMenuOpen(menus.JournalMenu) || pUi->GetMenuOpen(menus.TweenMenu))
+        if (!IsBlockingInteractiveMenuOpen(blockedMenuReason) &&
+            (pUi->GetMenuOpen(menus.JournalMenu) ||
+             pUi->GetMenuOpen(menus.TweenMenu) ||
+             pUi->GetMenuOpen(menus.MapMenu)))
+        {
             pUi->CloseAllMenus();
+        }
     }
 
     m_pendingSaveSlot = cleanStem;
@@ -331,7 +343,9 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_pendingSavePurgeFrames = 0;
     m_hasDeferredPrepareSave = false;
     m_isExecutingPreJoinBackup = false;
+    m_deferredInSessionRollback.reset();
 
+    m_transport.ClearPausedInboundPackets();
     m_world.GetDownedStateService().ResetAllStates();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
     m_world.GetCharacterService().BeginEngineWorldLoad();
@@ -540,6 +554,7 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
+    m_deferredInSessionRollback.reset();
     m_autoReconnectPendingAfterLoad = false;
     m_wasAutoReconnecting = false;
     m_sawLoadingScreenForReconnect = false;
@@ -597,6 +612,7 @@ void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
     m_authorizedPendingSaveSlot.clear();
     m_authorizedPendingLoadSlot.clear();
     m_deferredLoadSlot.clear();
+    m_deferredInSessionRollback.reset();
 }
 
 void CoordinatedSaveService::SendReloadBarrierReadyAck(
@@ -670,9 +686,89 @@ void CoordinatedSaveService::CompleteLiveWorldReloadAfterEngineReady() noexcept
     }
 }
 
+void CoordinatedSaveService::TickWhilePaused(double aDeltaSeconds) noexcept
+{
+    BGSSaveLoadManager::InstallUniversalPostSkseHooks();
+
+    if (m_lastInterceptNoticeCooldownSec > 0.0)
+        m_lastInterceptNoticeCooldownSec = std::max(0.0, m_lastInterceptNoticeCooldownSec - aDeltaSeconds);
+
+    if (m_pendingSaveRetryDelaySec > 0.0)
+        m_pendingSaveRetryDelaySec = std::max(0.0, m_pendingSaveRetryDelaySec - aDeltaSeconds);
+
+    if (m_autoReconnectPendingAfterLoad && !m_transport.IsOnline())
+    {
+        if (IsLoadingMenuOpen() || m_world.GetCharacterService().IsEngineWorldLoading())
+        {
+            m_sawLoadingScreenForReconnect = true;
+            return;
+        }
+
+        PlayerCharacter* pPlayer = PlayerCharacter::Get();
+        if (pPlayer && !pPlayer->IsStillLoading() && pPlayer->parentCell != nullptr)
+        {
+            m_autoReconnectDelaySec -= aDeltaSeconds;
+            if (m_autoReconnectDelaySec <= 0.0)
+            {
+                if (m_autoReconnectAttemptsLeft == 0)
+                {
+                    m_autoReconnectPendingAfterLoad = false;
+                    m_wasAutoReconnecting = false;
+                    m_sawLoadingScreenForReconnect = false;
+                    return;
+                }
+
+                if (m_autoReconnectAttemptsLeft == 6)
+                    Utils::ShowHudMessage(String("RFAB Online: Автоматическое переподключение к сессии..."));
+
+                --m_autoReconnectAttemptsLeft;
+                m_autoReconnectDelaySec = 3.5;
+                m_transport.ReconnectToLastServer();
+            }
+        }
+        return;
+    }
+
+    if (!m_transport.IsConnected())
+        return;
+
+    if (m_hasDeferredPrepareSave)
+    {
+        m_deferredPrepareWaitSec -= aDeltaSeconds;
+        std::string failReason;
+        if (CanSafelySaveNow(failReason))
+        {
+            const std::string slot = std::move(m_deferredPrepareSlotName);
+            const uint64_t epochId = m_deferredPrepareEpochId;
+            m_hasDeferredPrepareSave = false;
+            QueuePurgedAuthorizedSave(slot, epochId, true);
+        }
+        else if (m_deferredPrepareWaitSec <= 0.0)
+        {
+            CoordinatedSaveAck ack{};
+            ack.EpochId = m_deferredPrepareEpochId;
+            ack.SlotName = String(m_deferredPrepareSlotName.c_str());
+            ack.Success = false;
+            ack.Reason = String(failReason.c_str());
+            m_hasDeferredPrepareSave = false;
+            m_transport.Send(ack);
+        }
+    }
+}
+
 void CoordinatedSaveService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
     BGSSaveLoadManager::InstallUniversalPostSkseHooks();
+
+    if (m_deferredInSessionRollback)
+    {
+        auto* pUi = UI::Get();
+        if (!pUi || !pUi->GetMenuOpen(GetSaveMenus().StatsMenu))
+        {
+            std::unique_ptr<NotifyExecuteLoad> pendingRollback = std::move(m_deferredInSessionRollback);
+            ApplyInSessionRollback(*pendingRollback);
+        }
+    }
 
     if (m_lastInterceptNoticeCooldownSec > 0.0)
         m_lastInterceptNoticeCooldownSec = std::max(0.0, m_lastInterceptNoticeCooldownSec - acEvent.Delta);
@@ -817,9 +913,15 @@ void CoordinatedSaveService::OnNotifyPrepareSave(const NotifyPrepareSave& acMess
 
     if (auto* pUi = UI::Get())
     {
+        std::string blockedMenuReason;
         const auto& menus = GetSaveMenus();
-        if (pUi->GetMenuOpen(menus.JournalMenu) || pUi->GetMenuOpen(menus.TweenMenu))
+        if (!IsBlockingInteractiveMenuOpen(blockedMenuReason) &&
+            (pUi->GetMenuOpen(menus.JournalMenu) ||
+             pUi->GetMenuOpen(menus.TweenMenu) ||
+             pUi->GetMenuOpen(menus.MapMenu)))
+        {
             pUi->CloseAllMenus();
+        }
     }
 
     if (!CanSafelySaveNow(failReason))
@@ -981,9 +1083,23 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
     if (!acMessage.Message.empty())
         Utils::ShowHudMessage(acMessage.Message);
 
+    auto invokeOrDeferInSessionRollback = [&](const NotifyExecuteLoad& aMsg) noexcept
+    {
+        auto* pUi = UI::Get();
+        const bool statsOpen = pUi && pUi->GetMenuOpen(GetSaveMenus().StatsMenu);
+        if (pUi)
+            pUi->CloseAllMenus();
+        if (statsOpen)
+        {
+            m_deferredInSessionRollback = std::make_unique<NotifyExecuteLoad>(aMsg);
+            return;
+        }
+        ApplyInSessionRollback(aMsg);
+    };
+
     if (acMessage.UseInSessionRollback)
     {
-        ApplyInSessionRollback(acMessage);
+        invokeOrDeferInSessionRollback(acMessage);
         return;
     }
 
@@ -1033,7 +1149,7 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
             "[RFAB WorldReloadBarrier] Disk slot '{}' unavailable in current session — applying non-destructive emergency fallback (Epoch={})",
             std::string_view(acMessage.SlotName.c_str(), acMessage.SlotName.size()),
             acMessage.EpochId);
-        ApplyInSessionRollback(acMessage);
+        invokeOrDeferInSessionRollback(acMessage);
         return;
     }
 

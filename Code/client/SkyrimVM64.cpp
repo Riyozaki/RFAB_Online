@@ -6,7 +6,9 @@ extern std::unique_ptr<TiltedOnlineApp> g_appInstance;
 #include <GameVM.h>
 #include <Games/Skyrim/Interface/UI.h>
 #include <Misc/BSFixedString.h>
+#include <PlayerCharacter.h>
 #include <World.h>
+#include <common/CoopWorldStabilizer.h>
 
 #include <atomic>
 #include <cstddef>
@@ -76,16 +78,31 @@ short TP_MAKE_THISCALL(HookMainLoop, Main)
     {
         World::Get().OnMainThreadUpdate();
 
-        if (!apThis->resetGame &&
-            !apThis->fullReset &&
-            !apThis->reloadContent &&
-            !apThis->freezeTime &&
-            vmWasActive &&
-            g_appInstance &&
-            !IsMainOrLoadingMenuOpen())
+        if (g_appInstance)
         {
-            g_appInstance->Update();
-            World::Get().OnMainThreadUpdate();
+            PlayerCharacter* const pPlayer = PlayerCharacter::Get();
+            const bool hasLoadedPlayerWorld =
+                pPlayer && (pPlayer->parentCell != nullptr || pPlayer->GetWorldSpace() != nullptr);
+            const auto updateMode = CoopWorldStabilizer::SelectMainLoopUpdateMode(
+                apThis->quitGame,
+                apThis->resetGame,
+                apThis->fullReset,
+                apThis->reloadContent,
+                IsMainOrLoadingMenuOpen(),
+                !apThis->freezeTime,
+                vmWasActive,
+                hasLoadedPlayerWorld);
+
+            if (updateMode == CoopWorldStabilizer::MainLoopUpdateMode::kFullSimulationUpdate)
+            {
+                g_appInstance->Update();
+                World::Get().OnMainThreadUpdate();
+            }
+            else if (updateMode == CoopWorldStabilizer::MainLoopUpdateMode::kPausedNetworkAndSavePump)
+            {
+                World::Get().UpdatePausedPump();
+                World::Get().OnMainThreadUpdate();
+            }
         }
     }
 

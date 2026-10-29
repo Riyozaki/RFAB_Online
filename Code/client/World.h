@@ -32,6 +32,7 @@ struct World : entt::registry
     ~World();
 
     void Update() noexcept;
+    void UpdatePausedPump() noexcept;
     void OnMainThreadUpdate() noexcept;
     void QueueMainThreadTask(std::function<void()> aTask) noexcept;
 

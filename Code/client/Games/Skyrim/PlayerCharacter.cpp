@@ -215,8 +215,13 @@ void TP_MAKE_THISCALL(HookSetBeastForm, void, void* apUnk1, void* apUnk2, bool a
 {
     if (!aEntering)
     {
-        PlayerCharacter::Get()->GetExtension()->GraphDescriptorHash = BehaviorVar::GetHumanoidHash();
-        World::Get().GetRunner().Trigger(BeastFormChangeEvent());
+        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        {
+            if (auto* pExt = pPlayer->GetExtension())
+                pExt->GraphDescriptorHash = BehaviorVar::GetHumanoidHash();
+        }
+        if (World::IsCreated() && World::IsConnectedCached())
+            World::Get().GetRunner().Trigger(BeastFormChangeEvent());
     }
 
     TiltedPhoques::ThisCall(RealSetBeastForm, apThis, apUnk1, apUnk2, aEntering);
@@ -224,6 +229,9 @@ void TP_MAKE_THISCALL(HookSetBeastForm, void, void* apUnk1, void* apUnk2, bool a
 
 void TP_MAKE_THISCALL(HookAddSkillExperience, PlayerCharacter, int32_t aSkill, float aExperience)
 {
+    if (!apThis)
+        return;
+
     // TODO: armor skills? sneak?
     static const Set<int32_t> combatSkills{ActorValueInfo::kAlteration, ActorValueInfo::kConjuration, ActorValueInfo::kDestruction, ActorValueInfo::kIllusion, ActorValueInfo::kRestoration, ActorValueInfo::kOneHanded, ActorValueInfo::kTwoHanded, ActorValueInfo::kMarksman, ActorValueInfo::kBlock};
 
@@ -242,7 +250,8 @@ void TP_MAKE_THISCALL(HookAddSkillExperience, PlayerCharacter, int32_t aSkill, f
         spdlog::debug("Set new last used combat skill to {}.", aSkill);
         PlayerCharacter::LastUsedCombatSkill = aSkill;
 
-        World::Get().GetRunner().Trigger(AddExperienceEvent(deltaExperience));
+        if (World::IsCreated() && World::IsConnectedCached())
+            World::Get().GetRunner().Trigger(AddExperienceEvent(deltaExperience));
     }
 }
 
@@ -261,7 +270,7 @@ bool TP_MAKE_THISCALL(HookCalculateExperience, int32_t, float* aFactor, float* a
 
 void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TESForm* apWorldSpaceOrCell)
 {
-    if (apPosition && apWorldSpaceOrCell)
+    if (World::IsCreated() && World::IsConnectedCached() && apPosition && apWorldSpaceOrCell)
     {
         Vector3_NetQuantize position{};
         position.x = apPosition->x;
@@ -276,7 +285,8 @@ void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TE
 
 void TP_MAKE_THISCALL(HookRemoveWaypoint, PlayerCharacter)
 {
-    World::Get().GetRunner().Trigger(RemoveWaypointEvent());
+    if (World::IsCreated() && World::IsConnectedCached())
+        World::Get().GetRunner().Trigger(RemoveWaypointEvent());
 
     return TiltedPhoques::ThisCall(RealRemoveWaypoint, apThis);
 }

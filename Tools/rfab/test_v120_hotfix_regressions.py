@@ -325,7 +325,7 @@ def main() -> int:
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
     assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
     assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt
-    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.4"' in build_txt
+    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.5"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -388,7 +388,26 @@ def main() -> int:
     assert "TiltedTrampoline" in main_cpp and "s_crashDedupMutex" in main_cpp
     assert "mo2FromExe" in launcher_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 architectural regression checks passed!")
+    # 23. v3.1.5 Long-Session Paused-Menu Pump, Scalar ActivateEvent & Hook Hardening
+    activate_evt_h = (ROOT / "Code" / "client" / "Events" / "ActivateEvent.h").read_text(encoding="utf-8")
+    transport_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "TransportService.cpp").read_text(encoding="utf-8")
+    overlay_client_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "OverlayClient.cpp").read_text(encoding="utf-8")
+    coord_save_cpp = (ROOT / "Code" / "client" / "Services" / "CoordinatedSaveService.cpp").read_text(encoding="utf-8")
+    invis_cpp = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Effects" / "InvisibilityEffect.cpp").read_text(encoding="utf-8")
+    refs_cpp = (ROOT / "Code" / "client" / "Games" / "References.cpp").read_text(encoding="utf-8")
+
+    assert "SelectMainLoopUpdateMode" in stabilizer_h and "ClassifyPausedInboundPacket" in stabilizer_h
+    assert "UpdatePausedPump()" in main_hook_body and "void World::UpdatePausedPump() noexcept" in world_cpp
+    assert "PollWhileSimulationPaused()" in transport_cpp and "FlushPausedInboundPackets()" in transport_cpp
+    assert "opcode >= static_cast<uint32_t>(kServerOpcodeMax) || !m_messageHandlers[opcode]" in transport_cpp
+    assert "QueueMainThreadTask" in overlay_client_cpp
+    assert 'BSFixedString("StatsMenu")' in coord_save_cpp and 'BSFixedString("Console")' in coord_save_cpp
+    assert "void CoordinatedSaveService::TickWhilePaused(" in coord_save_cpp
+    assert "TESObjectREFR* pObject" not in activate_evt_h and "uint32_t ObjectId{0};" in activate_evt_h
+    assert "IsAttachedAndLoaded()" in invis_cpp
+    assert "s_cachedRfabActive" in refs_cpp and "ResolveRfabPluginMod" not in refs_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 + v3.1.5 architectural regression checks passed!")
     return 0
 
 

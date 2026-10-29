@@ -1313,6 +1313,9 @@ namespace
 {
 bool ShouldAutoUnlockCoopArenaBarrier(TESObjectREFR* apDoor, Actor* apActivator) noexcept
 {
+    if (!World::IsMainThread())
+        return false;
+
     if (!apDoor || !apActivator || apActivator != PlayerCharacter::Get() || !apDoor->parentCell)
         return false;
 
@@ -1395,6 +1398,15 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
 
     auto openState = TESObjectREFR::kNone;
     bool wasLockedBefore = false;
+    const uint32_t objectFormId = apThis->formID;
+    const uint32_t activatorFormId = pActivator ? pActivator->formID : 0u;
+    const uint32_t objectToGetFormId = apObjectToGet ? apObjectToGet->formID : 0u;
+    const bool isTargetActor = (apThis->formType == Actor::Type);
+    const bool isTempTarget = ((objectFormId & 0xFF000000u) == 0xFF000000u);
+    const bool isTeleportLoadDoor =
+        (apThis->baseForm &&
+         apThis->baseForm->formType == FormType::Door &&
+         apThis->extraData.Contains(ExtraDataType::Teleport));
 
     if (shouldSyncActivate)
     {
@@ -1421,7 +1433,7 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
                 wasLockedBefore = pLockBefore->IsLocked();
         }
 
-        RecordDirectObjectActivation(apThis->formID);
+        RecordDirectObjectActivation(objectFormId);
     }
 
     if (!ScopedActivateOverride::IsOverriden() && apActivator && apActivator->formID == 0x14)
@@ -1439,31 +1451,27 @@ bool TP_MAKE_THISCALL(HookActivate, TESObjectREFR, TESObjectREFR* apActivator, u
 
     const bool result = TiltedPhoques::ThisCall(RealActivate, apThis, apActivator, aUnk1, apObjectToGet, aCount, aDefaultProcessing);
 
-    if (shouldSyncActivate)
+    if (shouldSyncActivate && objectFormId != 0 && activatorFormId != 0)
     {
-        // If RealActivate unlocked the door/chest using a Key in the player's inventory,
-        // Skyrim's key-unlock path clears Lock::kLocked without invoking TESObjectREFR::LockChange.
-        // Emit LockChangeEvent first so the server and all peers unlock the object before ActivateEvent!
+        // Re-validate `objectFormId` via `TESForm::GetById` in case `RealActivate` deleted/consumed the object.
         if (wasLockedBefore)
         {
-            const auto* pLockAfter = apThis->GetLock();
-            if (!pLockAfter || !pLockAfter->IsLocked())
+            TESObjectREFR* pLiveObject = World::IsMainThread() ? Cast<TESObjectREFR>(TESForm::GetById(objectFormId)) : apThis;
+            if (pLiveObject && !pLiveObject->IsDeleted())
             {
-                World::Get().GetRunner().Trigger(
-                    LockChangeEvent(apThis->formID, false, pLockAfter ? pLockAfter->lockLevel : 0));
+                const auto* pLockAfter = pLiveObject->GetLock();
+                if (!pLockAfter || !pLockAfter->IsLocked())
+                {
+                    World::Get().GetRunner().Trigger(
+                        LockChangeEvent(objectFormId, false, pLockAfter ? pLockAfter->lockLevel : 0));
+                }
             }
         }
-
-        const bool isTargetActor = (apThis->formType == Actor::Type);
-        const bool isTempTarget = ((apThis->formID & 0xFF000000u) == 0xFF000000u);
-        const bool isTeleportLoadDoor =
-            (apThis->baseForm->formType == FormType::Door &&
-             apThis->extraData.Contains(ExtraDataType::Teleport));
 
         if (CoopWorldStabilizer::ShouldBroadcastObjectActivation(isTargetActor, isTempTarget, isTeleportLoadDoor))
         {
             World::Get().GetRunner().Trigger(
-                ActivateEvent(apThis, pActivator, apObjectToGet, aCount, aDefaultProcessing, aUnk1, openState)
+                ActivateEvent(objectFormId, activatorFormId, objectToGetFormId, aCount, aDefaultProcessing, aUnk1, openState)
             );
         }
     }

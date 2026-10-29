@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+
+#include <encoding/Opcodes.h>
 
 namespace CoopWorldStabilizer
 {
@@ -419,5 +422,99 @@ namespace CoopWorldStabilizer
                !aIsStillLoading &&
                !aIsDisabled &&
                !aIsDeleted;
+    }
+
+    /**
+     * Maximum number of reliable world-mutating packets buffered in FIFO order while Skyrim's
+     * simulation is paused (`Main::freezeTime == true`, e.g. reading RFAB perk trees in `StatsMenu`,
+     * viewing `MapMenu`, or pausing in `Journal Menu`).
+     */
+    inline constexpr size_t kMaxPausedInboundQueueSize = 4096;
+
+    enum class MainLoopUpdateMode : uint8_t
+    {
+        kSkip = 0,
+        kFullSimulationUpdate,
+        kPausedNetworkAndSavePump,
+    };
+
+    /**
+     * Selects how `HookMainLoop` (`WinMain`) should drive client updates on the current frame:
+     * - `kSkip`: engine shutting down/resetting, or on `Main Menu` / `Loading Menu`, or world not loaded yet.
+     * - `kFullSimulationUpdate`: world simulation is unpaused (`!freezeTime`) and `SkyrimVM` ticked normally.
+     * - `kPausedNetworkAndSavePump`: player is in a loaded world (`StatsMenu` RFAB perks, `MapMenu`,
+     *   `Journal Menu` ESC, or `Console`), keeping GNS socket heartbeats, connection handshakes, party/chat UI,
+     *   and coordinated save/load barriers alive without touching paused 3D actors, Havok, or `Sky`.
+     */
+    [[nodiscard]] constexpr MainLoopUpdateMode SelectMainLoopUpdateMode(
+        bool aQuitGame,
+        bool aResetGame,
+        bool aFullReset,
+        bool aReloadContent,
+        bool aMainOrLoadingMenuOpen,
+        bool aSimulationUnpaused,
+        bool aVmWasActive,
+        bool aHasLoadedPlayerWorld) noexcept
+    {
+        if (aQuitGame || aResetGame || aFullReset || aReloadContent || aMainOrLoadingMenuOpen)
+            return MainLoopUpdateMode::kSkip;
+
+        if (aSimulationUnpaused && aVmWasActive)
+            return MainLoopUpdateMode::kFullSimulationUpdate;
+
+        if (aHasLoadedPlayerWorld)
+            return MainLoopUpdateMode::kPausedNetworkAndSavePump;
+
+        return MainLoopUpdateMode::kSkip;
+    }
+
+    enum class PausedInboundPacketAction : uint8_t
+    {
+        kRejectOutOfRange = 0,
+        kDropStaleUnreliable,
+        kDispatchImmediately,
+        kQueueUntilUnpaused,
+    };
+
+    /**
+     * Classifies inbound server packets received while local Skyrim simulation is paused (`freezeTime == true`):
+     * - `kRejectOutOfRange`: corrupted/unknown opcode `>= kServerOpcodeMax`.
+     * - `kDropStaleUnreliable`: 30 Hz unreliable movement frames (`kServerReferencesMoveRequest`) that would
+     *   otherwise pile up thousands of stale snapshots during multi-minute RFAB `StatsMenu` perk planning.
+     * - `kDispatchImmediately`: pure handshake, party, overlay chat, string-cache, settings, and save/load
+     *   barrier control messages that never spawn/despawn/mutate 3D world `Actor`s while paused.
+     * - `kQueueUntilUnpaused`: all reliable world-state deltas (`NotifySpawnData`, `NotifyPlayerLeft`,
+     *   `NotifyInventoryChanges`, `NotifySpellCast`, etc.) replayed in exact FIFO order once unpaused.
+     */
+    [[nodiscard]] constexpr PausedInboundPacketAction ClassifyPausedInboundPacket(uint32_t aOpcode) noexcept
+    {
+        if (aOpcode >= static_cast<uint32_t>(kServerOpcodeMax))
+            return PausedInboundPacketAction::kRejectOutOfRange;
+
+        switch (static_cast<ServerOpcode>(aOpcode))
+        {
+        case kServerReferencesMoveRequest:
+            return PausedInboundPacketAction::kDropStaleUnreliable;
+
+        case kAuthenticationResponse:
+        case kNotifyPlayerList:
+        case kNotifyPartyInfo:
+        case kNotifyPartyInvite:
+        case kNotifyPartyJoined:
+        case kNotifyPartyLeft:
+        case kNotifyChatMessageBroadcast:
+        case kStringCacheUpdate:
+        case kNotifyPlayerJoined:
+        case kNotifyPlayerLevel:
+        case kNotifyPlayerCellChanged:
+        case kNotifySettingsChange:
+        case kNotifyPrepareSave:
+        case kNotifyCommitSave:
+        case kNotifyExecuteLoad:
+            return PausedInboundPacketAction::kDispatchImmediately;
+
+        default:
+            return PausedInboundPacketAction::kQueueUntilUnpaused;
+        }
     }
 } // namespace CoopWorldStabilizer
