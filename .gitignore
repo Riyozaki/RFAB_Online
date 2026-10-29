@@ -111,3 +111,7 @@ RFAB_ref/
 !dist_ready/**/*.esp
 !dist_ready/**/*.pex
 
+
+# Generated artifacts (see Tools/rfab/parse_rfab_esp.py: regenerate locally from your own RFAB.esp)
+docs/rfab/rfab_records.tsv
+build_logs_and_report/
