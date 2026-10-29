@@ -213,7 +213,7 @@ void PurgeDynamicActorCleanly(Actor* apActor) noexcept
     }
 }
 
-bool IsActorLiveInAttachedCellWith3D(const Actor* apActor) noexcept
+bool IsActorLiveInAttachedCellWith3D(Actor* apActor) noexcept
 {
     return apActor != nullptr &&
            CoopWorldStabilizer::CanTouchActorGraphDuringDetach(
