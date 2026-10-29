@@ -8,6 +8,7 @@ Regression test suite for RFAB Online v1.2.0-hotfix.1:
   5. Verifies D3D11 Render-Thread isolation of RfabAdapterService::OnDrawTacticalHud().
   6. Verifies version-agnostic StatsMenu pause detection & SkyrimSoulsRE.ini bStatsMenu=false self-healer.
 """
+import re
 import importlib.util
 import json
 import pathlib
@@ -325,7 +326,10 @@ def main() -> int:
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
     assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
     assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt
-    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.7"' in build_txt
+    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt
+    assert "Resolve-ReleaseVersionTag" in build_txt
+    assert re.fullmatch(r"v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?",
+                        (ROOT / "VERSION").read_text(encoding="utf-8").strip()), "VERSION must hold a semver tag"
     assert '"v3.1.4"' in build_txt and '"v3.1.5"' in build_txt and '"v3.1.6"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene

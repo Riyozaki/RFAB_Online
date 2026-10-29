@@ -240,8 +240,8 @@ TEST_CASE("v3.1.7 Full-codebase critical audit source contracts across Client, S
     CHECK(static_cast<unsigned char>(pkgPs1[0]) == 0xEF);
     CHECK(static_cast<unsigned char>(pkgPs1[1]) == 0xBB);
     CHECK(static_cast<unsigned char>(pkgPs1[2]) == 0xBF);
-    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.7\"") != std::string::npos);
-    CHECK(pkgPs1.find("[string]$VersionTag = \"v3.1.7\"") != std::string::npos);
+    CHECK(buildPs1.find("Resolve-ReleaseVersionTag") != std::string::npos);
+    CHECK(pkgPs1.find("Resolve-ReleaseVersionTag") != std::string::npos);
     CHECK(buildPs1.find("\"v3.1.6\"") != std::string::npos);
 
     // 2. ModManager + ModSystem + ModsComponent architectural FormID isolation

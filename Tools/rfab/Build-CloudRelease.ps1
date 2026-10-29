@@ -1,18 +1,39 @@
 ﻿param(
-    [string]$VersionTag = "v3.1.7",
+    [string]$VersionTag = "",
     [string]$BuildMode = "releasedbg",
     [bool]$PublishRelease = $true,
     [switch]$SkipPublish
 )
 if ($SkipPublish) { $PublishRelease = $false }
+$script:RfabRepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6")
-if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v3.1.7' (previous releases are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v3.1.7"
+# Single source of truth for the release number: <repo>/VERSION.
+function Resolve-ReleaseVersionTag {
+    param([string]$RepoRootPath)
+    $root = if ($RepoRootPath) { $RepoRootPath } else { $script:RfabRepoRoot }
+    $versionFile = Join-Path $root "VERSION"
+    if (-not (Test-Path -LiteralPath $versionFile)) {
+        throw "Single source of truth missing: $versionFile (expected e.g. '3.1.8')."
+    }
+    $raw = ([System.IO.File]::ReadAllText($versionFile)).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw "VERSION file is empty: $versionFile" }
+    $raw = $raw -replace "\s+", ""
+    if (-not $raw.StartsWith("v")) { $raw = "v$raw" }
+    return $raw
 }
-if ($VersionTag -in $ProtectedTags) {
-    throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"
+
+if ([string]::IsNullOrWhiteSpace($VersionTag)) { $VersionTag = Resolve-ReleaseVersionTag }
+
+# Hard rule: CI never publishes from a branch or pull request, only from a pushed tag.
+# This guard lives in the script (not only in the workflow) so a stale workflow file
+# cannot accidentally overwrite an already published release.
+if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF -and ($env:GITHUB_REF -notlike "refs/tags/v*")) {
+    $PublishRelease = $false
+}
+
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6", "v3.1.7-backup", "v3.1.7")
+if ($PublishRelease -and ($VersionTag -in $ProtectedTags)) {
+    throw "Release policy violation: '$VersionTag' is an immutable protected release. Bump VERSION and cut a new tag instead of overwriting it."
 }
 
 $IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main")
