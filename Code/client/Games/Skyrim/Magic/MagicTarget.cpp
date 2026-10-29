@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
+#include <unordered_map>
+#ifdef _WIN32
+#include <intrin.h>
+#endif
 
 #include <Actor.h>
 #include <World.h>
@@ -29,10 +34,31 @@
 
 namespace
 {
+uint32_t AtomicOrActorFlags1(uint32_t& aFlags, uint32_t aMask) noexcept
+{
+#ifdef _MSC_VER
+    return static_cast<uint32_t>(_InterlockedOr(reinterpret_cast<volatile long*>(&aFlags), static_cast<long>(aMask)));
+#else
+    return __atomic_fetch_or(&aFlags, aMask, __ATOMIC_ACQ_REL);
+#endif
+}
+
+void AtomicAndNotActorFlags1(uint32_t& aFlags, uint32_t aMask) noexcept
+{
+#ifdef _MSC_VER
+    (void)_InterlockedAnd(reinterpret_cast<volatile long*>(&aFlags), static_cast<long>(~aMask));
+#else
+    (void)__atomic_fetch_and(&aFlags, ~aMask, __ATOMIC_ACQ_REL);
+#endif
+}
+
+std::mutex s_scopedTeammateFlagsMutex{};
+std::unordered_map<uint32_t, uint32_t> s_scopedTeammateRefCounts{};
+
 // Temporarily marks allied RemotePlayer clones in the party with ActorBoolBits::kPlayerTeammate (1 << 26)
 // during MagicCaster::FindTargets and MagicTarget::AddTarget when the local player casts a friendly support/buff/aura spell.
-// This allows Skyrim/Requiem/RFAB party auras, Leadership perks, Lionheart Cloak, Priesthood Auras, Warhorns, and
-// Totem of Brotherhood (whose Creation Kit TESConditions check IsPlayerTeammate == 1) to naturally target co-op teammates.
+// Uses atomic bit operations + per-FormID reference counting so concurrent projectile/aura worker threads
+// never corrupt adjacent Actor::flags1 bits or prematurely strip kPlayerTeammate mid-cast.
 struct ScopedCoopPartyTeammateFlags
 {
     explicit ScopedCoopPartyTeammateFlags(bool aEnable) noexcept
@@ -43,28 +69,62 @@ struct ScopedCoopPartyTeammateFlags
         auto& world = World::Get();
         TiltedPhoques::Vector<uint32_t> peerFormIds;
         world.GetRfabAdapterService().CollectPartyPeerActorFormIds(peerFormIds);
+        if (peerFormIds.empty())
+            return;
+
+        std::lock_guard<std::mutex> lock(s_scopedTeammateFlagsMutex);
         for (const uint32_t formId : peerFormIds)
         {
-            Actor* pPeerActor = Cast<Actor>(TESForm::GetById(formId));
-            if (!pPeerActor || (pPeerActor->flags1 & Actor::ActorBoolBits::kPlayerTeammate) != 0)
+            if (formId == 0)
                 continue;
 
-            pPeerActor->flags1 |= Actor::ActorBoolBits::kPlayerTeammate;
-            m_modifiedActors.push_back(pPeerActor);
+            Actor* pPeerActor = Cast<Actor>(TESForm::GetById(formId));
+            if (!pPeerActor)
+                continue;
+
+            auto refIt = s_scopedTeammateRefCounts.find(formId);
+            if (refIt != s_scopedTeammateRefCounts.end() && refIt->second > 0)
+            {
+                ++refIt->second;
+                m_modifiedActorFormIds.push_back(formId);
+                continue;
+            }
+
+            const uint32_t prevFlags = AtomicOrActorFlags1(pPeerActor->flags1, Actor::ActorBoolBits::kPlayerTeammate);
+            if ((prevFlags & Actor::ActorBoolBits::kPlayerTeammate) != 0)
+                continue;
+
+            s_scopedTeammateRefCounts[formId] = 1u;
+            m_modifiedActorFormIds.push_back(formId);
         }
     }
 
     ~ScopedCoopPartyTeammateFlags() noexcept
     {
-        for (Actor* pActor : m_modifiedActors)
+        if (m_modifiedActorFormIds.empty())
+            return;
+
+        std::lock_guard<std::mutex> lock(s_scopedTeammateFlagsMutex);
+        for (const uint32_t formId : m_modifiedActorFormIds)
         {
-            if (pActor)
-                pActor->flags1 &= ~Actor::ActorBoolBits::kPlayerTeammate;
+            auto refIt = s_scopedTeammateRefCounts.find(formId);
+            if (refIt == s_scopedTeammateRefCounts.end())
+                continue;
+
+            if (refIt->second > 1u)
+            {
+                --refIt->second;
+                continue;
+            }
+
+            s_scopedTeammateRefCounts.erase(refIt);
+            if (Actor* pActor = Cast<Actor>(TESForm::GetById(formId)))
+                AtomicAndNotActorFlags1(pActor->flags1, Actor::ActorBoolBits::kPlayerTeammate);
         }
     }
 
 private:
-    TiltedPhoques::Vector<Actor*> m_modifiedActors{};
+    TiltedPhoques::Vector<uint32_t> m_modifiedActorFormIds{};
 };
 } // namespace
 
@@ -264,7 +324,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                 const bool allowLocalPlayerPvpBeam =
                     pTargetActorEx->IsLocalPlayer() &&
                     isConcentration &&
-                    (World::Get().GetServerSettings().PvpEnabled || coopPolicy.AllowPartySparring);
+                    (World::IsPvpEnabledCached() || coopPolicy.AllowPartySparring);
                 if (!allowLocalPlayerPvpBeam)
                     return false;
             }
@@ -303,7 +363,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
         if (!arData.pCaster)
             return false;
 
-        const bool isPvpAllowed = World::Get().GetServerSettings().PvpEnabled || coopPolicy.AllowPartySparring;
+        const bool isPvpAllowed = World::IsPvpEnabledCached() || coopPolicy.AllowPartySparring;
         if (!isFriendlySupport && !isPvpAllowed)
             return false;
 
@@ -360,7 +420,7 @@ bool TP_MAKE_THISCALL(HookAddTarget, MagicTarget, MagicTarget::AddTargetData& ar
                     return TiltedPhoques::ThisCall(RealAddTarget, apThis, arData);
                 }
 
-                if (!World::Get().GetServerSettings().PvpEnabled && !coopPolicy.AllowPartySparring)
+                if (!World::IsPvpEnabledCached() && !coopPolicy.AllowPartySparring)
                     return false;
 
                 if (!isConcentration)

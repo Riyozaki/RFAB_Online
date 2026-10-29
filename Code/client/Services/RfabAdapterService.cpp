@@ -363,6 +363,15 @@ bool RfabAdapterService::IsBossActor(Actor* apActor) const noexcept
 
 void RfabAdapterService::BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept
 {
+    if (!World::IsMainThread())
+    {
+        const GameId capturedObjectId = acObjectId;
+        m_world.GetRunner().Queue([this, capturedObjectId]() noexcept {
+            BroadcastArenaBarrierUnlock(capturedObjectId);
+        });
+        return;
+    }
+
     RfabCombatRules::BroadcastArenaBarrierUnlock(m_transport, acObjectId, m_xpAndBookSync.GetCurrentWorldEpoch());
 }
 

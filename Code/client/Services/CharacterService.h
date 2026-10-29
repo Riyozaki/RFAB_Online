@@ -221,6 +221,7 @@ private:
     mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
     mutable CoopWorldView::CancelledCookieTracker<64> m_cancelledCookies{};
     mutable CoopWorldStabilizer::AuthoritativePlacedActorRegistry m_authoritativePlacedBases{};
+    mutable CoopWorldStabilizer::RelinquishClaimCooldownTracker m_relinquishClaimCooldowns{};
     mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
     mutable Map<uint32_t, RemoteEntityModel> m_remoteModels{};
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};

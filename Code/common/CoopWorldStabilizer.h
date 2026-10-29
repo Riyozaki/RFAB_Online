@@ -357,4 +357,67 @@ namespace CoopWorldStabilizer
         }
         return true;
     }
+    /**
+     * Prevents 100ms exterior cell-border ownership ping-pong (`DC568` Wolf / `105A3C` Rabbit):
+     * after a client relinquishes a locally owned actor (`CancelServerAssignment` -> `RequestOwnershipTransfer`),
+     * suppress automatic party-leader ownership re-claims on that FormID for `kDefaultCooldownMs` so an actor
+     * straddling the 5x5 `uGridsToLoad` seam cannot bounce `Local -> Remote -> Claim -> Drop` 10x/sec.
+     */
+    class RelinquishClaimCooldownTracker
+    {
+    public:
+        static constexpr uint64_t kDefaultCooldownMs = 3000ULL;
+
+        void RecordRelinquished(uint32_t aFormId, uint64_t aNowMs, uint64_t aCooldownMs = kDefaultCooldownMs) noexcept
+        {
+            if (aFormId == 0 || aFormId == 0x14)
+                return;
+            if (m_cooldownUntilMs.size() > 2048)
+                m_cooldownUntilMs.clear();
+            m_cooldownUntilMs[aFormId] = aNowMs + aCooldownMs;
+        }
+
+        [[nodiscard]] bool IsInCooldown(uint32_t aFormId, uint64_t aNowMs) noexcept
+        {
+            if (aFormId == 0)
+                return false;
+            const auto it = m_cooldownUntilMs.find(aFormId);
+            if (it == m_cooldownUntilMs.end())
+                return false;
+            if (aNowMs >= it->second)
+            {
+                m_cooldownUntilMs.erase(it);
+                return false;
+            }
+            return true;
+        }
+
+        void Clear() noexcept
+        {
+            m_cooldownUntilMs.clear();
+        }
+
+    private:
+        std::unordered_map<uint32_t, uint64_t> m_cooldownUntilMs{};
+    };
+
+    /**
+     * Pure predicate deciding whether a materialized remote world actor is safe to detached-sanitize
+     * (`SendAnimationEvent("attackStop")` + `EvaluatePackage()`) during `DematerializeRemoteView` or
+     * `CancelServerAssignment`. Unloading/detached cells or actors without live 3D must NEVER receive
+     * `BShkbAnimationGraph` notifications or AI package evaluations while `TES::PurgeExteriorCells` runs.
+     */
+    [[nodiscard]] constexpr bool CanTouchActorGraphDuringDetach(
+        bool aCellAttachedAndLoaded,
+        bool aHasNiNode3D,
+        bool aIsStillLoading,
+        bool aIsDisabled,
+        bool aIsDeleted) noexcept
+    {
+        return aCellAttachedAndLoaded &&
+               aHasNiNode3D &&
+               !aIsStillLoading &&
+               !aIsDisabled &&
+               !aIsDeleted;
+    }
 } // namespace CoopWorldStabilizer

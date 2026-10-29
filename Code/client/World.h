@@ -90,6 +90,8 @@ struct World : entt::registry
     [[nodiscard]] static bool IsSyncPlayerHomesCached() noexcept { return s_syncPlayerHomesCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsPvpEnabledCached() noexcept { return s_pvpEnabledCached.load(std::memory_order_acquire); }
     [[nodiscard]] static float GetEnemyHealthMultiplierCached() noexcept { return s_enemyHealthMultiplierCached.load(std::memory_order_acquire); }
+    [[nodiscard]] static uint64_t GetTickCached() noexcept { return s_currentTickCached.load(std::memory_order_acquire); }
+    static void RecordMainThreadId() noexcept { s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release); }
     static void SetConnectedHint(bool aConnected) noexcept
     {
         s_isConnectedCached.store(aConnected, std::memory_order_release);
@@ -97,6 +99,7 @@ struct World : entt::registry
         {
             s_pvpEnabledCached.store(false, std::memory_order_release);
             s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
+            s_currentTickCached.store(0, std::memory_order_release);
         }
     }
     static void SetContainerMenuOpenHint(bool aOpen) noexcept { s_isContainerMenuOpenCached.store(aOpen, std::memory_order_release); }
@@ -109,6 +112,7 @@ private:
     inline static std::atomic<bool> s_syncPlayerHomesCached{false};
     inline static std::atomic<bool> s_pvpEnabledCached{false};
     inline static std::atomic<float> s_enemyHealthMultiplierCached{1.0f};
+    inline static std::atomic<uint64_t> s_currentTickCached{0};
 
     entt::dispatcher m_dispatcher;
     RunnerService m_runner;

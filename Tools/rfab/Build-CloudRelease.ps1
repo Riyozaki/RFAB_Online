@@ -1,15 +1,15 @@
 ﻿param(
-    [string]$VersionTag = "v3.1.3",
+    [string]$VersionTag = "v3.1.4",
     [string]$BuildMode = "releasedbg",
     [bool]$PublishRelease = $true,
     [switch]$SkipPublish
 )
 if ($SkipPublish) { $PublishRelease = $false }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup")
 if ($VersionTag -in $ProtectedTags) {
-    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v3.1.3' (previous releases are preserved untouched)." -ForegroundColor Yellow
-    $VersionTag = "v3.1.3"
+    Write-Host "[RELEASE POLICY] Remapping protected tag '$VersionTag' -> 'v3.1.4' (previous releases are preserved untouched)." -ForegroundColor Yellow
+    $VersionTag = "v3.1.4"
 }
 if ($VersionTag -in $ProtectedTags) {
     throw "Hard guard: $VersionTag is a protected immutable release and must never be overwritten!"
@@ -28,6 +28,7 @@ $script:V300BackupReady = $false
 $script:V310BackupReady = $false
 $script:V311BackupReady = $false
 $script:V312BackupReady = $false
+$script:V313BackupReady = $false
 $script:LastDiagMatches = ""
 $script:LastDiagTail = ""
 $script:ProgressLog = New-Object System.Collections.Generic.List[string]
@@ -729,6 +730,97 @@ function Ensure-V312BackupRelease([string]$RepoRootPath) {
     }
 }
 
+function Ensure-V313BackupRelease([string]$RepoRootPath) {
+    if (-not $PublishRelease) {
+        $script:V313BackupReady = $true
+        return
+    }
+    if (-not $env:GH_TOKEN) {
+        throw "[BACKUP] GH_TOKEN is required when PublishRelease=true so v3.1.3-backup can be verified before publishing v3.1.4."
+    }
+
+    $manifestPath = Join-Path $RepoRootPath "docs\V3.1.3_RELEASE_BACKUP_MANIFEST.json"
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        throw "[BACKUP] Missing required manifest: $manifestPath"
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+    $existingJson = & cmd.exe /d /s /c "gh release view v3.1.3-backup --json assets 2>nul"
+    if ($LASTEXITCODE -eq 0 -and $existingJson) {
+        $existingRel = $existingJson | ConvertFrom-Json
+        $existingMap = @{}
+        foreach ($a in $existingRel.assets) { $existingMap[$a.name] = $a }
+        $allVerified = $true
+        foreach ($exp in $manifest.assets) {
+            if (-not $existingMap.ContainsKey($exp.name)) {
+                $allVerified = $false
+                break
+            }
+            $gotAsset = $existingMap[$exp.name]
+            if ([int64]$gotAsset.size -ne [int64]$exp.size) {
+                throw "[BACKUP] Size mismatch on existing v3.1.3-backup asset $($exp.name): expected $($exp.size), got $($gotAsset.size)"
+            }
+            if ($gotAsset.PSObject.Properties.Name -contains "digest" -and $gotAsset.digest) {
+                $expectedDigest = "sha256:" + $exp.sha256.ToLowerInvariant()
+                if ($gotAsset.digest.ToLowerInvariant() -ne $expectedDigest) {
+                    throw "[BACKUP] Digest mismatch on existing v3.1.3-backup asset $($exp.name): expected $expectedDigest, got $($gotAsset.digest)"
+                }
+            }
+        }
+        if ($allVerified) {
+            Write-Host "[BACKUP] Protected backup release v3.1.3-backup already exists and all 4 SHA-256 assets are verified." -ForegroundColor Green
+            $script:V313BackupReady = $true
+            return
+        }
+    }
+
+    Write-Host "[BACKUP] Mirroring immutable v3.1.3 assets into permanent backup release v3.1.3-backup..." -ForegroundColor Cyan
+    $bakDir = Join-Path $env:TEMP ("rfab_v313_bak_" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
+    try {
+        & cmd.exe /d /s /c "gh release download v3.1.3 -D `"$bakDir`" --clobber"
+        if ($LASTEXITCODE -ne 0) {
+            throw "[BACKUP] Failed to download live v3.1.3 assets for backup mirror; aborting before publishing v3.1.4."
+        }
+
+        foreach ($exp in $manifest.assets) {
+            $f = Join-Path $bakDir $exp.name
+            if (-not (Test-Path -LiteralPath $f)) {
+                throw "[BACKUP] Missing downloaded v3.1.3 asset: $($exp.name)"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $exp.sha256.ToLowerInvariant()) {
+                throw "[BACKUP] SHA256 mismatch on v3.1.3 asset $($exp.name): expected $($exp.sha256), got $actualHash"
+            }
+        }
+
+        $bakNotes = Join-Path $bakDir "BACKUP_NOTES.md"
+        $bakText = "Immutable golden backup mirror of release **v3.1.3** (commit ``37c6753f8401ecf303ce66b89f8b7640e768fb83``), preserved automatically before v3.1.4 single-threaded WinMain & cell-seam stability builds.`r`n"
+        [System.IO.File]::WriteAllText($bakNotes, $bakText, (New-Object System.Text.UTF8Encoding($false)))
+
+        & cmd.exe /d /s /c "gh release view v3.1.3-backup >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            & cmd.exe /d /s /c "gh release create v3.1.3-backup --target 37c6753f8401ecf303ce66b89f8b7640e768fb83 --title `"RFAB Online v3.1.3 (Immutable Release Backup)`" --notes-file `"$bakNotes`" --prerelease"
+            if ($LASTEXITCODE -ne 0) {
+                throw "[BACKUP] Failed to create GitHub release v3.1.3-backup; aborting before publishing v3.1.4."
+            }
+        }
+
+        foreach ($exp in $manifest.assets) {
+            $assetFile = Join-Path $bakDir $exp.name
+            & cmd.exe /d /s /c "gh release upload v3.1.3-backup `"$assetFile`" --clobber"
+            if ($LASTEXITCODE -ne 0) {
+                throw "[BACKUP] Failed to upload $($exp.name) to v3.1.3-backup; aborting before publishing v3.1.4."
+            }
+        }
+
+        Write-Host "[BACKUP] Created & SHA-256 verified immutable GitHub backup release v3.1.3-backup!" -ForegroundColor Green
+        $script:V313BackupReady = $true
+    } finally {
+        Remove-Item -LiteralPath $bakDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Write-StepSummary([string]$MarkdownText) {
     try {
         if ($env:GITHUB_STEP_SUMMARY) {
@@ -824,6 +916,7 @@ try {
     Ensure-V310BackupRelease -RepoRootPath $RepoRoot
     Ensure-V311BackupRelease -RepoRootPath $RepoRoot
     Ensure-V312BackupRelease -RepoRootPath $RepoRoot
+    Ensure-V313BackupRelease -RepoRootPath $RepoRoot
 
     Invoke-LoggedCmd "[1/7] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
     Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"

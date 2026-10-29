@@ -194,7 +194,7 @@ char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject
         {
             const char* pEditorId = apObject->baseForm->GetFormEditorID();
             const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
-            const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+            const bool syncHomes = World::IsSyncPlayerHomesCached();
             if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apObject->baseForm->formType), apObject->baseForm->formID, syncHomes))
                 item.IsQuestItem = true;
         }

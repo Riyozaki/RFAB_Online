@@ -320,9 +320,12 @@ def main() -> int:
     assert '"v3.1.1-backup"' in v311_backup_manifest and "426193785" in v311_backup_manifest
     v312_backup_manifest = (ROOT / "docs" / "V3.1.2_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
     assert '"v3.1.2-backup"' in v312_backup_manifest and "427038318" in v312_backup_manifest
+    v313_backup_manifest = (ROOT / "docs" / "V3.1.3_RELEASE_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    assert '"v3.1.3-backup"' in v313_backup_manifest and "427269248" in v313_backup_manifest
     assert '"v3.1.0-backup"' in build_txt and "Ensure-V310BackupRelease" in build_txt
     assert '"v3.1.1-backup"' in build_txt and "Ensure-V311BackupRelease" in build_txt
-    assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.3"' in build_txt
+    assert '"v3.1.2-backup"' in build_txt and "Ensure-V312BackupRelease" in build_txt
+    assert '"v3.1.3-backup"' in build_txt and "Ensure-V313BackupRelease" in build_txt and '[string]$VersionTag = "v3.1.4"' in build_txt
 
     # 20. v3.1 Hybrid Combat, 1/M Regen Parity, 0x14 Perk-Exact Magic, Concentration Beam Sync, Hit Impact & Host-Canonical BGSScene
     cli_quest_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "QuestService.cpp").read_text(encoding="utf-8")
@@ -360,7 +363,32 @@ def main() -> int:
     assert "GetNiNode3rdPerson(" in tes_refr_h and "GetNiNode3rdPerson(false)" in facegen_cpp
     assert "NoteLocalDirectPlayerTravelInteraction" in tp_guard_h and "NoteLocalDirectPlayerTravelInteraction" in tes_refr_cpp
 
-    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 architectural regression checks passed!")
+    # 22. v3.1.4 Single-Thread WinMain Frame Architecture, Cell-Seam Stabilization & Worker-Hook Thread Safety
+    tes_cell_h = (ROOT / "Code" / "client" / "Games" / "Skyrim" / "Forms" / "TESObjectCELL.h").read_text(encoding="utf-8")
+    stabilizer_h = (ROOT / "Code" / "common" / "CoopWorldStabilizer.h").read_text(encoding="utf-8")
+    main_cpp = (ROOT / "Code" / "client" / "main.cpp").read_text(encoding="utf-8")
+    launcher_cpp = (ROOT / "Code" / "immersive_launcher" / "Launcher.cpp").read_text(encoding="utf-8")
+    downed_cpp = (ROOT / "Code" / "client" / "Services" / "DownedStateService.cpp").read_text(encoding="utf-8")
+    party_h = (ROOT / "Code" / "client" / "Services" / "PartyService.h").read_text(encoding="utf-8")
+    inv_cpp = (ROOT / "Code" / "client" / "Services" / "Generic" / "InventoryService.cpp").read_text(encoding="utf-8")
+
+    vm_hook_body = skyrim_vm_cpp.split("int TP_MAKE_THISCALL(HookVMUpdate", 1)[1].split("short TP_MAKE_THISCALL(HookMainLoop", 1)[0]
+    main_hook_body = skyrim_vm_cpp.split("short TP_MAKE_THISCALL(HookMainLoop", 1)[1].split("uintptr_t TP_MAKE_THISCALL(HookVMDestructor", 1)[0]
+    assert "g_appInstance->Update()" not in vm_hook_body
+    assert "s_vmActiveSinceLastMainLoop.store(true" in vm_hook_body
+    assert "g_appInstance->Update()" in main_hook_body and "!apThis->freezeTime" in main_hook_body
+    assert "IsAttachedAndLoaded()" in tes_cell_h
+    assert "CanTouchActorGraphDuringDetach" in stabilizer_h and "RelinquishClaimCooldownTracker" in stabilizer_h
+    assert "IsActorLiveInAttachedCellWith3D" in cli_char_cpp and "m_relinquishClaimCooldowns" in cli_assign_cpp
+    assert "AtomicOrActorFlags1" in magic_target_cpp and "s_scopedTeammateRefCounts" in magic_target_cpp
+    assert "GetServerSettings().PvpEnabled" not in magic_target_cpp
+    assert "std::atomic<bool> m_isLeader" in party_h
+    assert "if (!World::IsMainThread())" in downed_cpp and "if (!World::IsMainThread())" in rfab_adapter_cpp
+    assert "FlushPendingNpcAmmoDeltas" in inv_cpp
+    assert "TiltedTrampoline" in main_cpp and "s_crashDedupMutex" in main_cpp
+    assert "mo2FromExe" in launcher_cpp
+
+    print("[test_v120_hotfix_regressions] OK: All v1.2.0-hotfix.1 + v2.0.1 + v2.0.2 + v2.0.3 + v2.1.0 + v3.0 + v3.1 + v3.1.3 + v3.1.4 architectural regression checks passed!")
     return 0
 
 

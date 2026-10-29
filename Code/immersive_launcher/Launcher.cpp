@@ -113,6 +113,14 @@ int StartUp(int argc, char** argv)
     // disables conflicting allocators and sets MaxStdio = 8192 while preserving RegularQuicksaves = true.
     RfabCompat::EnsureEngineFixesPatchedUnderRoot(LC->gamePath);
     {
+        const auto exeDir = TiltedPhoques::GetPath();
+        if (!exeDir.empty())
+        {
+            const auto mo2FromExe = exeDir.parent_path().parent_path().parent_path();
+            if (!mo2FromExe.empty() && mo2FromExe != LC->gamePath)
+                RfabCompat::EnsureEngineFixesPatchedUnderRoot(mo2FromExe);
+        }
+
         std::error_code cwdEc;
         const auto cwd = std::filesystem::current_path(cwdEc);
         if (!cwdEc && !cwd.empty())
@@ -125,8 +133,9 @@ int StartUp(int argc, char** argv)
         }
     }
 
-    // Bind path environment.
+    // Bind path environment, then re-verify virtualized Data/SKSE/Plugins/EngineFixes.toml under USVFS/path routing.
     loader::InstallPathRouting(LC->gamePath);
+    RfabCompat::EnsureEngineFixesPatchedUnderRoot(LC->gamePath);
     steam::Load(LC->gamePath);
 
     if (!LoadProgram(*LC))

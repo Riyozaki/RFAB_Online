@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 struct World;
 struct ImguiService;
 struct TransportService;
@@ -23,9 +25,9 @@ struct PartyService
 
     TP_NOCOPYMOVE(PartyService);
 
-    [[nodiscard]] bool IsInParty() const noexcept { return m_inParty; }
-    [[nodiscard]] bool IsLeader() const noexcept { return m_isLeader; }
-    [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId; }
+    [[nodiscard]] bool IsInParty() const noexcept { return m_inParty.load(std::memory_order_acquire); }
+    [[nodiscard]] bool IsLeader() const noexcept { return m_isLeader.load(std::memory_order_acquire); }
+    [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId.load(std::memory_order_acquire); }
     [[nodiscard]] bool IsPlayerInParty(const uint32_t aPlayerId) const noexcept
     {
         if (!m_inParty || aPlayerId == 0)
@@ -67,9 +69,9 @@ private:
     Map<uint32_t, uint64_t> m_invitations;
     uint64_t m_nextUpdate{0};
 
-    bool m_inParty = false;
-    bool m_isLeader = false;
-    uint32_t m_leaderPlayerId;
+    std::atomic<bool> m_inParty{false};
+    std::atomic<bool> m_isLeader{false};
+    std::atomic<uint32_t> m_leaderPlayerId{0};
     Vector<uint32_t> m_partyMembers;
 
     World& m_world;

@@ -62,6 +62,16 @@ void FormatAddrWithModulePod(uintptr_t aAddr, char* apOut, size_t aOutSz) noexce
         const char* slash = std::strrchr(modBuf, '\\');
         const char* shortName = slash ? (slash + 1) : modBuf;
         const uintptr_t rva = aAddr - reinterpret_cast<uintptr_t>(hMod);
+        // SkyrimTogether.exe reserves ~1.05 GB above 0x140000000 for RipAllocator hook trampolines;
+        // RVAs >= 64 MB are TiltedHooks trampolines rather than SkyrimSE.exe's ~55 MB image!
+        if (hMod == GetModuleHandleA(nullptr) && rva >= 0x04000000ULL)
+        {
+            std::snprintf(apOut, aOutSz, "%s[TiltedTrampoline]+0x%llX (0x%llX)",
+                          shortName,
+                          static_cast<unsigned long long>(rva),
+                          static_cast<unsigned long long>(aAddr));
+            return;
+        }
         std::snprintf(apOut, aOutSz, "%s+0x%llX (0x%llX)",
                       shortName,
                       static_cast<unsigned long long>(rva),
@@ -277,6 +287,32 @@ void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
     // Ignore benign Win32 informational codes (OutputDebugStringA / thread naming)
     if (apInfo->ExceptionRecord->ExceptionCode < 0x80000000)
         return;
+
+    // Deduplicate identical crash records when both SetUnhandledExceptionFilter and
+    // AddVectoredContinueHandler observe the exact same unhandled fault on the same thread/frame.
+    static std::mutex s_crashDedupMutex{};
+    static DWORD s_lastLoggedTid = 0;
+    static DWORD s_lastLoggedCode = 0;
+    static uintptr_t s_lastLoggedRip = 0;
+    static uintptr_t s_lastLoggedRsp = 0;
+    {
+        std::lock_guard<std::mutex> lock(s_crashDedupMutex);
+        const DWORD curTid = GetCurrentThreadId();
+        const DWORD curCode = apInfo->ExceptionRecord->ExceptionCode;
+        const uintptr_t curRip = apInfo->ContextRecord->Rip;
+        const uintptr_t curRsp = apInfo->ContextRecord->Rsp;
+        if (s_lastLoggedTid == curTid &&
+            s_lastLoggedCode == curCode &&
+            s_lastLoggedRip == curRip &&
+            s_lastLoggedRsp == curRsp)
+        {
+            return;
+        }
+        s_lastLoggedTid = curTid;
+        s_lastLoggedCode = curCode;
+        s_lastLoggedRip = curRip;
+        s_lastLoggedRsp = curRsp;
+    }
 
     s_inCrashLogger = true;
 

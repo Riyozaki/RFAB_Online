@@ -13,6 +13,10 @@ struct TESObjectCELL : TESForm
     void GetCOCPlacementInfo(NiPoint3* aOutPos, NiPoint3* aOutRot, bool aAllowCellLoad) noexcept;
 
     bool IsValid() const { return cellFlags[4] == 7; }
+    [[nodiscard]] bool IsAttachedAndLoaded() const noexcept
+    {
+        return IsValid() && !cellDetached && loadedCellData != nullptr;
+    }
 
     struct ReferenceData
     {

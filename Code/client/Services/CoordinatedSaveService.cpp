@@ -191,8 +191,10 @@ void CoordinatedSaveService::QueuePurgedAuthorizedSave(const std::string& acSlot
     m_pendingSaveSendAck = aSendServerAck;
     // Allow 2 calm main-thread frames after marking all 0xFFxxxxxx dynamic actors & pooled TESNPCs
     // skip-save + UnsetChanged(0xFFFFFFFF) before executing Save_Impl inside BGSSaveLoadManager::ProcessEvents.
+    // Budget 24 retries (6.0s at 0.25s cadence) so mid-air jumps, slope falls, and finishing MCO attacks
+    // complete cleanly instead of rejecting manual/auto checkpoints after 2.0s.
     m_pendingSavePurgeFrames = 2;
-    m_pendingSaveRetriesLeft = 8;
+    m_pendingSaveRetriesLeft = 24;
     m_pendingSaveRetryDelaySec = 0.0;
 
     auto& charSvc = m_world.GetCharacterService();
@@ -831,7 +833,7 @@ void CoordinatedSaveService::OnNotifyPrepareSave(const NotifyPrepareSave& acMess
             m_hasDeferredPrepareSave = true;
             m_deferredPrepareEpochId = acMessage.EpochId;
             m_deferredPrepareSlotName = slotName;
-            m_deferredPrepareWaitSec = 2.5;
+            m_deferredPrepareWaitSec = 5.0;
             return;
         }
 

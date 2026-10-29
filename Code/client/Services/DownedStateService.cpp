@@ -137,6 +137,11 @@ bool DownedStateService::IsActorDowned(uint32_t aActorFormId) const noexcept
             return true;
     }
 
+    // Never walk entt::registry views from combat/magic/projectile worker threads:
+    // materialized remote downed players always carry ActorExtension::kDownedPlayer atomically.
+    if (!World::IsMainThread())
+        return false;
+
     auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
     for (auto entity : playerView)
     {
@@ -193,6 +198,14 @@ void DownedStateService::RequestAllySpellReviveOnActor(uint32_t aTargetFormId, f
     if (!IsSystemActive() || IsLocalPlayerDowned() || aTargetFormId == 0 || aTargetFormId == 0x14 || aHealMagnitude < 5.0f)
         return;
 
+    if (!World::IsMainThread())
+    {
+        m_world.GetRunner().Queue([this, aTargetFormId, aHealMagnitude]() noexcept {
+            RequestAllySpellReviveOnActor(aTargetFormId, aHealMagnitude);
+        });
+        return;
+    }
+
     if (m_spellReviveRequestCooldownSec > 0.0)
         return;
 
@@ -222,11 +235,21 @@ void DownedStateService::NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemot
     if (!IsSystemActive() || !IsLocalPlayerDowned() || !apRemoteCaster || aHealMagnitude < 5.0f)
         return;
 
-    if (m_spellReviveRequestCooldownSec > 0.0)
-        return;
-
     const auto* pCasterExt = apRemoteCaster->GetExtension();
     if (!pCasterExt || !pCasterExt->IsRemotePlayer() || pCasterExt->IsDownedPlayer())
+        return;
+
+    if (!World::IsMainThread())
+    {
+        const uint32_t casterFormId = apRemoteCaster->formID;
+        m_world.GetRunner().Queue([this, casterFormId, aHealMagnitude]() noexcept {
+            if (Actor* pResolvedCaster = Cast<Actor>(TESForm::GetById(casterFormId)))
+                NotifyAllyHealingSpellReceivedFromRemote(pResolvedCaster, aHealMagnitude);
+        });
+        return;
+    }
+
+    if (m_spellReviveRequestCooldownSec > 0.0)
         return;
 
     const uint32_t localPlayerId = GetLocalPlayerId();

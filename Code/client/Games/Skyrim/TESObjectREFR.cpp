@@ -1130,7 +1130,7 @@ void TESObjectREFR::AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSet
         const char* pEditorId = pObject->GetFormEditorID();
         const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
         const uint8_t rawFormType = static_cast<uint8_t>(pObject->formType);
-        const bool syncHomes = World::Get().GetServerSettings().SyncPlayerHomes;
+        const bool syncHomes = World::IsSyncPlayerHomesCached();
 
         if ((arEntry.IsQuestItem || RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, rawFormType, objectId, syncHomes)) &&
             !RfabCompat::IsExcludedFromQuestItemReplication(editorIdView, rawFormType, objectId))

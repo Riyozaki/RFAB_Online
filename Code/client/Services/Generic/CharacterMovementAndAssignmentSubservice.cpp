@@ -323,9 +323,26 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
 
     if (auto* pRemoteComponent = m_world.try_get<RemoteComponent>(aEntity); pRemoteComponent)
     {
-        // Never steal actor ownership onto a downed party leader or from a remote player summon!
+        const TES* pTes = TES::Get();
+        const bool cellAttached = pActor->parentCell != nullptr && pActor->parentCell->IsAttachedAndLoaded();
+        const bool insideSafeClaimMargin =
+            cellAttached &&
+            (pActor->GetWorldSpace() == nullptr ||
+             (pTes != nullptr &&
+              CoopWorldView::IsInsideExteriorEntryMargin(
+                  GridCellCoords(pTes->centerGridX, pTes->centerGridY),
+                  pActor->position.x,
+                  pActor->position.y,
+                  pActor->IsDragon())));
+        const bool inRelinquishCooldown =
+            m_relinquishClaimCooldowns.IsInCooldown(pActor->formID, NowSteadyWorldViewMs());
+
+        // Never steal actor ownership onto a downed party leader, from a remote player summon, or across a
+        // 5x5 exterior border seam right after relinquishing (`DC568` Wolf / `105A3C` Rabbit ping-pong guard)!
         if (m_world.GetPartyService().IsLeader() &&
             !m_world.GetDownedStateService().IsLocalPlayerDowned() &&
+            insideSafeClaimMargin &&
+            !inRelinquishCooldown &&
             !pActor->IsInCombat() &&
             !pActor->IsTemporary() &&
             !pActor->IsMount() &&

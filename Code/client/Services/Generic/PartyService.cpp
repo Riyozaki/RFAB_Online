@@ -188,7 +188,7 @@ void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcep
     if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
         pOverlayApp->ExecuteAsync("partyInfo", pArguments);
 
-    m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader));
+    m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader.load(std::memory_order_relaxed)));
     m_world.GetRfabAdapterService().NotifyPartyLeadershipChanged();
 }
 
