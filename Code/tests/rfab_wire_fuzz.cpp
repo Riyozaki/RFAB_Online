@@ -18,6 +18,7 @@
 
 #include <TiltedCore/Buffer.hpp>
 #include <TiltedCore/Serialization.hpp>
+#include <TiltedCore/ViewBuffer.hpp>
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
@@ -59,7 +60,7 @@ std::string Describe(const char* apKind, size_t aOpcode, size_t aSize, const cha
            " bytes, case '" + apCase + "'";
 }
 
-template <class TFactory> void ExpectSafeExtract(TFactory& aFactory,
+template <class TFactory> void ExpectSafeExtract(const TFactory& aFactory,
                                                               uint32_t aOpcode,
                                                               const std::vector<uint8_t>& acPayload,
                                                               const char* apKind,
