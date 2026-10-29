@@ -100,9 +100,9 @@ PartyService::Party* PartyService::GetPlayerParty(Player* const apPlayer) noexce
     auto& inviterPartyComponent = apPlayer->GetParty();
     if (inviterPartyComponent.JoinedPartyId)
     {
-        const auto partyIt = m_parties.find(*inviterPartyComponent.JoinedPartyId);
+        auto partyIt = m_parties.find(*inviterPartyComponent.JoinedPartyId);
         if (partyIt != m_parties.end())
-            return &partyIt->second;
+            return &partyIt.value();
     }
 
     return nullptr;
