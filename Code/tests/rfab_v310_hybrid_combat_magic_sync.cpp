@@ -12,6 +12,7 @@
 #include <string>
 
 #include "../common/Authority/Health.h"
+#include "../common/Authority/Audit.h"
 #include "../common/Authority/Hits.h"
 #include "../common/Sync/HitImpact.h"
 #include <Messages/ClientMessageFactory.h>
@@ -258,6 +259,53 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         const float nan = std::numeric_limits<float>::quiet_NaN();
         CHECK(ClassifyHealthSnapshot(60.0f, nan, 7u, 7u) == SnapshotVerdict::kMalformed);
         CHECK(ClassifyHealthSnapshot(60.0f, -1.0f, 7u, 7u) == SnapshotVerdict::kMalformed);
+    }
+
+    SECTION("Refusals are reported early, then quietly, and never into silence")
+    {
+        using Authority::AuditEvent;
+        Authority::CombatAudit audit;
+
+        // An idle server says nothing, however often it is asked.
+        CHECK_FALSE(audit.ShouldReport(0ULL));
+        CHECK_FALSE(audit.ShouldReport(90'000ULL));
+
+        // The first refusal of a kind is worth seeing while the player still remembers
+        // what they did.
+        audit.Record(AuditEvent::kRejectedHit);
+        CHECK(audit.ShouldReport(1'000ULL));
+        CHECK(audit.WindowCount(AuditEvent::kRejectedHit) == 1u);
+
+        // More of the same kind during a fight must not flood the log.
+        for (int i = 0; i < 50; ++i)
+            audit.Record(AuditEvent::kRejectedHit);
+        CHECK_FALSE(audit.ShouldReport(2'000ULL));
+        CHECK_FALSE(audit.ShouldReport(60'000ULL));
+
+        // A kind nobody has seen yet still gets through immediately.
+        audit.Record(AuditEvent::kStaleSnapshot);
+        CHECK(audit.ShouldReport(3'000ULL));
+        CHECK(audit.WindowCount(AuditEvent::kRejectedHit) == 50u);
+        CHECK(audit.WindowCount(AuditEvent::kStaleSnapshot) == 1u);
+
+        // Then the slow cadence, counted from the last summary.
+        audit.Record(AuditEvent::kRejectedHit);
+        CHECK_FALSE(audit.ShouldReport(62'000ULL));
+        CHECK(audit.ShouldReport(63'000ULL));
+
+        // Totals outlive the summaries; that is what an operator asks for afterwards.
+        CHECK(audit.TotalCount(AuditEvent::kRejectedHit) == 52u);
+        CHECK(audit.TotalCount(AuditEvent::kStaleSnapshot) == 1u);
+        CHECK(audit.TotalCount(AuditEvent::kDuplicateHit) == 0u);
+        CHECK(audit.AnythingRecorded());
+
+        // A clock that jumps backwards must not silence the log for good.
+        audit.Record(AuditEvent::kDuplicateHit);
+        CHECK(audit.ShouldReport(10ULL));
+
+        audit.Clear();
+        CHECK_FALSE(audit.AnythingRecorded());
+        CHECK_FALSE(audit.ShouldReport(200'000ULL));
     }
 
     SECTION("One swing is applied once, however many times its packet arrives")

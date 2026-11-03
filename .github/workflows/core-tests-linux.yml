@@ -43,6 +43,10 @@ jobs:
         # reads past its buffer.
         env:
           RFAB_FUZZ_SEEDS: '128'
+          # 512 random sessions instead of 32: a disagreement that shows up once in a
+          # few hundred sessions is exactly the one that reaches a player as "it
+          # desynced and I could not reproduce it".
+          RFAB_SOAK_SEEDS: '512'
         run: ./Tools/rfab/run-core-tests.sh --asan
 
   ui-build:

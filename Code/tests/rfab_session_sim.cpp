@@ -11,6 +11,8 @@
 
 #include <catch2/catch.hpp>
 
+#include <cstdlib>
+
 #include "SessionSim.h"
 
 using SessionSim::Session;
@@ -446,12 +448,34 @@ TEST_CASE("Session: a hit reported from outside the cell is not believed",
     CHECK(session.ServerHealthOf(target) == before);
 }
 
+// How many different sessions the soak plays out. The default keeps the loop under a
+// tenth of a second; before a playtest it is worth spending a minute on a few hundred,
+// because a seed that only fails once in two hundred sessions is exactly the bug that
+// gets reported as "it desynced once and I could not reproduce it".
+uint32_t SoakSeeds() noexcept
+{
+    static const uint32_t seeds = []() -> uint32_t {
+        const char* pEnv = std::getenv("RFAB_SOAK_SEEDS");
+        if (!pEnv)
+            return 32u;
+
+        const long parsed = std::strtol(pEnv, nullptr, 10);
+        if (parsed <= 0)
+            return 1u;
+
+        return static_cast<uint32_t>(parsed > 8192 ? 8192 : parsed);
+    }();
+
+    return seeds;
+}
+
 TEST_CASE("Session: soak - random play never produces two simulators or a lost checkpoint",
           "[rfab][session][soak]")
 {
     // Each seed is a different session: who claims what, who drops, who refuses a save,
     // when the host rolls back. The invariants are checked on every tick inside the model.
-    for (uint32_t seed = 1; seed <= 32u; ++seed)
+    const uint32_t seedCount = SoakSeeds();
+    for (uint32_t seed = 1; seed <= seedCount; ++seed)
     {
         Session session{4, 5, seed * 2654435761u};
 
@@ -482,6 +506,10 @@ TEST_CASE("Session: soak - random play never produces two simulators or a lost c
                     session.Random(2u) == 0u;
             else if (roll < 68)
                 session.RollBack(session.Saves().GetLastCommittedEpoch());
+            else if (roll < 71)
+                // Someone on a bad connection: the readings they send are older than
+                // everyone else's, which is precisely what the revision rule is for.
+                session.SetExtraLatency(peerId, session.Random(2u) == 0u ? 0u : 50u * (1u + session.Random(6u)));
 
             session.Tick();
         }
@@ -491,6 +519,7 @@ TEST_CASE("Session: soak - random play never produces two simulators or a lost c
         {
             peer.RefusesSave = false;
             peer.StuckLoading = false;
+            session.SetExtraLatency(peer.Id, 0u);
             session.SetConnected(peer.Id, true);
             session.SetInRange(peer.Id, true);
             session.SetDowned(peer.Id, false);

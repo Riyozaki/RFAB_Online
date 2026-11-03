@@ -76,6 +76,15 @@ Console::Command<> TogglePvp(
         GameServer::Get()->UpdateSettings();
     });
 
+// A playtester can see what the server refused without a debug build: the summary
+// warnings appear by themselves during a fight, this is for asking afterwards.
+Console::Command<> ShowCombatAudit(
+    "CombatAudit", "Show what combat authority has refused since the server started",
+    [](Console::ArgStack&)
+    {
+        GameServer::Get()->GetWorld().GetActorValueService().LogCombatAudit();
+    });
+
 Console::Command<int64_t> SetDifficulty(
     "SetDifficulty", "Set server difficulty (0 being Novice and 5 being Legendary; default is 4)",
     [](Console::ArgStack& aStack)

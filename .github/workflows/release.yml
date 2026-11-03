@@ -37,3 +37,19 @@ jobs:
         # No -VersionTag: the tag comes from the VERSION file (single source of
         # truth). Publishing only happens for refs/tags/v*, the script enforces it.
         run: .\Tools\rfab\Build-CloudRelease.ps1
+
+      # Every run already builds, verifies and packages a complete installer; without
+      # this step it was deleted with the runner, so the only testable build was a
+      # published release. Now any commit can be played before it is tagged.
+      - name: Upload playable build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RFAB_Online-build-${{ github.sha }}
+          path: |
+            release_artifacts/*.zip
+            release_artifacts/SHA256SUMS.txt
+            release_artifacts/RELEASE_NOTES.md
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0

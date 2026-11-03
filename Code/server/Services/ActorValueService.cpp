@@ -61,6 +61,47 @@ void ActorValueService::RecordCombatClaim(
     m_combatAuthorityLedger.RecordCombatClaim(aAttackerPlayerId, aTargetServerId, aKind, SteadyActorValueNowMs());
 }
 
+void ActorValueService::ReportAudit(uint64_t aNowMs) const noexcept
+{
+    using Authority::AuditEvent;
+
+    if (!m_combatAudit.ShouldReport(aNowMs))
+        return;
+
+    spdlog::warn(
+        "Combat authority refused: {} hit(s) from players not allowed to deal them, {} repeated "
+        "swing(s), {} stale health reading(s) ({} sender(s) corrected). Totals since start: "
+        "{}/{}/{}.",
+        m_combatAudit.WindowCount(AuditEvent::kRejectedHit),
+        m_combatAudit.WindowCount(AuditEvent::kDuplicateHit),
+        m_combatAudit.WindowCount(AuditEvent::kStaleSnapshot),
+        m_combatAudit.WindowCount(AuditEvent::kSnapshotCorrection),
+        m_combatAudit.TotalCount(AuditEvent::kRejectedHit),
+        m_combatAudit.TotalCount(AuditEvent::kDuplicateHit),
+        m_combatAudit.TotalCount(AuditEvent::kStaleSnapshot));
+}
+
+void ActorValueService::LogCombatAudit() const noexcept
+{
+    using Authority::AuditEvent;
+
+    auto pOut = spdlog::get("ConOut");
+    if (!pOut)
+        return;
+
+    if (!m_combatAudit.AnythingRecorded())
+    {
+        pOut->info("Combat authority has refused nothing since this server started.");
+        return;
+    }
+
+    pOut->info("Combat authority, since this server started:");
+    pOut->info("  hits from players not allowed to deal them : {}", m_combatAudit.TotalCount(AuditEvent::kRejectedHit));
+    pOut->info("  the same swing arriving more than once     : {}", m_combatAudit.TotalCount(AuditEvent::kDuplicateHit));
+    pOut->info("  health readings that arrived out of date   : {}", m_combatAudit.TotalCount(AuditEvent::kStaleSnapshot));
+    pOut->info("  senders told the authoritative value       : {}", m_combatAudit.TotalCount(AuditEvent::kSnapshotCorrection));
+}
+
 void ActorValueService::RecordPlayerDownedState(uint32_t aPlayerId, bool aIsDowned) const noexcept
 {
     m_combatAuthorityLedger.RecordPlayerDownedState(aPlayerId, aIsDowned, SteadyActorValueNowMs());
@@ -125,6 +166,10 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
                     correction.HealthRevision = actorValuesComponent.HealthRevision;
                     correction.Values[kHealthActorValueIndex] = currentHp;
                     acMessage.pPlayer->Send(correction);
+
+                    m_combatAudit.Record(Authority::AuditEvent::kStaleSnapshot);
+                    m_combatAudit.Record(Authority::AuditEvent::kSnapshotCorrection);
+                    ReportAudit(SteadyActorValueNowMs());
                     continue;
                 }
 
@@ -291,6 +336,8 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
                 senderId,
                 isSenderDowned,
                 areCoopPartyAllies);
+            m_combatAudit.Record(Authority::AuditEvent::kRejectedHit);
+            ReportAudit(nowMs);
             return;
         }
 
@@ -306,6 +353,8 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     if (m_combatAuthorityLedger.IsDuplicateHit(senderId, message.Id, message.HitId))
     {
         spdlog::debug("Ignored duplicate hit {} on {:x} from player {}", message.HitId, message.Id, senderId);
+        m_combatAudit.Record(Authority::AuditEvent::kDuplicateHit);
+        ReportAudit(nowMs);
         return;
     }
 
