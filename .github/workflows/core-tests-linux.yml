@@ -1,0 +1,25 @@
+name: Core tests (Linux)
+
+# Fast feedback loop for the platform-independent layers (protocol, encoding, coop core).
+# Runs on every push and pull request: minutes instead of the 13-19 minute Windows release build,
+# and it actually executes code instead of grepping the sources.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache third-party sources
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: core-deps-${{ hashFiles('Tools/rfab/run-core-tests.sh') }}
+      - name: Build & run core tests
+        run: ./Tools/rfab/run-core-tests.sh
