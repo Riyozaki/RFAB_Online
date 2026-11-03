@@ -38,6 +38,11 @@ jobs:
           path: build/deps
           key: core-deps-${{ hashFiles('Tools/rfab/run-core-tests.sh') }}
       - name: Build & run core tests under sanitizers
+        # 128 random payloads per opcode and length instead of the 4 the fast loop uses:
+        # with the sanitizers on, every pass is a chance to catch a deserializer that
+        # reads past its buffer.
+        env:
+          RFAB_FUZZ_SEEDS: '128'
         run: ./Tools/rfab/run-core-tests.sh --asan
 
   ui-build:

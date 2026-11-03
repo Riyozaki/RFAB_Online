@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #include <vector>
@@ -53,6 +54,26 @@ void FillSmallAlphabet(uint8_t* apData, size_t aSize, uint32_t aSeed) noexcept
     uint32_t state = aSeed | 1u;
     for (size_t i = 0; i < aSize; ++i)
         apData[i] = static_cast<uint8_t>(NextXorShift(state) & 0x7u);
+}
+
+// How many random payloads to try per opcode and length. One pass is enough to keep the
+// fast loop fast; the sanitized CI job raises it with RFAB_FUZZ_SEEDS, where each extra
+// pass is a real chance to catch a deserializer reading past its buffer.
+size_t FuzzPasses() noexcept
+{
+    static const size_t passes = []() -> size_t {
+        const char* pEnv = std::getenv("RFAB_FUZZ_SEEDS");
+        if (!pEnv)
+            return 4u;
+
+        const long parsed = std::strtol(pEnv, nullptr, 10);
+        if (parsed <= 0)
+            return 1u;
+
+        return static_cast<size_t>(parsed > 4096 ? 4096 : parsed);
+    }();
+
+    return passes;
 }
 
 std::string Describe(const char* apKind, size_t aOpcode, size_t aSize, const char* apCase)
@@ -122,10 +143,14 @@ TEST_CASE("Wire: every ClientOpcode survives truncated and random payloads", "[w
     {
         for (size_t size : kPayloadSizes)
         {
-            std::vector<uint8_t> payload(size);
-            FillSmallAlphabet(payload.data(), payload.size(), static_cast<uint32_t>(opcode * 131u + size * 17u + 1u));
-            ExpectSafeExtract<ClientMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
-                                                                  "client", "small-alphabet");
+            for (size_t pass = 0; pass < FuzzPasses(); ++pass)
+            {
+                std::vector<uint8_t> payload(size);
+                FillSmallAlphabet(payload.data(), payload.size(),
+                                  static_cast<uint32_t>(opcode * 131u + size * 17u + pass * 7919u + 1u));
+                ExpectSafeExtract<ClientMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
+                                                                      "client", "small-alphabet");
+            }
         }
 
         // Maximal varint: 8 x 0xFF decodes to a huge unsigned value.
@@ -146,10 +171,14 @@ TEST_CASE("Wire: every ServerOpcode survives truncated and random payloads", "[w
     {
         for (size_t size : kPayloadSizes)
         {
-            std::vector<uint8_t> payload(size);
-            FillSmallAlphabet(payload.data(), payload.size(), static_cast<uint32_t>(opcode * 197u + size * 13u + 7u));
-            ExpectSafeExtract<ServerMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
-                                                                  "server", "small-alphabet");
+            for (size_t pass = 0; pass < FuzzPasses(); ++pass)
+            {
+                std::vector<uint8_t> payload(size);
+                FillSmallAlphabet(payload.data(), payload.size(),
+                                  static_cast<uint32_t>(opcode * 197u + size * 13u + pass * 6271u + 7u));
+                ExpectSafeExtract<ServerMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
+                                                                      "server", "small-alphabet");
+            }
         }
 
         std::vector<uint8_t> maximal(8, 0xFF);
