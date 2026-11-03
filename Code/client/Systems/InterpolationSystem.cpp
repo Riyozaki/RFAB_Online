@@ -15,7 +15,7 @@
 #include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/GridCellCoords.h>
 #include <CoopAnimationState.h>
-#include <CoopDamagePipeline.h>
+#include <World/CellMotion.h>
 #include <CoopWorldStabilizer.h>
 #include <World.h>
 
@@ -156,7 +156,7 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
                     }
                 }
 
-                const auto motionMode = CoopDamagePipeline::EvaluateExteriorCellMotion(
+                const auto motionMode = WorldMotion::EvaluateExteriorCellMotion(
                     stepDistSq > kTeleportSnapThresholdSq,
                     hasAttachedParentCell,
                     hasLoadedDestCell,
@@ -170,7 +170,7 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
                     aTick,
                     aInterpolationComponent.LastSeamlessRehomeTick);
 
-                if (motionMode == CoopDamagePipeline::ExteriorCellMotionMode::kTeleportMoveTo)
+                if (motionMode == WorldMotion::ExteriorCellMotionMode::kTeleportMoveTo)
                 {
                     apActor->MoveTo(pDestCell, position);
                     aInterpolationComponent.TrackedParentCell = pDestCell;
@@ -180,7 +180,7 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
                     aInterpolationComponent.LastSeamlessRehomeTick = aTick;
                     movedViaCellTransfer = true;
                 }
-                else if (motionMode == CoopDamagePipeline::ExteriorCellMotionMode::kSeamlessCellRehome)
+                else if (motionMode == WorldMotion::ExteriorCellMotionMode::kSeamlessCellRehome)
                 {
                     apActor->MoveToCellSeamless(pDestCell, position);
                     aInterpolationComponent.TrackedParentCell = pDestCell;

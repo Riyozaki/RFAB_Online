@@ -11,7 +11,8 @@
 #include <sstream>
 #include <string>
 
-#include "../common/CoopDamagePipeline.h"
+#include "../common/Authority/Health.h"
+#include "../common/Sync/HitImpact.h"
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/AddTargetRequest.h>
@@ -27,7 +28,7 @@ std::filesystem::path FindV310RepoRoot()
     fs::path cur = fs::current_path();
     for (int i = 0; i < 8; ++i)
     {
-        if (fs::exists(cur / "Code" / "common" / "CoopDamagePipeline.h") &&
+        if (fs::exists(cur / "Code" / "common" / "Combat" / "Health.h") &&
             fs::exists(cur / "Code" / "client" / "Games" / "Skyrim" / "Actor.cpp"))
         {
             return cur;
@@ -51,7 +52,8 @@ std::string LoadV310File(const std::filesystem::path& aRoot, const char* apRelPa
 
 TEST_CASE("v3.1 Pillar 1: 1/M Enemy Combat Regen & ActiveEffect Heal Parity", "[rfab][v310][regen]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace Sync;
 
     SECTION("Requiem/RFAB Troll DPS check preserves exact TTK ratio instead of becoming immortal under M=3")
     {
@@ -108,7 +110,8 @@ TEST_CASE("v3.1 Pillar 1: 1/M Enemy Combat Regen & ActiveEffect Heal Parity", "[
 
 TEST_CASE("v3.1 Pillar 2: Caster 0x14 AdjustForPerks Ratio & Pre-Adjusted Spell Wire Sync", "[rfab][v310][magic]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace Sync;
     using namespace TiltedPhoques;
 
     SECTION("Resistance cancels out cleanly from M_after / M_before perk ratio")
@@ -179,7 +182,8 @@ TEST_CASE("v3.1 Pillar 2: Caster 0x14 AdjustForPerks Ratio & Pre-Adjusted Spell 
 
 TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physical Hit Impact Gate", "[rfab][v310][impact]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace Sync;
     using namespace TiltedPhoques;
 
     SECTION("Periodic kHealth reconciliation prevents upward bounce right after local hit while applying extra damage immediately")
@@ -220,7 +224,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         // Target facing East (heading = pi/2), Attacker East (+100, 0) -> 0.0 (front of East-facing target!)
         CHECK(ComputeNormalizedStaggerDirection(100.0f, 0.0f, 0.0f, 0.0f, kHalfPi) == Approx(0.0f).margin(0.001f));
 
-        RemoteHitImpactGate gate;
+        HitImpactGate gate;
         // Initial shield bash at t = 1000ms accepted:
         CHECK(gate.TryConsumeStagger(0x3001, 0.50f, false, 1000ULL) == Approx(0.50f));
         // Follow-up dual-wield/ally bash 400ms later blocked by poise recovery window:
@@ -282,7 +286,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         // Player has 150 Permanent MaxHP + 250 Temporary Fortify Health = 400 CurrentHP.
         const float permMaxHp = 150.0f;
         const float currentBuffedHp = 400.0f;
-        const auto afterChip = ApplyAuthoritativeServerHealthDelta(
+        const auto afterChip = ApplyHealthDelta(
             currentBuffedHp,
             std::max(permMaxHp, currentBuffedHp),
             -25.0f);

@@ -1,6 +1,8 @@
 #include <catch2/catch.hpp>
 
-#include <CoopDamagePipeline.h>
+#include <Sync/ConcentrationLimiter.h>
+#include <Authority/ScriptDamage.h>
+#include <Hooks/TrampolineTarget.h>
 #include <CoopLootLedger.h>
 #include <CoopWorldView.h>
 
@@ -109,7 +111,7 @@ TEST_CASE("v2.0.3 Phase 2: Multi-hop SKSE->EngineFixes trampoline walker and Zer
     {
         // 1. Unhooked MSVC x64 prologue `mov [rsp+8], rbx` (`48 89 5C 24 08`) -> 0
         alignas(16) uint8_t unhooked[16] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x90, 0x90, 0x90};
-        REQUIRE(CoopDamagePipeline::DecodeHookJumpTargetLive(unhooked) == 0);
+        REQUIRE(Hooks::DecodeHookJumpTargetLive(unhooked) == 0);
 
         // 2. 2-hop chain: `FormAllocate` (`E9 rel32`) -> SKSE branch trampoline (`FF 25 00 00 00 00 <u64>`) -> `EngineFixes`
         alignas(16) uint8_t arena[128]{};
@@ -136,22 +138,22 @@ TEST_CASE("v2.0.3 Phase 2: Multi-hop SKSE->EngineFixes trampoline walker and Zer
         std::memcpy(pSkseTrampoline + 6, &finalAddr, sizeof(finalAddr));
 
         REQUIRE(
-            CoopDamagePipeline::DecodeHookJumpTargetLive(pFormAllocate) ==
+            Hooks::DecodeHookJumpTargetLive(pFormAllocate) ==
             reinterpret_cast<uintptr_t>(pEngineFixesAlloc));
 
         // 3. Pathological `EB FE` infinite self-jump terminates deterministically without hanging:
         alignas(16) uint8_t selfLoop[8] = {0xEB, 0xFE, 0x90, 0x90};
-        const uintptr_t loopRes = CoopDamagePipeline::DecodeHookJumpTargetLive(selfLoop);
+        const uintptr_t loopRes = Hooks::DecodeHookJumpTargetLive(selfLoop);
         REQUIRE(loopRes == reinterpret_cast<uintptr_t>(selfLoop));
     }
 
 }
 
-TEST_CASE("v2.0.3 Phase 3: RFAB ScriptDamageAuthLedger, ConcentrationSyncLimiter, and ResurrectInPlace", "[rfab][v203][phase3]")
+TEST_CASE("v2.0.3 Phase 3: RFAB ScriptDamageLedger, ConcentrationLimiter, and ResurrectInPlace", "[rfab][v203][phase3]")
 {
-    SECTION("ScriptDamageAuthLedger authorizes Papyrus DamageActorValue after local player hits while blocking ambient peer bleed")
+    SECTION("ScriptDamageLedger authorizes Papyrus DamageActorValue after local player hits while blocking ambient peer bleed")
     {
-        CoopDamagePipeline::ScriptDamageAuthLedger ledger;
+        Authority::ScriptDamageLedger ledger;
         constexpr uint32_t kRemoteBossFormId = 0x0704BEEFu;
         constexpr uint32_t kUnrelatedBanditFormId = 0x00019999u;
 
@@ -166,9 +168,9 @@ TEST_CASE("v2.0.3 Phase 3: RFAB ScriptDamageAuthLedger, ConcentrationSyncLimiter
         REQUIRE_FALSE(ledger.IsAuthorized(kRemoteBossFormId, 4000));
     }
 
-    SECTION("ConcentrationSyncLimiter throttles 60Hz concentration ticks while passing new effects/targets immediately")
+    SECTION("ConcentrationLimiter throttles 60Hz concentration ticks while passing new effects/targets immediately")
     {
-        CoopDamagePipeline::ConcentrationSyncLimiter limiter;
+        Sync::ConcentrationLimiter limiter;
 
         // First cast tick sends immediately:
         REQUIRE(limiter.ShouldAllowSend(/*caster=*/0x14u, /*target=*/500u, /*effect=*/0x12FD0u, /*nowMs=*/1000));

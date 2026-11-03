@@ -11,7 +11,8 @@
 #include <string>
 
 #include "../common/CoopAnimationState.h"
-#include "../common/CoopDamagePipeline.h"
+#include "../common/Authority/Health.h"
+#include "../common/World/CellMotion.h"
 #include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/Skyrim/AnimationGraphDescriptor_Master_Behavior.h>
 
@@ -23,7 +24,7 @@ std::filesystem::path FindPhase4RepoRoot()
     fs::path cur = fs::current_path();
     for (int i = 0; i < 8; ++i)
     {
-        if (fs::exists(cur / "Code" / "common" / "CoopDamagePipeline.h") &&
+        if (fs::exists(cur / "Code" / "common" / "Combat" / "Health.h") &&
             fs::exists(cur / "Code" / "client" / "Systems" / "InterpolationSystem.cpp"))
         {
             return cur;
@@ -47,7 +48,8 @@ std::string LoadPhase4File(const std::filesystem::path& aRoot, const char* apRel
 
 TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage scaling (1 / M)", "[rfab][v300][phase4][damage]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace WorldMotion;
 
     SECTION("Multiplier normalization clamps edge cases safely")
     {
@@ -90,7 +92,7 @@ TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage
             const float scaledDelta = ScaleIncomingEnemyDamageDelta(-300.0f, mult, true);
             REQUIRE(scaledDelta == Approx(-100.0f));
 
-            const auto applied = ApplyAuthoritativeServerHealthDelta(serverCurrentHp, serverMaxHp, scaledDelta);
+            const auto applied = ApplyHealthDelta(serverCurrentHp, serverMaxHp, scaledDelta);
             serverCurrentHp = applied.UpdatedHealth;
             hostCurrentHp = std::max(0.0f, hostCurrentHp + applied.ClampedBroadcastDelta);
             guestCurrentHp = std::max(0.0f, guestCurrentHp + applied.ClampedBroadcastDelta);
@@ -115,11 +117,11 @@ TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage
         // Boss scripted phase heal (+50% of native MaxHP = +500.0f) stays unscaled and restores exact +50%:
         const float healDelta = ScaleIncomingEnemyDamageDelta(+500.0f, mult, true);
         CHECK(healDelta == Approx(+500.0f));
-        const auto afterHeal = ApplyAuthoritativeServerHealthDelta(serverCurrentHp, serverMaxHp, healDelta);
+        const auto afterHeal = ApplyHealthDelta(serverCurrentHp, serverMaxHp, healDelta);
         CHECK(afterHeal.UpdatedHealth == Approx(1000.0f));
 
         // Simultaneous overkill clamp prevents absurd negative overkill debt:
-        const auto overkill = ApplyAuthoritativeServerHealthDelta(120.0f, kNativeBossMaxHp, -50000.0f);
+        const auto overkill = ApplyHealthDelta(120.0f, kNativeBossMaxHp, -50000.0f);
         CHECK(overkill.UpdatedHealth == Approx(0.0f));
         CHECK(overkill.ClampedBroadcastDelta == Approx(-kNativeBossMaxHp));
     }
@@ -127,7 +129,8 @@ TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage
 
 TEST_CASE("v3.0 Phase 4B: Seamless exterior cell-border motion policy without MoveTo flicker", "[rfab][v300][phase4][movement]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace WorldMotion;
 
     SECTION("Border combat oscillating 50 times across x = 4096 inside inner 3x3 grid triggers zero MoveTo calls")
     {

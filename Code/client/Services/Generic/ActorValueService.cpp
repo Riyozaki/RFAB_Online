@@ -40,6 +40,7 @@ namespace
 #include <Messages/RequestDeathStateChange.h>
 
 #include <Misc/ActorValueOwner.h>
+#include <Authority/Health.h>
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -550,7 +551,7 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
                 pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, targetHp);
                 continue;
             }
-            if (CoopDamagePipeline::ShouldReconcileRemoteActorHealthSnapshot(
+            if (Authority::ShouldReconcileRemoteActorHealthSnapshot(
                     isRemoteNonPlayer,
                     pActor->IsDead(),
                     localHp,

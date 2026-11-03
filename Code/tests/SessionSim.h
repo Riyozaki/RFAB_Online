@@ -20,7 +20,8 @@
  */
 
 #include <Authority/Lease.h>
-#include <CoopDamagePipeline.h>
+#include <Authority/Health.h>
+#include <Authority/Hits.h>
 #include <Save/Barrier.h>
 
 #include <algorithm>
@@ -619,7 +620,7 @@ private:
         if (!senderOwnsIt)
         {
             m_combat.RecordCombatClaim(acSender.Id, acMessage.EntityId,
-                                       CoopDamagePipeline::ServerHitClaimKind::kMeleeOrDamage, m_nowMs);
+                                       Authority::HitKind::kMeleeOrDamage, m_nowMs);
 
             const bool accepted = m_combat.ValidateNonOwnerHealthDelta(
                 acSender.Id, acMessage.EntityId, acMessage.Delta, acSender.InRange, acSender.Downed,
@@ -632,7 +633,7 @@ private:
         }
 
         const auto applied =
-            CoopDamagePipeline::ApplyAuthoritativeServerHealthDelta(healthIt->second, kMaxHealth, acMessage.Delta);
+            Authority::ApplyHealthDelta(healthIt->second, kMaxHealth, acMessage.Delta);
 
         if (applied.UpdatedHealth > healthIt->second && acMessage.Delta < 0.0f)
         {
@@ -862,7 +863,7 @@ private:
     static constexpr float kMaxHealth = 100.0f;
 
     Authority::Policy m_policy{};
-    CoopDamagePipeline::ServerCombatAuthorityLedger<> m_combat{};
+    Authority::HitLedger<> m_combat{};
     std::map<uint32_t, float> m_health{};
     uint64_t m_rejectedHits{0};
     Save::Coordinator m_save{"SIM", 3};

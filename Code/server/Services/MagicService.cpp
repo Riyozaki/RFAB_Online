@@ -16,6 +16,7 @@
 #include <Messages/NotifyInterruptCast.h>
 #include <Messages/NotifyAddTarget.h>
 #include <Messages/NotifyRemoveSpell.h>
+#include <Authority/Hits.h>
 
 MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -42,7 +43,7 @@ void MagicService::OnSpellCastRequest(const PacketEvent<SpellCastRequest>& acMes
         m_world.GetActorValueService().RecordCombatClaim(
             acMessage.pPlayer->GetId(),
             message.DesiredTarget,
-            CoopDamagePipeline::ServerHitClaimKind::kSpellOrTarget);
+            Authority::HitKind::kSpellOrTarget);
     }
 
     NotifySpellCast notify{};
@@ -123,7 +124,7 @@ void MagicService::OnAddTargetRequest(const PacketEvent<AddTargetRequest>& acMes
         m_world.GetActorValueService().RecordCombatClaim(
             acMessage.pPlayer->GetId(),
             message.TargetId,
-            CoopDamagePipeline::ServerHitClaimKind::kSpellOrTarget);
+            Authority::HitKind::kSpellOrTarget);
     }
 
     NotifyAddTarget notify{};

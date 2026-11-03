@@ -412,7 +412,7 @@ void MagicService::OnAddTargetEvent(const AddTargetEvent& acEvent) noexcept
             {
                 // Hostile concentration health damage is streamed smoothly via 250ms caster-authoritative
                 // HealthChangeBroadcasts; forward a lightweight target-bound keepalive every 2000ms so sustained
-                // >6s beams (`Flames`, `Sparks`, `Lightning Ray`, staves) refresh ServerCombatAuthorityLedger & Host aggro!
+                // >6s beams (`Flames`, `Sparks`, `Lightning Ray`, staves) refresh HitLedger & Host aggro!
                 const uint64_t nowMs = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())

@@ -2,7 +2,7 @@
 
 #include <CoopAnimationState.h>
 #include <CoopCheckpointStore.h>
-#include <CoopDamagePipeline.h>
+#include <Authority/Hits.h>
 #include <CoopWorldView.h>
 #include <RfabModpackCompat.h>
 
@@ -102,9 +102,9 @@ TEST_CASE("v2.1.0 Phase 2: Bidirectional and cell-bucketed ServerInterestRegistr
     REQUIRE_FALSE(registry.IsObserving(kPlayerB, kEntityDraugr1));
 }
 
-TEST_CASE("v2.1.0 Phase 3: ServerCombatAuthorityLedger non-owner damage, post-downed grace, and ally protection", "[rfab][v210][phase3]")
+TEST_CASE("v2.1.0 Phase 3: HitLedger non-owner damage, post-downed grace, and ally protection", "[rfab][v210][phase3]")
 {
-    CoopDamagePipeline::ServerCombatAuthorityLedger<32> ledger;
+    Authority::HitLedger<32> ledger;
 
     constexpr uint32_t kPeerId = 2u;
     constexpr uint32_t kBossServerId = 500u;
@@ -125,7 +125,7 @@ TEST_CASE("v2.1.0 Phase 3: ServerCombatAuthorityLedger non-owner damage, post-do
 
     // 4. Pre-downed projectile launch claim permits one in-flight hit within 1500ms after entering downed state:
     ledger.RecordCombatClaim(
-        kPeerId, 0u, CoopDamagePipeline::ServerHitClaimKind::kProjectileLaunch, 2000ULL);
+        kPeerId, 0u, Authority::HitKind::kProjectileLaunch, 2000ULL);
     ledger.RecordPlayerDownedState(kPeerId, /*aIsDowned=*/true, 2200ULL);
     REQUIRE(ledger.ValidateNonOwnerHealthDelta(
         kPeerId, kBossServerId, -120.0f, /*inRange=*/true, /*downed=*/true, /*dead=*/false, /*partyAlly=*/false, /*pvp=*/false, 2900ULL));

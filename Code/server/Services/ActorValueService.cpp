@@ -24,6 +24,8 @@ extern Console::Setting<bool> bEnablePvp;
 #include <Messages/NotifyHealthChangeBroadcast.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <Messages/NotifyDeathStateChange.h>
+#include <Authority/Health.h>
+#include <Authority/Hits.h>
 
 namespace
 {
@@ -55,7 +57,7 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
 void ActorValueService::RecordCombatClaim(
     uint32_t aAttackerPlayerId,
     uint32_t aTargetServerId,
-    CoopDamagePipeline::ServerHitClaimKind aKind) const noexcept
+    Authority::HitKind aKind) const noexcept
 {
     m_combatAuthorityLedger.RecordCombatClaim(aAttackerPlayerId, aTargetServerId, aKind, SteadyActorValueNowMs());
 }
@@ -292,7 +294,7 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
         ? curIt->second
         : maxHealth;
 
-    const auto applied = CoopDamagePipeline::ApplyAuthoritativeServerHealthDelta(
+    const auto applied = Authority::ApplyHealthDelta(
         currentHealth,
         std::max(maxHealth, currentHealth),
         sanitizedDelta);

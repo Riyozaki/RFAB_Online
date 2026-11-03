@@ -36,7 +36,7 @@ float ComputeEffectiveEnemyHealthMultiplier(float aBaseMultiplier, bool aAutoSca
 }
 
 // Mirrors Server ActorValueService::OnHealthChange signed delta application + clamping
-float ApplyAuthoritativeServerHealthDelta(float aCurrentHealth, float aMaxHealth, float aDeltaHealth) noexcept
+float ApplyHealthDelta(float aCurrentHealth, float aMaxHealth, float aDeltaHealth) noexcept
 {
     const float updated = aCurrentHealth + aDeltaHealth;
     return (aMaxHealth > 0.f) ? std::clamp(updated, 0.f, aMaxHealth) : std::max(0.f, updated);
@@ -192,7 +192,7 @@ TEST_CASE("RFAB dynamic enemy HP scaling & ownership-transfer invariance", "[rfa
         // Spawn on A with 2 players (3x -> 3000/3000), deal 1200 real engine damage -> 1800/3000 (60%)
         clientA.Apply(bossFormId, false, false, maxHp, curHp, 3.0f);
         REQUIRE(maxHp == Approx(3000.f));
-        curHp = ApplyAuthoritativeServerHealthDelta(curHp, maxHp, -1200.f);
+        curHp = ApplyHealthDelta(curHp, maxHp, -1200.f);
         REQUIRE(curHp == Approx(1800.f));
 
         // Bounce ownership A -> B -> C -> A 1,000 times — zero 3^K inflation!
@@ -250,12 +250,12 @@ TEST_CASE("RFAB dynamic enemy HP scaling & ownership-transfer invariance", "[rfa
 TEST_CASE("Server health delta sign, healing clamp, and AssignCharacterResponse payload roundtrip", "[rfab.health]")
 {
     // Damage reduces health (previously inverted with subtraction!)
-    REQUIRE(ApplyAuthoritativeServerHealthDelta(300.f, 300.f, -85.f) == Approx(215.f));
+    REQUIRE(ApplyHealthDelta(300.f, 300.f, -85.f) == Approx(215.f));
     // Overkill clamps to 0.0f
-    REQUIRE(ApplyAuthoritativeServerHealthDelta(40.f, 300.f, -500.f) == Approx(0.f));
+    REQUIRE(ApplyHealthDelta(40.f, 300.f, -500.f) == Approx(0.f));
     // Regeneration/healing increases health and clamps at MaxHealth
-    REQUIRE(ApplyAuthoritativeServerHealthDelta(215.f, 300.f, +50.f) == Approx(265.f));
-    REQUIRE(ApplyAuthoritativeServerHealthDelta(290.f, 300.f, +50.f) == Approx(300.f));
+    REQUIRE(ApplyHealthDelta(215.f, 300.f, +50.f) == Approx(265.f));
+    REQUIRE(ApplyHealthDelta(290.f, 300.f, +50.f) == Approx(300.f));
 
     // Ownership transfer via AssignCharacterResponse preserves AllActorValues & IsDead
     AssignCharacterResponse tx;

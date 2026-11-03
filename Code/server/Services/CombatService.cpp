@@ -7,6 +7,7 @@
 #include <Messages/ProjectileLaunchRequest.h>
 #include <Messages/NotifyProjectileLaunch.h>
 #include <common/RfabModpackCompat.h>
+#include <Authority/Hits.h>
 
 CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -48,7 +49,7 @@ void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunch
         m_world.GetActorValueService().RecordCombatClaim(
             acMessage.pPlayer->GetId(),
             0u,
-            CoopDamagePipeline::ServerHitClaimKind::kProjectileLaunch);
+            Authority::HitKind::kProjectileLaunch);
     }
 
     NotifyProjectileLaunch notify{};

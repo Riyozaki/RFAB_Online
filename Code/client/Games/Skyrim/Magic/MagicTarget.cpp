@@ -22,7 +22,9 @@
 #include <Games/Overrides.h>
 #include <Games/References.h>
 #include <PlayerCharacter.h>
-#include <CoopDamagePipeline.h>
+#include <Sync/ConcentrationLimiter.h>
+#include <Authority/Health.h>
+#include <Authority/ScriptDamage.h>
 #include <RfabModpackCompat.h>
 #include <Services/RfabAdapterService.h>
 
@@ -224,7 +226,7 @@ bool MagicTarget::AddTargetData::ShouldSync()
     //   1. SELF-delivered `kScript` effects (Spirit Toggle summons, Mirel_REUS tokens, Stances/Auras) corrupt puppets.
     //   2. Hostile targeted/aimed/cloak `kScript` effects (`RFAB_PapyrusFunctions.ScriptDamage`, custom RFAB procs)
     //      rely on `akCaster == Game.GetPlayer()` (`0x14`) perks, skills, and equipped items — they execute
-    //      authoritatively on the casting player's own client via `ScriptDamageAuthLedger` and sync exact HP deltas!
+    //      authoritatively on the casting player's own client via `ScriptDamageLedger` and sync exact HP deltas!
     if (pEffectItem->pEffectSetting->eArchetype == EffectArchetypes::ArchetypeID::kScript &&
         pCaster && pCaster->GetExtension() && pCaster->GetExtension()->IsPlayer())
     {
@@ -256,7 +258,7 @@ Actor* MagicTarget::GetTargetAsActor()
 
 namespace
 {
-CoopDamagePipeline::ConcentrationSyncLimiter<64> s_concentrationSyncLimiter{};
+Sync::ConcentrationLimiter<64> s_concentrationSyncLimiter{};
 
 [[nodiscard]] uint64_t NowMagicSteadyMs() noexcept
 {
@@ -567,7 +569,7 @@ void TP_MAKE_THISCALL(HookAdjustForPerks, ActiveEffect, Actor* apCaster, MagicTa
     if (s_captureLocalCasterPerkRatio && apThis)
     {
         s_capturedPerkMagnitudeRatio =
-            CoopDamagePipeline::ComputeCasterOutgoingPerkMultiplier(magBefore, apThis->fMagnitude);
+            Authority::ComputeCasterOutgoingPerkMultiplier(magBefore, apThis->fMagnitude);
     }
 
     if (s_applyHealPerkBonus && apThis)

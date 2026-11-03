@@ -2,8 +2,7 @@
 
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
-#include <CoopDamagePipeline.h>
-
+#include <Sync/HitImpact.h>
 struct World;
 
 struct ConnectedEvent;
@@ -68,5 +67,5 @@ private:
     Map<uint32_t, float> m_smallHealthChanges;
     Map<uint32_t, uint32_t> m_smallHealthAttackerIds;
     mutable Map<uint32_t, uint64_t> m_lastLocalPredictedHitMs;
-    mutable CoopDamagePipeline::RemoteHitImpactGate m_remoteHitImpactGate{};
+    mutable Sync::HitImpactGate m_remoteHitImpactGate{};
 };

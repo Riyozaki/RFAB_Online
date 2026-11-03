@@ -1,8 +1,7 @@
 #pragma once
 
 #include <Events/PacketEvent.h>
-#include <CoopDamagePipeline.h>
-
+#include <Authority/Hits.h>
 struct World;
 struct UpdateEvent;
 struct PlayerLeaveEvent;
@@ -25,12 +24,12 @@ struct ActorValueService
     void RecordCombatClaim(
         uint32_t aAttackerPlayerId,
         uint32_t aTargetServerId,
-        CoopDamagePipeline::ServerHitClaimKind aKind) const noexcept;
+        Authority::HitKind aKind) const noexcept;
     void RecordPlayerDownedState(uint32_t aPlayerId, bool aIsDowned) const noexcept;
 
 private:
     World& m_world;
-    mutable CoopDamagePipeline::ServerCombatAuthorityLedger<64> m_combatAuthorityLedger{};
+    mutable Authority::HitLedger<64> m_combatAuthorityLedger{};
 
     void OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noexcept;
     void OnActorValueChanges(const PacketEvent<RequestActorValueChanges>& acMessage) const noexcept;
