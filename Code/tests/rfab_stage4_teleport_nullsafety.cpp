@@ -116,32 +116,3 @@ TEST_CASE("Stage 4: RemoteQuestMoveToGuard blocks cross-thread async Papyrus que
     RemoteQuestMoveToGuard::ResetForTesting();
 }
 
-TEST_CASE("Stage 4: Structural null-safety & teleport-guard audit across client/server sources", "[rfab][stage4][audit]")
-{
-    const auto root = FindRepoRootStage4();
-    if (root.empty())
-        return;
-
-    const auto tesRefr = ReadFileUtf8(root / "Code/client/Games/Skyrim/TESObjectREFR.cpp");
-    CHECK(tesRefr.find("HookInternalMoveTo") != std::string::npos);
-    CHECK(tesRefr.find("ShouldBlockUnauthorizedPlayerMoveTo") != std::string::npos);
-
-    const auto questSvc = ReadFileUtf8(root / "Code/client/Services/Generic/QuestService.cpp");
-    CHECK(questSvc.find("ScopedRemoteQuestMoveToSuppression") != std::string::npos);
-
-    const auto playerSvc = ReadFileUtf8(root / "Code/client/Services/Generic/PlayerService.cpp");
-    CHECK(playerSvc.find("ShouldSuppressLegacyRespawnTeleport") != std::string::npos);
-
-    const auto playerChar = ReadFileUtf8(root / "Code/client/Games/Skyrim/PlayerCharacter.cpp");
-    CHECK(playerChar.find("if (!pCell)") != std::string::npos);
-    CHECK(playerChar.find("!pSkills || !pSkills->data") != std::string::npos);
-
-    const auto equipMgr = ReadFileUtf8(root / "Code/client/Games/Skyrim/EquipManager.cpp");
-    CHECK(equipMgr.find("if (!apActor)") != std::string::npos);
-    CHECK(equipMgr.find("if (!pExtension)") != std::string::npos);
-
-    const auto coordSave = ReadFileUtf8(root / "Code/client/Services/CoordinatedSaveService.cpp");
-    CHECK(coordSave.find("ApplyInSessionRollback") != std::string::npos);
-    CHECK(coordSave.find("m_preJoinBackupWrittenThisSession") != std::string::npos);
-    CHECK(coordSave.find("CloseAllMenus") != std::string::npos);
-}

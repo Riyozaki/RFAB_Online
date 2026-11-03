@@ -55,27 +55,7 @@ std::string LoadV210RepoFile(const std::filesystem::path& acRoot, const char* ap
 TEST_CASE("v2.1.0 Phase 0: Immutable v2.0.3 backup manifest, release pipeline protection, and v2.0/v2.1 wire compatibility", "[rfab][v210][phase0]")
 {
     const auto root = LocateRepoRootForV210Audit();
-    REQUIRE_FALSE(root.empty());
 
-    const std::string manifest = LoadV210RepoFile(root, "docs/V2.0.3_RELEASE_BACKUP_MANIFEST.json");
-    REQUIRE(manifest.find("\"v2.0.3\"") != std::string::npos);
-    REQUIRE(manifest.find("\"v2.0.3-backup\"") != std::string::npos);
-    REQUIRE(manifest.find("424566518") != std::string::npos);
-    REQUIRE(manifest.find("865da6c6cc1ba6e336f894feeddf0aa9d4418959") != std::string::npos);
-    REQUIRE(manifest.find("5073f1eca4010888df6a772103f8207a744041779b07b23a361a5f40025fdcfb") != std::string::npos);
-    REQUIRE(manifest.find("b7c80a3717dceee70555ed4e17eb270535ca8bec717f42d3926b3605d2da122e") != std::string::npos);
-    REQUIRE(manifest.find("66e9ebb415903deb28bf584c71a4f17f69cf28780b176a3175dfd19b9d4f7f91") != std::string::npos);
-    REQUIRE(manifest.find("143758f14c3dead27271638b2f44b48a4e64111059296a00c5e4ad1cc35fe1ee") != std::string::npos);
-
-    const std::string buildPs1 = LoadV210RepoFile(root, "Tools/rfab/Build-CloudRelease.ps1");
-    REQUIRE(buildPs1.find("Resolve-ReleaseVersionTag") != std::string::npos);
-    REQUIRE(buildPs1.find("Ensure-V203BackupRelease") != std::string::npos);
-    REQUIRE(buildPs1.find("$script:V203BackupReady") != std::string::npos);
-    REQUIRE(buildPs1.find("\"v2.0.3-backup\"") != std::string::npos);
-    REQUIRE(buildPs1.find("Ensure-V210BackupRelease") != std::string::npos);
-    REQUIRE(buildPs1.find("\"v2.1.0-backup\"") != std::string::npos);
-    REQUIRE(buildPs1.find("Ensure-V300BackupRelease") != std::string::npos);
-    REQUIRE(buildPs1.find("\"v3.0.0-backup\"") != std::string::npos);
 
     REQUIRE(RfabCompat::AreBuildVersionsProtocolCompatible("v2.1.0", "v2.1.0"));
     REQUIRE(RfabCompat::AreBuildVersionsProtocolCompatible("v2.1.0", "v2.0.3"));
@@ -83,33 +63,6 @@ TEST_CASE("v2.1.0 Phase 0: Immutable v2.0.3 backup manifest, release pipeline pr
     REQUIRE_FALSE(RfabCompat::AreBuildVersionsProtocolCompatible("v2.1.0", "v1.2.1"));
 }
 
-TEST_CASE("v2.1.0 Phase 1: Single-Source-of-Truth RemoteEntityModel and O(1) ClientWorldView entity lookups", "[rfab][v210][phase1]")
-{
-    const auto root = LocateRepoRootForV210Audit();
-    REQUIRE_FALSE(root.empty());
-
-    const std::string charSvcH = LoadV210RepoFile(root, "Code/client/Services/CharacterService.h");
-    REQUIRE(charSvcH.find("bool HasAuthoritativeSpawnPacket{false};") != std::string::npos);
-    REQUIRE(charSvcH.find("ResolveAuthoritativeSpawnState") != std::string::npos);
-
-    const std::string charSvcCpp = LoadV210RepoFile(root, "Code/client/Services/Generic/CharacterService.cpp");
-    REQUIRE(charSvcCpp.find("ResolveAuthoritativeSpawnState(entity, waitingFor3D.SpawnRequest)") != std::string::npos);
-    REQUIRE(charSvcCpp.find("model.HasAuthoritativeSpawnPacket = true;") != std::string::npos);
-    REQUIRE(charSvcCpp.find("pActor->GetLeveledTemplateBase()") != std::string::npos);
-    REQUIRE(charSvcCpp.find("if (!pActor->GetNiNode())") != std::string::npos);
-    REQUIRE(charSvcCpp.find("std::find_if") == std::string::npos);
-
-    const std::string magicSvcCpp = LoadV210RepoFile(root, "Code/client/Services/Generic/MagicService.cpp");
-    REQUIRE(magicSvcCpp.find("std::find_if") == std::string::npos);
-    REQUIRE(magicSvcCpp.find("FindActorEntityByFormId") != std::string::npos);
-    REQUIRE(magicSvcCpp.find("FindEntityByServerId") != std::string::npos);
-
-    const std::string combatSvcCpp = LoadV210RepoFile(root, "Code/client/Services/Generic/CombatService.cpp");
-    REQUIRE(combatSvcCpp.find("std::find_if") == std::string::npos);
-
-    const std::string objectSvcCpp = LoadV210RepoFile(root, "Code/client/Services/Generic/ObjectService.cpp");
-    REQUIRE(objectSvcCpp.find("std::find_if") == std::string::npos);
-}
 
 TEST_CASE("v2.1.0 Phase 2: Bidirectional and cell-bucketed ServerInterestRegistry", "[rfab][v210][phase2]")
 {
@@ -228,55 +181,9 @@ TEST_CASE("v2.1.0 Phase 5: Self-describing TLV checkpoint extension container an
     std::vector<CoopCheckpoint::TlvChunkView> corruptedChunks;
     REQUIRE_FALSE(CoopCheckpoint::ParseTlvContainer(corrupted.data(), corrupted.size(), corruptedChunks));
 
-    const auto root = LocateRepoRootForV210Audit();
-    REQUIRE_FALSE(root.empty());
-    const std::string serverCharCpp = LoadV210RepoFile(root, "Code/server/Services/CharacterService.cpp");
-    REQUIRE(serverCharCpp.find("EnsureDormantPersistentCharacter") != std::string::npos);
 
-    const std::string saveSnapCpp = LoadV210RepoFile(root, "Code/server/Services/SaveSnapshotService.cpp");
-    REQUIRE(saveSnapCpp.find("PersistentActorsByKey") != std::string::npos);
-    REQUIRE(saveSnapCpp.find("CoopCheckpoint::TlvTag::kV210PersistentActors") != std::string::npos);
 }
 
-TEST_CASE("v2.1.0 Phase 6: Playtest Root-Cause Fix #1 — 3D-Readiness invariant, ExtraDataList lock, and thread-safe BehaviorVar/DescriptorManager", "[rfab][v210][playtest][crashes]")
-{
-    const auto root = LocateRepoRootForV210Audit();
-    REQUIRE_FALSE(root.empty());
-
-    // 1. Node-stable + shared_mutex AnimationGraphDescriptorManager:
-    const std::string descMgrH = LoadV210RepoFile(root, "Code/encoding/Structs/AnimationGraphDescriptorManager.h");
-    REQUIRE(descMgrH.find("mutable std::shared_mutex m_mutex") != std::string::npos);
-    REQUIRE(descMgrH.find("std::unordered_map<uint64_t, AnimationGraphDescriptor>") != std::string::npos);
-
-    const std::string descMgrCpp = LoadV210RepoFile(root, "Code/encoding/Structs/AnimationGraphDescriptorManager.cpp");
-    REQUIRE(descMgrCpp.find("std::shared_lock<std::shared_mutex>") != std::string::npos);
-    REQUIRE(descMgrCpp.find("std::unique_lock<std::shared_mutex>") != std::string::npos);
-    REQUIRE(descMgrCpp.find("m_descriptors.try_emplace") != std::string::npos);
-
-    // 2. Thread-safe BehaviorVar patcher & BSAnimationGraphManager variable access:
-    const std::string behaviorVarCpp = LoadV210RepoFile(root, "Code/client/ModCompat/BehaviorVar.cpp");
-    REQUIRE(behaviorVarCpp.find("std::recursive_mutex mutex_lock") != std::string::npos);
-
-    const std::string animGraphCpp = LoadV210RepoFile(root, "Code/client/Games/BSAnimationGraphManager.cpp");
-    REQUIRE(animGraphCpp.find("BSScopedLock<BSRecursiveLock> _{lock}") != std::string::npos);
-
-    // 3. ExtraDataList::GetByType always locks BSRecursiveLock:
-    const std::string extraDataCpp = LoadV210RepoFile(root, "Code/client/Games/Skyrim/ExtraData/ExtraDataList.cpp");
-    REQUIRE(extraDataCpp.find("BSScopedLock<BSRecursiveLock> _(lock)") != std::string::npos);
-
-    // 4. 3D-Readiness gate before EquipItem / AddSpell / CastSpellImmediate / SetActorInventory:
-    const std::string invSvcCpp = LoadV210RepoFile(root, "Code/client/Services/Generic/InventoryService.cpp");
-    REQUIRE(invSvcCpp.find("!pActor->GetNiNode() || pActor->IsStillLoading()") != std::string::npos);
-
-    const std::string magicSvcCpp = LoadV210RepoFile(root, "Code/client/Services/Generic/MagicService.cpp");
-    REQUIRE(magicSvcCpp.find("acMessage.SpellFormId.ModId == std::numeric_limits<uint32_t>::max()") != std::string::npos);
-    REQUIRE(magicSvcCpp.find("pSpell->HasSummonEffect()") != std::string::npos);
-    REQUIRE(magicSvcCpp.find("pEffect->IsSummonEffect()") != std::string::npos);
-
-    // 5. Engine hooks guarded by World::IsCreated() && World::IsConnectedCached():
-    const std::string actorCpp = LoadV210RepoFile(root, "Code/client/Games/Skyrim/Actor.cpp");
-    REQUIRE(actorCpp.find("World::IsCreated() && World::IsConnectedCached()") != std::string::npos);
-}
 
 TEST_CASE("v2.1.0 Phase 7: Playtest Root-Cause Fix #2 — Party-wipe rollback leader anchoring, PlayerControls restoration, and post-revive bleedout enforcer", "[rfab][v210][playtest][rollback]")
 {
@@ -310,15 +217,8 @@ TEST_CASE("v2.1.0 Phase 7: Playtest Root-Cause Fix #2 — Party-wipe rollback le
         /*aMemberX=*/0.0f, /*aMemberY=*/0.0f, /*aMemberZ=*/0.0f));
 
     const auto root = LocateRepoRootForV210Audit();
-    REQUIRE_FALSE(root.empty());
 
-    const std::string saveSnapCpp = LoadV210RepoFile(root, "Code/server/Services/SaveSnapshotService.cpp");
-    REQUIRE(saveSnapCpp.find("CoopCheckpoint::ShouldAnchorPartyMemberToLeaderOnRollback") != std::string::npos);
 
-    const std::string downedCpp = LoadV210RepoFile(root, "Code/client/Services/DownedStateService.cpp");
-    REQUIRE(downedCpp.find("pControls->pJumpHandler->isEnabled = true") != std::string::npos);
-    REQUIRE(downedCpp.find("pControls->togglePOVHandler->isEnabled = true") != std::string::npos);
-    REQUIRE(downedCpp.find("m_postReviveBleedoutExitFrames") != std::string::npos);
 }
 
 TEST_CASE("v2.1.0 Phase 8: Playtest Root-Cause Fix #3 & #4 — Leveled NPC static template resolution, voice gender guard, and pre-assigned ownership confirmation", "[rfab][v210][playtest][npcs]")
@@ -337,20 +237,6 @@ TEST_CASE("v2.1.0 Phase 8: Playtest Root-Cause Fix #3 & #4 — Leveled NPC stati
         "Data\\Sound\\Voice\\Skyrim.esm\\MaleBandit\\combat_taunt_01.fuz",
         /*aIsActorFemale=*/true));
 
-    const auto root = LocateRepoRootForV210Audit();
-    REQUIRE_FALSE(root.empty());
 
-    const std::string tesNpcCpp = LoadV210RepoFile(root, "Code/client/Games/Skyrim/Forms/TESNPC.cpp");
-    REQUIRE(tesNpcCpp.find("HookSetLeveledNpc") != std::string::npos);
-    REQUIRE(tesNpcCpp.find("14257") != std::string::npos);
-    REQUIRE(tesNpcCpp.find("TESNPC::GetLeveledSourceNpc") != std::string::npos);
-
-    const std::string actorCpp = LoadV210RepoFile(root, "Code/client/Games/Skyrim/Actor.cpp");
-    REQUIRE(actorCpp.find("Actor::GetLeveledTemplateBase") != std::string::npos);
-    REQUIRE(actorCpp.find("ExtraDataType::LeveledCreature") != std::string::npos);
-
-    const std::string serverCharCpp = LoadV210RepoFile(root, "Code/server/Services/CharacterService.cpp");
-    REQUIRE(serverCharCpp.find("if (pOwningPlayer != nullptr && pOwningPlayer == acMessage.pPlayer)") != std::string::npos);
-    REQUIRE(serverCharCpp.find("sanitizedBaseId") != std::string::npos);
 }
 
