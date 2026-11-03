@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -156,12 +157,15 @@ struct Decision
 // A late packet from a peer that already lost the lease must not move it: that is the
 // bug that wiped live bosses when an unloading client's RequestOwnershipTransfer
 // arrived after the entity had been reassigned.
-[[nodiscard]] Decision Handoff(const Lease& acCurrent, uint32_t aSenderId, uint64_t aSenderEpoch,
-                               const Candidate& acNewOwner, uint64_t aNowMs, const Policy& acPolicy = {}) noexcept;
+[[nodiscard]] Decision Handoff(const Lease& acCurrent, const Subject& acSubject, uint32_t aSenderId,
+                               uint64_t aSenderEpoch, const Candidate& acNewOwner, uint64_t aNowMs,
+                               const Policy& acPolicy = {}) noexcept;
 
-// The current owner gives the entity back to the server.
-[[nodiscard]] Decision Release(const Lease& acCurrent, uint32_t aSenderId, uint64_t aSenderEpoch,
-                               uint64_t aNowMs) noexcept;
+// The current owner gives the entity back to the server. Pinned subjects are refused
+// here too: a player's own character has exactly one owner for its whole life, and a
+// client asking to hand it back (by accident or on purpose) used to leave it ownerless.
+[[nodiscard]] Decision Release(const Lease& acCurrent, const Subject& acSubject, uint32_t aSenderId,
+                               uint64_t aSenderEpoch, uint64_t aNowMs) noexcept;
 
 // The server takes the entity away: disconnect, out of range, or a lapsed lease.
 [[nodiscard]] Decision Revoke(const Lease& acCurrent, uint64_t aNowMs) noexcept;

@@ -53,6 +53,7 @@ INCLUDES := \
   -I$(REPO_ROOT)/Code/encoding \
   -I$(REPO_ROOT)/Code/encoding/Structs/Skyrim \
   -I$(REPO_ROOT)/Code/common \
+  -I$(REPO_ROOT)/Code/tests \
   -I$(DEPS_DIR)/tcinc \
   -I$(TILTEDCORE)/Code/core/include \
   -I$(HOPSCOTCH)/include \
@@ -71,6 +72,7 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/rfab_string_cache_protocol.cpp \
   $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp \
   $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_session_sim.cpp \
   $(REPO_ROOT)/Code/tests/rfab_se1597_port.cpp \
   $(REPO_ROOT)/Code/tests/rfab_stage2_physics_ownership_anim.cpp \
   $(REPO_ROOT)/Code/tests/rfab_stage4_teleport_nullsafety.cpp \

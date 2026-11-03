@@ -961,9 +961,19 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
     const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
 
     // The lease model answers this directly: only the peer named by the current lease,
-    // quoting the current epoch, may hand the entity back.
-    const auto handoffDecision =
-        Authority::Release(pCharacterOwnerComponent->GetLease(), senderId, message.OwnershipEpoch, SteadyClockMs());
+    // quoting the current epoch, may hand the entity back - and never for an entity
+    // that belongs to one player for its whole life. The ServerId comes straight off
+    // the wire, so without the subject a client could ask the server to let go of a
+    // player's own character and leave it ownerless.
+    Authority::Subject handoffSubject{};
+    if (const auto* pCharacterComponent = m_world.try_get<CharacterComponent>(cEntity))
+    {
+        handoffSubject.IsPlayerAvatar = pCharacterComponent->IsPlayer();
+        handoffSubject.IsSummonPinnedToOwner = pCharacterComponent->IsPlayerSummon();
+    }
+
+    const auto handoffDecision = Authority::Release(pCharacterOwnerComponent->GetLease(), handoffSubject, senderId,
+                                                    message.OwnershipEpoch, SteadyClockMs());
 
     if (!handoffDecision.Accepted())
     {

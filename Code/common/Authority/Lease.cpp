@@ -80,9 +80,13 @@ Decision Claim(const Lease& acCurrent, const Subject& acSubject, const OwnerStat
     return Changed(Grant(acCurrent, acChallenger.PlayerId, aNowMs, acPolicy), Outcome::kGranted);
 }
 
-Decision Handoff(const Lease& acCurrent, uint32_t aSenderId, uint64_t aSenderEpoch, const Candidate& acNewOwner,
-                 uint64_t aNowMs, const Policy& acPolicy) noexcept
+Decision Handoff(const Lease& acCurrent, const Subject& acSubject, uint32_t aSenderId, uint64_t aSenderEpoch,
+                 const Candidate& acNewOwner, uint64_t aNowMs, const Policy& acPolicy) noexcept
 {
+    if (acSubject.IsPlayerAvatar || acSubject.IsSummonPinnedToOwner)
+        return Unchanged(acCurrent, Outcome::kDeniedPinnedEntity);
+
+
     // Epoch first: a sender that quotes an old epoch is describing a world that no
     // longer exists, and saying so is more useful than "you are not the owner" - it
     // usually *was* the owner one epoch ago.
@@ -93,7 +97,7 @@ Decision Handoff(const Lease& acCurrent, uint32_t aSenderId, uint64_t aSenderEpo
         return Unchanged(acCurrent, Outcome::kDeniedNotOwner);
 
     if (acNewOwner.PlayerId == kNoOwner)
-        return Release(acCurrent, aSenderId, aSenderEpoch, aNowMs);
+        return Release(acCurrent, acSubject, aSenderId, aSenderEpoch, aNowMs);
 
     if (acNewOwner.PlayerId == acCurrent.OwnerId)
         return Unchanged(acCurrent, Outcome::kAlreadyOwner);
@@ -101,8 +105,12 @@ Decision Handoff(const Lease& acCurrent, uint32_t aSenderId, uint64_t aSenderEpo
     return Changed(Grant(acCurrent, acNewOwner.PlayerId, aNowMs, acPolicy), Outcome::kGranted);
 }
 
-Decision Release(const Lease& acCurrent, uint32_t aSenderId, uint64_t aSenderEpoch, uint64_t aNowMs) noexcept
+Decision Release(const Lease& acCurrent, const Subject& acSubject, uint32_t aSenderId, uint64_t aSenderEpoch,
+                 uint64_t aNowMs) noexcept
 {
+    if (acSubject.IsPlayerAvatar || acSubject.IsSummonPinnedToOwner)
+        return Unchanged(acCurrent, Outcome::kDeniedPinnedEntity);
+
     if (aSenderEpoch != kUnknownEpoch && aSenderEpoch != acCurrent.Epoch)
         return Unchanged(acCurrent, Outcome::kDeniedStaleEpoch);
 

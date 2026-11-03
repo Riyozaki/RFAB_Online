@@ -42,6 +42,8 @@ Candidate Peer(uint32_t aId)
 }
 
 constexpr Subject kWorldActor{};
+constexpr Subject kPlayerAvatar{true, false};
+constexpr Subject kBoundSummon{false, true};
 constexpr OwnerState kOwnerPresent{true, true};
 } // namespace
 
@@ -74,7 +76,7 @@ TEST_CASE("Authority: every accepted transition advances the epoch exactly once"
         lease = grant.Next;
         CHECK(lease.Epoch == ++expected);
 
-        const auto release = Release(lease, kGuest, lease.Epoch, now + 1ull);
+        const auto release = Release(lease, kWorldActor, kGuest, lease.Epoch, now + 1ull);
         REQUIRE(release.Result == Outcome::kReleased);
         lease = release.Next;
         CHECK(lease.Epoch == ++expected);
@@ -90,9 +92,9 @@ TEST_CASE("Authority: rejected requests never touch the lease", "[rfab][authorit
         Claim(held, Subject{true, false}, kOwnerPresent, Peer(kGuest), 9000ull).Result,
         Claim(held, Subject{false, true}, kOwnerPresent, Peer(kGuest), 9000ull).Result,
         Claim(held, kWorldActor, kOwnerPresent, Peer(kGuest), 1100ull).Result,
-        Handoff(held, kGuest, 7ull, Peer(kThird), 9000ull).Result,
-        Handoff(held, kHost, 6ull, Peer(kThird), 9000ull).Result,
-        Release(held, kGuest, 7ull, 9000ull).Result,
+        Handoff(held, kWorldActor, kGuest, 7ull, Peer(kThird), 9000ull).Result,
+        Handoff(held, kWorldActor, kHost, 6ull, Peer(kThird), 9000ull).Result,
+        Release(held, kWorldActor, kGuest, 7ull, 9000ull).Result,
     };
 
     for (const auto outcome : rejected)
@@ -103,8 +105,8 @@ TEST_CASE("Authority: rejected requests never touch the lease", "[rfab][authorit
 
     // The point of the table above: not one of those calls produced a new lease.
     CHECK(Claim(held, Subject{true, false}, kOwnerPresent, Peer(kGuest), 9000ull).Next == held);
-    CHECK(Handoff(held, kGuest, 7ull, Peer(kThird), 9000ull).Next == held);
-    CHECK(Release(held, kGuest, 7ull, 9000ull).Next == held);
+    CHECK(Handoff(held, kWorldActor, kGuest, 7ull, Peer(kThird), 9000ull).Next == held);
+    CHECK(Release(held, kWorldActor, kGuest, 7ull, 9000ull).Next == held);
 }
 
 TEST_CASE("Authority: player avatars and bound summons never change hands", "[rfab][authority][pinned]")
@@ -195,15 +197,15 @@ TEST_CASE("Authority: a late packet from a former owner cannot move a live entit
     // anyway - wiping the owner list and deleting a living boss.
     const Lease current = OwnedBy(kThird, 9ull, 5000ull);
 
-    const auto stale = Handoff(current, kHost, 8ull, Peer(kGuest), 6000ull);
+    const auto stale = Handoff(current, kWorldActor, kHost, 8ull, Peer(kGuest), 6000ull);
     CHECK(stale.Result == Outcome::kDeniedStaleEpoch);
     CHECK(stale.Next == current);
 
-    const auto notOwner = Handoff(current, kGuest, kUnknownEpoch, Peer(kHost), 6000ull);
+    const auto notOwner = Handoff(current, kWorldActor, kGuest, kUnknownEpoch, Peer(kHost), 6000ull);
     CHECK(notOwner.Result == Outcome::kDeniedNotOwner);
     CHECK(notOwner.Next == current);
 
-    const auto staleRelease = Release(current, kHost, 8ull, 6000ull);
+    const auto staleRelease = Release(current, kWorldActor, kHost, 8ull, 6000ull);
     CHECK(staleRelease.Result == Outcome::kDeniedStaleEpoch);
     CHECK(staleRelease.Next == current);
 }
@@ -212,14 +214,14 @@ TEST_CASE("Authority: a handoff from the current owner moves the lease", "[rfab]
 {
     const Lease current = OwnedBy(kHost, 4ull, 1000ull);
 
-    const auto decision = Handoff(current, kHost, 4ull, Peer(kGuest), 2000ull);
+    const auto decision = Handoff(current, kWorldActor, kHost, 4ull, Peer(kGuest), 2000ull);
     CHECK(decision.Result == Outcome::kGranted);
     CHECK(decision.Next.OwnerId == kGuest);
     CHECK(decision.Next.Epoch == 5ull);
     CHECK(decision.Next.GrantedAtMs == 2000ull);
 
     // A handoff to nobody is a release.
-    const auto toServer = Handoff(current, kHost, 4ull, Peer(kNoOwner), 2000ull);
+    const auto toServer = Handoff(current, kWorldActor, kHost, 4ull, Peer(kNoOwner), 2000ull);
     CHECK(toServer.Result == Outcome::kReleased);
     CHECK_FALSE(toServer.Next.HasOwner());
     CHECK(toServer.Next.Epoch == 5ull);
@@ -229,11 +231,11 @@ TEST_CASE("Authority: peers that do not track epochs still interoperate", "[rfab
 {
     const Lease current = OwnedBy(kHost, 11ull, 1000ull);
 
-    const auto decision = Handoff(current, kHost, kUnknownEpoch, Peer(kGuest), 2000ull);
+    const auto decision = Handoff(current, kWorldActor, kHost, kUnknownEpoch, Peer(kGuest), 2000ull);
     CHECK(decision.Result == Outcome::kGranted);
     CHECK(decision.Next.Epoch == 12ull);
 
-    CHECK(Release(current, kHost, kUnknownEpoch, 2000ull).Result == Outcome::kReleased);
+    CHECK(Release(current, kWorldActor, kHost, kUnknownEpoch, 2000ull).Result == Outcome::kReleased);
 }
 
 TEST_CASE("Authority: a lease that lapses frees the entity without any timer",
@@ -437,7 +439,7 @@ TEST_CASE("Authority: a full session of handovers stays consistent", "[rfab][aut
     CHECK(client.OwnerOf(777u) == kGuest);
 
     // The host disconnects; its late transfer request must not disturb the guest.
-    CHECK(commit(Handoff(server, kHost, 1ull, Peer(kThird), now += 10, policy)) == Outcome::kDeniedStaleEpoch);
+    CHECK(commit(Handoff(server, kWorldActor, kHost, 1ull, Peer(kThird), now += 10, policy)) == Outcome::kDeniedStaleEpoch);
     CHECK(client.OwnerOf(777u) == kGuest);
 
     // The guest disconnects, and the entity goes to the only peer left in range.
@@ -500,3 +502,29 @@ TEST_CASE("Authority: a freshly orphaned entity settles before it is adopted",
     // A lapsed lease is as good as unowned.
     CHECK(CanAdoptDormant(OwnedBy(kGuest, 4ull, 0ull, 2000ull), 100'000ull, policy));
 }
+
+TEST_CASE("Authority: a player's own character cannot be given up either",
+          "[rfab][authority][pinned]")
+{
+    const Lease avatarLease = OwnedBy(kHost, 4ull, 1000ull);
+
+    // Claim and Reassign already refused pinned entities; Release and Handoff did not,
+    // and the server takes the entity id for a handoff straight from the packet. A
+    // client could therefore ask the server to let go of a player's own character, and
+    // the reassignment that followed left it with no owner at all.
+    const auto released = Release(avatarLease, kPlayerAvatar, kHost, 4ull, 5000ull);
+    CHECK(released.Result == Outcome::kDeniedPinnedEntity);
+    CHECK_FALSE(released.Changed);
+    CHECK(released.Next.OwnerId == kHost);
+    CHECK(released.Next.Epoch == 4ull);
+
+    const auto handed = Handoff(avatarLease, kPlayerAvatar, kHost, 4ull, Peer(kGuest), 5000ull);
+    CHECK(handed.Result == Outcome::kDeniedPinnedEntity);
+    CHECK_FALSE(handed.Changed);
+    CHECK(handed.Next.OwnerId == kHost);
+
+    // A summon follows its summoner for the same reason.
+    const auto summon = Release(avatarLease, kBoundSummon, kHost, 4ull, 5000ull);
+    CHECK(summon.Result == Outcome::kDeniedPinnedEntity);
+}
+
