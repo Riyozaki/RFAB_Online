@@ -21,6 +21,11 @@ CXX      ?= g++
 CC       ?= gcc
 OPT      ?= -O1
 CXXFLAGS += -std=c++20 $(OPT) -fPIC -DNOMINMAX -Wno-everything
+
+# Header dependency tracking. Without it, editing a header rebuilds nothing and the
+# loop reports a pass for code it did not compile - the exact failure this harness
+# exists to prevent.
+DEPFLAGS := -MMD -MP
 CFLAGS   += -std=c11 $(OPT) -fPIC
 
 TILTEDCORE := $(DEPS_DIR)/TiltedCore-0.2.9
@@ -50,7 +55,8 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/encoding.cpp \
   $(REPO_ROOT)/Code/tests/rfab_wire_fuzz.cpp \
   $(REPO_ROOT)/Code/tests/rfab_string_cache_protocol.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp
+  $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp
 
 CORE_SRCS     := $(filter-out %MimallocAllocator.cpp,$(wildcard $(TILTEDCORE)/Code/core/src/*.cpp)) \
                  $(TILTEDCORE)/Code/core/src/MimallocAllocator.cpp
@@ -68,6 +74,7 @@ TEST_OBJS     := $(foreach s,$(PORTABLE_TESTS),$(call obj_of,tests,$(s)))
 MIMALLOC_OBJ  := $(OBJ_DIR)/mimalloc.o
 
 ALL_OBJS := $(CORE_OBJS) $(ENCODING_OBJS) $(COMMON_OBJS) $(TEST_OBJS) $(MIMALLOC_OBJ)
+ALL_DEPS := $(ALL_OBJS:.o=.d)
 
 .PHONY: all run clean
 all: $(BIN)
@@ -89,13 +96,15 @@ define compile_rule
 $(call obj_of,$(1),$(2)): $(2)
 	@mkdir -p $$(dir $$@)
 	@echo "  CXX   $$(patsubst $$(REPO_ROOT)/%,%,$$<)"
-	@$$(CXX) $$(CXXFLAGS) -w $$(INCLUDES) $(3) -c $$< -o $$@
+	@$$(CXX) $$(CXXFLAGS) $$(DEPFLAGS) -w $$(INCLUDES) $(3) -c $$< -o $$@
 endef
 
 $(foreach s,$(CORE_SRCS),$(eval $(call compile_rule,core,$(s),)))
 $(foreach s,$(ENCODING_SRCS),$(eval $(call compile_rule,encoding,$(s),$(PCH))))
 $(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),$(PCH))))
 $(foreach s,$(PORTABLE_TESTS),$(eval $(call compile_rule,tests,$(s),$(PCH))))
+
+-include $(ALL_DEPS)
 
 clean:
 	rm -rf $(BUILD_DIR)
