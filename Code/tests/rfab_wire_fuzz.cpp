@@ -21,6 +21,7 @@
 #include <TiltedCore/ViewBuffer.hpp>
 
 #include <Messages/ClientMessageFactory.h>
+#include <Structs/AnimationVariables.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Opcodes.h>
 
@@ -242,5 +243,60 @@ TEST_CASE("Wire: a valid message truncated at every byte boundary stays safe", "
         INFO("authentication prefix " << prefix << " of " << fullSize);
         CHECK_FALSE(threw);
         CHECK_FALSE(opcodeMismatch);
+    }
+}
+
+// A packet declares how many animation variables it carries and, separately, the packed
+// bits for them. Nothing forces the two to agree, so the unpacker must never read past
+// the bytes it was actually given. AddressSanitizer caught this as a stack-buffer-overflow
+// reachable straight from AnimationVariables::ApplyDiff.
+TEST_CASE("Wire: an animation diff that promises more values than it carries stays in bounds",
+          "[rfab][wire][fuzz][animation]")
+{
+    using namespace TiltedPhoques;
+
+    auto applyDiff = [](size_t aBooleans, size_t aIntegers, size_t aFloats, const std::string& acPackedBits) {
+        Buffer buffer(1024);
+        Buffer::Writer writer(&buffer);
+        Serialization::WriteVarInt(writer, aBooleans);
+        Serialization::WriteVarInt(writer, aIntegers);
+        Serialization::WriteVarInt(writer, aFloats);
+        Serialization::WriteString(writer, String(acPackedBits.c_str(), acPackedBits.size()));
+
+        Buffer::Reader reader(&buffer);
+        AnimationVariables variables{};
+        variables.ApplyDiff(reader);
+        return variables;
+    };
+
+    SECTION("no packed bytes at all")
+    {
+        const auto variables = applyDiff(64, 0, 0, "");
+        REQUIRE(variables.Booleans.size() == 64);
+        CHECK(std::count(variables.Booleans.begin(), variables.Booleans.end(), true) == 0);
+    }
+
+    SECTION("one byte for sixty-four booleans")
+    {
+        const auto variables = applyDiff(64, 0, 0, std::string(1, '\xFF'));
+        REQUIRE(variables.Booleans.size() == 64);
+        // The eight bits that were sent are set; the rest were never paid for.
+        for (size_t i = 0; i < 8; ++i)
+            CHECK(variables.Booleans[i]);
+        CHECK(std::count(variables.Booleans.begin(), variables.Booleans.end(), true) == 8);
+    }
+
+    SECTION("more packed bytes than values is harmless too")
+    {
+        const auto variables = applyDiff(4, 0, 0, std::string(32, '\xFF'));
+        REQUIRE(variables.Booleans.size() == 4);
+        CHECK(std::count(variables.Booleans.begin(), variables.Booleans.end(), true) == 4);
+    }
+
+    SECTION("the changed-table for integers and floats is bounded as well")
+    {
+        const auto variables = applyDiff(0, 16, 16, std::string(1, '\x01'));
+        CHECK(variables.Integers.size() == 16);
+        CHECK(variables.Floats.size() == 16);
     }
 }

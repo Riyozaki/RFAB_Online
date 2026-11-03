@@ -8,6 +8,7 @@
 #
 #   ./Tools/rfab/run-core-tests.sh             # fetch (once), build, run
 #   ./Tools/rfab/run-core-tests.sh --clean     # rebuild from scratch
+#   ./Tools/rfab/run-core-tests.sh --asan      # same suites under ASan + UBSan
 #
 # Requirements: bash, curl, tar, make, g++ (C++20). No submodules, no xmake, no network beyond
 # codeload.github.com.
@@ -17,9 +18,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPS_DIR="${REPO_ROOT}/build/deps"
 JOBS="${JOBS:-$( (command -v nproc >/dev/null && nproc) || echo 2 )}"
 
-if [[ "${1:-}" == "--clean" ]]; then
-    rm -rf "${REPO_ROOT}/build/linux-core"
-fi
+SANITIZE=0
+for arg in "$@"; do
+    case "${arg}" in
+        --clean) rm -rf "${REPO_ROOT}/build/linux-core" "${REPO_ROOT}/build/linux-core-asan" ;;
+        --asan)  SANITIZE=1 ;;
+        *) echo "unknown argument: ${arg}" >&2; exit 2 ;;
+    esac
+done
 
 fetch() {
     local name="$1" url="$2" expect_dir="$3"
@@ -43,6 +49,17 @@ fetch mimalloc      https://codeload.github.com/microsoft/mimalloc/tar.gz/refs/t
 # The xmake tiltedcore package exposes its headers under a TiltedCore/ prefix; mirror that layout.
 mkdir -p "${DEPS_DIR}/tcinc"
 ln -sfn "${DEPS_DIR}/TiltedCore-0.2.9/Code/core/include" "${DEPS_DIR}/tcinc/TiltedCore"
+
+if [[ "${SANITIZE}" == "1" ]]; then
+    echo "==> building core tests with ASan + UBSan (-j${JOBS})"
+    make -C "${REPO_ROOT}/Tools/rfab/linux-core" SANITIZE=1 -j"${JOBS}" all
+
+    echo "==> running core tests under sanitizers"
+    # halt_on_error keeps the first report as the failure; leaks are mimalloc's, not ours.
+    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1"
+    export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1"
+    exec make -C "${REPO_ROOT}/Tools/rfab/linux-core" SANITIZE=1 run
+fi
 
 echo "==> building core tests (-j${JOBS})"
 make -C "${REPO_ROOT}/Tools/rfab/linux-core" -j"${JOBS}" all

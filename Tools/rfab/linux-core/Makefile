@@ -12,7 +12,21 @@
 # GameNetworkingSockets transport are NOT part of this target - they stay on the xmake build.
 
 REPO_ROOT ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../..)
-BUILD_DIR ?= $(REPO_ROOT)/build/linux-core
+
+# SANITIZE=1 rebuilds the same suites with AddressSanitizer + UndefinedBehaviorSanitizer
+# into their own object tree. Use it when a test passes but the behaviour looks wrong:
+# it is how the dangling TLV chunk views would have been caught without a second platform.
+ifeq ($(SANITIZE),1)
+  SAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g
+  BUILD_SUFFIX := -asan
+  # Vendored sources keep AddressSanitizer but drop the UB checks: TiltedCore's
+  # ReadVarInt shifts by more than 64 bits on a malformed varint
+  # (Code/core/src/Serialization.cpp:34). That is an upstream bug we cannot fix from
+  # here and it would fail every sanitized run; our own code stays fully checked.
+  VENDOR_SAN := -fno-sanitize=undefined
+endif
+
+BUILD_DIR ?= $(REPO_ROOT)/build/linux-core$(BUILD_SUFFIX)
 DEPS_DIR  ?= $(REPO_ROOT)/build/deps
 OBJ_DIR   := $(BUILD_DIR)/obj
 BIN       := $(BUILD_DIR)/coretests
@@ -20,7 +34,7 @@ BIN       := $(BUILD_DIR)/coretests
 CXX      ?= g++
 CC       ?= gcc
 OPT      ?= -O1
-CXXFLAGS += -std=c++20 $(OPT) -fPIC -DNOMINMAX -Wno-everything
+CXXFLAGS += -std=c++20 $(OPT) -fPIC -DNOMINMAX -Wno-everything $(SAN_FLAGS)
 
 # Header dependency tracking. Without it, editing a header rebuilds nothing and the
 # loop reports a pass for code it did not compile - the exact failure this harness
@@ -100,12 +114,14 @@ run: $(BIN)
 $(BIN): $(ALL_OBJS)
 	@mkdir -p $(dir $@)
 	@echo "  LD    $(notdir $@)"
-	@$(CXX) $(ALL_OBJS) -o $@ -lpthread
+	@$(CXX) $(SAN_FLAGS) $(ALL_OBJS) -o $@ -lpthread
 
 $(MIMALLOC_OBJ): $(MIMALLOC)/src/static.c
 	@mkdir -p $(dir $@)
 	@echo "  CC    mimalloc"
-	@$(CC) $(CFLAGS) -w -DMI_MALLOC_OVERRIDE=0 -I$(MIMALLOC)/include -c $< -o $@
+	@# -U, not -D...=0: mimalloc guards the malloc interposer with #if defined(), so
+	@# defining it to zero switched the override ON and broke AddressSanitizer.
+	@$(CC) $(CFLAGS) -w -UMI_MALLOC_OVERRIDE -I$(MIMALLOC)/include -c $< -o $@
 
 define compile_rule
 $(call obj_of,$(1),$(2)): $(2)
@@ -114,7 +130,7 @@ $(call obj_of,$(1),$(2)): $(2)
 	@$$(CXX) $$(CXXFLAGS) $$(DEPFLAGS) -w $$(INCLUDES) $(3) -c $$< -o $$@
 endef
 
-$(foreach s,$(CORE_SRCS),$(eval $(call compile_rule,core,$(s),)))
+$(foreach s,$(CORE_SRCS),$(eval $(call compile_rule,core,$(s),$(VENDOR_SAN))))
 $(foreach s,$(ENCODING_SRCS),$(eval $(call compile_rule,encoding,$(s),$(PCH))))
 $(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),$(PCH))))
 $(foreach s,$(PORTABLE_TESTS),$(eval $(call compile_rule,tests,$(s),$(PCH))))

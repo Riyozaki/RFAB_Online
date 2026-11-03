@@ -24,6 +24,22 @@ jobs:
       - name: Build & run core tests
         run: ./Tools/rfab/run-core-tests.sh
 
+  core-tests-sanitized:
+    # The same suites under AddressSanitizer + UndefinedBehaviorSanitizer. This is how
+    # a packet that reads past its buffer gets caught before a player's game closes
+    # itself: the animation-diff overflow was invisible to a normal build on either OS.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache third-party sources
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: core-deps-${{ hashFiles('Tools/rfab/run-core-tests.sh') }}
+      - name: Build & run core tests under sanitizers
+        run: ./Tools/rfab/run-core-tests.sh --asan
+
   ui-build:
     # Proves the shipped CEF UI can be rebuilt from Code/skyrim_ui. The release
     # pipeline runs the very same commands (Build-CloudRelease.ps1 step [6/8]),
