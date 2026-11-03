@@ -168,6 +168,7 @@ TEST_CASE("v2.1.0 Phase 5: Self-describing TLV checkpoint extension container an
 
     std::vector<CoopCheckpoint::TlvChunkView> chunks;
     REQUIRE(CoopCheckpoint::ParseTlvContainer(builder.Bytes().data(), builder.Bytes().size(), chunks));
+    // The views above borrow the builder's buffer; reading them has to be safe.
     REQUIRE(chunks.size() == 2);
     REQUIRE(chunks[0].Tag == static_cast<uint32_t>(CoopCheckpoint::TlvTag::kV210PersistentActors));
     REQUIRE(chunks[0].ByteLength == sizeof(sampleActorChunk));

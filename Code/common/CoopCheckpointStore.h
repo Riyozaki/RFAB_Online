@@ -276,6 +276,11 @@ namespace CoopCheckpoint
     };
     static_assert(sizeof(TlvChunkHeader) == 16, "TlvChunkHeader must be 16 bytes");
 
+    // A parsed chunk BORROWS the buffer it was parsed from: Data points into it and is
+    // only valid while that buffer lives. TlvContainerBuilder::Bytes() therefore hands
+    // out a reference to a buffer the builder owns, so the obvious call
+    //   ParseTlvContainer(builder.Bytes().data(), builder.Bytes().size(), chunks)
+    // reads live memory instead of a vector that died at the end of the statement.
     struct TlvChunkView
     {
         uint32_t Tag{0};
@@ -311,6 +316,7 @@ namespace CoopCheckpoint
             if (aSize > 0 && apPayload)
                 entry.Payload.assign(apPayload, apPayload + aSize);
             m_chunks.push_back(std::move(entry));
+            m_serializedDirty = true;
         }
 
         void AppendToBuffer(std::vector<uint8_t>& aOut) const
@@ -337,14 +343,23 @@ namespace CoopCheckpoint
             }
         }
 
-        [[nodiscard]] std::vector<uint8_t> Bytes() const
+        // Serialized container, owned by this builder. Valid until the next AddChunk.
+        [[nodiscard]] const std::vector<uint8_t>& Bytes() const
         {
-            std::vector<uint8_t> out;
-            AppendToBuffer(out);
-            return out;
+            if (m_serializedDirty)
+            {
+                m_serialized.clear();
+                AppendToBuffer(m_serialized);
+                m_serializedDirty = false;
+            }
+
+            return m_serialized;
         }
 
     private:
+        mutable std::vector<uint8_t> m_serialized{};
+        mutable bool m_serializedDirty{true};
+
         struct ChunkEntry
         {
             TlvChunkHeader Header{};

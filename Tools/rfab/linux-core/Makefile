@@ -56,7 +56,22 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/rfab_wire_fuzz.cpp \
   $(REPO_ROOT)/Code/tests/rfab_string_cache_protocol.cpp \
   $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp
+  $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_se1597_port.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_stage2_physics_ownership_anim.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_stage4_teleport_nullsafety.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v200_stabilization_audit.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v201_architectural_overhaul.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v202_root_cause_stabilization.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v203_architectural_stabilization.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v210_architectural_stabilization.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v300_phase1_clean_core.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v300_phase4_damage_movement_animation.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v310_hybrid_combat_magic_sync.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v312_racemenu_hair_color_sync.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v315_paused_pump_and_hook_hardening.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v316_adversarial_audit_hardening.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v317_full_codebase_critical_audit.cpp
 
 CORE_SRCS     := $(filter-out %MimallocAllocator.cpp,$(wildcard $(TILTEDCORE)/Code/core/src/*.cpp)) \
                  $(TILTEDCORE)/Code/core/src/MimallocAllocator.cpp
