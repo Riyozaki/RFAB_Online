@@ -446,7 +446,7 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
             if (pCurrentOwner == nullptr && eligibleWorldNpc && observerStanding && !holdNonHostClaims)
             {
                 const bool cooldownReady = (action == CoopWorldView::ServerPeerSyncAction::kSendSpawn) ||
-                                           (nowMs >= mutableOwner.LastChangedAtMs && (nowMs - mutableOwner.LastChangedAtMs) >= 1000ULL);
+                                           (nowMs >= mutableOwner.GetGrantedAtMs() && (nowMs - mutableOwner.GetGrantedAtMs()) >= 1000ULL);
                 if (cooldownReady)
                 {
                     const uint64_t newEpoch = mutableOwner.SetOwner(apObserver, nowMs);
@@ -480,7 +480,7 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
 
                     NotifyOwnershipTransfer grant{};
                     grant.ServerId = serverId;
-                    grant.OwnershipEpoch = mutableOwner.Epoch;
+                    grant.OwnershipEpoch = mutableOwner.GetEpoch();
                     apObserver->Send(grant);
                 }
             }
@@ -679,7 +679,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             response.ServerId = existingServerId;
             response.PlayerId = characterComponent.PlayerId;
             response.Owner = true;
-            response.OwnershipEpoch = ownerComponent.Epoch;
+            response.OwnershipEpoch = ownerComponent.GetEpoch();
             acMessage.pPlayer->Send(response);
 
             ReconcileEntityForAllObservers(existingPlayerEntity);
@@ -688,7 +688,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                 "[RFAB WorldReloadBarrier] Reused player {} entity (ServerId={:X}, Epoch={}) after live .ess reload",
                 acMessage.pPlayer->GetId(),
                 existingServerId,
-                ownerComponent.Epoch);
+                ownerComponent.GetEpoch());
             return;
         }
     }
@@ -781,18 +781,22 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
 
                 if (canChallengeOwnership)
                 {
-                    const auto claimDecision = CoopOwnership::EvaluateVoluntaryClaim(
-                        pOwningPlayer ? pOwningPlayer->GetId() : 0,
-                        acMessage.pPlayer->GetId(),
-                        existingOwnerComp.LastChangedAtMs,
-                        SteadyClockMs(),
-                        characterComponent.IsPlayer(),
-                        characterComponent.IsPlayerSummon(),
-                        ownerValidInRange,
-                        false,
-                        challengerDowned,
-                        {},
-                        isCalmPartyLeader);
+                    Authority::Subject subject{};
+                    subject.IsPlayerAvatar = characterComponent.IsPlayer();
+                    subject.IsSummonPinnedToOwner = characterComponent.IsPlayerSummon();
+
+                    Authority::OwnerState ownerState{};
+                    ownerState.Connected = pOwningPlayer != nullptr;
+                    ownerState.InRange = ownerValidInRange;
+
+                    Authority::Candidate challenger{};
+                    challenger.PlayerId = acMessage.pPlayer->GetId();
+                    challenger.IsDowned = challengerDowned;
+                    challenger.InRange = true;
+                    challenger.IsPartyLeader = isCalmPartyLeader;
+
+                    const auto claimDecision =
+                        Authority::Claim(existingOwnerComp.GetLease(), subject, ownerState, challenger, SteadyClockMs());
 
                     // Transfer ownership ONLY if entity is dormant/orphaned, current owner left range/disconnected,
                     // OR party leader is claiming a calm non-combat world NPC after anti-flap hold.
@@ -801,7 +805,8 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                         isOrphanEntity || !ownerValidInRange ||
                         (pParty != nullptr &&
                          std::find(pParty->Members.begin(), pParty->Members.end(), pOwningPlayer) != pParty->Members.end());
-                    if ((claimDecision == CoopOwnership::ClaimDecision::kAccept || claimDecision == CoopOwnership::ClaimDecision::kAlreadyOwner) &&
+                    if ((claimDecision.Result == Authority::Outcome::kGranted ||
+                         claimDecision.Result == Authority::Outcome::kAlreadyOwner) &&
                         samePartyOrOrphan)
                     {
                         const ActorData authoritativeActorData = BuildActorData(existingEntity);
@@ -815,7 +820,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
             response.Cookie = message.Cookie;
             response.ServerId = World::ToInteger(existingEntity);
             response.Owner = isOwner;
-            response.OwnershipEpoch = m_world.get<OwnerComponent>(existingEntity).Epoch;
+            response.OwnershipEpoch = m_world.get<OwnerComponent>(existingEntity).GetEpoch();
             response.AllActorValues = actorValuesComponent.CurrentActorValues;
             response.CurrentInventory = inventoryComponent.Content;
             response.IsDead = characterComponent.IsDead();
@@ -898,7 +903,7 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                     response.Cookie = message.Cookie;
                     response.ServerId = existingServerId;
                     response.Owner = false;
-                    response.OwnershipEpoch = pOwner ? pOwner->Epoch : 0;
+                    response.OwnershipEpoch = pOwner ? pOwner->GetEpoch() : 0;
                     response.AllActorValues = pAv->CurrentActorValues;
                     response.CurrentInventory = pInv->Content;
                     response.IsDead = pChar->IsDead();
@@ -950,28 +955,30 @@ void CharacterService::OnOwnershipTransferRequest(const PacketEvent<RequestOwner
     const uint32_t currentOwnerId = pCurrentOwner ? pCurrentOwner->GetId() : 0;
     const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
 
-    if (!CoopOwnership::ValidateHandoffFromOwner(
-            currentOwnerId,
-            pCharacterOwnerComponent->Epoch,
-            senderId,
-            message.OwnershipEpoch))
+    // The lease model answers this directly: only the peer named by the current lease,
+    // quoting the current epoch, may hand the entity back.
+    const auto handoffDecision =
+        Authority::Release(pCharacterOwnerComponent->GetLease(), senderId, message.OwnershipEpoch, SteadyClockMs());
+
+    if (!handoffDecision.Accepted())
     {
         // Stale handoff from a former owner after ownership already moved to another peer:
         // reject immediately so we NEVER clobber position/InvalidOwners or destroy a live boss via CharacterRemoveEvent!
         NotifyRelinquishControl relinquish{};
         relinquish.ServerId = message.ServerId;
-        relinquish.OwnershipEpoch = pCharacterOwnerComponent->Epoch;
+        relinquish.OwnershipEpoch = pCharacterOwnerComponent->GetEpoch();
         if (acMessage.pPlayer)
             acMessage.pPlayer->Send(relinquish);
 
         m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
             SteadyClockMs(), CoopFlight::FlightEventKind::kStaleEpochRejected, message.ServerId, senderId);
         spdlog::debug(
-            "[Ownership] Rejected stale RequestOwnershipTransfer for {:X} from player {} (pktEpoch={}, authEpoch={}, authOwner={})",
+            "[Ownership] Rejected RequestOwnershipTransfer for {:X} from player {} ({}; pktEpoch={}, authEpoch={}, authOwner={})",
             message.ServerId,
             senderId,
+            handoffDecision.Result == Authority::Outcome::kDeniedStaleEpoch ? "stale epoch" : "not the owner",
             message.OwnershipEpoch,
-            pCharacterOwnerComponent->Epoch,
+            pCharacterOwnerComponent->GetEpoch(),
             currentOwnerId);
         return;
     }
@@ -1178,20 +1185,23 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
         m_world.GetPartyService().IsPlayerLeader(acMessage.pPlayer) && !pCharComp->IsWeaponDrawn();
     const uint64_t nowMs = SteadyClockMs();
 
-    auto decision = CoopOwnership::EvaluateVoluntaryClaim(
-        pCurrentOwner ? pCurrentOwner->GetId() : 0,
-        acMessage.pPlayer->GetId(),
-        pOwnerComp->LastChangedAtMs,
-        nowMs,
-        pCharComp->IsPlayer(),
-        pCharComp->IsPlayerSummon(),
-        currentOwnerInRange,
-        false,
-        challengerDowned,
-        {},
-        challengerIsCalmPartyLeader);
+    Authority::Subject subject{};
+    subject.IsPlayerAvatar = pCharComp->IsPlayer();
+    subject.IsSummonPinnedToOwner = pCharComp->IsPlayerSummon();
 
-    if (decision == CoopOwnership::ClaimDecision::kAccept &&
+    Authority::OwnerState ownerState{};
+    ownerState.Connected = pCurrentOwner != nullptr;
+    ownerState.InRange = currentOwnerInRange;
+
+    Authority::Candidate challenger{};
+    challenger.PlayerId = acMessage.pPlayer->GetId();
+    challenger.IsDowned = challengerDowned;
+    challenger.InRange = true;
+    challenger.IsPartyLeader = challengerIsCalmPartyLeader;
+
+    auto decision = Authority::Claim(pOwnerComp->GetLease(), subject, ownerState, challenger, nowMs);
+
+    if (decision.Result == Authority::Outcome::kGranted &&
         pCurrentOwner != nullptr &&
         pCurrentOwner != acMessage.pPlayer &&
         currentOwnerInRange)
@@ -1202,16 +1212,20 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
             pCharComp->IsMount() ||
             (m_world.GetPartyService().IsPlayerLeader(acMessage.pPlayer) && !pCharComp->IsWeaponDrawn());
         if (!allowedVoluntaryTakeover)
-            decision = CoopOwnership::ClaimDecision::kRejectOwnerActiveInCombatOrNonLeader;
+        {
+            decision.Result = Authority::Outcome::kDeniedHoldWindow;
+            decision.Next = pOwnerComp->GetLease();
+            decision.Changed = false;
+        }
     }
 
-    if (decision != CoopOwnership::ClaimDecision::kAccept && decision != CoopOwnership::ClaimDecision::kAlreadyOwner)
+    if (decision.Result != Authority::Outcome::kGranted && decision.Result != Authority::Outcome::kAlreadyOwner)
     {
         // Reject optimistic client claim cleanly by issuing NotifyRelinquishControl with current authoritative epoch
         // so the challenger immediately reverts its optimistic LocalComponent -> RemoteComponent (zero split-brain!).
         NotifyRelinquishControl reject{};
         reject.ServerId = acMessage.Packet.ServerId;
-        reject.OwnershipEpoch = pOwnerComp->Epoch;
+        reject.OwnershipEpoch = pOwnerComp->GetEpoch();
         acMessage.pPlayer->Send(reject);
 
         m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(
@@ -1220,7 +1234,7 @@ void CharacterService::OnOwnershipClaimRequest(const PacketEvent<RequestOwnershi
             "[Ownership] Rejected claim on {:X} from player {} (reason={})",
             acMessage.Packet.ServerId,
             acMessage.pPlayer->GetId(),
-            static_cast<uint32_t>(decision));
+            static_cast<uint32_t>(decision.Result));
         return;
     }
 
@@ -1507,7 +1521,7 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     response.ServerId = World::ToInteger(cEntity);
     response.PlayerId = characterComponent.PlayerId;
     response.Owner = true;
-    response.OwnershipEpoch = ownerComponent.Epoch;
+    response.OwnershipEpoch = ownerComponent.GetEpoch();
 
     if (isTemporary && !isPlayer && !message.IsPlayerSummon && !message.IsMount && baseId != GameId{})
     {
@@ -1765,7 +1779,7 @@ void CharacterService::WakeDormantCharactersInActiveRanges() const noexcept
         auto& ownerComp = view.get<OwnerComponent>(entity);
         if (ownerComp.GetOwner() != nullptr)
             continue;
-        if (nowMs >= ownerComp.LastChangedAtMs && (nowMs - ownerComp.LastChangedAtMs) < 1000ULL)
+        if (nowMs >= ownerComp.GetGrantedAtMs() && (nowMs - ownerComp.GetGrantedAtMs()) < 1000ULL)
             continue;
 
         const auto& charComp = view.get<CharacterComponent>(entity);
@@ -1852,9 +1866,9 @@ void CharacterService::PruneExcessDormantCharacters() const noexcept
         if (isDamaged)
             continue;
 
-        if (ownerComp.LastChangedAtMs < oldestChangedMs)
+        if (ownerComp.GetGrantedAtMs() < oldestChangedMs)
         {
-            oldestChangedMs = ownerComp.LastChangedAtMs;
+            oldestChangedMs = ownerComp.GetGrantedAtMs();
             oldestPrunable = entity;
         }
     }

@@ -42,6 +42,10 @@ inline constexpr uint32_t kNoOwner = 0u;
 // being rejected outright, so a mixed-version session still converges.
 inline constexpr uint64_t kUnknownEpoch = 0ull;
 
+// Owner id a client uses for "this entity is simulated here". Clients do not need the
+// server's player ids to order their own grants and relinquishes.
+inline constexpr uint32_t kLocalOwner = 0xFFFFFFFFu;
+
 struct Lease
 {
     uint32_t OwnerId{kNoOwner};
@@ -185,6 +189,12 @@ public:
     // Returns true when the table changed. Epoch 0 means "unknown" and is accepted
     // once, for first contact with a peer that does not track epochs.
     bool Apply(uint32_t aEntityId, const Lease& acLease) noexcept;
+
+    // Client-side shorthand. A client learns only "the entity is mine now" or "it is
+    // not mine any more", plus the epoch that orders the two. Equal epochs are accepted
+    // so a re-sent grant still applies; older ones are dropped, which is what stops a
+    // late Relinquish from undoing a newer Grant.
+    bool AcceptEpoch(uint32_t aEntityId, uint64_t aEpoch, bool aOwnedLocally) noexcept;
 
     [[nodiscard]] const Lease* Find(uint32_t aEntityId) const noexcept;
     [[nodiscard]] uint32_t OwnerOf(uint32_t aEntityId) const noexcept;

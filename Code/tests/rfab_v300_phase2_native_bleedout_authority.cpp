@@ -49,7 +49,6 @@ std::string ReadRepoFilePhase2(const std::filesystem::path& acRoot, const char* 
 }
 } // namespace
 
-
 TEST_CASE("RFAB v3.0 Phase 2.2: Server-authoritative ally Restoration healing-spell revive", "[rfab][v300][phase2][spell_revive]")
 {
     SECTION("Standing healer casting onto downed ally within 45m revives immediately and clears active E-channel")
@@ -98,7 +97,6 @@ TEST_CASE("RFAB v3.0 Phase 2.2: Server-authoritative ally Restoration healing-sp
     {
         const auto root = LocateRepoRootPhase2();
 
-
         ReviveActionRequest out{};
         out.Action = ReviveActionRequest::ActionType::HealingSpellRevive;
         out.TargetPlayerId = 42u;
@@ -113,62 +111,3 @@ TEST_CASE("RFAB v3.0 Phase 2.2: Server-authoritative ally Restoration healing-sp
     }
 }
 
-TEST_CASE("RFAB v3.0 Phase 2.3: Sticky Host Cell Authority & deterministic Auto-Party convergence", "[rfab][v300][phase2][authority]")
-{
-    SECTION("Calm PartyLeader bypasses MinVoluntaryHoldMs on cell entry while active combat & non-leaders stay protected")
-    {
-        CoopOwnership::PolicyConfig cfg{};
-        cfg.MinVoluntaryHoldMs = 1500;
-
-        // Faster-loading Guest (player 2) claimed calm dungeon NPC at t=1000ms; Host (player 1) enters cell at t=1200ms:
-        // Host immediately claims calm NPC without getting stuck behind 1500ms hold!
-        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(
-                    2u, 1u, 1000u, 1200u,
-                    /*isPlayer=*/false,
-                    /*isSummon=*/false,
-                    /*ownerInRange=*/true,
-                    /*ownerDowned=*/false,
-                    /*challengerDowned=*/false,
-                    cfg,
-                    /*challengerIsCalmPartyLeader=*/true) == CoopOwnership::ClaimDecision::kAccept);
-
-        // Non-leader (or combat NPC where challengerIsCalmPartyLeader == false) is still blocked by 1500ms hold window
-        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(
-                    1u, 2u, 1200u, 1400u,
-                    /*isPlayer=*/false,
-                    /*isSummon=*/false,
-                    /*ownerInRange=*/true,
-                    /*ownerDowned=*/false,
-                    /*challengerDowned=*/false,
-                    cfg,
-                    /*challengerIsCalmPartyLeader=*/false) == CoopOwnership::ClaimDecision::kRejectHoldWindowActive);
-
-        // Downed PartyLeader must NEVER steal simulation authority from an in-range standing owner
-        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(
-                    2u, 1u, 1000u, 1200u,
-                    /*isPlayer=*/false,
-                    /*isSummon=*/false,
-                    /*ownerInRange=*/true,
-                    /*ownerDowned=*/false,
-                    /*challengerDowned=*/true,
-                    cfg,
-                    /*challengerIsCalmPartyLeader=*/true) == CoopOwnership::ClaimDecision::kRejectChallengerDowned);
-
-        // Player avatars and player summons remain pinned even against calm PartyLeader
-        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(
-                    2u, 1u, 1000u, 5000u, true, false, true, false, false, cfg, true) ==
-                CoopOwnership::ClaimDecision::kRejectPlayerAvatar);
-        REQUIRE(CoopOwnership::EvaluateVoluntaryClaim(
-                    2u, 1u, 1000u, 5000u, false, true, true, false, false, cfg, true) ==
-                CoopOwnership::ClaimDecision::kRejectSummonPinned);
-    }
-
-    SECTION("Server CharacterService & PartyService enforce Sticky Host Cell Authority and primary party auto-join")
-    {
-        const auto root = LocateRepoRootPhase2();
-
-        // Auto-join converges into primary active party even if m_parties.size() > 1
-
-        // ReconcileAllEntitiesForObserver transfers calm placed NPCs to entering standing PartyLeader
-    }
-}

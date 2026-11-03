@@ -1829,7 +1829,7 @@ CoopFlight::BucketedStateDigest SaveSnapshotService::BuildLiveWorldDigest() cons
         char key[24]{};
         std::snprintf(key, sizeof(key), "%08X", World::ToInteger(entity));
         const uint32_t ownerId = ownerComp.GetOwner() ? ownerComp.GetOwner()->GetId() : 0;
-        const uint64_t combined = (ownerComp.Epoch << 16) ^ static_cast<uint64_t>(ownerId);
+        const uint64_t combined = (ownerComp.GetEpoch() << 16) ^ static_cast<uint64_t>(ownerId);
         digest.Put(CoopFlight::StateCategory::kActorOwnership, key, combined);
     }
 

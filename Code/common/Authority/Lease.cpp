@@ -198,6 +198,41 @@ bool LeaseTable::Apply(uint32_t aEntityId, const Lease& acLease) noexcept
     return true;
 }
 
+bool LeaseTable::AcceptEpoch(uint32_t aEntityId, uint64_t aEpoch, bool aOwnedLocally) noexcept
+{
+    const auto it = m_leases.find(aEntityId);
+    if (aEpoch == kUnknownEpoch)
+    {
+        // A peer that does not track epochs: take its word, but do not let it rewrite
+        // an epoch we already know.
+        if (it == m_leases.end())
+        {
+            Lease lease{};
+            lease.OwnerId = aOwnedLocally ? kLocalOwner : kNoOwner;
+            m_leases.emplace(aEntityId, lease);
+        }
+        else
+        {
+            it->second.OwnerId = aOwnedLocally ? kLocalOwner : kNoOwner;
+        }
+        return true;
+    }
+
+    if (it != m_leases.end() && aEpoch < it->second.Epoch)
+        return false;
+
+    Lease lease = it != m_leases.end() ? it->second : Lease{};
+    lease.OwnerId = aOwnedLocally ? kLocalOwner : kNoOwner;
+    lease.Epoch = aEpoch;
+
+    if (it == m_leases.end())
+        m_leases.emplace(aEntityId, lease);
+    else
+        it->second = lease;
+
+    return true;
+}
+
 const Lease* LeaseTable::Find(uint32_t aEntityId) const noexcept
 {
     const auto it = m_leases.find(aEntityId);

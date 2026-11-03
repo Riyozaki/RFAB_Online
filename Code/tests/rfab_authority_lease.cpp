@@ -441,3 +441,35 @@ TEST_CASE("Authority: a full session of handovers stays consistent", "[rfab][aut
     CHECK(client.EpochOf(777u) == server.Epoch);
     CHECK(server.Epoch == 4ull);
 }
+
+TEST_CASE("Authority: the client-side epoch gate keeps grants and relinquishes ordered",
+          "[rfab][authority][table][client]")
+{
+    LeaseTable client;
+    const uint32_t entity = 7u;
+
+    // Grant at epoch 4, then a relinquish for epoch 3 that overtook it on the wire.
+    CHECK(client.AcceptEpoch(entity, 4ull, true));
+    CHECK(client.IsOwnedBy(entity, kLocalOwner));
+    CHECK_FALSE(client.AcceptEpoch(entity, 3ull, false));
+    CHECK(client.IsOwnedBy(entity, kLocalOwner));
+
+    // A re-sent grant for the same epoch must still be applied: the server resends it
+    // after a cell reload, and dropping it used to leave the client simulating nothing.
+    CHECK(client.AcceptEpoch(entity, 4ull, true));
+
+    // The real relinquish, one epoch later, takes effect.
+    CHECK(client.AcceptEpoch(entity, 5ull, false));
+    CHECK(client.OwnerOf(entity) == kNoOwner);
+    CHECK(client.EpochOf(entity) == 5ull);
+
+    // A peer that does not send epochs at all still gets applied, without rewriting
+    // the epoch we already know.
+    CHECK(client.AcceptEpoch(entity, kUnknownEpoch, true));
+    CHECK(client.IsOwnedBy(entity, kLocalOwner));
+    CHECK(client.EpochOf(entity) == 5ull);
+
+    client.Forget(entity);
+    CHECK(client.AcceptEpoch(entity, kUnknownEpoch, false));
+    CHECK(client.OwnerOf(entity) == kNoOwner);
+}
