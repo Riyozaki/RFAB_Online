@@ -939,20 +939,31 @@ try {
     Ensure-V312BackupRelease -RepoRootPath $RepoRoot
     Ensure-V313BackupRelease -RepoRootPath $RepoRoot
 
-    Invoke-LoggedCmd "[1/7] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
-    Invoke-LoggedCmd "[2/7] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"
-    Invoke-LoggedCmd "[3/7] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
+    Invoke-LoggedCmd "[1/8] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
+    Invoke-LoggedCmd "[2/8] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"
+    Invoke-LoggedCmd "[3/8] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
     $script:PackagesReady = $true
 
-    Invoke-LoggedCmd "[4/7] xmake build (Client + Launcher + Server + Tests)" "xmake -y -v"
+    Invoke-LoggedCmd "[4/8] xmake build (Client + Launcher + Server + Tests)" "xmake -y -v"
 
     $TpTests = Get-ChildItem -LiteralPath (Join-Path $RepoRoot "build\windows\x64\$BuildMode") -Filter "TPTests.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $TpTests) {
         throw "TPTests.exe not found under build\windows\x64\$BuildMode!"
     }
-    Invoke-LoggedCmd "[5/7] Native Windows x64 Unit Tests (TPTests.exe)" "`"$($TpTests.FullName)`""
+    Invoke-LoggedCmd "[5/8] Native Windows x64 Unit Tests (TPTests.exe)" "`"$($TpTests.FullName)`""
 
-    Invoke-LoggedCmd "[6/7] xmake install + Package-Release.ps1 + Smoke & Clean-Wipe Verification" `
+    # The CEF UI is compiled here, from Code\skyrim_ui, so that the shipped bundle
+    # always matches the sources in this commit. Before this step the release copied
+    # a bundle committed under dist_ready\, so UI changes never reached players.
+    Invoke-LoggedCmd "[6/8] Build Angular CEF UI from source (pnpm)" `
+        "cd /d Code\skyrim_ui && corepack enable && corepack pnpm@8.15.9 install --frozen-lockfile && corepack pnpm@8.15.9 run deploy:production"
+
+    $UiBundleIndex = Join-Path $RepoRoot "Code\skyrim_ui\dist\UI\index.html"
+    if (-not (Test-Path -LiteralPath $UiBundleIndex)) {
+        throw "UI build produced no bundle at Code\skyrim_ui\dist\UI (expected index.html)."
+    }
+
+    Invoke-LoggedCmd "[7/8] xmake install + Package-Release.ps1 + Smoke & Clean-Wipe Verification" `
         "xmake install -o distrib && powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tools\rfab\Package-Release.ps1 -VersionTag $VersionTag -BuildMode $BuildMode"
 
     $NotesTemplateFile = Join-Path $RepoRoot "Tools\rfab\RELEASE_NOTES_TEMPLATE.md"
@@ -978,16 +989,16 @@ try {
     }
 
     if (-not $PublishRelease) {
-        Write-Host "`n==> [7/7] Skipping GitHub Release upload (PublishRelease=false; verified bundles saved in release_artifacts\)" -ForegroundColor Green
+        Write-Host "`n==> [8/8] Skipping GitHub Release upload (PublishRelease=false; verified bundles saved in release_artifacts\)" -ForegroundColor Green
         Write-StepSummary "## CI Build & Bundle Verification Passed ($CommitSha)`r`n`r`nGitHub Release $VersionTag and protected backup tags were left untouched (PublishRelease=false)."
         Emit-Annotation "notice" "BUILD_VERIFIED" "Verified build + tests + clean bundles for $CommitSha (GitHub Release untouched)"
     } else {
         & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
         if ($LASTEXITCODE -ne 0) {
-            Invoke-LoggedCmd "[7/7] Create GitHub Release $VersionTag" `
+            Invoke-LoggedCmd "[8/8] Create GitHub Release $VersionTag" `
                 "gh release create $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $CreateFlags"
         } else {
-            Invoke-LoggedCmd "[7/7] Update GitHub Release Metadata $VersionTag (in-place)" `
+            Invoke-LoggedCmd "[8/8] Update GitHub Release Metadata $VersionTag (in-place)" `
                 "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
         }
 
@@ -1008,7 +1019,7 @@ try {
                 Start-Sleep -Seconds 4
             }
             if (-not $uploadedOk) {
-                throw "[7/7] Failed to upload $assetName after 4 attempts"
+                throw "[8/8] Failed to upload $assetName after 4 attempts"
             }
         }
 

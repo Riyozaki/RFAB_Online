@@ -22,8 +22,18 @@ jobs:
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: 3.1.0
-      - name: Clean Build, Test & Publish Release v1.0.0
+      # Node is required by build step [6/8]: the CEF UI is compiled from
+      # Code/skyrim_ui instead of being copied from a committed bundle.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Enable pnpm
+        run: corepack enable
+        shell: powershell
+      - name: Build, test & package release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: powershell
-        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "v1.0.0"
+        # No -VersionTag: the tag comes from the VERSION file (single source of
+        # truth). Publishing only happens for refs/tags/v*, the script enforces it.
+        run: .\Tools\rfab\Build-CloudRelease.ps1
