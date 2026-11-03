@@ -274,6 +274,80 @@ TEST_CASE("Session: a rollback moves the world timeline forward for everyone",
     CHECK_FALSE(session.Saves().HasActiveReloadBarrier());
 }
 
+TEST_CASE("Session: everyone ends up agreeing how hurt the dragon is",
+          "[rfab][session][damage]")
+{
+    Session session{3, 2, 61u};
+    const uint32_t dragon = session.Entities().front().Id;
+
+    session.Claim(1u, dragon);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+    REQUIRE(session.ServerOwnerOf(dragon) == 1u);
+
+    // Three players hitting the same target, their reports crossing on the wire.
+    for (uint32_t round = 0; round < 10; ++round)
+    {
+        session.Damage(1u, dragon, -3.0f);
+        session.Damage(2u, dragon, -2.0f);
+        session.Damage(3u, dragon, -1.0f);
+        session.Tick();
+    }
+
+    session.Quiesce();
+    RequireNoViolations(session, 61u);
+    CHECK(session.HealthAgreedOn(dragon));
+    CHECK(session.ServerHealthOf(dragon) < 100.0f);
+    CHECK(session.ServerHealthOf(dragon) >= 0.0f);
+}
+
+TEST_CASE("Session: a target cannot be hurt below zero or healed by damage",
+          "[rfab][session][damage]")
+{
+    Session session{2, 1, 67u};
+    const uint32_t target = session.Entities().front().Id;
+
+    session.Claim(1u, target);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+
+    for (uint32_t round = 0; round < 40; ++round)
+    {
+        session.Damage(1u, target, -25.0f);
+        session.Tick();
+    }
+
+    session.Quiesce();
+    RequireNoViolations(session, 67u);
+    CHECK(session.ServerHealthOf(target) == 0.0f);
+    CHECK(session.HealthAgreedOn(target));
+}
+
+TEST_CASE("Session: a hit reported from outside the cell is not believed",
+          "[rfab][session][damage]")
+{
+    Session session{2, 1, 71u};
+    const uint32_t target = session.Entities().front().Id;
+
+    session.Claim(1u, target);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+
+    // Peer 2 does not simulate the target and is nowhere near it.
+    session.SetInRange(2u, false);
+    const float before = session.ServerHealthOf(target);
+    for (uint32_t round = 0; round < 5; ++round)
+    {
+        session.Damage(2u, target, -10.0f);
+        session.Tick();
+    }
+
+    session.Quiesce();
+    RequireNoViolations(session, 71u);
+    CHECK(session.RejectedHits() >= 5u);
+    CHECK(session.ServerHealthOf(target) == before);
+}
+
 TEST_CASE("Session: soak - random play never produces two simulators or a lost checkpoint",
           "[rfab][session][soak]")
 {
@@ -291,8 +365,10 @@ TEST_CASE("Session: soak - random play never produces two simulators or a lost c
             const auto& entities = session.Entities();
             const uint32_t entityId = entities[session.Random(static_cast<uint32_t>(entities.size()))].Id;
 
-            if (roll < 35)
+            if (roll < 30)
                 session.Claim(peerId, entityId);
+            else if (roll < 35)
+                session.Damage(peerId, entityId, -1.0f * static_cast<float>(1u + session.Random(20u)));
             else if (roll < 45)
                 session.Release(peerId, entityId);
             else if (roll < 52)
@@ -325,5 +401,11 @@ TEST_CASE("Session: soak - random play never produces two simulators or a lost c
         session.Quiesce();
         RequireNoViolations(session, seed);
         RequireSettledOwnership(session);
+
+        for (const auto& entity : session.Entities())
+        {
+            INFO("entity " << entity.Id << " health " << session.ServerHealthOf(entity.Id));
+            CHECK(session.HealthAgreedOn(entity.Id));
+        }
     }
 }

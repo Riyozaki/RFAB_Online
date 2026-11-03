@@ -20,6 +20,7 @@
  */
 
 #include <Authority/Lease.h>
+#include <CoopDamagePipeline.h>
 #include <Save/Barrier.h>
 
 #include <algorithm>
@@ -46,6 +47,8 @@ enum class MsgKind : uint8_t
     kSaveAck,       // peer -> server: written / refused
     kReloadBegin,   // server -> peer: load this checkpoint
     kReloadReady,   // peer -> server: loaded
+    kDamageRequest, // peer -> server: I hit this for N
+    kHealthUpdate,  // server -> peer: this is its health now
 };
 
 struct Message
@@ -57,6 +60,8 @@ struct Message
     Authority::Lease Lease{};
     uint64_t SaveEpoch{};
     uint64_t SenderEpoch{};
+    float Delta{0.0f};
+    float Health{0.0f};
     bool Success{true};
     uint64_t DeliverAtMs{};
     uint64_t Order{};
@@ -71,7 +76,8 @@ struct Peer
     bool IsHost{false};
     bool RefusesSave{false};
     bool StuckLoading{false};
-    Authority::LeaseTable Leases{}; // what this peer believes about the world
+    Authority::LeaseTable Leases{};      // what this peer believes about the world
+    std::map<uint32_t, float> KnownHealth{}; // and how hurt it thinks each entity is
 };
 
 struct Entity
@@ -119,7 +125,10 @@ public:
 
         uint32_t entityId = 100u;
         for (uint32_t i = 0; i < aWorldEntities; ++i)
+        {
+            m_health[entityId] = kMaxHealth;
             m_entities.push_back(Entity{entityId++, false, Authority::kNoOwner});
+        }
 
         // One avatar per peer: these must never change hands, whatever happens.
         for (const auto& peer : m_peers)
@@ -165,6 +174,22 @@ public:
     // The client told the server it cannot take this entity (failed to load the actor).
     void RecordDecline(uint32_t aPeerId, uint32_t aEntityId) { m_declined[aEntityId].push_back(aPeerId); }
 
+    // A peer reports a hit. Whether it is allowed to is the server's problem.
+    void Damage(uint32_t aPeerId, uint32_t aEntityId, float aDelta)
+    {
+        Message message{};
+        message.Kind = MsgKind::kDamageRequest;
+        message.EntityId = aEntityId;
+        message.Delta = aDelta;
+        Send(message, aPeerId, kServerId);
+    }
+
+    [[nodiscard]] float ServerHealthOf(uint32_t aEntityId) const
+    {
+        const auto it = m_health.find(aEntityId);
+        return it == m_health.end() ? 0.0f : it->second;
+    }
+
     void SetConnected(uint32_t aPeerId, bool aConnected)
     {
         Peer* pPeer = FindPeer(aPeerId);
@@ -180,6 +205,7 @@ public:
                                          { return m.From == aPeerId || m.To == aPeerId; }),
                           m_queue.end());
             pPeer->Leases.Clear();
+            pPeer->KnownHealth.clear();
             for (const auto& entity : m_entities)
                 m_peerEpochSeen.erase((static_cast<uint64_t>(aPeerId) << 32) | entity.Id);
 
@@ -188,14 +214,25 @@ public:
 
         if (aConnected)
         {
-            // Join sync: a peer that just arrived is told who owns what, otherwise it
-            // would keep an empty world forever.
+            // Join sync: a peer that just arrived is told who owns what and how hurt
+            // everything is - the same state the real spawn packets carry. Without the
+            // health half, a reconnecting player keeps fighting a boss the rest of the
+            // party already brought down.
             for (const auto& [entityId, lease] : m_leases)
             {
                 Message message{};
                 message.Kind = MsgKind::kLeaseUpdate;
                 message.EntityId = entityId;
                 message.Lease = lease;
+                Send(message, kServerId, aPeerId);
+            }
+
+            for (const auto& [entityId, health] : m_health)
+            {
+                Message message{};
+                message.Kind = MsgKind::kHealthUpdate;
+                message.EntityId = entityId;
+                message.Health = health;
                 Send(message, kServerId, aPeerId);
             }
         }
@@ -429,6 +466,10 @@ private:
             HandleSaveAck(*pSender, acMessage);
             break;
 
+        case MsgKind::kDamageRequest:
+            HandleDamage(*pSender, acMessage);
+            break;
+
         case MsgKind::kReloadReady:
             if (m_save.RecordReloadPlayerReady(acMessage.From, acMessage.SaveEpoch))
                 Note("host gate released by peer %u", acMessage.From);
@@ -449,6 +490,10 @@ private:
         {
         case MsgKind::kLeaseUpdate:
             pPeer->Leases.Apply(acMessage.EntityId, acMessage.Lease);
+            break;
+
+        case MsgKind::kHealthUpdate:
+            pPeer->KnownHealth[acMessage.EntityId] = acMessage.Health;
             break;
 
         case MsgKind::kSavePrepare:
@@ -557,6 +602,59 @@ private:
             m_save.ConsumeAborted(m_nowMs);
             ++m_aborts;
             Note("save barrier aborted");
+        }
+    }
+
+    void HandleDamage(const Peer& acSender, const Message& acMessage)
+    {
+        const auto healthIt = m_health.find(acMessage.EntityId);
+        if (healthIt == m_health.end())
+            return;
+
+        const auto leaseIt = m_leases.find(acMessage.EntityId);
+        const bool senderOwnsIt = leaseIt != m_leases.end() && leaseIt->second.OwnerId == acSender.Id;
+
+        // A peer that does not simulate the target still gets to hit it, but the server
+        // decides whether to believe the report.
+        if (!senderOwnsIt)
+        {
+            m_combat.RecordCombatClaim(acSender.Id, acMessage.EntityId,
+                                       CoopDamagePipeline::ServerHitClaimKind::kMeleeOrDamage, m_nowMs);
+
+            const bool accepted = m_combat.ValidateNonOwnerHealthDelta(
+                acSender.Id, acMessage.EntityId, acMessage.Delta, acSender.InRange, acSender.Downed,
+                healthIt->second <= 0.0f, /*aAreCoopPartyAllies=*/false, /*aIsPvpEnabled=*/false, m_nowMs);
+            if (!accepted)
+            {
+                ++m_rejectedHits;
+                return;
+            }
+        }
+
+        const auto applied =
+            CoopDamagePipeline::ApplyAuthoritativeServerHealthDelta(healthIt->second, kMaxHealth, acMessage.Delta);
+
+        if (applied.UpdatedHealth > healthIt->second && acMessage.Delta < 0.0f)
+        {
+            std::ostringstream out;
+            out << "entity " << acMessage.EntityId << " healed from damage: " << healthIt->second << " -> "
+                << applied.UpdatedHealth;
+            m_violations.Add(m_nowMs, out.str());
+        }
+
+        healthIt->second = applied.UpdatedHealth;
+        m_changedThisTick = true;
+
+        for (const auto& peer : m_peers)
+        {
+            if (!peer.Connected)
+                continue;
+
+            Message update{};
+            update.Kind = MsgKind::kHealthUpdate;
+            update.EntityId = acMessage.EntityId;
+            update.Health = applied.UpdatedHealth;
+            Send(update, kServerId, peer.Id);
         }
     }
 
@@ -729,6 +827,17 @@ private:
                     ++believersAtCurrentEpoch;
             }
 
+            const auto serverHealthIt = m_health.find(entity.Id);
+            if (serverHealthIt != m_health.end())
+            {
+                if (serverHealthIt->second < 0.0f || serverHealthIt->second > kMaxHealth)
+                {
+                    std::ostringstream out;
+                    out << "entity " << entity.Id << " has impossible health " << serverHealthIt->second;
+                    m_violations.Add(m_nowMs, out.str());
+                }
+            }
+
             // Two peers simulating the same entity at the same epoch is the bug that
             // makes an NPC fight itself; a stale believer waiting for an update is not.
             if (believersAtCurrentEpoch > 1)
@@ -750,7 +859,12 @@ private:
     uint64_t m_claimsHeldByGate{0};
     bool m_changedThisTick{false};
 
+    static constexpr float kMaxHealth = 100.0f;
+
     Authority::Policy m_policy{};
+    CoopDamagePipeline::ServerCombatAuthorityLedger<> m_combat{};
+    std::map<uint32_t, float> m_health{};
+    uint64_t m_rejectedHits{0};
     Save::Coordinator m_save{"SIM", 3};
 
     std::vector<Peer> m_peers{};
@@ -767,6 +881,27 @@ private:
 
 public:
     [[nodiscard]] uint64_t ClaimsHeldByGate() const noexcept { return m_claimsHeldByGate; }
+    [[nodiscard]] uint64_t RejectedHits() const noexcept { return m_rejectedHits; }
+
+    // Everyone who is connected must end up believing the server about how hurt this is.
+    [[nodiscard]] bool HealthAgreedOn(uint32_t aEntityId) const
+    {
+        const auto it = m_health.find(aEntityId);
+        if (it == m_health.end())
+            return true;
+
+        for (const auto& peer : m_peers)
+        {
+            const auto known = peer.KnownHealth.find(aEntityId);
+            if (!peer.Connected || known == peer.KnownHealth.end())
+                continue;
+
+            if (known->second != it->second)
+                return false;
+        }
+
+        return true;
+    }
 };
 
 inline void Session::Note(const char* apFormat, ...)
