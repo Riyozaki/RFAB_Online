@@ -1068,45 +1068,56 @@ void CharacterService::OnOwnershipTransferEvent(const OwnershipTransferEvent& ac
     NotifyOwnershipTransfer response;
     response.ServerId = World::ToInteger(acEvent.Entity);
 
-    Player* pBestStandingCandidate = nullptr;
-    Player* pFallbackDownedCandidate = nullptr;
+    // Who can take this entity is a question about the lease, not about this function:
+    // collect everyone in range, say who already refused it, and let Authority rank them
+    // (in range > able to act > host). The ranking used to be an ad-hoc two-bucket loop.
+    std::vector<Authority::Candidate> candidates;
+    Map<uint32_t, Player*> candidatesById;
     for (auto pPlayer : m_world.GetPlayerManager())
     {
         if (ownerComponent.GetOwner() == pPlayer)
             continue;
-
-        bool isPlayerInvalid = false;
-        for (const auto invalidOwner : ownerComponent.InvalidOwners)
-        {
-            isPlayerInvalid = invalidOwner == pPlayer;
-            if (isPlayerInvalid)
-                break;
-        }
-
-        if (isPlayerInvalid)
-            continue;
-
         if (!pPlayer->GetCellComponent().IsInRange(cellIdComponent, characterComponent.IsDragon()))
             continue;
 
-        if (!m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pPlayer->GetId()))
-        {
-            if (!pBestStandingCandidate || m_world.GetPartyService().IsPlayerLeader(pPlayer))
-                pBestStandingCandidate = pPlayer;
-            if (m_world.GetPartyService().IsPlayerLeader(pPlayer))
-                break; // Prefer standing PartyLeader (Sticky Host Cell Authority) when in range
-            continue;
-        }
+        Authority::Candidate candidate{};
+        candidate.PlayerId = pPlayer->GetId();
+        candidate.InRange = true;
+        candidate.IsDowned = m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(pPlayer->GetId());
+        candidate.IsPartyLeader = m_world.GetPartyService().IsPlayerLeader(pPlayer);
 
-        if (!pFallbackDownedCandidate)
-            pFallbackDownedCandidate = pPlayer;
+        candidates.push_back(candidate);
+        candidatesById[candidate.PlayerId] = pPlayer;
     }
 
-    Player* pSelectedOwner = pBestStandingCandidate ? pBestStandingCandidate : pFallbackDownedCandidate;
+    std::vector<uint32_t> declined;
+    declined.reserve(ownerComponent.InvalidOwners.size());
+    for (const auto* pInvalidOwner : ownerComponent.InvalidOwners)
+    {
+        if (pInvalidOwner)
+            declined.push_back(pInvalidOwner->GetId());
+    }
+
+    Authority::Subject subject{};
+    subject.IsPlayerAvatar = characterComponent.IsPlayer();
+    subject.IsSummonPinnedToOwner = characterComponent.IsPlayerSummon();
+
+    const uint64_t reassignNowMs = SteadyClockMs();
+    const auto reassignment =
+        Authority::Reassign(ownerComponent.GetLease(), subject, candidates, declined, reassignNowMs);
+
+    Player* pSelectedOwner = nullptr;
+    if (reassignment.Result == Authority::Outcome::kGranted)
+    {
+        const auto selected = candidatesById.find(reassignment.Next.OwnerId);
+        if (selected != candidatesById.end())
+            pSelectedOwner = selected->second;
+    }
+
     if (pSelectedOwner)
     {
-        const uint64_t nowMs = SteadyClockMs();
-        response.OwnershipEpoch = ownerComponent.SetOwner(pSelectedOwner, nowMs);
+        const uint64_t nowMs = reassignNowMs;
+        response.OwnershipEpoch = ownerComponent.Apply(reassignment, pSelectedOwner);
         pSelectedOwner->Send(response);
 
         m_world.GetSaveSnapshotService().GetCoordinator().RecordFlightEvent(

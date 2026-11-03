@@ -945,7 +945,7 @@ try {
     Ensure-V313BackupRelease -RepoRootPath $RepoRoot
 
     Invoke-LoggedCmd "[1/8] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
-    Invoke-LoggedCmd "[2/8] SE 1.5.97 RVA, Struct & Hotfix Regression Audit" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\test_v120_hotfix_regressions.py"
+    Invoke-LoggedCmd "[2/8] SE 1.5.97 Port Audit + Release Invariants" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\check_release_invariants.py"
     Invoke-LoggedCmd "[3/8] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
     $script:PackagesReady = $true
 

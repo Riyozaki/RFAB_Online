@@ -314,6 +314,12 @@ TEST_CASE("Authority: reassignment prefers peers that can actually simulate",
     CHECK(decision.Next.OwnerId == kGuest);
     CHECK(decision.Next.Epoch == 11ull);
 
+    // A standing guest outranks a downed host: authority follows who can act.
+    Candidate downedLeader = Peer(kHost);
+    downedLeader.IsDowned = true;
+    downedLeader.IsPartyLeader = true;
+    CHECK(Reassign(orphan, kWorldActor, {downedLeader, nearGuest}, {}, 2000ull).Next.OwnerId == kGuest);
+
     // A downed peer in range still beats nobody at all.
     const auto onlyDowned = Reassign(orphan, kWorldActor, {farLeader, nearDowned}, {}, 2000ull);
     CHECK(onlyDowned.Result == Outcome::kGranted);

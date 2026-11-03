@@ -165,8 +165,9 @@ Decision Reassign(const Lease& acCurrent, const Subject& acSubject, const std::v
             continue;
 
         // In range matters most (it is the only way to simulate at all), then being
-        // the host, then simply being able to act.
-        const int score = (candidate.InRange ? 4 : 0) + (candidate.IsPartyLeader ? 2 : 0) + (candidate.IsDowned ? 0 : 1);
+        // able to act, then being the host. A standing guest beats a downed host:
+        // handing a cell to someone bleeding out on the floor is how encounters stall.
+        const int score = (candidate.InRange ? 4 : 0) + (candidate.IsDowned ? 0 : 2) + (candidate.IsPartyLeader ? 1 : 0);
         if (score > bestScore)
         {
             bestScore = score;
