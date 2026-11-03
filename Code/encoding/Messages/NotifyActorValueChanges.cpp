@@ -5,6 +5,7 @@
 void NotifyActorValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, Id);
+    Serialization::WriteVarInt(aWriter, HealthRevision);
 
     const size_t count = std::min(Values.size(), CoopPacketSafety::kMaxActorValues);
     Serialization::WriteVarInt(aWriter, count);
@@ -23,6 +24,7 @@ void NotifyActorValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
     ServerMessage::DeserializeRaw(aReader);
 
     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    HealthRevision = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
     const size_t count = CoopPacketSafety::ClampCollectionCount(
         Serialization::ReadVarInt(aReader),

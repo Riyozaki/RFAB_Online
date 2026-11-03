@@ -10,6 +10,7 @@
  */
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,18 @@ namespace Authority
 //   3. Rejects friendly-fire on co-op party members/summons when PvP is disabled (`!aIsPvpEnabled && aAreCoopPartyAllies`).
 //   4. Rejects ambient/cloak/script damage emitted by a currently Downed player (`aIsSenderDowned`),
 //      UNLESS that player recorded an in-flight projectile or spell claim BEFORE going downed within `kPostDownedInFlightGraceMs` (1500 ms)!
+// Stamp for an outgoing hit, unique for the lifetime of this process. The server only
+// compares it with the last few ids from the same player: it says "this is the swing you
+// already told me about", nothing more. 0 means the sender did not stamp it.
+[[nodiscard]] inline uint32_t NextOutgoingHitId() noexcept
+{
+    static std::atomic<uint32_t> s_counter{0};
+    uint32_t id = s_counter.fetch_add(1, std::memory_order_relaxed) + 1u;
+    if (id == 0u)
+        id = s_counter.fetch_add(1, std::memory_order_relaxed) + 1u;
+    return id;
+}
+
 enum class HitKind : uint8_t
 {
     kNone = 0,
@@ -45,20 +58,55 @@ public:
     static constexpr uint64_t kPostDownedInFlightGraceMs = 1500;
     static constexpr float kMaxValidSingleHitMagnitude = 100000.0f;
 
+    // How many recent hits per attacker are remembered. A swing re-sent after this many
+    // later hits from the same player is indistinguishable from a new one, which is fine:
+    // by then the damage has long been applied either way.
+    static constexpr size_t kRecentHitMemory = 16;
+
     void Clear() noexcept
     {
         for (auto& slot : m_claims)
             slot = {};
         for (auto& d : m_downedStates)
             d = {};
+        for (auto& hit : m_recentHits)
+            hit = {};
         m_claimCursor = 0;
         m_downedCursor = 0;
+        m_hitCursor = 0;
+    }
+
+    // One swing, one application. The transport delivers each packet once; a client that
+    // re-sends after a hiccup - or one that was told to - otherwise has its damage counted
+    // twice, and the party watches the boss melt at half the hits it should take.
+    [[nodiscard]] bool IsDuplicateHit(uint32_t aPlayerId, uint32_t aTargetServerId, uint32_t aHitId) noexcept
+    {
+        if (aPlayerId == 0 || aHitId == 0)
+            return false;
+
+        for (const auto& hit : m_recentHits)
+        {
+            if (hit.Active && hit.PlayerId == aPlayerId && hit.TargetServerId == aTargetServerId &&
+                hit.HitId == aHitId)
+            {
+                return true;
+            }
+        }
+
+        m_recentHits[m_hitCursor % kRecentHitMemory] = RecentHit{aPlayerId, aTargetServerId, aHitId, true};
+        ++m_hitCursor;
+        return false;
     }
 
     void ForgetPlayer(uint32_t aPlayerId) noexcept
     {
         if (aPlayerId == 0)
             return;
+        for (auto& hit : m_recentHits)
+        {
+            if (hit.Active && hit.PlayerId == aPlayerId)
+                hit = {};
+        }
         for (auto& slot : m_claims)
         {
             if (slot.Active && slot.AttackerPlayerId == aPlayerId)
@@ -230,6 +278,14 @@ private:
         bool Active{false};
     };
 
+    struct RecentHit
+    {
+        uint32_t PlayerId{0};
+        uint32_t TargetServerId{0};
+        uint32_t HitId{0};
+        bool Active{false};
+    };
+
     struct DownedSlot
     {
         uint32_t PlayerId{0};
@@ -240,8 +296,10 @@ private:
 
     std::array<ClaimSlot, Capacity> m_claims{};
     std::array<DownedSlot, Capacity> m_downedStates{};
+    std::array<RecentHit, kRecentHitMemory> m_recentHits{};
     size_t m_claimCursor{0};
     size_t m_downedCursor{0};
+    size_t m_hitCursor{0};
 };
 
 } // namespace Authority

@@ -21,6 +21,7 @@ struct RequestHealthChangeBroadcast final : ClientMessage
                SourceServerId == acRhs.SourceServerId &&
                StaggerMagnitude == acRhs.StaggerMagnitude &&
                StaggerDirection == acRhs.StaggerDirection &&
+               HitId == acRhs.HitId &&
                GetOpcode() == acRhs.GetOpcode();
     }
 
@@ -29,4 +30,8 @@ struct RequestHealthChangeBroadcast final : ClientMessage
     uint32_t SourceServerId{};
     float StaggerMagnitude{};
     float StaggerDirection{};
+
+    // The sender's own count of the swings it has reported, so the server can apply one
+    // swing once even when the packet arrives twice.
+    uint32_t HitId{};
 };

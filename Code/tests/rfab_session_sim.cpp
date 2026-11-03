@@ -323,6 +323,104 @@ TEST_CASE("Session: a target cannot be hurt below zero or healed by damage",
     CHECK(session.HealthAgreedOn(target));
 }
 
+TEST_CASE("Session: the same swing sent twice costs the target once",
+          "[rfab][session][damage]")
+{
+    Session session{2, 1, 73u};
+    const uint32_t target = session.Entities().front().Id;
+
+    session.Claim(1u, target);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+
+    // Peer 2 swings once and, believing the packet was lost, sends the same one again.
+    session.Damage(2u, target, -10.0f);
+    session.ReplayLastDamage(2u);
+    session.ReplayLastDamage(2u);
+    session.Quiesce();
+
+    RequireNoViolations(session, 73u);
+    CHECK(session.DuplicateHits() >= 2u);
+    CHECK(session.ServerHealthOf(target) == 90.0f);
+    CHECK(session.HealthAgreedOn(target));
+}
+
+TEST_CASE("Session: a refused hit does not leave the attacker's health bar wrong",
+          "[rfab][session][damage]")
+{
+    Session session{2, 1, 79u};
+    const uint32_t target = session.Entities().front().Id;
+
+    session.Claim(1u, target);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+
+    // Peer 2 is down on its knees, where the server refuses its damage - but its own game
+    // already took the health off locally. The owner keeps restating what it sees, and
+    // that stream is what has to pull the mistaken player back to the truth.
+    session.SetDowned(2u, true);
+    session.Damage(2u, target, -40.0f);
+    session.Quiesce();
+
+    RequireNoViolations(session, 79u);
+    CHECK(session.RejectedHits() >= 1u);
+    CHECK(session.ServerHealthOf(target) == 100.0f);
+    CHECK(session.KnownHealthOf(2u, target) == 100.0f);
+}
+
+TEST_CASE("Session: an older echo does not bounce a swing that already landed",
+          "[rfab][session][damage]")
+{
+    Session session{2, 1, 89u};
+    const uint32_t target = session.Entities().front().Id;
+
+    session.Claim(1u, target);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+
+    // Peer 2 swings again and again. The server's answer to one swing is still on the wire
+    // when the next lands locally: believing it would show the player its own damage being
+    // handed back.
+    for (uint32_t round = 0; round < 8; ++round)
+    {
+        session.Damage(2u, target, -5.0f);
+        session.Tick();
+    }
+
+    session.Quiesce();
+    RequireNoViolations(session, 89u);
+    CHECK(session.HeldEchoes() >= 1u);
+    CHECK(session.ServerHealthOf(target) == 60.0f);
+    CHECK(session.HealthAgreedOn(target));
+}
+
+TEST_CASE("Session: the owner's own reading cannot undo another player's hit",
+          "[rfab][session][damage]")
+{
+    Session session{2, 1, 83u};
+    const uint32_t target = session.Entities().front().Id;
+
+    session.Claim(1u, target);
+    for (uint32_t i = 0; i < 20; ++i)
+        session.Tick();
+    REQUIRE(session.ServerOwnerOf(target) == 1u);
+
+    // Peer 1 simulates the target and keeps restating its health. Peer 2 hits it while
+    // those readings are in flight: every one of them is now out of date.
+    for (uint32_t round = 0; round < 6; ++round)
+    {
+        session.Damage(2u, target, -5.0f);
+        for (uint32_t i = 0; i < 4; ++i)
+            session.Tick();
+    }
+
+    session.Quiesce();
+    RequireNoViolations(session, 83u);
+    CHECK(session.SuppressedSnapshots() >= 1u);
+    CHECK(session.ServerHealthOf(target) == 70.0f);
+    CHECK(session.HealthAgreedOn(target));
+}
+
 TEST_CASE("Session: a hit reported from outside the cell is not believed",
           "[rfab][session][damage]")
 {

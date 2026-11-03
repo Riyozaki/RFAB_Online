@@ -7,6 +7,7 @@ void RequestHealthChangeBroadcast::SerializeRaw(TiltedPhoques::Buffer::Writer& a
     Serialization::WriteVarInt(aWriter, SourceServerId);
     Serialization::WriteFloat(aWriter, StaggerMagnitude);
     Serialization::WriteFloat(aWriter, StaggerDirection);
+    Serialization::WriteVarInt(aWriter, HitId);
 }
 
 void RequestHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -18,4 +19,5 @@ void RequestHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader&
     SourceServerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     StaggerMagnitude = Serialization::ReadFloat(aReader);
     StaggerDirection = Serialization::ReadFloat(aReader);
+    HitId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

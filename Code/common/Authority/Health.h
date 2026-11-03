@@ -144,6 +144,56 @@ struct HealthDeltaResult
     return std::clamp(rawRatio, 0.05f, 25.0f);
 }
 
+// 8D. Whose absolute health value is worth believing.
+//
+// The client that simulates an actor restates its health every few frames, and every one
+// of those reports was sampled before it was sent. A report that crossed a hit on the wire
+// hands the health back. Holding such reports for a few hundred milliseconds only delays
+// them: the same stale number arrives again on the next tick, and once the window closes
+// the server believes it. A timer cannot tell a stale reading from a fresh one.
+//
+// So the server counts instead. One revision per actor, bumped every time health goes
+// down. Whoever reports an absolute value also says which revision it had seen when it
+// read it. Lower health is always believed - damage must never be lost. Higher health is
+// believed only from someone who had already seen the latest decrease, because only then
+// is "it healed" a statement about the present instead of an echo of the past.
+struct SnapshotPolicy
+{
+    // Differences smaller than this are float noise, not a correction.
+    float NoiseBand{0.5f};
+};
+
+enum class SnapshotVerdict : uint8_t
+{
+    kApply,          // believe it
+    kAlreadyCurrent, // says what we already know - still worth passing on to the others
+    kStaleIncrease,  // would hand back health somebody took off: refuse, and answer with
+                     // the truth, or the sender stays behind and every later reading of
+                     // its own is refused too
+    kMalformed,
+};
+
+[[nodiscard]] inline SnapshotVerdict ClassifyHealthSnapshot(
+    float aCurrentHp,
+    float aSnapshotHp,
+    uint32_t aCurrentRevision,
+    uint32_t aSnapshotRevision,
+    SnapshotPolicy aPolicy = {}) noexcept
+{
+    if (!std::isfinite(aCurrentHp) || !std::isfinite(aSnapshotHp) || aSnapshotHp < 0.0f)
+        return SnapshotVerdict::kMalformed;
+
+    const float diff = aSnapshotHp - aCurrentHp;
+    if (diff < -aPolicy.NoiseBand)
+        return SnapshotVerdict::kApply; // damage always lands
+
+    if (diff <= aPolicy.NoiseBand)
+        return SnapshotVerdict::kAlreadyCurrent;
+
+    return aSnapshotRevision == aCurrentRevision ? SnapshotVerdict::kApply
+                                                 : SnapshotVerdict::kStaleIncrease;
+}
+
 // 8C. Non-Rubberbanding Authoritative `CurrentHP` Snapshot Reconciliation:
 // Allows remote non-player NPCs on Guests to reconcile `kHealth` from periodic owner snapshots
 // (preventing permanent HP bar drift on missed deltas, regen, or DoTs) WITHOUT upward rubberbanding

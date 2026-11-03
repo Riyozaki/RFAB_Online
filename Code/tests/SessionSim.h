@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -38,6 +39,10 @@ namespace SessionSim
 {
 inline constexpr uint64_t kTickMs = 50ull;
 inline constexpr uint32_t kServerId = 0u;
+
+// How often the simulating client restates an actor's absolute health, like the periodic
+// actor value sync on the real client - every few frames, not every frame.
+inline constexpr uint64_t kSnapshotIntervalMs = 200ull;
 
 enum class MsgKind : uint8_t
 {
@@ -50,6 +55,7 @@ enum class MsgKind : uint8_t
     kReloadReady,   // peer -> server: loaded
     kDamageRequest, // peer -> server: I hit this for N
     kHealthUpdate,  // server -> peer: this is its health now
+    kHealthSnapshot,// peer -> server: the owner's absolute reading of what it simulates
 };
 
 struct Message
@@ -63,6 +69,8 @@ struct Message
     uint64_t SenderEpoch{};
     float Delta{0.0f};
     float Health{0.0f};
+    uint32_t HitId{0};    // the attacker's own count of its swings, so a replay is recognisable
+    uint32_t Revision{0}; // which version of this actor's health the sender had seen
     bool Success{true};
     uint64_t DeliverAtMs{};
     uint64_t Order{};
@@ -77,8 +85,14 @@ struct Peer
     bool IsHost{false};
     bool RefusesSave{false};
     bool StuckLoading{false};
+    uint64_t ExtraLatencyMs{0}; // a bad connection: extra delay on every hop both ways
+    uint32_t NextHitId{0};
     Authority::LeaseTable Leases{};      // what this peer believes about the world
-    std::map<uint32_t, float> KnownHealth{}; // and how hurt it thinks each entity is
+    std::map<uint32_t, float> KnownHealth{};           // and how hurt it thinks each entity is
+    std::map<uint32_t, uint32_t> KnownRevision{};      // the newest health version it has applied
+    std::map<uint32_t, uint64_t> LastPredictedHitMs{}; // when it last swung at each of them
+    std::map<uint32_t, float> SampledHealth{};         // what its last engine read saw, which is not now
+    std::map<uint32_t, uint32_t> SampledRevision{};    // the version that came with that reading
 };
 
 struct Entity
@@ -128,6 +142,9 @@ public:
         for (uint32_t i = 0; i < aWorldEntities; ++i)
         {
             m_health[entityId] = kMaxHealth;
+            m_lastSeenHealth[entityId] = kMaxHealth;
+            for (auto& peer : m_peers) // everyone is told an actor's values when it spawns
+                peer.KnownHealth[entityId] = kMaxHealth;
             m_entities.push_back(Entity{entityId++, false, Authority::kNoOwner});
         }
 
@@ -182,7 +199,36 @@ public:
         message.Kind = MsgKind::kDamageRequest;
         message.EntityId = aEntityId;
         message.Delta = aDelta;
+
+        if (Peer* pPeer = FindPeer(aPeerId))
+        {
+            // The engine does not wait for the server: the swing lands locally first. That
+            // is what makes combat feel instant, and what makes every reading taken after
+            // it a claim about a world the others have not seen yet.
+            const auto known = pPeer->KnownHealth.find(aEntityId);
+            if (known != pPeer->KnownHealth.end())
+            {
+                known->second = Authority::ApplyHealthDelta(known->second, kMaxHealth, aDelta).UpdatedHealth;
+                if (aDelta < 0.0f)
+                    pPeer->LastPredictedHitMs[aEntityId] = m_nowMs;
+            }
+
+            message.HitId = ++pPeer->NextHitId;
+        }
+
+        m_lastDamageSent[aPeerId] = message;
         Send(message, aPeerId, kServerId);
+    }
+
+    // A client that believes its packet was lost sends the same swing again. The server has
+    // to recognise it: the target must not be charged twice for one swing.
+    void ReplayLastDamage(uint32_t aPeerId)
+    {
+        const auto it = m_lastDamageSent.find(aPeerId);
+        if (it == m_lastDamageSent.end())
+            return;
+
+        Send(it->second, aPeerId, kServerId);
     }
 
     [[nodiscard]] float ServerHealthOf(uint32_t aEntityId) const
@@ -206,7 +252,7 @@ public:
                                          { return m.From == aPeerId || m.To == aPeerId; }),
                           m_queue.end());
             pPeer->Leases.Clear();
-            pPeer->KnownHealth.clear();
+            ForgetHealth(*pPeer);
             for (const auto& entity : m_entities)
                 m_peerEpochSeen.erase((static_cast<uint64_t>(aPeerId) << 32) | entity.Id);
 
@@ -229,13 +275,7 @@ public:
             }
 
             for (const auto& [entityId, health] : m_health)
-            {
-                Message message{};
-                message.Kind = MsgKind::kHealthUpdate;
-                message.EntityId = entityId;
-                message.Health = health;
-                Send(message, kServerId, aPeerId);
-            }
+                SendHealth(entityId, health, aPeerId);
         }
 
         Note(aConnected ? "peer %u reconnected" : "peer %u disconnected", aPeerId);
@@ -243,8 +283,28 @@ public:
 
     void SetInRange(uint32_t aPeerId, bool aInRange)
     {
+        Peer* pPeer = FindPeer(aPeerId);
+        if (!pPeer || pPeer->InRange == aInRange)
+            return;
+
+        pPeer->InRange = aInRange;
+
+        if (!aInRange)
+        {
+            // The actors unload with the cell: this peer no longer has an opinion.
+            ForgetHealth(*pPeer);
+            return;
+        }
+
+        // Walking back in spawns them again, values included.
+        for (const auto& [entityId, health] : m_health)
+            SendHealth(entityId, health, aPeerId);
+    }
+
+    void SetExtraLatency(uint32_t aPeerId, uint64_t aMilliseconds)
+    {
         if (Peer* pPeer = FindPeer(aPeerId))
-            pPeer->InRange = aInRange;
+            pPeer->ExtraLatencyMs = aMilliseconds;
     }
 
     void SetDowned(uint32_t aPeerId, bool aDowned)
@@ -312,6 +372,7 @@ public:
     {
         m_nowMs += kTickMs;
         DeliverDue();
+        OwnerSnapshots();
         ServerHousekeeping();
         CheckInvariants();
     }
@@ -327,7 +388,7 @@ public:
 
         for (uint32_t i = 0; i < aMaxTicks; ++i)
         {
-            const bool busy = !m_queue.empty() || m_save.HasPendingBarrier() || m_save.HasActiveReloadBarrier();
+            const bool busy = HasPendingWork() || m_save.HasPendingBarrier() || m_save.HasActiveReloadBarrier();
             m_changedThisTick = false;
             Tick();
 
@@ -340,6 +401,19 @@ public:
     }
 
     uint32_t Random(uint32_t aBound) { return aBound == 0 ? 0u : NextRandom() % aBound; }
+
+    // Health readings and the updates they cause are background chatter: an owner streams
+    // them forever, so "the wire is empty" would never be true. Everything else in flight
+    // is a decision nobody has taken yet.
+    [[nodiscard]] bool HasPendingWork() const noexcept
+    {
+        for (const auto& message : m_queue)
+        {
+            if (message.Kind != MsgKind::kHealthSnapshot && message.Kind != MsgKind::kHealthUpdate)
+                return true;
+        }
+        return false;
+    }
 
     [[nodiscard]] const std::vector<Entity>& Entities() const noexcept { return m_entities; }
 
@@ -404,7 +478,11 @@ private:
         aMessage.From = aFrom;
         aMessage.To = aTo;
 
-        const uint64_t latency = 20ull + (NextRandom() % 180ull);
+        uint64_t latency = 20ull + (NextRandom() % 180ull);
+        if (const Peer* pFrom = FindPeer(aFrom))
+            latency += pFrom->ExtraLatencyMs;
+        if (const Peer* pTo = FindPeer(aTo))
+            latency += pTo->ExtraLatencyMs;
         const uint64_t pairKey = (static_cast<uint64_t>(aFrom) << 32) | aTo;
         uint64_t deliverAt = m_nowMs + latency;
         auto& lastForPair = m_lastDelivery[pairKey];
@@ -467,6 +545,10 @@ private:
             HandleSaveAck(*pSender, acMessage);
             break;
 
+        case MsgKind::kHealthSnapshot:
+            HandleSnapshot(*pSender, acMessage);
+            break;
+
         case MsgKind::kDamageRequest:
             HandleDamage(*pSender, acMessage);
             break;
@@ -494,8 +576,34 @@ private:
             break;
 
         case MsgKind::kHealthUpdate:
-            pPeer->KnownHealth[acMessage.EntityId] = acMessage.Health;
+        {
+            const auto known = pPeer->KnownHealth.find(acMessage.EntityId);
+            if (known == pPeer->KnownHealth.end())
+            {
+                pPeer->KnownHealth[acMessage.EntityId] = acMessage.Health;
+                pPeer->KnownRevision[acMessage.EntityId] = acMessage.Revision;
+                break;
+            }
+
+            // A value that arrives right after the local swing and would put health back
+            // up is the echo of a world that has not heard about the swing yet. Downward
+            // corrections always win; this hold is only about the player's own prediction.
+            const auto hitIt = pPeer->LastPredictedHitMs.find(acMessage.EntityId);
+            const uint64_t lastPredictedHit = hitIt == pPeer->LastPredictedHitMs.end() ? 0ull : hitIt->second;
+
+            if (Authority::ShouldReconcileRemoteActorHealthSnapshot(
+                    /*aIsRemoteNonPlayer=*/true, /*aIsDead=*/false, known->second, acMessage.Health, m_nowMs,
+                    lastPredictedHit))
+            {
+                known->second = acMessage.Health;
+                pPeer->KnownRevision[acMessage.EntityId] = acMessage.Revision;
+            }
+            else if (acMessage.Health > known->second + 0.5f)
+            {
+                ++m_heldEchoes;
+            }
             break;
+        }
 
         case MsgKind::kSavePrepare:
         {
@@ -622,6 +730,8 @@ private:
             m_combat.RecordCombatClaim(acSender.Id, acMessage.EntityId,
                                        Authority::HitKind::kMeleeOrDamage, m_nowMs);
 
+            m_combat.RecordPlayerDownedState(acSender.Id, acSender.Downed, m_nowMs);
+
             const bool accepted = m_combat.ValidateNonOwnerHealthDelta(
                 acSender.Id, acMessage.EntityId, acMessage.Delta, acSender.InRange, acSender.Downed,
                 healthIt->second <= 0.0f, /*aAreCoopPartyAllies=*/false, /*aIsPvpEnabled=*/false, m_nowMs);
@@ -630,6 +740,14 @@ private:
                 ++m_rejectedHits;
                 return;
             }
+        }
+
+        // One swing, one application - checked after the rules, so a refused hit does not
+        // burn its id.
+        if (m_combat.IsDuplicateHit(acSender.Id, acMessage.EntityId, acMessage.HitId))
+        {
+            ++m_duplicateHits;
+            return;
         }
 
         const auto applied =
@@ -643,20 +761,133 @@ private:
             m_violations.Add(m_nowMs, out.str());
         }
 
+        if (applied.UpdatedHealth < healthIt->second - 0.5f)
+        {
+            // Health went down: every absolute reading taken before this moment is out of
+            // date, and will say so by carrying the previous revision.
+            ++m_healthRevision[acMessage.EntityId];
+        }
+        else if (applied.UpdatedHealth > healthIt->second + 0.5f)
+        {
+            m_healedSinceCheck.insert(acMessage.EntityId);
+        }
+
         healthIt->second = applied.UpdatedHealth;
         m_changedThisTick = true;
+        BroadcastHealth(acMessage.EntityId, applied.UpdatedHealth, /*aExcept=*/Authority::kNoOwner);
+    }
 
-        for (const auto& peer : m_peers)
+    // The client that simulates an actor keeps restating its absolute health, the way the
+    // periodic actor value sync does. Those readings are always a little out of date, so
+    // this is where another player's hit goes to die.
+    void OwnerSnapshots()
+    {
+        if ((m_nowMs % kSnapshotIntervalMs) != 0ull)
+            return;
+
+        for (auto& peer : m_peers)
         {
-            if (!peer.Connected)
+            if (!peer.Connected || peer.StuckLoading) // a loading client's game thread is frozen
                 continue;
 
-            Message update{};
-            update.Kind = MsgKind::kHealthUpdate;
-            update.EntityId = acMessage.EntityId;
-            update.Health = applied.UpdatedHealth;
-            Send(update, kServerId, peer.Id);
+            for (const auto& entity : m_entities)
+            {
+                if (entity.IsPlayerAvatar || !peer.Leases.IsOwnedBy(entity.Id, peer.Id))
+                    continue;
+
+                const auto known = peer.KnownHealth.find(entity.Id);
+                if (known == peer.KnownHealth.end())
+                    continue;
+
+                // What the last read of the actor saw, not what the player's own swing did
+                // a moment ago: the hit hook and the value sampler run on their own
+                // schedules. The version is read together with the value, because a
+                // reading is only as current as the moment it was taken.
+                const bool hasSample = peer.SampledHealth.find(entity.Id) != peer.SampledHealth.end();
+                const auto& revisions = hasSample ? peer.SampledRevision : peer.KnownRevision;
+                const auto revision = revisions.find(entity.Id);
+
+                Message snapshot{};
+                snapshot.Kind = MsgKind::kHealthSnapshot;
+                snapshot.EntityId = entity.Id;
+                snapshot.Health = hasSample ? peer.SampledHealth[entity.Id] : known->second;
+                snapshot.Revision = revision == revisions.end() ? 0u : revision->second;
+                Send(snapshot, peer.Id, kServerId);
+            }
+
+            peer.SampledHealth = peer.KnownHealth;
+            peer.SampledRevision = peer.KnownRevision;
         }
+    }
+
+    void HandleSnapshot(const Peer& acSender, const Message& acMessage)
+    {
+        const auto healthIt = m_health.find(acMessage.EntityId);
+        if (healthIt == m_health.end())
+            return;
+
+        const auto leaseIt = m_leases.find(acMessage.EntityId);
+        if (leaseIt == m_leases.end() || leaseIt->second.OwnerId != acSender.Id)
+            return; // only the simulator may state an absolute value
+
+        auto& revision = m_healthRevision[acMessage.EntityId];
+        const auto verdict =
+            Authority::ClassifyHealthSnapshot(healthIt->second, acMessage.Health, revision, acMessage.Revision);
+
+        if (verdict == Authority::SnapshotVerdict::kStaleIncrease)
+        {
+            // An owner handing health back from an old reading. Refusing it in silence
+            // would leave that client behind for good: its revision would never advance,
+            // so every later reading of its own would be refused too.
+            ++m_suppressedSnapshots;
+            SendHealth(acMessage.EntityId, healthIt->second, acSender.Id);
+            return;
+        }
+
+        if (verdict == Authority::SnapshotVerdict::kApply)
+        {
+            if (acMessage.Health < healthIt->second - 0.5f)
+                ++revision; // a reading that takes health off is a decrease like any other
+
+            healthIt->second = acMessage.Health;
+            m_changedThisTick = true;
+        }
+
+        // Passed on even when it changes nothing: this periodic stream is what pulls a peer
+        // whose predicted hit was refused back to the truth.
+        BroadcastHealth(acMessage.EntityId, healthIt->second, /*aExcept=*/acSender.Id);
+    }
+
+    // Only players who have the actor loaded hear about it, the way the real server sends
+    // to players in range.
+    void BroadcastHealth(uint32_t aEntityId, float aHealth, uint32_t aExcept)
+    {
+        for (const auto& peer : m_peers)
+        {
+            if (!peer.Connected || !peer.InRange || peer.Id == aExcept)
+                continue;
+
+            SendHealth(aEntityId, aHealth, peer.Id);
+        }
+    }
+
+    void SendHealth(uint32_t aEntityId, float aHealth, uint32_t aPeerId)
+    {
+        Message update{};
+        update.Kind = MsgKind::kHealthUpdate;
+        update.EntityId = aEntityId;
+        update.Health = aHealth;
+        update.Revision = m_healthRevision[aEntityId];
+        Send(update, kServerId, aPeerId);
+    }
+
+    static void ForgetHealth(Peer& aPeer)
+    {
+        aPeer.KnownHealth.clear();
+        aPeer.KnownRevision.clear();
+        aPeer.LastPredictedHitMs.clear();
+        aPeer.SampledHealth.clear();
+        aPeer.SampledRevision.clear();
     }
 
     void CommitSave()
@@ -785,6 +1016,7 @@ private:
 
     void CheckInvariants()
     {
+        const bool healedThisRound = !m_healedSinceCheck.empty();
         for (const auto& entity : m_entities)
         {
             const auto leaseIt = m_leases.find(entity.Id);
@@ -837,6 +1069,19 @@ private:
                     out << "entity " << entity.Id << " has impossible health " << serverHealthIt->second;
                     m_violations.Add(m_nowMs, out.str());
                 }
+
+                // Nothing in this world heals on its own. If health went up anyway, some
+                // stale reading just gave a player's work back to the monster.
+                float& lastSeen = m_lastSeenHealth[entity.Id];
+                if (serverHealthIt->second > lastSeen + 0.5f && m_healedSinceCheck.count(entity.Id) == 0)
+                {
+                    std::ostringstream out;
+                    out << "entity " << entity.Id << " health went back up: " << lastSeen << " -> "
+                        << serverHealthIt->second << " without a heal";
+                    m_violations.Add(m_nowMs, out.str());
+                }
+
+                lastSeen = serverHealthIt->second;
             }
 
             // Two peers simulating the same entity at the same epoch is the bug that
@@ -849,6 +1094,9 @@ private:
                 m_violations.Add(m_nowMs, out.str());
             }
         }
+
+        if (healedThisRound)
+            m_healedSinceCheck.clear();
     }
 
     uint32_t m_rng{1};
@@ -865,7 +1113,14 @@ private:
     Authority::Policy m_policy{};
     Authority::HitLedger<> m_combat{};
     std::map<uint32_t, float> m_health{};
+    std::map<uint32_t, float> m_lastSeenHealth{};
+    std::map<uint32_t, uint32_t> m_healthRevision{};
+    std::map<uint32_t, Message> m_lastDamageSent{};
+    std::set<uint32_t> m_healedSinceCheck{};
     uint64_t m_rejectedHits{0};
+    uint64_t m_suppressedSnapshots{0};
+    uint64_t m_duplicateHits{0};
+    uint64_t m_heldEchoes{0};
     Save::Coordinator m_save{"SIM", 3};
 
     std::vector<Peer> m_peers{};
@@ -883,6 +1138,22 @@ private:
 public:
     [[nodiscard]] uint64_t ClaimsHeldByGate() const noexcept { return m_claimsHeldByGate; }
     [[nodiscard]] uint64_t RejectedHits() const noexcept { return m_rejectedHits; }
+    [[nodiscard]] uint64_t SuppressedSnapshots() const noexcept { return m_suppressedSnapshots; }
+    [[nodiscard]] uint64_t DuplicateHits() const noexcept { return m_duplicateHits; }
+    [[nodiscard]] uint64_t HeldEchoes() const noexcept { return m_heldEchoes; }
+
+    // What this peer believes the actor's health is - the number its HP bar would show.
+    [[nodiscard]] float KnownHealthOf(uint32_t aPeerId, uint32_t aEntityId) const
+    {
+        for (const auto& peer : m_peers)
+        {
+            if (peer.Id != aPeerId)
+                continue;
+            const auto it = peer.KnownHealth.find(aEntityId);
+            return it == peer.KnownHealth.end() ? -1.0f : it->second;
+        }
+        return -1.0f;
+    }
 
     // Everyone who is connected must end up believing the server about how hurt this is.
     [[nodiscard]] bool HealthAgreedOn(uint32_t aEntityId) const
@@ -894,7 +1165,7 @@ public:
         for (const auto& peer : m_peers)
         {
             const auto known = peer.KnownHealth.find(aEntityId);
-            if (!peer.Connected || known == peer.KnownHealth.end())
+            if (!peer.Connected || !peer.InRange || known == peer.KnownHealth.end())
                 continue;
 
             if (known->second != it->second)

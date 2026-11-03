@@ -67,5 +67,10 @@ private:
     Map<uint32_t, float> m_smallHealthChanges;
     Map<uint32_t, uint32_t> m_smallHealthAttackerIds;
     mutable Map<uint32_t, uint64_t> m_lastLocalPredictedHitMs;
+
+    //! @brief The newest health revision this client has applied, per server id. Sent back
+    //!        with absolute value reports so the server can tell a fresh reading from one
+    //!        that was taken before somebody else's hit landed.
+    mutable Map<uint32_t, uint32_t> m_knownHealthRevisions;
     mutable Sync::HitImpactGate m_remoteHitImpactGate{};
 };

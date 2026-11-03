@@ -76,6 +76,7 @@
 #include <Messages/NotifyRelinquishControl.h>
 #include <Messages/NotifyEquipmentChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Authority/Hits.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <DefaultObjectManager.h>
 
@@ -1428,6 +1429,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             RequestHealthChangeBroadcast hpSync{};
             hpSync.Id = acMessage.ServerId;
             hpSync.DeltaHealth = waitingSnapshot.PendingHealthDelta;
+            hpSync.HitId = Authority::NextOutgoingHitId();
             m_transport.Send(hpSync);
         }
     }
@@ -1471,6 +1473,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             RequestHealthChangeBroadcast hpSync{};
             hpSync.Id = acMessage.ServerId;
             hpSync.DeltaHealth = waitingSnapshot.PendingHealthDelta;
+            hpSync.HitId = Authority::NextOutgoingHitId();
             m_transport.Send(hpSync);
         }
 

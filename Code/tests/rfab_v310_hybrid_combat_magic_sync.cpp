@@ -12,6 +12,7 @@
 #include <string>
 
 #include "../common/Authority/Health.h"
+#include "../common/Authority/Hits.h"
 #include "../common/Sync/HitImpact.h"
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
@@ -237,6 +238,50 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         CHECK(gate.TryConsumeStagger(0x3003, 1.0f, /*aIsTargetGhostOrDead=*/true, 5000ULL) == Approx(0.0f));
     }
 
+    SECTION("An absolute health reading is judged by the revision it was taken with")
+    {
+        using Authority::ClassifyHealthSnapshot;
+        using Authority::SnapshotVerdict;
+
+        // Damage always lands, however old the reading that carries it.
+        CHECK(ClassifyHealthSnapshot(100.0f, 60.0f, 7u, 3u) == SnapshotVerdict::kApply);
+
+        // Healing from someone who had already seen the latest decrease is real healing.
+        CHECK(ClassifyHealthSnapshot(60.0f, 90.0f, 7u, 7u) == SnapshotVerdict::kApply);
+
+        // Healing from someone who had not is an echo of the world before the hit.
+        CHECK(ClassifyHealthSnapshot(60.0f, 100.0f, 7u, 6u) == SnapshotVerdict::kStaleIncrease);
+
+        // Saying what the server already knows is not a correction, but is worth echoing.
+        CHECK(ClassifyHealthSnapshot(60.0f, 60.2f, 7u, 1u) == SnapshotVerdict::kAlreadyCurrent);
+
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        CHECK(ClassifyHealthSnapshot(60.0f, nan, 7u, 7u) == SnapshotVerdict::kMalformed);
+        CHECK(ClassifyHealthSnapshot(60.0f, -1.0f, 7u, 7u) == SnapshotVerdict::kMalformed);
+    }
+
+    SECTION("One swing is applied once, however many times its packet arrives")
+    {
+        Authority::HitLedger<8> ledger;
+
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+        CHECK(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+        CHECK(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+
+        // A different swing, a different target, or a different attacker is a new hit.
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 42u));
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4011u, 41u));
+        CHECK_FALSE(ledger.IsDuplicateHit(4u, 0x4010u, 41u));
+
+        // An unstamped hit from an older client is never treated as a repeat.
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 0u));
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 0u));
+
+        // A player who left takes its history with it.
+        ledger.ForgetPlayer(3u);
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+    }
+
     SECTION("Zero-damage Shield Bash interrupt roundtrips through RequestHealthChangeBroadcast & NotifyHealthChangeBroadcast")
     {
         RequestHealthChangeBroadcast req{};
@@ -245,6 +290,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         req.SourceServerId = 0x1005;
         req.StaggerMagnitude = 0.55f;
         req.StaggerDirection = 0.25f;
+        req.HitId = 9001;
 
         Buffer buf(256);
         Buffer::Writer writer(&buf);
@@ -259,6 +305,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         CHECK(rx->SourceServerId == 0x1005);
         CHECK(rx->StaggerMagnitude == Approx(0.55f));
         CHECK(rx->StaggerDirection == Approx(0.25f));
+        CHECK(rx->HitId == 9001);
 
         NotifyHealthChangeBroadcast notify{};
         notify.Id = rx->Id;

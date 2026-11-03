@@ -33,7 +33,6 @@ constexpr uint32_t kHealthActorValueIndex = 24;
 constexpr uint32_t kInfamyActorValueIndex = 37;
 constexpr uint32_t kActorValueCount = 164;
 constexpr float kMaxSanitizedActorValue = 100000.0f;
-constexpr uint64_t kExternalDamageReconcileWindowMs = 650ULL;
 
 uint64_t SteadyActorValueNowMs() noexcept
 {
@@ -95,7 +94,6 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
     const auto* pCharComp = m_world.try_get<CharacterComponent>(*it);
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-    const uint64_t nowMs = SteadyActorValueNowMs();
     for (const auto& [id, value] : message.Values)
     {
         if (id >= kActorValueCount || id == kInfamyActorValueIndex || !std::isfinite(value))
@@ -106,17 +104,36 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
         if (id == kHealthActorValueIndex && pCharComp && !pCharComp->IsPlayer() && !pCharComp->IsDead())
         {
             const auto curIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
-            const float currentHp = (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end()) ? curIt->second : 0.f;
 
-            if (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end() &&
-                actorValuesComponent.LastExternalDamageAtMs != 0 &&
-                nowMs >= actorValuesComponent.LastExternalDamageAtMs &&
-                (nowMs - actorValuesComponent.LastExternalDamageAtMs) <= kExternalDamageReconcileWindowMs &&
-                sanitized > currentHp + 0.5f)
+            if (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end())
             {
-                // Suppress stale periodic owner HP snapshots that departed before a peer's
-                // RequestHealthChangeBroadcast hit reached the owner client.
-                continue;
+                const float currentHp = curIt->second;
+
+                // An owner restating health it read before someone else's hit landed would
+                // hand that health back. The verdict comes from the revision the sender
+                // echoed, not from how long ago the hit was.
+                const auto verdict = Authority::ClassifyHealthSnapshot(
+                    currentHp, sanitized, actorValuesComponent.HealthRevision, message.HealthRevision);
+
+                if (verdict == Authority::SnapshotVerdict::kStaleIncrease)
+                {
+                    // Refusing in silence would leave this client behind for good: its
+                    // revision would never advance and every later reading would be
+                    // refused too. Answer with what is actually true.
+                    NotifyActorValueChanges correction;
+                    correction.Id = message.Id;
+                    correction.HealthRevision = actorValuesComponent.HealthRevision;
+                    correction.Values[kHealthActorValueIndex] = currentHp;
+                    acMessage.pPlayer->Send(correction);
+                    continue;
+                }
+
+                if (verdict == Authority::SnapshotVerdict::kMalformed)
+                    continue;
+
+                // Health going down is a new revision, whoever reported it.
+                if (verdict == Authority::SnapshotVerdict::kApply && sanitized < currentHp - 0.5f)
+                    ++actorValuesComponent.HealthRevision;
             }
         }
 
@@ -126,6 +143,8 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
     if (notify.Values.empty())
         return;
+
+    notify.HealthRevision = actorValuesComponent.HealthRevision;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
@@ -230,9 +249,10 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
         }
     }
 
+    const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
+
     if (!isOwner)
     {
-        const uint32_t senderId = acMessage.pPlayer ? acMessage.pPlayer->GetId() : 0;
         const bool isSenderDowned = senderId != 0 &&
             m_world.GetEncounterService().GetCoordinator().IsPlayerDowned(senderId);
         m_combatAuthorityLedger.RecordPlayerDownedState(senderId, isSenderDowned, nowMs);
@@ -281,9 +301,15 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
         }
     }
 
+    // One swing, one application: the same packet arriving twice must not cost the target
+    // twice. Checked after the rules, so a refused hit does not burn its id.
+    if (m_combatAuthorityLedger.IsDuplicateHit(senderId, message.Id, message.HitId))
+    {
+        spdlog::debug("Ignored duplicate hit {} on {:x} from player {}", message.HitId, message.Id, senderId);
+        return;
+    }
+
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
-    if ((sanitizedDelta < 0.f || sanitizedStagger > 0.05f) && !isOwner)
-        actorValuesComponent.LastExternalDamageAtMs = nowMs;
 
     const auto maxIt = actorValuesComponent.CurrentActorValues.ActorMaxValuesList.find(kHealthActorValueIndex);
     const float maxHealth = (maxIt != actorValuesComponent.CurrentActorValues.ActorMaxValuesList.end() && std::isfinite(maxIt->second))
@@ -299,6 +325,11 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
         std::max(maxHealth, currentHealth),
         sanitizedDelta);
 
+    // Health going down starts a new revision: every absolute value sampled before this
+    // moment is now out of date and says so by carrying the previous number.
+    if (applied.UpdatedHealth < currentHealth - 0.5f)
+        ++actorValuesComponent.HealthRevision;
+
     actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = applied.UpdatedHealth;
 
     NotifyHealthChangeBroadcast notify;
@@ -307,6 +338,7 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     notify.SourceServerId = sanitizedSourceId;
     notify.StaggerMagnitude = (!isOwner) ? sanitizedStagger : 0.0f;
     notify.StaggerDirection = (!isOwner) ? sanitizedDir : 0.0f;
+    notify.HealthRevision = actorValuesComponent.HealthRevision;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))
