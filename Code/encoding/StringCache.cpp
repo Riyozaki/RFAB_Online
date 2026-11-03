@@ -36,6 +36,14 @@ uint32_t StringCache::Add(const TiltedPhoques::String& acValue) noexcept
 
 void StringCache::AddWanted(const TiltedPhoques::String& acValue) noexcept
 {
+    // Remote peers decide what lands here, so the table must not be allowed to grow past the
+    // range StringCacheUpdate::StartId can carry on the wire.
+    if (m_idToString.size() + m_wantedStrings.size() >= kMaxEntries && !m_stringToId.contains(acValue))
+    {
+        ++m_droppedWantedCount;
+        return;
+    }
+
     m_wantedStrings.insert(acValue);
 }
 
@@ -47,7 +55,8 @@ size_t StringCache::Size() const noexcept
 StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
 {
     StringCacheUpdate update;
-    update.StartId = aStartId;
+    // Defensive: kMaxEntries keeps every legal offset inside the uint16_t wire field.
+    update.StartId = static_cast<uint16_t>(aStartId <= kMaxEntries ? aStartId : kMaxEntries);
 
     if (aStartId < m_idToString.size())
     {
@@ -62,18 +71,54 @@ StringCacheUpdate StringCache::Serialize(uint32_t& aStartId) const noexcept
     return update;
 }
 
-void StringCache::Deserialize(const StringCacheUpdate& aMessage) noexcept
+bool StringCache::Deserialize(const StringCacheUpdate& aMessage) noexcept
 {
-    // We should only receive contiguous updates
-    assert(aMessage.StartId == m_idToString.size());
+    const auto cLocalSize = m_idToString.size();
 
-    for (auto& value : aMessage.Values)
+    // A gap would shift every following id: the local table can never be repaired by appending,
+    // so the update is dropped and the caller is told to resynchronize from scratch.
+    if (aMessage.StartId > cLocalSize)
     {
-        const auto expectedId = m_idToString.size();
-        auto id = Add(value);
-
-        assert(id == expectedId);
+        ++m_rejectedUpdateCount;
+        return false;
     }
+
+    // Replay / overlap: the sender restarted from an older offset. The common prefix must match
+    // byte for byte, otherwise the two tables disagree on ids that were already handed out.
+    size_t skip = cLocalSize - aMessage.StartId;
+    if (skip > aMessage.Values.size())
+        skip = aMessage.Values.size();
+
+    for (size_t i = 0; i < skip; ++i)
+    {
+        if (m_idToString[aMessage.StartId + i] != aMessage.Values[i])
+        {
+            ++m_rejectedUpdateCount;
+            return false;
+        }
+    }
+
+    for (size_t i = skip; i < aMessage.Values.size(); ++i)
+    {
+        // Append-only: Add() must hand out exactly the id the sender used for this entry.
+        const auto expectedId = m_idToString.size();
+        const auto id = Add(aMessage.Values[i]);
+
+        if (id != expectedId)
+        {
+            // The same string already exists under a different id, so the tables have diverged.
+            ++m_rejectedUpdateCount;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void StringCache::NotifyUnknownId(uint32_t aId) noexcept
+{
+    (void)aId;
+    ++m_unknownIdCount;
 }
 
 void StringCache::Clear() noexcept
@@ -81,6 +126,9 @@ void StringCache::Clear() noexcept
     m_idToString.clear();
     m_wantedStrings.clear();
     m_stringToId.clear();
+    m_unknownIdCount = 0;
+    m_rejectedUpdateCount = 0;
+    m_droppedWantedCount = 0;
 }
 
 bool StringCache::ProcessDirty() noexcept
