@@ -3,7 +3,12 @@
     [string]$BuildMode = "releasedbg"
 )
 
-$script:RfabRepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$script:RfabScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+# This script lives in <repo>/Tools/rfab, so the repository root is two levels up.
+# Resolving it from the script directory kept VERSION unreadable and made the whole
+# release abort in under a second the first time the tag was not passed in by hand.
+$script:RfabRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RfabScriptRoot ".."))
+$script:RfabRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RfabRepoRoot ".."))
 
 # Single source of truth for the release number: <repo>/VERSION.
 function Resolve-ReleaseVersionTag {
