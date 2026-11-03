@@ -1,7 +1,26 @@
 ﻿param(
-    [string]$VersionTag = "v3.1.7",
+    [string]$VersionTag = "",
     [string]$BuildMode = "releasedbg"
 )
+
+$script:RfabRepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+# Single source of truth for the release number: <repo>/VERSION.
+function Resolve-ReleaseVersionTag {
+    param([string]$RepoRootPath)
+    $root = if ($RepoRootPath) { $RepoRootPath } else { $script:RfabRepoRoot }
+    $versionFile = Join-Path $root "VERSION"
+    if (-not (Test-Path -LiteralPath $versionFile)) {
+        throw "Single source of truth missing: $versionFile (expected e.g. '3.1.8')."
+    }
+    $raw = ([System.IO.File]::ReadAllText($versionFile)).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) { throw "VERSION file is empty: $versionFile" }
+    $raw = $raw -replace "\s+", ""
+    if (-not $raw.StartsWith("v")) { $raw = "v$raw" }
+    return $raw
+}
+
+if ([string]::IsNullOrWhiteSpace($VersionTag)) { $VersionTag = Resolve-ReleaseVersionTag }
 
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8

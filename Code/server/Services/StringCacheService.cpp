@@ -24,12 +24,21 @@ void StringCacheService::HandleUpdate(const UpdateEvent&) const noexcept
 
     auto& stringCache = StringCache::Get();
 
-    if (!stringCache.ProcessDirty())
-        return;
+    // Promote strings that were received as literals into the shared table. This may legitimately
+    // report "nothing new" while a player is still missing entries (a late joiner starts at id 0
+    // against an already warm table), so the send loop below is driven by per-player progress and
+    // NOT by this flag - otherwise such a player never receives the table and every CachedString
+    // the server relays to it by id resolves to nothing for the rest of the session.
+    stringCache.ProcessDirty();
+
+    const auto cCacheSize = stringCache.Size();
 
     for (const auto pPlayer : m_world.GetPlayerManager())
     {
         auto startId = pPlayer->GetStringCacheId();
+        if (startId >= cCacheSize)
+            continue;
+
         auto update = stringCache.Serialize(startId);
         pPlayer->SetStringCacheId(startId);
 

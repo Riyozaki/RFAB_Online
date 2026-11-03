@@ -225,7 +225,7 @@ TEST_CASE("v3.1.2 Source-level architectural contracts for RaceMenu hair color i
     CHECK(static_cast<unsigned char>(pkgPs1[0]) == 0xEF);
     CHECK(static_cast<unsigned char>(pkgPs1[1]) == 0xBB);
     CHECK(static_cast<unsigned char>(pkgPs1[2]) == 0xBF);
-    CHECK(buildPs1.find("[string]$VersionTag = \"v3.1.7\"") != std::string::npos);
+    CHECK(buildPs1.find("Resolve-ReleaseVersionTag") != std::string::npos);
     CHECK(buildPs1.find("Ensure-V311BackupRelease") != std::string::npos);
     CHECK(buildPs1.find("\"v3.1.1-backup\"") != std::string::npos);
 

@@ -1,29 +1,79 @@
-name: Build & Publish Clean Release
+# RFAB Online release pipeline (canonical copy).
+# The GitHub App used by this workspace is not allowed to modify .github/workflows/*,
+# so this file is the reviewable source of truth: copy it over .github/workflows/release.yml.
+# (The script-side guards in Tools/rfab/Build-CloudRelease.ps1 are independent of this file.)
+name: Build & Release
 
+# Release policy (single source of truth: <repo>/VERSION)
+#   • push tag v* / v*-backup  -> full build + publish of that tag (immutable, never overwritten)
+#   • push main / arena/**     -> full build + tests, artifacts uploaded to the run, NO release changes
+#   • pull_request             -> same as branch push
+#   • manual run               -> same as branch push
 on:
   push:
-    branches: ['arena/**', 'main']
+    branches: ['main', 'arena/**']
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  build:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve release version and verify tag
+        id: ver
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath "VERSION" -Raw).Trim()
+          if (-not $version) { throw "VERSION file is empty" }
+          if (-not $version.StartsWith("v")) { $version = "v$version" }
+          "tag=$version" >> $env:GITHUB_OUTPUT
+          $isTag = $env:GITHUB_REF_TYPE -eq 'tag'
+          "is_release=$($isTag.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          Write-Host "VERSION = $version ; ref = $env:GITHUB_REF ; is_release = $isTag"
+          if ($isTag -and $env:GITHUB_REF_NAME -ne $version) {
+            throw "Tag '$env:GITHUB_REF_NAME' does not match VERSION '$version'. Bump VERSION or fix the tag."
+          }
+
       - uses: actions/cache@v4
         with:
           path: ~/AppData/Local/.xmake/packages
           key: ${{ runner.os }}-xmake-mt-${{ hashFiles('**/xmake.lua') }}
+
       - uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: 3.1.0
-      - name: Clean Build, Test & Publish Release v1.2.0 (Preserving v1.0.0 & v1.1.0)
+
+      - name: Build, test & package (no publish)
+        if: steps.ver.outputs.is_release != 'true'
+        shell: powershell
+        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "${{ steps.ver.outputs.tag }}" -SkipPublish
+
+      - name: Build, test & publish release
+        if: steps.ver.outputs.is_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: powershell
-        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "v1.2.0"
+        run: .\Tools\rfab\Build-CloudRelease.ps1 -VersionTag "${{ steps.ver.outputs.tag }}"
+
+      - name: Upload installers as run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RFAB_Online_${{ steps.ver.outputs.tag }}_${{ github.sha }}
+          path: |
+            release_artifacts/*.zip
+            release_artifacts/SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 14

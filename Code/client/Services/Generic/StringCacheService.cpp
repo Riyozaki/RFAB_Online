@@ -27,5 +27,13 @@ void StringCacheService::HandleDisconnected(const DisconnectedEvent& acEvent) no
 
 void StringCacheService::HandleStringCacheUpdate(const StringCacheUpdate& acMessage) noexcept
 {
-    StringCache::Get().Deserialize(acMessage);
+    if (!StringCache::Get().Deserialize(acMessage))
+    {
+        // Applying a non-contiguous or mismatching update would shift every id and silently
+        // corrupt every CachedString for the rest of the session, so it is dropped instead.
+        spdlog::warn("Rejected StringCacheUpdate (StartId {}, {} values) against local table of {} entries; "
+                     "total rejected: {}, unresolved ids: {}",
+                     acMessage.StartId, acMessage.Values.size(), StringCache::Get().Size(),
+                     StringCache::Get().GetRejectedUpdateCount(), StringCache::Get().GetUnknownIdCount());
+    }
 }
