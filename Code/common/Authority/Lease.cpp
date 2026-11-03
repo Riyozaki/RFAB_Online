@@ -146,6 +146,14 @@ Decision Renew(const Lease& acCurrent, uint32_t aSenderId, uint64_t aNowMs, cons
     return Changed(next, Outcome::kGranted);
 }
 
+bool CanAdoptDormant(const Lease& acCurrent, uint64_t aNowMs, const Policy& acPolicy) noexcept
+{
+    if (acCurrent.IsLive(aNowMs))
+        return false;
+
+    return acCurrent.HeldForMs(aNowMs) >= acPolicy.DormantSettleMs;
+}
+
 Decision Reassign(const Lease& acCurrent, const Subject& acSubject, const std::vector<Candidate>& acCandidates,
                   const std::vector<uint32_t>& acDeclined, uint64_t aNowMs, const Policy& acPolicy) noexcept
 {

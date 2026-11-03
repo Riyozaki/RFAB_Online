@@ -85,6 +85,12 @@ struct Policy
     // owner disconnects or walks out of range); a non-zero value makes authority
     // self-healing: a peer that stops renewing simply loses the entity.
     uint64_t LeaseDurationMs{0};
+
+    // How long an entity that just became unowned is left alone before the server
+    // offers it to an observer. Without it a dormant NPC ping-pongs between peers
+    // on every reconcile tick. This used to be a bare 1000ULL repeated at the call
+    // sites that happened to remember it.
+    uint64_t DormantSettleMs{1000};
 };
 
 // What the entity is. Some entities are structurally pinned to one peer and can
@@ -164,6 +170,10 @@ struct Decision
 // decision when the sender is not the owner or the lease already lapsed.
 [[nodiscard]] Decision Renew(const Lease& acCurrent, uint32_t aSenderId, uint64_t aNowMs,
                              const Policy& acPolicy = {}) noexcept;
+
+// May the server hand this unowned entity to an observer yet? False while the
+// entity is still settling, and for anything that already has an owner.
+[[nodiscard]] bool CanAdoptDormant(const Lease& acCurrent, uint64_t aNowMs, const Policy& acPolicy = {}) noexcept;
 
 // Picks the next owner after the previous one went away. Candidates that already
 // refused the entity (or failed to load it) are passed in acDeclined, which replaces

@@ -446,11 +446,16 @@ void CharacterService::ReconcileAllEntitiesForObserver(Player* apObserver) const
             if (pCurrentOwner == nullptr && eligibleWorldNpc && observerStanding && !holdNonHostClaims)
             {
                 const bool cooldownReady = (action == CoopWorldView::ServerPeerSyncAction::kSendSpawn) ||
-                                           (nowMs >= mutableOwner.GetGrantedAtMs() && (nowMs - mutableOwner.GetGrantedAtMs()) >= 1000ULL);
+                                           Authority::CanAdoptDormant(mutableOwner.GetLease(), nowMs);
                 if (cooldownReady)
                 {
-                    const uint64_t newEpoch = mutableOwner.SetOwner(apObserver, nowMs);
-                    mutableOwner.InvalidOwners.clear();
+                    Authority::Candidate observer{};
+                    observer.PlayerId = apObserver->GetId();
+                    observer.InRange = true;
+
+                    const auto adoption = Authority::Claim(mutableOwner.GetLease(), Authority::Subject{},
+                                                           Authority::OwnerState{false, false}, observer, nowMs);
+                    const uint64_t newEpoch = mutableOwner.Apply(adoption, apObserver);
                     m_interestRegistry.UnmarkInRange(apObserver->GetId(), serverId);
 
                     NotifyOwnershipTransfer grant{};
@@ -1790,7 +1795,7 @@ void CharacterService::WakeDormantCharactersInActiveRanges() const noexcept
         auto& ownerComp = view.get<OwnerComponent>(entity);
         if (ownerComp.GetOwner() != nullptr)
             continue;
-        if (nowMs >= ownerComp.GetGrantedAtMs() && (nowMs - ownerComp.GetGrantedAtMs()) < 1000ULL)
+        if (!Authority::CanAdoptDormant(ownerComp.GetLease(), nowMs))
             continue;
 
         const auto& charComp = view.get<CharacterComponent>(entity);

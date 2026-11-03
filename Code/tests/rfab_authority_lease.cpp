@@ -479,3 +479,24 @@ TEST_CASE("Authority: the client-side epoch gate keeps grants and relinquishes o
     CHECK(client.AcceptEpoch(entity, kUnknownEpoch, false));
     CHECK(client.OwnerOf(entity) == kNoOwner);
 }
+
+TEST_CASE("Authority: a freshly orphaned entity settles before it is adopted",
+          "[rfab][authority][dormant]")
+{
+    const Policy policy{1500ull, 0ull, 1000ull};
+
+    // The owner just disconnected: the entity is unowned as of now.
+    const auto revoked = Revoke(OwnedBy(kHost, 3ull, 1000ull), 5000ull);
+    REQUIRE(revoked.Result == Outcome::kReleased);
+    const Lease orphan = revoked.Next;
+
+    CHECK_FALSE(CanAdoptDormant(orphan, 5000ull, policy));
+    CHECK_FALSE(CanAdoptDormant(orphan, 5999ull, policy));
+    CHECK(CanAdoptDormant(orphan, 6000ull, policy));
+
+    // An entity that still has a live owner is never up for adoption.
+    CHECK_FALSE(CanAdoptDormant(OwnedBy(kGuest, 4ull, 0ull), 100'000ull, policy));
+
+    // A lapsed lease is as good as unowned.
+    CHECK(CanAdoptDormant(OwnedBy(kGuest, 4ull, 0ull, 2000ull), 100'000ull, policy));
+}
