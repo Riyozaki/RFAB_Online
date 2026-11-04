@@ -7,7 +7,13 @@
 #include <Setting.h>
 #include <future>
 
+// The public server-list announcer speaks HTTPS, which needs cpp-httplib's OpenSSL
+// support. A platform-independent build (the Linux core harness) has no OpenSSL and never
+// announces - `bAnnounceServer` defaults to false - so it compiles this file without TLS
+// instead of dropping the translation unit and losing the server's own code from the loop.
+#ifndef RFAB_NO_HTTPLIB_SSL
 #define CPPHTTPLIB_OPENSSL_SUPPORT
+#endif
 #include <httplib.h>
 
 extern Console::Setting<uint32_t> uMaxPlayerCount;
@@ -62,7 +68,7 @@ void ServerListService::Announce() noexcept
         return;
 
     const auto pc = static_cast<uint16_t>(m_world.GetPlayerManager().Count());
-    int32 flags = m_flags | kIsPublic;
+    int32_t flags = m_flags | kIsPublic;
     if (pServer->IsPasswordProtected())
         flags |= kHasPassword;
     m_flags = flags;
@@ -80,7 +86,7 @@ void ServerListService::Announce() noexcept
 
 void ServerListService::PostAnnouncement(String acName, String acDesc, String acIconUrl, uint16_t aPort, uint16_t aTick,
                                          uint16_t aPlayerCount, uint16_t aPlayerMaxCount, String acTagList,
-                                         bool aPublic, bool aPassword, int32 aFlags) noexcept
+                                         bool aPublic, bool aPassword, int32_t aFlags) noexcept
 {
     const std::string kVersion{BUILD_COMMIT};
     const httplib::Params params{
@@ -99,7 +105,10 @@ void ServerListService::PostAnnouncement(String acName, String acDesc, String ac
     };
 
     httplib::Client client(kMasterServerEndpoint);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    // Nothing to verify when the build has no TLS at all.
     client.enable_server_certificate_verification(false);
+#endif
     client.set_read_timeout(std::chrono::milliseconds(30000));
     const auto response = client.Post("/announce", params);
 
