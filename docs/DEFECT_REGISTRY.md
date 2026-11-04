@@ -45,6 +45,7 @@
 | C6 | Бессмертные невидимые враги при входе в интерьер с downed-союзником | `WaitingFor3D`-спавн без `FormIdComponent` | `CreateCharacterForEntity`/`RunSpawnUpdates` (`CharacterService.cpp:2441`) | ✅ код |
 | C7 | Бессмертные невидимые враги после reconnect в данже | `OnConnected` удалял нативных `TESLevCharacter` `0xFF` | `IsCreatedByNetwork()` + `SetRemote(false)` | ✅ код (2 call-site) · 🔬 плейтест |
 | C8 | NPC навсегда `IsRemote()` после выхода пира | `OnRemoveCharacter` не сбрасывал `SetRemote(false)` | `CharacterService.cpp` | ✅ код |
+| C9 | Предикат «network-created vs нативный leveled 0xFF» и решения «удалить/отсоединить/перерегистрировать» были инлайн в ~6 местах | Решающая логика вперемешку с entt/движком; корень C7 | `Code/common/RemoteLifecycle.h` (вынесено: `IsNetworkCreatedForm`, `DecideFormDisposition`, `DecideEntityDisposition`; предикат делегирован всеми 20 call-site) | 🧪 тест (`rfab_remote_lifecycle.cpp`, 7 кейсов — добавлено в этой ветке; вынос доказуемо faithful) · 🔬 плейтест (движковая часть) |
 
 ## 3. Бой / урон / здоровье
 
