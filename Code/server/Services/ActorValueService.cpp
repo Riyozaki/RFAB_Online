@@ -374,12 +374,10 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
         std::max(maxHealth, currentHealth),
         sanitizedDelta);
 
-    // Health going down starts a new revision: every absolute value sampled before this
-    // moment is now out of date and says so by carrying the previous number.
-    if (applied.UpdatedHealth < currentHealth - 0.5f)
-        ++actorValuesComponent.HealthRevision;
-
-    actorValuesComponent.CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = applied.UpdatedHealth;
+    // Health changed, so the revision moves with it - in the one function allowed to
+    // write it. Every absolute reading sampled before this moment is now out of date and
+    // says so by carrying the previous number.
+    actorValuesComponent.SetHealth(applied.UpdatedHealth, maxHealth);
 
     NotifyHealthChangeBroadcast notify;
     notify.Id = message.Id;
@@ -439,7 +437,12 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     if (message.IsDead)
     {
         if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
-            pActorValues->CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = 0.f;
+        {
+            // Death is an absolute write like any other, and it is the one that used to
+            // lose the race: without a revision bump, a snapshot sampled just before the
+            // killing blow still matched and handed the corpse its health back.
+            pActorValues->SetHealth(0.0f);
+        }
         m_world.GetRfabProgressionService().GetLedger().ClearBossGhostState(message.Id);
     }
 

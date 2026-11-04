@@ -232,4 +232,54 @@ enum class SnapshotVerdict : uint8_t
     return true;
 }
 
+// 8E. Absolute writes are health changes too.
+//
+// The server does not only apply deltas: it also sets health outright when an actor dies,
+// when ownership of an NPC moves to another peer, and when a saved value is restored.
+// Those writes changed the number but not the revision, so an absolute reading sampled
+// just before the write still carried the *current* revision and the classifier above
+// believed it. That is how a dead NPC got its health back: the death path zeroed HP on
+// revision N, an in-flight "HP 50 / revision N" snapshot arrived, `50 > 0` plus an equal
+// revision meant kApply, and the pair (dead, HP 50) went out to everybody. From the seat
+// that is a hit that did not count, a corpse that stands up again, or a boss that heals
+// for free - depending on which side of the wire you are watching from.
+//
+// So the rule is: whoever writes authoritative health moves the revision with it. A write
+// that changes nothing does not burn a revision, because a revision that moves for no
+// reason turns every honest reading into a stale one and starves the owner of corrections.
+struct AbsoluteHealthWrite
+{
+    float Value{0.0f};
+    uint32_t Revision{0};
+};
+
+[[nodiscard]] inline AbsoluteHealthWrite ApplyAbsoluteHealth(
+    float aCurrentHp,
+    float aTargetHp,
+    float aMaxHealth,
+    uint32_t aRevision,
+    SnapshotPolicy aPolicy = {}) noexcept
+{
+    AbsoluteHealthWrite out{};
+    out.Revision = aRevision;
+
+    const float safeCurrent = std::isfinite(aCurrentHp) ? std::max(0.0f, aCurrentHp) : 0.0f;
+    if (!std::isfinite(aTargetHp))
+    {
+        // A NaN target is a broken reading, not an instruction to change anything.
+        out.Value = safeCurrent;
+        return out;
+    }
+
+    float target = std::max(0.0f, aTargetHp);
+    if (std::isfinite(aMaxHealth) && aMaxHealth > 0.0f)
+        target = std::min(target, aMaxHealth);
+
+    out.Value = target;
+    if (std::abs(target - safeCurrent) > aPolicy.NoiseBand)
+        out.Revision = aRevision + 1;
+
+    return out;
+}
+
 } // namespace Authority
