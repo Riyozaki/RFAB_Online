@@ -21,7 +21,10 @@
 //   6. a checkpoint is recorded only when every connected player reports its file written;
 //   7. one refusal voids the barrier - no epoch is recorded, and the flight ring says "aborted";
 //   8. an ack that arrives after the barrier is gone cannot commit anything;
-//   9. a duplicate ack does not commit twice.
+//   9. a duplicate ack does not commit twice;
+//  10. a player who leaves is no longer waited for;
+//  11. the checkpoint file survives its own round trip - what the server writes is exactly what
+//      it reads back, and a corrupted file is refused instead of becoming a world.
 //
 // The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
 // was never observed is the wiring: who is told, and what the server records when a player
@@ -49,7 +52,9 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <system_error>
+#include <vector>
 
 namespace
 {
@@ -85,6 +90,18 @@ size_t CountSaveEvents(const SaveSnapshotCoordinator& acCoordinator, CoopFlight:
             ++count;
     }
     return count;
+}
+
+std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& acPath)
+{
+    std::ifstream in(acPath, std::ios::binary);
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+void WriteAllBytes(const std::filesystem::path& acPath, const std::vector<uint8_t>& acBytes)
+{
+    std::ofstream out(acPath, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(acBytes.data()), static_cast<std::streamsize>(acBytes.size()));
 }
 
 float HealthOf(const ActorValuesComponent& acValues)
@@ -351,6 +368,56 @@ int main()
             Check(coordinator.GetLastCommittedEpoch() == pending->EpochId,
                   "the remaining acks are enough to record the checkpoint");
         }
+    }
+
+    std::printf("the checkpoint file\n");
+
+    // 11. A rollback is only as good as the file it reads. The format is a v2.0 body plus two
+    //     trailing extension blocks (NPC spatial state, v2.0.3 identity/ledger state), each behind
+    //     its own magic, and a reader that falls out of step by a single field restores a
+    //     different world without complaining. Nothing exercised that path end to end.
+    {
+        auto& saves = world.GetSaveSnapshotService();
+        const auto dataDir = std::filesystem::current_path() / "Data";
+        std::error_code ec;
+        std::filesystem::create_directories(dataDir, ec);
+        const auto firstPath = dataDir / "rfab_harness_roundtrip_a.bin";
+        const auto secondPath = dataDir / "rfab_harness_roundtrip_b.bin";
+
+        // The same state must produce the same bytes: a checkpoint that reorders its own contents
+        // between two writes cannot be compared, deduplicated or trusted.
+        Check(saves.SaveCheckpointsToDisk(firstPath), "a checkpoint file is written");
+        Check(saves.SaveCheckpointsToDisk(secondPath), "the same state writes a second file");
+        Check(ReadAllBytes(firstPath) == ReadAllBytes(secondPath), "the same state writes identical bytes twice");
+
+        const size_t snapshotCount = saves.GetSnapshotCount();
+        const uint64_t committedEpoch = saves.GetLastCommittedEpoch();
+        const std::string committedSlot = saves.GetLastCommittedSlot();
+
+        Check(saves.LoadCheckpointsFromDisk(firstPath), "the file reads back");
+        Check(saves.GetSnapshotCount() == snapshotCount, "the snapshot count survives the round trip");
+        Check(saves.GetLastCommittedEpoch() == committedEpoch, "the committed epoch survives the round trip");
+        Check(saves.GetLastCommittedSlot() == committedSlot, "the committed slot survives the round trip");
+
+        Check(saves.SaveCheckpointsToDisk(secondPath), "the loaded state writes again");
+        Check(ReadAllBytes(firstPath) == ReadAllBytes(secondPath),
+              "load-then-save reproduces the file byte for byte");
+
+        // A single flipped byte must be caught by the envelope hash, and a refused file must leave
+        // the loaded state alone rather than half-applying it.
+        auto corrupted = ReadAllBytes(firstPath);
+        if (!corrupted.empty())
+        {
+            corrupted[corrupted.size() / 2] ^= 0xFF;
+            WriteAllBytes(secondPath, corrupted);
+
+            Check(!saves.LoadCheckpointsFromDisk(secondPath), "a corrupted checkpoint file is refused");
+            Check(saves.GetLastCommittedEpoch() == committedEpoch, "a refused file leaves the state alone");
+            Check(saves.GetSnapshotCount() == snapshotCount, "a refused file does not replace the history");
+        }
+
+        std::filesystem::remove(firstPath, ec);
+        std::filesystem::remove(secondPath, ec);
     }
 
     // Leave no checkpoint history behind: the scenes above wrote one, and the next run would
