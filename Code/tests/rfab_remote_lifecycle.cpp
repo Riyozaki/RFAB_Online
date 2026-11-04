@@ -104,3 +104,35 @@ TEST_CASE("Remote lifecycle: entity disposition — strip network, re-register l
     REQUIRE(DecideEntityDisposition(false, false, true) == EntityDisposition::DestroyIfOrphan);
     REQUIRE(DecideEntityDisposition(false, false, false) == EntityDisposition::DestroyIfOrphan);
 }
+
+TEST_CASE("Remote lifecycle: grant handling — take a remote actor, renew an actor we already simulate",
+          "[rfab][remote][grant]")
+{
+    // A remote actor: become its simulator.
+    REQUIRE(DecideGrantHandling(true, true, false, false) == GrantAction::TakeOver);
+    REQUIRE(DecideGrantHandling(true, true, false, true) == GrantAction::TakeOver);
+
+    // A grant for an actor this peer already simulates is a renewal. It must never reach
+    // `AskServer`, whose handler sends RequestOwnershipTransfer and hands the actor back:
+    // that is the peer evicting itself from an actor it is still animating locally.
+    REQUIRE(DecideGrantHandling(true, false, true, false) == GrantAction::Renew);
+
+    // The queued-model case: the form is not materialized yet, so there is nothing to
+    // take over, but the epoch must be remembered rather than declined.
+    REQUIRE(DecideGrantHandling(true, false, false, true) == GrantAction::Defer);
+    REQUIRE(DecideGrantHandling(false, false, false, true) == GrantAction::Defer);
+
+    // Nothing known about the actor and nothing queued: only the server can decide.
+    REQUIRE(DecideGrantHandling(true, false, false, false) == GrantAction::AskServer);
+    REQUIRE(DecideGrantHandling(false, false, false, false) == GrantAction::AskServer);
+
+    // Stale components can co-exist (a take-over that has not finished stripping
+    // RemoteComponent yet). Simulating it locally wins: taking it over a second time
+    // would send a redundant claim, renewing it is harmless.
+    REQUIRE(DecideGrantHandling(true, true, true, false) == GrantAction::Renew);
+
+    // Renewal must be reachable for every epoch, including a first grant (epoch 0 with no
+    // lease recorded): the decision never looks at the epoch, so it cannot disagree with
+    // the table about ordering.
+    REQUIRE(DecideGrantHandling(true, false, true, true) == GrantAction::Renew);
+}

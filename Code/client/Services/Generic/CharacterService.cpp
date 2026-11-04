@@ -1701,31 +1701,61 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
         return;
     }
 
+    // Which of the four things a grant can mean for this peer: take the actor, renew an
+    // actor it already simulates, remember the epoch while a world model is still queued,
+    // or admit it does not know the actor. The rules live in RemoteLifecycle so the
+    // "already ours" case is covered by the fast loop - it used to fall through to the
+    // unknown-actor branch, which asks the server to take the actor back and evicted the
+    // peer from an actor it kept animating.
     const entt::entity entity = FindEntityByServerId(acMessage.ServerId);
-    if (entity != entt::null && m_world.all_of<RemoteComponent, FormIdComponent>(entity))
+    const bool hasFormId = entity != entt::null && m_world.all_of<FormIdComponent>(entity);
+    const bool isRemoteHere = hasFormId && m_world.all_of<RemoteComponent>(entity);
+    const bool isLocalHere = hasFormId && m_world.all_of<LocalComponent>(entity);
+    const bool isQueued = m_remoteModels.find(acMessage.ServerId) != m_remoteModels.end();
+
+    switch (RemoteLifecycle::DecideGrantHandling(hasFormId, isRemoteHere, isLocalHere, isQueued))
+    {
+    case RemoteLifecycle::GrantAction::TakeOver:
     {
         auto& formIdComponent = m_world.get<FormIdComponent>(entity);
-
         if (TakeOwnership(formIdComponent.Id, acMessage.ServerId, entity, acMessage.OwnershipEpoch))
         {
             spdlog::info("Ownership claimed {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
             return;
         }
+        // Refused (the actor turned out to be someone else's form, or the grant went
+        // stale between the table and here): fall through to the unknown-actor path.
+        break;
     }
-
-    // Two-phase dormant wake-up: if `RemoteEntityModel` already exists (queued behind the 4/frame spawn budget
-    // or waiting for `TESForm::IsStillLoading()` / cell `loadedCellData` to finish streaming), stage
-    // `PendingOwnershipEpoch` so `MaterializeRemoteView` promotes it to `TakeOwnership` on the very frame it
-    // materializes — NEVER prematurely decline and strand the NPC in `Owner == nullptr` dormant limbo!
-    if (auto modelIt = m_remoteModels.find(acMessage.ServerId); modelIt != m_remoteModels.end())
+    case RemoteLifecycle::GrantAction::Renew:
     {
-        modelIt.value().PendingOwnershipEpoch = acMessage.OwnershipEpoch;
-        spdlog::info(
-            "Deferred ownership claim for queued WorldModel {:X} (epoch {}) until FormView materializes",
-            acMessage.ServerId,
-            acMessage.OwnershipEpoch);
-        ReconcileRemoteWorldViews();
+        // The epoch moved, the simulator did not. Refresh the epoch this peer will quote
+        // on its next release and send nothing: neither a claim (it already has the
+        // actor) nor a RequestOwnershipTransfer (that is the self-eviction).
+        m_world.get<LocalComponent>(entity).OwnershipEpoch = acMessage.OwnershipEpoch;
+        spdlog::info("Ownership renewed {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
         return;
+    }
+    case RemoteLifecycle::GrantAction::Defer:
+    {
+        // Two-phase dormant wake-up: if `RemoteEntityModel` already exists (queued behind the 4/frame spawn budget
+        // or waiting for `TESForm::IsLoading()` / cell `loadedCellData` to finish streaming), stage
+        // `PendingOwnershipEpoch` so `MaterializeRemoteView` promotes it to `TakeOwnership` on the very frame it
+        // materializes — NEVER prematurely decline and strand the NPC in `Owner == nullptr` dormant limbo!
+        if (auto modelIt = m_remoteModels.find(acMessage.ServerId); modelIt != m_remoteModels.end())
+        {
+            modelIt.value().PendingOwnershipEpoch = acMessage.OwnershipEpoch;
+            spdlog::info(
+                "Deferred ownership claim for queued WorldModel {:X} (epoch {}) until FormView materializes",
+                acMessage.ServerId,
+                acMessage.OwnershipEpoch);
+            ReconcileRemoteWorldViews();
+            return;
+        }
+        break;
+    }
+    case RemoteLifecycle::GrantAction::AskServer:
+        break;
     }
 
     spdlog::warn("Actor for ownership transfer not found {:X}", acMessage.ServerId);
@@ -2011,7 +2041,10 @@ void CharacterService::CancelServerAssignment(const entt::entity aEntity, const 
 
         RequestOwnershipTransfer request{};
         request.ServerId = localComponent.Id;
-        request.OwnershipEpoch = localComponent.OwnershipEpoch;
+        // Quote the lease table, which is the only place the epoch is decided. When it has
+        // no entry the request carries no epoch, which the server reads as "the owner is
+        // handing it back" and still validates against the sender id.
+        request.OwnershipEpoch = m_ownershipLeases.EpochOf(localComponent.Id);
 
         if (pActor)
         {

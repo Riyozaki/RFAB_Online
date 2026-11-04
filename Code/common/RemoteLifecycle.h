@@ -103,4 +103,59 @@ enum class EntityDisposition : uint8_t
     return EntityDisposition::DestroyIfOrphan;
 }
 
+// ============================================================================
+// What to do with a grant (`NotifyOwnershipTransfer`) the lease table accepted
+// ============================================================================
+// The server bumps the epoch every time it hands an actor out, and it does not ask
+// whether the recipient is already simulating that actor: a reload, a cell re-entry or
+// a reassignment after a challenger went away all produce "same peer, new epoch".
+//
+// The client used to answer only two questions - "is the actor remote here?" (take it)
+// and "is a model queued?" (defer) - and let everything else fall through to the
+// unknown-actor branch, which asks the server to take the actor back. For a grant that
+// landed on an actor this peer was *already* simulating that fall-through is a
+// self-inflicted eviction: the peer holds `LocalComponent` and keeps simulating, the
+// server releases the lease, and the actor ends up simulated by someone the server does
+// not consider its owner - or by nobody once the client notices. Playtests report it as
+// an NPC that stops responding after a reload.
+//
+// A grant for an actor we already simulate is a *renewal*: the epoch moved, the
+// simulator did not, so the peer refreshes the epoch it will quote on its next release
+// and sends nothing.
+//
+// Note the two flags are not exclusive by accident: `TakeOver` requires an entity that
+// still carries `RemoteComponent`, and take-over strips it, so a local actor never
+// satisfies the first. `Renew` is therefore the answer for exactly the state the old
+// code could not describe.
+enum class GrantAction : uint8_t
+{
+    TakeOver,  // remote here -> become its simulator
+    Renew,     // already simulated here -> only the epoch moves, do not claim, do not release
+    Defer,     // a world model is queued but not materialized -> remember the epoch, claim on materialize
+    AskServer, // nothing to take over and nothing queued -> let the server pick a new owner
+};
+
+[[nodiscard]] inline GrantAction DecideGrantHandling(
+    bool aEntityExists,
+    bool aActorIsRemoteHere,
+    bool aActorIsLocalHere,
+    bool aIsQueuedForMaterialization) noexcept
+{
+    if (!aEntityExists)
+        return aIsQueuedForMaterialization ? GrantAction::Defer : GrantAction::AskServer;
+
+    // A remote actor we do not simulate: take it.
+    if (aActorIsRemoteHere && !aActorIsLocalHere)
+        return GrantAction::TakeOver;
+
+    // Already ours: renew, never evict ourselves.
+    if (aActorIsLocalHere)
+        return GrantAction::Renew;
+
+    // The entity exists but is neither simulated here nor remote (still loading, or a
+    // form we cannot resolve yet). If a model is queued the materializer will finish the
+    // job; otherwise only the server can decide.
+    return aIsQueuedForMaterialization ? GrantAction::Defer : GrantAction::AskServer;
+}
+
 } // namespace RemoteLifecycle
