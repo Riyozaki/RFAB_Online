@@ -12,7 +12,9 @@
 //   3. an absolute reading sampled *before* the death is refused, and the sender is told
 //      the truth - this is the defect that let dead NPCs stand back up;
 //   4. a reading sampled after the death is accepted as already current (no correction
-//      storm, no oscillation).
+//      storm, no oscillation);
+//   5. a claim carries the claimer's whole actor data - and health is still written through
+//      the one writer that owns its revision, so a claim cannot move health silently.
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -25,6 +27,7 @@
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Messages/RequestOwnershipClaim.h>
 
 #include "TransportSpy.h"
 
@@ -156,6 +159,61 @@ int main()
 
         Check(std::fabs(HealthOf(values)) < 0.01f, "a post-death reading agrees with the server");
         Check(values.HealthRevision == revisionAtDeath, "agreement does not churn the revision");
+    }
+
+    // 5. The claim path. `RequestOwnershipClaim` carries the claimer's whole actor data, and
+    //    the server applies it wholesale - but health is the one number a revision describes,
+    //    so it has to go through the single writer. Written straight into the map it changed
+    //    health without moving the revision, and a reading sampled before the write still
+    //    carried the current revision: the corpse case of Authority/Health.h §8E, still open
+    //    on this path because the snapshot bypassed `SetHealth`.
+    {
+        // Unowned, so the claim is eligible (a fresh owner in range is protected by the hold
+        // window), and unwounded, so a claimer reporting higher max health is believed - the
+        // RFAB case where Fortify-Health armor lands on load and the peer's max grows.
+        // Alive again: the scenarios above left it dead, and a claim cannot resurrect a corpse -
+        // that is the protection 2. put there, not something to work around.
+        world.get<CharacterComponent>(actor).SetDead(false);
+        world.get<OwnerComponent>(actor).SetOwner(nullptr, 0);
+        values.SetHealth(100.0f, 100.0f);
+        const uint32_t revisionBeforeClaim = values.HealthRevision;
+
+        ActorData claimerData{};
+        claimerData.InitialActorValues.ActorValuesList[ActorValuesComponent::kHealthActorValueIndex] = 150.0f;
+        claimerData.InitialActorValues.ActorMaxValuesList[ActorValuesComponent::kHealthActorValueIndex] = 150.0f;
+        claimerData.IsDead = false;
+
+        RequestOwnershipClaim claim{};
+        claim.ServerId = actorId;
+        claim.NewActorData = claimerData;
+        Deliver(world, claim, pAlly);
+
+        Check(world.get<OwnerComponent>(actor).GetOwner() == pAlly, "the claim is granted");
+        Check(std::fabs(HealthOf(values) - 150.0f) < 0.01f, "a claim's actor data is applied");
+        Check(values.HealthRevision == revisionBeforeClaim + 1, "a claim that moves health moves the revision");
+    }
+
+    // 6. And the reason the revision has to move: a claim reporting the actor dead must zero
+    //    its health, and a reading sampled before that write must not revive it.
+    {
+        world.get<OwnerComponent>(actor).SetOwner(nullptr, 0);
+        const uint32_t revisionBeforeCorpse = values.HealthRevision;
+
+        ActorData corpseData{};
+        corpseData.InitialActorValues.ActorValuesList[ActorValuesComponent::kHealthActorValueIndex] = 50.0f;
+        corpseData.InitialActorValues.ActorMaxValuesList[ActorValuesComponent::kHealthActorValueIndex] = 150.0f;
+        corpseData.IsDead = true;
+
+        RequestOwnershipClaim claim{};
+        claim.ServerId = actorId;
+        claim.NewActorData = corpseData;
+        Deliver(world, claim, pAlly);
+
+        Check(std::fabs(HealthOf(values)) < 0.01f, "a claim that reports the actor dead leaves no health");
+        Check(values.HealthRevision == revisionBeforeCorpse + 1, "the dead claim moves the revision once");
+        Check(Authority::ClassifyHealthSnapshot(HealthOf(values), 50.0f, values.HealthRevision,
+                                                revisionBeforeCorpse) == Authority::SnapshotVerdict::kStaleIncrease,
+              "a reading sampled before the dead claim cannot revive the corpse");
     }
 
     std::printf("%s (%d failure%s)\n", g_failures == 0 ? "PASSED" : "FAILED", g_failures,

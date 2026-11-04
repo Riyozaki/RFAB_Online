@@ -1678,7 +1678,9 @@ void CharacterService::ApplyActorData(const entt::entity acEntity, const ActorDa
     auto* pActorValuesComponent = m_world.try_get<ActorValuesComponent>(acEntity);
     if (pActorValuesComponent)
     {
-        pActorValuesComponent->CurrentActorValues = acActorData.InitialActorValues;
+        // Not a raw copy: health carries a revision, so it goes through the one writer that
+        // owns both the number and the revision (Authority/Health.h §8E).
+        pActorValuesComponent->AssignAuthoritative(acActorData.InitialActorValues, acActorData.IsDead);
     }
 
     auto* pInventoryComponent = m_world.try_get<InventoryComponent>(acEntity);

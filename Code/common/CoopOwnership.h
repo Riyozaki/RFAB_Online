@@ -11,30 +11,6 @@
 // header.
 namespace CoopOwnership
 {
-// Monotonic death & authoritative damage guard on ownership claim:
-// 1. A dead actor on the server must NEVER be resurrected by a new owner's stale local snapshot.
-// 2. If the server already tracks wounded health > 0 and < claimedHealth on a live actor, preserve the server's wounded HP
-//    so a party leader walking into a boss room never heals a half-dead boss back to full HP.
-inline void ReconcileClaimedState(
-    bool aServerIsDead,
-    float aServerCurrentHealth,
-    bool aHasAuthoritativeHealth,
-    bool& aInOutClaimedIsDead,
-    float& aInOutClaimedHealth) noexcept
-{
-    if (aServerIsDead)
-    {
-        aInOutClaimedIsDead = true;
-        aInOutClaimedHealth = 0.0f;
-        return;
-    }
-
-    if (aHasAuthoritativeHealth && !aInOutClaimedIsDead && aServerCurrentHealth > 0.0f && aServerCurrentHealth < aInOutClaimedHealth)
-    {
-        aInOutClaimedHealth = aServerCurrentHealth;
-    }
-}
-
 // Ratio- and RFAB-armor-aware ownership health reconciliation:
 // - If the server shows the actor is dead -> enforce dead (0 HP).
 // - If the server shows the actor was UNWOUNDED (Current >= Max - 0.5f) and the claiming peer reports
