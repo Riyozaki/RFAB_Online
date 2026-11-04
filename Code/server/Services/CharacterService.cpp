@@ -176,12 +176,12 @@ entt::entity CharacterService::EnsureDormantPersistentCharacter(
         charComp.SetDead(aIsDead);
         m_world.emplace<InventoryComponent>(entity);
         auto& avComp = m_world.emplace<ActorValuesComponent>(entity);
-        if (aIsDead)
-            avComp.CurrentActorValues.ActorValuesList[24] = 0.0f;
-        else if (aCurrentHealth > 0.0f)
-            avComp.CurrentActorValues.ActorValuesList[24] = aCurrentHealth;
         if (aMaxHealth > 0.0f)
             avComp.CurrentActorValues.ActorMaxValuesList[24] = aMaxHealth;
+        if (aIsDead)
+            avComp.SetHealth(0.0f, aMaxHealth);
+        else if (aCurrentHealth > 0.0f)
+            avComp.SetHealth(aCurrentHealth, aMaxHealth);
         auto& moveComp = m_world.emplace<MovementComponent>(entity);
         moveComp.Position = acPosition;
         moveComp.Rotation = acRotation;
@@ -198,12 +198,12 @@ entt::entity CharacterService::EnsureDormantPersistentCharacter(
         }
         if (auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
         {
-            if (aIsDead)
-                pAv->CurrentActorValues.ActorValuesList[24] = 0.0f;
-            else if (aCurrentHealth > 0.0f)
-                pAv->CurrentActorValues.ActorValuesList[24] = aCurrentHealth;
             if (aMaxHealth > 0.0f)
                 pAv->CurrentActorValues.ActorMaxValuesList[24] = aMaxHealth;
+            if (aIsDead)
+                pAv->SetHealth(0.0f, aMaxHealth);
+            else if (aCurrentHealth > 0.0f)
+                pAv->SetHealth(aCurrentHealth, aMaxHealth);
         }
         if (auto* pCell = m_world.try_get<CellIdComponent>(entity); pCell && (acCellId != GameId{} || acWorldSpaceId != GameId{}))
         {
@@ -747,12 +747,15 @@ void CharacterService::OnAssignCharacterRequest(const PacketEvent<AssignCharacte
                     const float savedMaxHp = hadSavedMaxHp ? savedMaxHpIt->second : 0.0f;
 
                     actorValuesComponent.CurrentActorValues = message.CurrentActorData.InitialActorValues;
+                    const float claimedMaxHp = (hadSavedMaxHp && savedMaxHp > 0.0f) ? savedMaxHp : 0.0f;
+                    if (claimedMaxHp > 0.0f)
+                        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[24] = claimedMaxHp;
+                    // Ownership just moved: the baseline belongs to the new owner, and the
+                    // previous owner's in-flight readings must not be able to overwrite it.
                     if (characterComponent.IsDead())
-                        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = 0.0f;
+                        actorValuesComponent.SetHealth(0.0f, claimedMaxHp);
                     else if (hadSavedHp)
-                        actorValuesComponent.CurrentActorValues.ActorValuesList[24] = savedHp;
-                    if (hadSavedMaxHp && savedMaxHp > 0.0f)
-                        actorValuesComponent.CurrentActorValues.ActorMaxValuesList[24] = savedMaxHp;
+                        actorValuesComponent.SetHealth(savedHp, claimedMaxHp);
                 }
             }
 
