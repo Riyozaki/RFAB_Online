@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <common/Downed/Revive.h>
+
 struct World;
 struct TransportService;
 struct UpdateEvent;
@@ -52,8 +54,8 @@ public:
     [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
     [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
     [[nodiscard]] double GetGraceRemainingSec() const noexcept { return m_graceRemainingSec; }
-    [[nodiscard]] bool IsChannelingRevive() const noexcept { return m_isChannelingRevive; }
-    [[nodiscard]] uint32_t GetChannelTargetPlayerId() const noexcept { return m_channelTargetPlayerId; }
+    [[nodiscard]] bool IsChannelingRevive() const noexcept { return m_channel.Active; }
+    [[nodiscard]] uint32_t GetChannelTargetPlayerId() const noexcept { return m_channel.TargetPlayerId; }
     [[nodiscard]] float GetReviveChannelProgress() const noexcept;
     [[nodiscard]] bool IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept;
     [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
@@ -138,10 +140,7 @@ private:
     double m_spellReviveRequestCooldownSec{0.0};
     SavedControlFlags m_savedControls{};
 
-    bool m_isChannelingRevive{false};
-    uint32_t m_channelTargetPlayerId{0};
-    double m_channelElapsedSec{0.0};
-    double m_channelDurationSec{4.0};
+    Downed::ReviveChannel m_channel{};
 
     bool m_bossDefeatedPendingReport{false};
     std::unordered_set<uint32_t> m_encounterHostileFormIds{};

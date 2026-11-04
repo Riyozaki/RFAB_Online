@@ -74,6 +74,7 @@
 | K1 | Вращение камеры + спам «Вы не можете продолжать бой» | Повторные `bleedoutStart`/`SetWeaponDrawn(false)` каждые 0.85 с | `DownedStateService` (однократный вход) | ✅ код · 🔬 плейтест |
 | K2 | CTD SkillsMenu + блокировка Tab | Boot-order race `g_IsSoulsREActive`; снятие `kPausesGame` у StatsMenu/TweenMenu | `SkillsMenu.cpp`/`UI.cpp` (runtime-проверка SoulsRE) | ✅ код · 🔬 плейтест |
 | K3 | Блокировка управления после сцены/квеста | `UEFlag::kMenu` не восстанавливался | `RfabAdapterService::OnUpdate` (ControlMap self-heal) | ✅ код · 🔬 плейтест |
+| K4 | Правила нокдауна/подъёма были инлайн в сервисе и не покрыты тестами | Решающая логика вперемешку с движковыми вызовами | `Code/common/Downed/Revive.h` (вынесено: health-gate, выбор цели, канал подъёма, расчёт лечения, grace) | 🧪 тест (`rfab_downed_revive.cpp`, 12 кейсов — добавлено в этой ветке; вынос доказуемо faithful) · 🔬 плейтест (движковая часть) |
 
 ## 6. Внешность / FaceGen / HUD
 

@@ -35,6 +35,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 namespace
 {
@@ -100,22 +101,12 @@ bool DownedStateService::IsSystemActive() const noexcept
 
 bool DownedStateService::ShouldBlockPlayerHealthMutation(float aDelta) const noexcept
 {
-    if (!IsSystemActive())
-        return false;
-
-    if (m_allowAuthorizedHeal.load(std::memory_order_acquire))
-        return false;
-
-    if (m_isLocalDowned.load(std::memory_order_acquire))
-    {
-        // Freeze BOTH positive regen/potions/spells AND negative poison/bleed/ground-fire ticks while on knee.
-        return aDelta != 0.0f;
-    }
-
-    if (m_isGraceActive.load(std::memory_order_acquire) && aDelta < 0.0f)
-        return true;
-
-    return false;
+    return Downed::ShouldBlockHealthMutation(
+        IsSystemActive(),
+        m_allowAuthorizedHeal.load(std::memory_order_acquire),
+        m_isLocalDowned.load(std::memory_order_acquire),
+        m_isGraceActive.load(std::memory_order_acquire),
+        aDelta);
 }
 
 bool DownedStateService::IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept
@@ -154,16 +145,14 @@ bool DownedStateService::IsActorDowned(uint32_t aActorFormId) const noexcept
 
 float DownedStateService::GetReviveChannelProgress() const noexcept
 {
-    if (!m_isChannelingRevive || m_channelDurationSec <= 0.05)
-        return 0.0f;
-    return static_cast<float>(std::clamp(m_channelElapsedSec / m_channelDurationSec, 0.0, 1.0));
+    return m_channel.Progress();
 }
 
 bool DownedStateService::IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept
 {
     if (aPlayerId == 0)
         return false;
-    if (m_isChannelingRevive && m_channelTargetPlayerId == aPlayerId)
+    if (m_channel.Active && m_channel.TargetPlayerId == aPlayerId)
         return true;
     return m_playersBeingRevived.contains(aPlayerId);
 }
@@ -412,8 +401,7 @@ void DownedStateService::CompleteEnterLocalDownedState() noexcept
         return;
 
     m_postReviveRecoveryActive = false;
-    m_isChannelingRevive = false;
-    m_channelTargetPlayerId = 0;
+    m_channel.Reset();
     m_bleedoutReassertTimerSec = 0.0;
 
     if (auto* pExt = pPlayer->GetExtension())
@@ -562,7 +550,7 @@ void DownedStateService::ApplyAuthoritativeRevive(
 
     m_pendingEnterDownedTransition.store(false, std::memory_order_release);
     m_isLocalDowned.store(false, std::memory_order_release);
-    m_graceRemainingSec = std::clamp(static_cast<double>(aGraceSec), 0.0, 15.0);
+    m_graceRemainingSec = Downed::ClampGraceSec(static_cast<double>(aGraceSec));
     m_isGraceActive.store(m_graceRemainingSec > 0.0, std::memory_order_release);
 
     // 1. Allow native Skyrim SE recovery from kBleedout BEFORE restoring positive kHealth:
@@ -573,17 +561,17 @@ void DownedStateService::ApplyAuthoritativeRevive(
     // 2. Restore kHealth above 0.0f so SkyrimSE.exe natively plays bleedoutStop and exits BleedoutCameraState:
     {
         ScopedReviveHealAllowance allow(m_allowAuthorizedHeal);
-        const float maxHp = std::max(
-            10.0f,
-            pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth) + pPlayer->healthModifiers.temporaryModifier);
         const float curHp = pPlayer->GetActorValue(ActorValueInfo::kHealth);
-        const float targetHp = std::max(kNativeBleedoutFloorHealth + 1.0f, maxHp * std::clamp(aHealthFraction, 0.05f, 1.0f));
-        const float healDelta = std::max(0.0f, targetHp - curHp);
+        const Downed::ReviveHeal heal = Downed::ComputeReviveHeal(
+            pPlayer->GetActorPermanentValue(ActorValueInfo::kHealth),
+            pPlayer->healthModifiers.temporaryModifier,
+            curHp,
+            aHealthFraction);
 
-        if (healDelta > 0.0f)
+        if (heal.HealDelta > 0.0f)
         {
-            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, targetHp);
-            m_world.GetRunner().Trigger(HealthChangeEvent(pPlayer->formID, healDelta));
+            pPlayer->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, heal.TargetHp);
+            m_world.GetRunner().Trigger(HealthChangeEvent(pPlayer->formID, heal.HealDelta));
         }
     }
 
@@ -631,9 +619,7 @@ void DownedStateService::ResetAllStates() noexcept
     m_bleedoutReassertTimerSec = 0.0;
     m_revivePromptCooldownSec = 0.0;
     m_spellReviveRequestCooldownSec = 0.0;
-    m_isChannelingRevive = false;
-    m_channelTargetPlayerId = 0;
-    m_channelElapsedSec = 0.0;
+    m_channel.Reset();
     m_bossDefeatedPendingReport = false;
     m_encounterHostileFormIds.clear();
     m_liveBossesSeenInCombat.clear();
@@ -820,11 +806,9 @@ void DownedStateService::UpdateInteractiveReviveInput(double aDeltaSec) noexcept
         return;
 
     const float maxUnits = RfabCompat::MetersToSkyrimUnits(kClientRevivePromptMeters);
-    const float maxUnitsSq = maxUnits * maxUnits;
 
-    uint32_t nearestDownedPlayerId = 0;
-    float bestDistSq = maxUnitsSq;
-
+    // Gather the party members (excluding self) and let the pure rule pick the nearest downed one.
+    std::vector<Downed::DownedCandidate> candidates;
     auto playerView = m_world.view<FormIdComponent, PlayerComponent>();
     for (auto entity : playerView)
     {
@@ -833,19 +817,18 @@ void DownedStateService::UpdateInteractiveReviveInput(double aDeltaSec) noexcept
             continue;
 
         const uint32_t pid = playerView.get<PlayerComponent>(entity).Id;
-        if (!IsRemotePlayerDowned(pid))
-            continue;
-
-        const float dx = pAlly->position.x - pPlayer->position.x;
-        const float dy = pAlly->position.y - pPlayer->position.y;
-        const float dz = pAlly->position.z - pPlayer->position.z;
-        const float distSq = dx * dx + dy * dy + dz * dz;
-        if (distSq <= bestDistSq)
-        {
-            bestDistSq = distSq;
-            nearestDownedPlayerId = pid;
-        }
+        Downed::DownedCandidate candidate{};
+        candidate.PlayerId = pid;
+        candidate.X = pAlly->position.x;
+        candidate.Y = pAlly->position.y;
+        candidate.Z = pAlly->position.z;
+        candidate.IsDowned = IsRemotePlayerDowned(pid);
+        candidates.push_back(candidate);
     }
+
+    const uint32_t nearestDownedPlayerId = Downed::SelectNearestDownedAlly(
+        pPlayer->position.x, pPlayer->position.y, pPlayer->position.z,
+        maxUnits, candidates.data(), candidates.size());
 
     if (m_revivePromptCooldownSec > 0.0)
         m_revivePromptCooldownSec = std::max(0.0, m_revivePromptCooldownSec - aDeltaSec);
@@ -857,37 +840,32 @@ void DownedStateService::UpdateInteractiveReviveInput(double aDeltaSec) noexcept
         Utils::ShowHudMessage(String("Рядом раненый союзник — зажмите [E], чтобы поднять на ноги"));
     }
 
-    if (nearestDownedPlayerId != 0 && keyHeld)
+    // The channel state machine decides start / continue / retarget / cancel; the service only
+    // performs the network send and HUD message each decision asks for.
+    const Downed::ChannelUpdate step = m_channel.Update(
+        nearestDownedPlayerId, keyHeld, aDeltaSec, m_world.GetServerSettings().ReviveDurationSec);
+
+    switch (step.Action)
     {
-        if (!m_isChannelingRevive || m_channelTargetPlayerId != nearestDownedPlayerId)
-        {
-            m_isChannelingRevive = true;
-            m_channelTargetPlayerId = nearestDownedPlayerId;
-            m_channelElapsedSec = 0.0;
-            m_channelDurationSec = m_world.GetServerSettings().ReviveDurationSec;
-
-            ReviveActionRequest req{};
-            req.Action = ReviveActionRequest::ActionType::StartChannel;
-            req.TargetPlayerId = nearestDownedPlayerId;
-            m_transport.Send(req);
-
-            Utils::ShowHudMessage(String("Реанимация союзника... удерживайте [E]"));
-        }
-        else
-        {
-            m_channelElapsedSec += aDeltaSec;
-        }
+    case Downed::ChannelAction::Start:
+    {
+        ReviveActionRequest req{};
+        req.Action = ReviveActionRequest::ActionType::StartChannel;
+        req.TargetPlayerId = step.TargetPlayerId;
+        m_transport.Send(req);
+        Utils::ShowHudMessage(String("Реанимация союзника... удерживайте [E]"));
+        break;
     }
-    else if (m_isChannelingRevive)
+    case Downed::ChannelAction::Cancel:
     {
         ReviveActionRequest cancelReq{};
         cancelReq.Action = ReviveActionRequest::ActionType::CancelChannel;
-        cancelReq.TargetPlayerId = m_channelTargetPlayerId;
+        cancelReq.TargetPlayerId = step.TargetPlayerId;
         m_transport.Send(cancelReq);
-
-        m_isChannelingRevive = false;
-        m_channelTargetPlayerId = 0;
-        m_channelElapsedSec = 0.0;
+        break;
+    }
+    case Downed::ChannelAction::None:
+        break;
     }
 }
 
@@ -1171,11 +1149,7 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
     case NotifyReviveState::ReviveStatus::ChannelCancelled:
         if (acMessage.TargetPlayerId != 0)
             m_playersBeingRevived.erase(acMessage.TargetPlayerId);
-        if (m_isChannelingRevive && m_channelTargetPlayerId == acMessage.TargetPlayerId)
-        {
-            m_isChannelingRevive = false;
-            m_channelTargetPlayerId = 0;
-        }
+        m_channel.ClearIfTarget(acMessage.TargetPlayerId);
         break;
 
     case NotifyReviveState::ReviveStatus::RevivedByAlly:
@@ -1196,12 +1170,8 @@ void DownedStateService::OnNotifyReviveState(const NotifyReviveState& acMessage)
                 break;
             }
         }
-        if (m_isChannelingRevive && m_channelTargetPlayerId == acMessage.TargetPlayerId)
-        {
-            m_isChannelingRevive = false;
-            m_channelTargetPlayerId = 0;
+        if (m_channel.ClearIfTarget(acMessage.TargetPlayerId))
             Utils::ShowHudMessage(String("Вы подняли союзника!"));
-        }
         if (m_isLocalDowned && targetsLocalPlayer)
             ApplyAuthoritativeRevive(acMessage.HealthFraction, acMessage.GraceSec, false);
         break;
