@@ -15,6 +15,17 @@
 //      storm, no oscillation);
 //   5. a claim carries the claimer's whole actor data - and health is still written through
 //      the one writer that owns its revision, so a claim cannot move health silently.
+//
+// And the save barrier, which decides whether an hour of play was persisted:
+//
+//   6. a checkpoint is recorded only when every connected player reports its file written;
+//   7. one refusal voids the barrier - no epoch is recorded, and the flight ring says "aborted";
+//   8. an ack that arrives after the barrier is gone cannot commit anything;
+//   9. a duplicate ack does not commit twice.
+//
+// The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
+// was never observed is the wiring: who is told, and what the server records when a player
+// refuses or answers too late.
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -24,15 +35,21 @@
 #include <World.h>
 
 #include <Events/PacketEvent.h>
+#include <Events/PlayerLeaveEvent.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Messages/CoordinatedSaveAck.h>
 #include <Messages/RequestOwnershipClaim.h>
+
+#include <Services/SaveSnapshotService.h>
 
 #include "TransportSpy.h"
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 
 namespace
 {
@@ -55,6 +72,21 @@ template <class T> void Deliver(World& aWorld, T aPacket, Player* apSender)
     aWorld.GetDispatcher().update();
 }
 
+// How many save events of one kind the server recorded for one epoch. The flight ring is the
+// shipping record of what the save machinery did - it is what an operator reads after a lost
+// session, so the harness reads it too instead of trusting private fields.
+size_t CountSaveEvents(const SaveSnapshotCoordinator& acCoordinator, CoopFlight::FlightEventKind aKind,
+                       uint64_t aEpochId)
+{
+    size_t count = 0;
+    for (const auto& record : acCoordinator.GetFlightRing().SnapshotRecent())
+    {
+        if (record.Kind == aKind && record.AuxValue == aEpochId)
+            ++count;
+    }
+    return count;
+}
+
 float HealthOf(const ActorValuesComponent& acValues)
 {
     float hp = -1.0f;
@@ -71,6 +103,13 @@ int main()
     spdlog::set_default_logger(pConsoleLogger);
 
     Console::ConsoleRegistry registry{"ConOut"};
+
+    // The service restores persisted checkpoints from `cwd/Data` on construction. A file left by
+    // a previous run would decide the starting epoch and session tag, so the scene would depend on
+    // whatever ran before it: remove it before the server exists.
+    std::error_code removeEc;
+    std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
+
     GameServer server{registry};
 
     World& world = server.GetWorld();
@@ -215,6 +254,108 @@ int main()
                                                 revisionBeforeCorpse) == Authority::SnapshotVerdict::kStaleIncrease,
               "a reading sampled before the dead claim cannot revive the corpse");
     }
+
+    std::printf("the save barrier\n");
+
+    auto MakeAck = [](uint64_t aEpochId, const std::string& acSlot, bool aSuccess, const char* acReason) {
+        CoordinatedSaveAck ack{};
+        ack.EpochId = aEpochId;
+        ack.SlotName = String(acSlot.c_str());
+        ack.Success = aSuccess;
+        ack.Reason = String(acReason);
+        return ack;
+    };
+
+    // 6. Everyone reports its file written -> the epoch is recorded, once.
+    {
+        auto& saves = world.GetSaveSnapshotService();
+        auto& coordinator = saves.GetCoordinator();
+        const uint64_t epochBefore = coordinator.GetLastCommittedEpoch();
+
+        Check(saves.TriggerCoordinatedSave(true, nullptr), "a save starts a barrier");
+        const auto pending = coordinator.GetPendingBarrier();
+        Check(pending.has_value(), "the barrier is armed");
+        Check(pending.has_value() && pending->ExpectedPlayerIds.size() == 2, "every connected player is expected");
+        Check(coordinator.GetLastCommittedEpoch() == epochBefore, "nothing is committed while players are saving");
+
+        if (pending.has_value())
+        {
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pOwner);
+            Check(coordinator.HasPendingBarrier(), "one ack is not enough");
+
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pAlly);
+            Check(!coordinator.HasPendingBarrier(), "the last ack closes the barrier");
+            Check(coordinator.GetLastCommittedEpoch() == pending->EpochId, "the committed epoch is the barrier's epoch");
+            Check(CountSaveEvents(coordinator, CoopFlight::FlightEventKind::kSaveCommitted, pending->EpochId) == 1,
+                  "the commit is recorded once in the flight ring");
+            Check(CountSaveEvents(coordinator, CoopFlight::FlightEventKind::kSaveAborted, pending->EpochId) == 0,
+                  "a committed save is not also recorded as aborted");
+        }
+    }
+
+    // 7. One refusal voids the barrier: nothing is recorded, and the abort is visible afterwards.
+    {
+        auto& saves = world.GetSaveSnapshotService();
+        auto& coordinator = saves.GetCoordinator();
+        const uint64_t epochBefore = coordinator.GetLastCommittedEpoch();
+
+        Check(saves.TriggerCoordinatedSave(false, nullptr), "a manual save starts a barrier");
+        const auto pending = coordinator.GetPendingBarrier();
+        Check(pending.has_value(), "the manual barrier is armed");
+
+        if (pending.has_value())
+        {
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pOwner);
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, false, "no disk space"), pAlly);
+
+            Check(!coordinator.HasPendingBarrier(), "a refusal closes the barrier");
+            Check(coordinator.GetLastCommittedEpoch() == epochBefore, "a refused save records no epoch");
+            Check(CountSaveEvents(coordinator, CoopFlight::FlightEventKind::kSaveAborted, pending->EpochId) == 1,
+                  "the abort is recorded in the flight ring");
+            Check(CountSaveEvents(coordinator, CoopFlight::FlightEventKind::kSaveCommitted, pending->EpochId) == 0,
+                  "a refused save is never recorded as committed");
+
+            // 8. The refusing client finishes writing anyway and answers late. The barrier is gone,
+            //    so the ack can only be ignored - it must not turn the abort into a commit.
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pAlly);
+            Check(coordinator.GetLastCommittedEpoch() == epochBefore, "a late ack does not commit a voided barrier");
+            Check(CountSaveEvents(coordinator, CoopFlight::FlightEventKind::kSaveCommitted, pending->EpochId) == 0,
+                  "a late ack does not commit anything either");
+
+            // 9. A duplicate of an ack that already counted changes nothing.
+            const uint64_t committedEpoch = coordinator.GetLastCommittedEpoch();
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pOwner);
+            Check(coordinator.GetLastCommittedEpoch() == committedEpoch, "a duplicate ack does not move the epoch");
+            Check(CountSaveEvents(coordinator, CoopFlight::FlightEventKind::kSaveCommitted, pending->EpochId) == 0,
+                  "a duplicate ack does not commit twice");
+        }
+    }
+
+    // 10. A player who leaves while its peers are saving is no longer waited for: the barrier
+    //     resolves against the players that are still there instead of timing out.
+    {
+        auto& saves = world.GetSaveSnapshotService();
+        auto& coordinator = saves.GetCoordinator();
+
+        Check(saves.TriggerCoordinatedSave(true, nullptr), "a save starts a barrier with three scenarios behind it");
+        const auto pending = coordinator.GetPendingBarrier();
+        if (pending.has_value())
+        {
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pOwner);
+            Check(coordinator.HasPendingBarrier(), "the save still waits for the other player");
+
+            world.GetDispatcher().trigger(PlayerLeaveEvent{pAlly});
+            world.GetDispatcher().update();
+
+            Check(!coordinator.HasPendingBarrier(), "the player who left is no longer waited for");
+            Check(coordinator.GetLastCommittedEpoch() == pending->EpochId,
+                  "the remaining acks are enough to record the checkpoint");
+        }
+    }
+
+    // Leave no checkpoint history behind: the scenes above wrote one, and the next run would
+    // otherwise restore it before the first assertion.
+    std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
 
     std::printf("%s (%d failure%s)\n", g_failures == 0 ? "PASSED" : "FAILED", g_failures,
                 g_failures == 1 ? "" : "s");
