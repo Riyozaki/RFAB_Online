@@ -28,9 +28,11 @@
 #include <TiltedCore/Serialization.hpp>
 #include <World.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <random>
+#include <vector>
 
 namespace
 {
@@ -41,6 +43,25 @@ Console::Setting uPostCombatAutosaveInterval{
     "Gameplay:uPostCombatAutosaveInterval",
     "Minimum seconds between automatic post-combat checkpoints (boss kills always save immediately)",
     180U};
+
+// Deterministic iteration for the checkpoint writer.
+//
+// The snapshot's collections are unordered maps, so writing them in their natural order made the
+// file's byte layout depend on the order keys happened to be inserted. The same world then wrote a
+// different file after a load, and two servers re-saving one checkpoint disagreed byte for byte:
+// the file stopped being a function of the state, and "did anything change?" could not be answered
+// from it. Iterating in key order costs a sort of a handful of entries and makes the writer
+// canonical.
+template <class TMap> std::vector<const typename TMap::value_type*> SortedEntries(const TMap& acMap)
+{
+    std::vector<const typename TMap::value_type*> entries;
+    entries.reserve(acMap.size());
+    for (const auto& entry : acMap)
+        entries.push_back(&entry);
+    std::sort(entries.begin(), entries.end(),
+              [](const auto* apLhs, const auto* apRhs) { return apLhs->first < apRhs->first; });
+    return entries;
+}
 
 uint64_t NowSteadyMs() noexcept
 {
@@ -75,29 +96,32 @@ void SerializeProgressionSnapshot(TiltedPhoques::Buffer::Writer& aWriter, const 
     using TiltedPhoques::Serialization;
     Serialization::WriteVarInt(aWriter, static_cast<uint64_t>(acProg.TotalSharedXp));
 
-    Serialization::WriteVarInt(aWriter, acProg.GrantedXpBySource.size());
-    for (const auto& [src, xp] : acProg.GrantedXpBySource)
+    const auto grantedXpBySource = SortedEntries(acProg.GrantedXpBySource);
+    Serialization::WriteVarInt(aWriter, grantedXpBySource.size());
+    for (const auto* pEntry : grantedXpBySource)
     {
-        WriteStdString(aWriter, src);
-        aWriter.WriteBits(static_cast<uint64_t>(static_cast<uint32_t>(xp)), 32);
+        WriteStdString(aWriter, pEntry->first);
+        aWriter.WriteBits(static_cast<uint64_t>(static_cast<uint32_t>(pEntry->second)), 32);
     }
 
     Serialization::WriteVarInt(aWriter, acProg.ReadBooks.size());
     for (const auto& book : acProg.ReadBooks)
         book.Serialize(aWriter);
 
-    Serialization::WriteVarInt(aWriter, acProg.SyncedGlobals.size());
-    for (const auto& [edid, val] : acProg.SyncedGlobals)
+    const auto syncedGlobals = SortedEntries(acProg.SyncedGlobals);
+    Serialization::WriteVarInt(aWriter, syncedGlobals.size());
+    for (const auto* pEntry : syncedGlobals)
     {
-        WriteStdString(aWriter, edid);
-        Serialization::WriteFloat(aWriter, val);
+        WriteStdString(aWriter, pEntry->first);
+        Serialization::WriteFloat(aWriter, pEntry->second);
     }
 
-    Serialization::WriteVarInt(aWriter, acProg.BossGhostStates.size());
-    for (const auto& [id, ghost] : acProg.BossGhostStates)
+    const auto bossGhostStates = SortedEntries(acProg.BossGhostStates);
+    Serialization::WriteVarInt(aWriter, bossGhostStates.size());
+    for (const auto* pEntry : bossGhostStates)
     {
-        Serialization::WriteVarInt(aWriter, id);
-        Serialization::WriteBool(aWriter, ghost);
+        Serialization::WriteVarInt(aWriter, pEntry->first);
+        Serialization::WriteBool(aWriter, pEntry->second);
     }
 }
 
@@ -245,28 +269,31 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
             Serialization::WriteBool(writer, snap.IsAutoCheckpoint);
             Serialization::WriteVarInt(writer, snap.CreatedAtMs);
 
-            Serialization::WriteVarInt(writer, snap.QuestLogsByPlayerId.size());
-            for (const auto& [pid, qlog] : snap.QuestLogsByPlayerId)
+            const auto questLogsByPlayerId = SortedEntries(snap.QuestLogsByPlayerId);
+            Serialization::WriteVarInt(writer, questLogsByPlayerId.size());
+            for (const auto* pEntry : questLogsByPlayerId)
             {
-                Serialization::WriteVarInt(writer, pid);
-                qlog.Serialize(writer);
+                Serialization::WriteVarInt(writer, pEntry->first);
+                pEntry->second.Serialize(writer);
             }
             snap.SharedPartyQuestLog.Serialize(writer);
 
-            Serialization::WriteVarInt(writer, snap.PlayersById.size());
-            for (const auto& [pid, pRec] : snap.PlayersById)
+            const auto playersById = SortedEntries(snap.PlayersById);
+            Serialization::WriteVarInt(writer, playersById.size());
+            for (const auto* pEntry : playersById)
             {
-                Serialization::WriteVarInt(writer, pid);
-                SerializePlayerStateRecord(writer, pRec);
+                Serialization::WriteVarInt(writer, pEntry->first);
+                SerializePlayerStateRecord(writer, pEntry->second);
             }
 
-            Serialization::WriteVarInt(writer, snap.TrackedActors.size());
-            for (const auto& [entId, aRec] : snap.TrackedActors)
+            const auto trackedActors = SortedEntries(snap.TrackedActors);
+            Serialization::WriteVarInt(writer, trackedActors.size());
+            for (const auto* pEntry : trackedActors)
             {
-                Serialization::WriteVarInt(writer, entId);
-                Serialization::WriteFloat(writer, aRec.CurrentHealth);
-                Serialization::WriteFloat(writer, aRec.MaxHealth);
-                Serialization::WriteBool(writer, aRec.IsDead);
+                Serialization::WriteVarInt(writer, pEntry->first);
+                Serialization::WriteFloat(writer, pEntry->second.CurrentHealth);
+                Serialization::WriteFloat(writer, pEntry->second.MaxHealth);
+                Serialization::WriteBool(writer, pEntry->second.IsDead);
             }
 
             Serialization::WriteVarInt(writer, snap.TrackedObjects.size());
@@ -296,18 +323,20 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
         Serialization::WriteVarInt(writer, m_snapshots.size());
         for (const auto& snap : m_snapshots)
         {
+            const auto spatialActors = SortedEntries(snap.TrackedActors);
             size_t spatialCount = 0;
-            for (const auto& [_, aRec] : snap.TrackedActors)
+            for (const auto* pEntry : spatialActors)
             {
-                if (aRec.HasSpatialState)
+                if (pEntry->second.HasSpatialState)
                     ++spatialCount;
             }
             Serialization::WriteVarInt(writer, spatialCount);
-            for (const auto& [entId, aRec] : snap.TrackedActors)
+            for (const auto* pEntry : spatialActors)
             {
+                const auto& aRec = pEntry->second;
                 if (!aRec.HasSpatialState)
                     continue;
-                Serialization::WriteVarInt(writer, entId);
+                Serialization::WriteVarInt(writer, pEntry->first);
                 aRec.CellId.Serialize(writer);
                 aRec.WorldSpaceId.Serialize(writer);
                 aRec.CenterCoords.Serialize(writer);
@@ -327,18 +356,20 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
         Serialization::WriteVarInt(writer, m_snapshots.size());
         for (const auto& snap : m_snapshots)
         {
-            Serialization::WriteVarInt(writer, snap.QuestLogsByIdentityKey.size());
-            for (const auto& [identKey, qlog] : snap.QuestLogsByIdentityKey)
+            const auto questLogsByIdentityKey = SortedEntries(snap.QuestLogsByIdentityKey);
+            Serialization::WriteVarInt(writer, questLogsByIdentityKey.size());
+            for (const auto* pEntry : questLogsByIdentityKey)
             {
-                WriteStdString(writer, identKey);
-                qlog.Serialize(writer);
+                WriteStdString(writer, pEntry->first);
+                pEntry->second.Serialize(writer);
             }
 
-            Serialization::WriteVarInt(writer, snap.PlayersByIdentityKey.size());
-            for (const auto& [identKey, pRec] : snap.PlayersByIdentityKey)
+            const auto playersByIdentityKey = SortedEntries(snap.PlayersByIdentityKey);
+            Serialization::WriteVarInt(writer, playersByIdentityKey.size());
+            for (const auto* pEntry : playersByIdentityKey)
             {
-                WriteStdString(writer, identKey);
-                SerializePlayerStateRecord(writer, pRec);
+                WriteStdString(writer, pEntry->first);
+                SerializePlayerStateRecord(writer, pEntry->second);
             }
 
             Serialization::WriteVarInt(writer, static_cast<uint64_t>(snap.LootLedger.size()));
@@ -361,10 +392,12 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
             Serialization::WriteVarInt(chunkWriter, m_snapshots.size());
             for (const auto& snap : m_snapshots)
             {
-                Serialization::WriteVarInt(chunkWriter, snap.PersistentActorsByKey.size());
-                for (const auto& [packedKey, aRec] : snap.PersistentActorsByKey)
+                const auto persistentActors = SortedEntries(snap.PersistentActorsByKey);
+                Serialization::WriteVarInt(chunkWriter, persistentActors.size());
+                for (const auto* pEntry : persistentActors)
                 {
-                    Serialization::WriteVarInt(chunkWriter, packedKey);
+                    const auto& aRec = pEntry->second;
+                    Serialization::WriteVarInt(chunkWriter, pEntry->first);
                     aRec.FormId.Serialize(chunkWriter);
                     aRec.BaseId.Serialize(chunkWriter);
                     Serialization::WriteFloat(chunkWriter, aRec.CurrentHealth);
