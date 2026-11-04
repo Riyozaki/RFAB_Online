@@ -142,8 +142,36 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
         const float sanitized = std::clamp(value, -kMaxSanitizedActorValue, kMaxSanitizedActorValue);
 
-        if (id == kHealthActorValueIndex && pCharComp && !pCharComp->IsPlayer() && !pCharComp->IsDead())
+        if (id == kHealthActorValueIndex && pCharComp && !pCharComp->IsPlayer())
         {
+            if (pCharComp->IsDead())
+            {
+                // A corpse's health is not something a client reports: death fixed it at
+                // zero and moved the revision. Letting the value through here is how a body
+                // gets its health back - the sender is an owner whose reading was sampled
+                // before the killing blow, and its revision is already out of date, so the
+                // write would be refused a few lines lower if it ever reached the
+                // classifier. It does not: the whole block used to be skipped for a dead
+                // actor, and the value was assigned straight into the component.
+                //
+                // Answering with the truth (not silence) matters just as much: without the
+                // correction the sender's revision would never advance and every later
+                // reading of its own would be refused as well.
+                NotifyActorValueChanges correction;
+                correction.Id = message.Id;
+                correction.HealthRevision = actorValuesComponent.HealthRevision;
+                float currentHp = 0.0f;
+                (void)actorValuesComponent.TryGetHealth(currentHp);
+                correction.Values[kHealthActorValueIndex] = currentHp;
+
+                acMessage.pPlayer->Send(correction);
+
+                m_combatAudit.Record(Authority::AuditEvent::kStaleSnapshot);
+                m_combatAudit.Record(Authority::AuditEvent::kSnapshotCorrection);
+                ReportAudit(SteadyActorValueNowMs());
+                continue;
+            }
+
             const auto curIt = actorValuesComponent.CurrentActorValues.ActorValuesList.find(kHealthActorValueIndex);
 
             if (curIt != actorValuesComponent.CurrentActorValues.ActorValuesList.end())
@@ -175,11 +203,19 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
                 if (verdict == Authority::SnapshotVerdict::kMalformed)
                     continue;
-
-                // Health going down is a new revision, whoever reported it.
-                if (verdict == Authority::SnapshotVerdict::kApply && sanitized < currentHp - 0.5f)
-                    ++actorValuesComponent.HealthRevision;
             }
+
+            // One writer for health: the value and the revision that describes it move
+            // together, so a reading sampled before this moment can no longer pass the
+            // classifier as current.
+            float maxHealth = 0.0f;
+            (void)actorValuesComponent.TryGetMaxHealth(maxHealth);
+            actorValuesComponent.SetHealth(sanitized, maxHealth);
+
+            float storedHealth = sanitized;
+            (void)actorValuesComponent.TryGetHealth(storedHealth);
+            notify.Values[id] = storedHealth;
+            continue;
         }
 
         actorValuesComponent.CurrentActorValues.ActorValuesList[id] = sanitized;

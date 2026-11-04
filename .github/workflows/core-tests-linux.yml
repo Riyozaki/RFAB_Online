@@ -80,3 +80,21 @@ jobs:
           name: skyrim-ui-bundle
           path: Code/skyrim_ui/dist/UI
           retention-days: 7
+
+  server-harness:
+    # `Code/server` - 14k lines of ownership, damage, saves and parties - used to be
+    # compiled for the first time inside the 16-minute Windows release build, and executed
+    # only when a human played the game. Here it is compiled and *run* on Linux, driven
+    # through the same dispatcher a network connection drives. A regression in the health
+    # /death rules now fails in minutes, without a game and without a second player.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache third-party sources
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: server-deps-${{ hashFiles('Tools/rfab/linux-server/run-server-tests.sh') }}
+      - name: Build & run the in-process server
+        run: ./Tools/rfab/linux-server/run-server-tests.sh
