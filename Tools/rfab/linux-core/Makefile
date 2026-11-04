@@ -71,6 +71,7 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/rfab_wire_fuzz.cpp \
   $(REPO_ROOT)/Code/tests/rfab_string_cache_protocol.cpp \
   $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_experience_ledger.cpp \
   $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp \
   $(REPO_ROOT)/Code/tests/rfab_session_sim.cpp \
   $(REPO_ROOT)/Code/tests/rfab_se1597_port.cpp \
@@ -118,7 +119,12 @@ $(BIN): $(ALL_OBJS)
 	@echo "  LD    $(notdir $@)"
 	@$(CXX) $(SAN_FLAGS) $(ALL_OBJS) -o $@ -lpthread
 
-$(MIMALLOC_OBJ): $(MIMALLOC)/src/static.c
+# Every object also depends on this Makefile. Flags, defines and include paths live
+# here, and make only tracks *source* prerequisites (-MMD -MP). Without this, editing
+# CXXFLAGS / SANITIZE / a -D define left stale objects compiled under the old flags,
+# and the loop reported a result about code it never rebuilt. A Makefile edit is rare
+# and a full rebuild is the correct, cheap price for never lying about what was built.
+$(MIMALLOC_OBJ): $(MIMALLOC)/src/static.c $(MAKEFILE_LIST)
 	@mkdir -p $(dir $@)
 	@echo "  CC    mimalloc"
 	@# -U, not -D...=0: mimalloc guards the malloc interposer with #if defined(), so
@@ -126,7 +132,7 @@ $(MIMALLOC_OBJ): $(MIMALLOC)/src/static.c
 	@$(CC) $(CFLAGS) -w -UMI_MALLOC_OVERRIDE -I$(MIMALLOC)/include -c $< -o $@
 
 define compile_rule
-$(call obj_of,$(1),$(2)): $(2)
+$(call obj_of,$(1),$(2)): $(2) $(MAKEFILE_LIST)
 	@mkdir -p $$(dir $$@)
 	@echo "  CXX   $$(patsubst $$(REPO_ROOT)/%,%,$$<)"
 	@$$(CXX) $$(CXXFLAGS) $$(DEPFLAGS) -w $$(INCLUDES) $(3) -c $$< -o $$@
