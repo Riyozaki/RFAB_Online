@@ -1268,9 +1268,15 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
         {
             if (savedState.MaxHealth > 0.0f)
                 pAv->CurrentActorValues.ActorMaxValuesList[kHealthAvIndex] = savedState.MaxHealth;
-            const auto prevIt = pAv->CurrentActorValues.ActorValuesList.find(kHealthAvIndex);
-            prevHp = prevIt != pAv->CurrentActorValues.ActorValuesList.end() ? prevIt->second : savedState.CurrentHealth;
-            pAv->CurrentActorValues.ActorValuesList[kHealthAvIndex] = savedState.CurrentHealth;
+
+            (void)pAv->TryGetHealth(prevHp);
+            // A rollback is an absolute write of the checkpoint's health, exactly like a death or
+            // an ownership transfer, so it goes through the one writer that owns the revision.
+            // Written into the map directly it left the revision where it was, and a reading
+            // sampled before the rollback still carried that revision and was believed: the
+            // restore undid itself, and a boss the party had wiped stood back up at whatever the
+            // last straggler happened to see.
+            pAv->SetHealth(savedState.CurrentHealth, savedState.MaxHealth);
             hpChanged = std::abs(prevHp - savedState.CurrentHealth) > 0.05f;
         }
 
