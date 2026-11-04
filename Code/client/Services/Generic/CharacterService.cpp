@@ -84,6 +84,7 @@
 #include <Games/TES.h>
 #include <Games/Skyrim/Interface/UI.h>
 #include <CoopAnimationState.h>
+#include <RemoteLifecycle.h>
 
 #include <cmath>
 
@@ -93,16 +94,17 @@ namespace
 {
 bool IsNetworkCreatedActor(const Actor* apActor) noexcept
 {
-    if (!apActor || apActor->formID == 0x14)
+    if (!apActor)
         return false;
 
     const auto* pExt = apActor->GetExtension();
-    if (pExt && (pExt->IsCreatedByNetwork() || pExt->IsRemotePlayer()))
-        return true;
-
-    return ((apActor->formID & 0xFF000000u) == 0xFF000000u) &&
-           apActor->baseForm != nullptr &&
-           ((apActor->baseForm->formID & 0xFF000000u) == 0xFF000000u);
+    return RemoteLifecycle::IsNetworkCreatedForm(
+        apActor->formID,
+        pExt != nullptr,
+        pExt != nullptr && pExt->IsCreatedByNetwork(),
+        pExt != nullptr && pExt->IsRemotePlayer(),
+        apActor->baseForm != nullptr,
+        apActor->baseForm != nullptr ? apActor->baseForm->formID : 0u);
 }
 
 std::vector<uint32_t>& GetDeferredDialogueDeletes() noexcept
@@ -686,19 +688,22 @@ void CharacterService::DeleteTempActor(const uint32_t aFormId) noexcept
     ActorExtension::EraseLatestAnimation(aFormId);
 
     Actor* pActor = Cast<Actor>(TESForm::GetById(aFormId));
-    if (!pActor || aFormId == 0x14)
-        return;
-
-    if (IsNetworkCreatedActor(pActor))
+    switch (RemoteLifecycle::DecideFormDisposition(pActor != nullptr, aFormId == 0x14, IsNetworkCreatedActor(pActor)))
     {
+    case RemoteLifecycle::FormDisposition::PurgeNetworkForm:
         PurgeDynamicActorCleanly(pActor);
         spdlog::info("\tDeleted network actor {:X}", aFormId);
-    }
-    else if (auto* pExt = pActor->GetExtension())
-    {
-        pExt->SetRemote(false);
-        pExt->SetDownedPlayer(false);
-        SanitizeActorCombatStateForLocalOwnership(pActor);
+        break;
+    case RemoteLifecycle::FormDisposition::DetachToVanilla:
+        if (auto* pExt = pActor->GetExtension())
+        {
+            pExt->SetRemote(false);
+            pExt->SetDownedPlayer(false);
+            SanitizeActorCombatStateForLocalOwnership(pActor);
+        }
+        break;
+    case RemoteLifecycle::FormDisposition::None:
+        break;
     }
 }
 
@@ -1773,24 +1778,26 @@ void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage)
         }
 
         DeleteRemoteEntityComponents(entity);
-        if (removedNetworkActor)
+        const bool livePlacedInLoadedCell = pLivePlacedActor &&
+                                            pLivePlacedActor->parentCell &&
+                                            pLivePlacedActor->parentCell->loadedCellData;
+        switch (RemoteLifecycle::DecideEntityDisposition(
+            removedNetworkActor, livePlacedInLoadedCell, m_world.all_of<FormIdComponent>(entity)))
         {
+        case RemoteLifecycle::EntityDisposition::StripNetworkAndDestroyIfOrphan:
             m_world.remove<FormIdComponent, EarlyAnimationBufferComponent>(entity);
             if (m_world.orphan(entity))
                 m_world.destroy(entity);
-        }
-        else if (pLivePlacedActor &&
-                 pLivePlacedActor->parentCell &&
-                 pLivePlacedActor->parentCell->loadedCellData &&
-                 m_world.all_of<FormIdComponent>(entity))
-        {
+            break;
+        case RemoteLifecycle::EntityDisposition::ReregisterPlacedLocally:
             // Placed `0x00..0xFE` actor is still loaded in the local player's active cell (e.g. server pruned
             // an old dormant record): immediately re-register locally so it never becomes an unsynced ghost!
             ProcessNewEntity(entity);
-        }
-        else if (m_world.orphan(entity))
-        {
-            m_world.destroy(entity);
+            break;
+        case RemoteLifecycle::EntityDisposition::DestroyIfOrphan:
+            if (m_world.orphan(entity))
+                m_world.destroy(entity);
+            break;
         }
     }
 }

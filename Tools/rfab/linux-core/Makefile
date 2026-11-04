@@ -72,6 +72,7 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/rfab_string_cache_protocol.cpp \
   $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp \
   $(REPO_ROOT)/Code/tests/rfab_downed_revive.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_remote_lifecycle.cpp \
   $(REPO_ROOT)/Code/tests/rfab_experience_ledger.cpp \
   $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp \
   $(REPO_ROOT)/Code/tests/rfab_session_sim.cpp \
