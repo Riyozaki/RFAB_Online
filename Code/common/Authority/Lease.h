@@ -197,17 +197,45 @@ struct Decision
 //  older epoch is dropped, so Grant/Relinquish packets that arrive out of order can
 //  never leave two owners or no owner behind.
 //
+// What a table does with an update that carries exactly the epoch it already has.
+//
+// The two callers need opposite answers, and both are right:
+//   * replicating a decision (server -> mirror, peer -> peer) - an equal epoch is a
+//     duplicate, and applying it cannot say anything new. Drop it.
+//   * applying a *correction* from the authority - "you do not own this, at the epoch you
+//     think you own it" - the epoch cannot move, because nothing about the world moved,
+//     only this peer's belief. It has to be applied, or the client keeps simulating an
+//     actor nobody else does.
+enum class EqualEpochPolicy : uint8_t
+{
+    kDrop,
+    kAccept,
+};
+
 class LeaseTable
 {
 public:
-    // Returns true when the table changed. Epoch 0 means "unknown" and is accepted
-    // once, for first contact with a peer that does not track epochs.
-    bool Apply(uint32_t aEntityId, const Lease& acLease) noexcept;
+    // Returns true when the table changed.
+    //
+    // An update without an epoch carries no ordering information. It is applied only when
+    // the table knows nothing better (first contact with a peer that does not track
+    // epochs); once an epoch is known, an epoch-less packet is older than that knowledge by
+    // definition and must not rewrite it. The previous code applied it unconditionally in
+    // both paths here, so any peer - including one that simply does not track epochs - could
+    // take an entity away from the owner the table already knew about.
+    bool Apply(uint32_t aEntityId, const Lease& acLease, EqualEpochPolicy aEqualEpoch = EqualEpochPolicy::kDrop) noexcept;
 
     // Client-side shorthand. A client learns only "the entity is mine now" or "it is
     // not mine any more", plus the epoch that orders the two. Equal epochs are accepted
-    // so a re-sent grant still applies; older ones are dropped, which is what stops a
-    // late Relinquish from undoing a newer Grant.
+    // because the server corrects a client at the epoch the client already holds (a
+    // rejected handoff answers with the current epoch, not a new one).
+    //
+    // Above zero this is an adapter over Apply, not a second ordering rule: the table has
+    // exactly one place that decides whether an update is newer, and a test that pins it.
+    //
+    // An update *without* an epoch can only do what cannot create a second simulator -
+    // adopt an unowned entity, or give one back. It may not take an actor away from
+    // another peer, which is what the previous implementation did for every case.
     bool AcceptEpoch(uint32_t aEntityId, uint64_t aEpoch, bool aOwnedLocally) noexcept;
 
     [[nodiscard]] const Lease* Find(uint32_t aEntityId) const noexcept;
