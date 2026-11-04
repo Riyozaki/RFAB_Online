@@ -80,7 +80,7 @@ void CharacterService::OnMountRequest(const PacketEvent<MountRequest>& acMessage
 
             NotifyOwnershipTransfer grant{};
             grant.ServerId = message.MountId;
-            grant.OwnershipEpoch = pMountOwner->Epoch;
+            grant.OwnershipEpoch = pMountOwner->GetEpoch();
             acMessage.pPlayer->Send(grant);
         }
     }

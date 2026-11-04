@@ -3,88 +3,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <unordered_map>
 
+// Reconciliation helpers for state that travels *with* an ownership change: health,
+// death and handoff coordinates. Who owns what is not decided here - that is
+// Authority::Lease (Code/common/Authority/Lease.h), which replaced the claim policy,
+// the handoff validation and the client-side epoch tracker that used to live in this
+// header.
 namespace CoopOwnership
 {
-struct PolicyConfig
-{
-    // Minimum hold window before another peer can voluntarily claim a calm world actor.
-    // Forced handoffs occur ONLY when the current owner disconnects or leaves cell/grid range.
-    // Simulation Authority != Combat Target: a player entering bleedout/downed state while still
-    // connected and in range keeps full simulation continuity for active encounters and bosses.
-    uint64_t MinVoluntaryHoldMs{1500};
-};
-
-enum class ClaimDecision : uint8_t
-{
-    kAccept = 0,
-    kAlreadyOwner = 1,
-    kRejectPlayerAvatar = 2,
-    kRejectSummonPinned = 3,
-    kRejectChallengerDowned = 4,
-    kRejectHoldWindowActive = 5,
-    kRejectOwnerActiveInCombatOrNonLeader = 6
-};
-
-inline ClaimDecision EvaluateVoluntaryClaim(
-    uint32_t aCurrentOwnerPlayerId,
-    uint32_t aChallengerPlayerId,
-    uint64_t aLastChangedAtMs,
-    uint64_t aNowMs,
-    bool aIsPlayerAvatar,
-    bool aIsPlayerSummon,
-    bool aCurrentOwnerValidAndInRange,
-    bool aCurrentOwnerDowned,
-    bool aChallengerDowned,
-    const PolicyConfig& acConfig = {},
-    bool aChallengerIsCalmPartyLeader = false) noexcept
-{
-    (void)aCurrentOwnerDowned;
-
-    if (aIsPlayerAvatar)
-        return ClaimDecision::kRejectPlayerAvatar;
-
-    if (aIsPlayerSummon)
-        return ClaimDecision::kRejectSummonPinned;
-
-    if (aChallengerPlayerId != 0 && aCurrentOwnerPlayerId == aChallengerPlayerId)
-        return ClaimDecision::kAlreadyOwner;
-
-    // Never hand simulation of an actor away from a connected, in-range owner to a downed challenger.
-    if (aChallengerDowned && aCurrentOwnerPlayerId != 0 && aCurrentOwnerValidAndInRange)
-        return ClaimDecision::kRejectChallengerDowned;
-
-    // Sticky Host Cell Authority: when the PartyLeader (Host) enters a cell and claims a calm world NPC
-    // from a faster-loading guest, allow immediate takeover without waiting for MinVoluntaryHoldMs
-    // (safe from ping-pong because non-leaders are rejected while Host remains in range).
-    if (aCurrentOwnerPlayerId != 0 && aCurrentOwnerValidAndInRange && !aChallengerIsCalmPartyLeader)
-    {
-        if (aNowMs >= aLastChangedAtMs && (aNowMs - aLastChangedAtMs) < acConfig.MinVoluntaryHoldMs)
-            return ClaimDecision::kRejectHoldWindowActive;
-    }
-
-    return ClaimDecision::kAccept;
-}
-
-// Validates voluntary handoff (RequestOwnershipTransfer) sent when a client unloads an actor.
-// Rejects stale packets sent by a former owner after ownership already moved to another peer
-// (prevents TiltedEvolution-rwf bug where a late RequestOwnershipTransfer wiped InvalidOwners and deleted live bosses).
-inline bool ValidateHandoffFromOwner(
-    uint32_t aAuthoritativeOwnerPlayerId,
-    uint64_t aAuthoritativeEpoch,
-    uint32_t aSenderPlayerId,
-    uint64_t aPacketEpoch) noexcept
-{
-    if (aSenderPlayerId == 0 || aAuthoritativeOwnerPlayerId != aSenderPlayerId)
-        return false;
-
-    if (aPacketEpoch != 0 && aPacketEpoch != aAuthoritativeEpoch)
-        return false;
-
-    return true;
-}
-
 // Monotonic death & authoritative damage guard on ownership claim:
 // 1. A dead actor on the server must NEVER be resurrected by a new owner's stale local snapshot.
 // 2. If the server already tracks wounded health > 0 and < claimedHealth on a live actor, preserve the server's wounded HP
@@ -235,47 +161,4 @@ struct SafeHealthStepPlan
     return true;
 }
 
-// Client-side per-actor monotonic epoch tracker preventing out-of-order Grant/Relinquish packets
-// from leaving TWO simultaneous owners or ZERO owners on the wire.
-class ClientEpochTracker
-{
-public:
-    bool AcceptGrant(uint32_t aServerId, uint64_t aEpoch) noexcept
-    {
-        if (aEpoch == 0)
-            return true;
-
-        auto& known = m_knownEpochs[aServerId];
-        if (aEpoch < known)
-            return false;
-
-        known = aEpoch;
-        return true;
-    }
-
-    bool AcceptRelinquish(uint32_t aServerId, uint64_t aEpoch) noexcept
-    {
-        if (aEpoch == 0)
-            return true;
-
-        auto& known = m_knownEpochs[aServerId];
-        if (aEpoch < known)
-            return false;
-
-        known = aEpoch;
-        return true;
-    }
-
-    [[nodiscard]] uint64_t GetEpoch(uint32_t aServerId) const noexcept
-    {
-        const auto it = m_knownEpochs.find(aServerId);
-        return it != m_knownEpochs.end() ? it->second : 0;
-    }
-
-    void Forget(uint32_t aServerId) noexcept { m_knownEpochs.erase(aServerId); }
-    void Clear() noexcept { m_knownEpochs.clear(); }
-
-private:
-    std::unordered_map<uint32_t, uint64_t> m_knownEpochs;
-};
 } // namespace CoopOwnership

@@ -20,8 +20,7 @@
 #include <Systems/ModSystem.h>
 
 #include <Structs/ServerSettings.h>
-#include <CoopDamagePipeline.h>
-
+#include <Authority/Health.h>
 #include <atomic>
 #include <functional>
 #include <mutex>
@@ -79,7 +78,7 @@ struct World : entt::registry
         s_syncPlayerHomesCached.store(m_serverSettings.SyncPlayerHomes, std::memory_order_release);
         s_pvpEnabledCached.store(m_serverSettings.PvpEnabled, std::memory_order_release);
         s_enemyHealthMultiplierCached.store(
-            CoopDamagePipeline::NormalizeEnemyHealthMultiplier(m_serverSettings.HealthMultiplier),
+            Authority::NormalizeEnemyHealthMultiplier(m_serverSettings.HealthMultiplier),
             std::memory_order_release);
     }
 

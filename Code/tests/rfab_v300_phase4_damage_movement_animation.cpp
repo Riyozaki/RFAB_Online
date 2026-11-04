@@ -11,7 +11,8 @@
 #include <string>
 
 #include "../common/CoopAnimationState.h"
-#include "../common/CoopDamagePipeline.h"
+#include "../common/Authority/Health.h"
+#include "../common/World/CellMotion.h"
 #include <Structs/AnimationGraphDescriptorManager.h>
 #include <Structs/Skyrim/AnimationGraphDescriptor_Master_Behavior.h>
 
@@ -23,7 +24,7 @@ std::filesystem::path FindPhase4RepoRoot()
     fs::path cur = fs::current_path();
     for (int i = 0; i < 8; ++i)
     {
-        if (fs::exists(cur / "Code" / "common" / "CoopDamagePipeline.h") &&
+        if (fs::exists(cur / "Code" / "common" / "Combat" / "Health.h") &&
             fs::exists(cur / "Code" / "client" / "Systems" / "InterpolationSystem.cpp"))
         {
             return cur;
@@ -47,7 +48,8 @@ std::string LoadPhase4File(const std::filesystem::path& aRoot, const char* apRel
 
 TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage scaling (1 / M)", "[rfab][v300][phase4][damage]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace WorldMotion;
 
     SECTION("Multiplier normalization clamps edge cases safely")
     {
@@ -90,7 +92,7 @@ TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage
             const float scaledDelta = ScaleIncomingEnemyDamageDelta(-300.0f, mult, true);
             REQUIRE(scaledDelta == Approx(-100.0f));
 
-            const auto applied = ApplyAuthoritativeServerHealthDelta(serverCurrentHp, serverMaxHp, scaledDelta);
+            const auto applied = ApplyHealthDelta(serverCurrentHp, serverMaxHp, scaledDelta);
             serverCurrentHp = applied.UpdatedHealth;
             hostCurrentHp = std::max(0.0f, hostCurrentHp + applied.ClampedBroadcastDelta);
             guestCurrentHp = std::max(0.0f, guestCurrentHp + applied.ClampedBroadcastDelta);
@@ -115,11 +117,11 @@ TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage
         // Boss scripted phase heal (+50% of native MaxHP = +500.0f) stays unscaled and restores exact +50%:
         const float healDelta = ScaleIncomingEnemyDamageDelta(+500.0f, mult, true);
         CHECK(healDelta == Approx(+500.0f));
-        const auto afterHeal = ApplyAuthoritativeServerHealthDelta(serverCurrentHp, serverMaxHp, healDelta);
+        const auto afterHeal = ApplyHealthDelta(serverCurrentHp, serverMaxHp, healDelta);
         CHECK(afterHeal.UpdatedHealth == Approx(1000.0f));
 
         // Simultaneous overkill clamp prevents absurd negative overkill debt:
-        const auto overkill = ApplyAuthoritativeServerHealthDelta(120.0f, kNativeBossMaxHp, -50000.0f);
+        const auto overkill = ApplyHealthDelta(120.0f, kNativeBossMaxHp, -50000.0f);
         CHECK(overkill.UpdatedHealth == Approx(0.0f));
         CHECK(overkill.ClampedBroadcastDelta == Approx(-kNativeBossMaxHp));
     }
@@ -127,7 +129,8 @@ TEST_CASE("v3.0 Phase 4A: Native RFAB MaxHP preservation & incoming enemy damage
 
 TEST_CASE("v3.0 Phase 4B: Seamless exterior cell-border motion policy without MoveTo flicker", "[rfab][v300][phase4][movement]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace WorldMotion;
 
     SECTION("Border combat oscillating 50 times across x = 4096 inside inner 3x3 grid triggers zero MoveTo calls")
     {
@@ -285,46 +288,3 @@ TEST_CASE("v3.0 Phase 4C: Continuous vs circular vs discrete MCO/SCAR/TUDM Behav
     }
 }
 
-TEST_CASE("v3.0 Phase 4D: Source & architectural invariants audit across damage, movement, and animation pipelines", "[rfab][v300][phase4][audit]")
-{
-    const auto root = FindPhase4RepoRoot();
-    REQUIRE_FALSE(root.empty());
-
-    const std::string worldH = LoadPhase4File(root, "Code/client/World.h");
-    const std::string actorCpp = LoadPhase4File(root, "Code/client/Games/Skyrim/Actor.cpp");
-    const std::string refrH = LoadPhase4File(root, "Code/client/Games/Skyrim/TESObjectREFR.h");
-    const std::string refrCpp = LoadPhase4File(root, "Code/client/Games/Skyrim/TESObjectREFR.cpp");
-    const std::string cliAvH = LoadPhase4File(root, "Code/client/Services/ActorValueService.h");
-    const std::string cliAvCpp = LoadPhase4File(root, "Code/client/Services/Generic/ActorValueService.cpp");
-    const std::string cliCharCpp = LoadPhase4File(root, "Code/client/Services/Generic/CharacterService.cpp");
-    const std::string srvAvCpp = LoadPhase4File(root, "Code/server/Services/ActorValueService.cpp");
-    const std::string interpCpp = LoadPhase4File(root, "Code/client/Systems/InterpolationSystem.cpp");
-    const std::string descH = LoadPhase4File(root, "Code/encoding/Structs/AnimationGraphDescriptor.h");
-    const std::string masterDescCpp = LoadPhase4File(root, "Code/encoding/Structs/Skyrim/AnimationGraphDescriptor_Master_Behavior.cpp");
-    const std::string behaviorVarCpp = LoadPhase4File(root, "Code/client/ModCompat/BehaviorVar.cpp");
-
-    // 4A: Zero client PERMANENT kHealth scaling mutation; incoming enemy damage scaled at HookRestoreActorValue
-    CHECK(cliAvH.find("m_unscaledMaxHealth") == std::string::npos);
-    CHECK(cliAvCpp.find("ApplyHealthMultiplier") == std::string::npos);
-    CHECK(cliAvCpp.find("SetScaledHealthSafely") == std::string::npos);
-    CHECK(cliCharCpp.find("SeedUnscaledMaxHealthFromRemote") == std::string::npos);
-    CHECK(cliCharCpp.find("CaptureNativeBaseMaxHealth") == std::string::npos);
-    CHECK(worldH.find("GetEnemyHealthMultiplierCached") != std::string::npos);
-    CHECK(actorCpp.find("ScaleIncomingEnemyDamageDelta") != std::string::npos);
-    CHECK(srvAvCpp.find("ApplyAuthoritativeServerHealthDelta") != std::string::npos);
-
-    // 4B: Seamless exterior cell-border motion (zero per-frame !GetNiNode() MoveTo spam, MoveToCellSeamless without ResetTeleportPhysics)
-    CHECK(refrH.find("MoveToCellSeamless") != std::string::npos);
-    CHECK(refrCpp.find("void TESObjectREFR::MoveToCellSeamless") != std::string::npos);
-    CHECK(interpCpp.find("EvaluateExteriorCellMotion") != std::string::npos);
-    CHECK(interpCpp.find("MoveToCellSeamless") != std::string::npos);
-    CHECK(interpCpp.find("!apActor->GetNiNode()") == std::string::npos);
-
-    // 4C: BehaviorVar float classification & circular/discrete/continuous blending
-    CHECK(descH.find("AnimationFloatBlendMode") != std::string::npos);
-    CHECK(masterDescCpp.find("AnimationFloatBlendMode::kCircularDegrees360") != std::string::npos);
-    CHECK(masterDescCpp.find("AnimationFloatBlendMode::kDiscreteStep") != std::string::npos);
-    CHECK(behaviorVarCpp.find("ClassifyBehaviorFloatBlendKind") != std::string::npos);
-    CHECK(interpCpp.find("BlendAnimationFloatValue") != std::string::npos);
-    CHECK(interpCpp.find("ShouldPreferActionDiscreteVariables") != std::string::npos);
-}

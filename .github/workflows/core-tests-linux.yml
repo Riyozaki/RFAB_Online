@@ -1,8 +1,8 @@
 name: Core tests (Linux)
 
-# Fast feedback loop for the platform-independent layers (protocol, encoding, coop core).
-# Runs on every push and pull request: minutes instead of the 13-19 minute Windows release build,
-# and it actually executes code instead of grepping the sources.
+# Fast feedback loop for everything that does not need Windows: the protocol and
+# coop core, and the CEF UI bundle. Minutes instead of the 13-19 minute Windows
+# release build, and it executes code instead of grepping the sources.
 
 on:
   push:
@@ -23,3 +23,60 @@ jobs:
           key: core-deps-${{ hashFiles('Tools/rfab/run-core-tests.sh') }}
       - name: Build & run core tests
         run: ./Tools/rfab/run-core-tests.sh
+
+  core-tests-sanitized:
+    # The same suites under AddressSanitizer + UndefinedBehaviorSanitizer. This is how
+    # a packet that reads past its buffer gets caught before a player's game closes
+    # itself: the animation-diff overflow was invisible to a normal build on either OS.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache third-party sources
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: core-deps-${{ hashFiles('Tools/rfab/run-core-tests.sh') }}
+      - name: Build & run core tests under sanitizers
+        # 128 random payloads per opcode and length instead of the 4 the fast loop uses:
+        # with the sanitizers on, every pass is a chance to catch a deserializer that
+        # reads past its buffer.
+        env:
+          RFAB_FUZZ_SEEDS: '128'
+          # 512 random sessions instead of 32: a disagreement that shows up once in a
+          # few hundred sessions is exactly the one that reaches a player as "it
+          # desynced and I could not reproduce it".
+          RFAB_SOAK_SEEDS: '512'
+        run: ./Tools/rfab/run-core-tests.sh --asan
+
+  ui-build:
+    # Proves the shipped CEF UI can be rebuilt from Code/skyrim_ui. The release
+    # pipeline runs the very same commands (Build-CloudRelease.ps1 step [6/8]),
+    # so a UI that breaks here can no longer reach a release.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install pnpm
+        run: corepack enable
+      - name: Install dependencies
+        working-directory: Code/skyrim_ui
+        run: corepack pnpm@8.15.9 install --frozen-lockfile
+      - name: Build production bundle
+        working-directory: Code/skyrim_ui
+        run: corepack pnpm@8.15.9 run deploy:production
+      - name: Verify bundle layout
+        run: |
+          set -e
+          for f in index.html main.js runtime.js polyfills.js styles.css; do
+            test -s "Code/skyrim_ui/dist/UI/$f" || { echo "missing or empty: $f"; exit 1; }
+          done
+          ls -la Code/skyrim_ui/dist/UI
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skyrim-ui-bundle
+          path: Code/skyrim_ui/dist/UI
+          retention-days: 7

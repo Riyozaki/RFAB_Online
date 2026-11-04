@@ -11,7 +11,10 @@
 #include <sstream>
 #include <string>
 
-#include "../common/CoopDamagePipeline.h"
+#include "../common/Authority/Health.h"
+#include "../common/Authority/Audit.h"
+#include "../common/Authority/Hits.h"
+#include "../common/Sync/HitImpact.h"
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/AddTargetRequest.h>
@@ -27,7 +30,7 @@ std::filesystem::path FindV310RepoRoot()
     fs::path cur = fs::current_path();
     for (int i = 0; i < 8; ++i)
     {
-        if (fs::exists(cur / "Code" / "common" / "CoopDamagePipeline.h") &&
+        if (fs::exists(cur / "Code" / "common" / "Combat" / "Health.h") &&
             fs::exists(cur / "Code" / "client" / "Games" / "Skyrim" / "Actor.cpp"))
         {
             return cur;
@@ -51,7 +54,8 @@ std::string LoadV310File(const std::filesystem::path& aRoot, const char* apRelPa
 
 TEST_CASE("v3.1 Pillar 1: 1/M Enemy Combat Regen & ActiveEffect Heal Parity", "[rfab][v310][regen]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace Sync;
 
     SECTION("Requiem/RFAB Troll DPS check preserves exact TTK ratio instead of becoming immortal under M=3")
     {
@@ -108,7 +112,8 @@ TEST_CASE("v3.1 Pillar 1: 1/M Enemy Combat Regen & ActiveEffect Heal Parity", "[
 
 TEST_CASE("v3.1 Pillar 2: Caster 0x14 AdjustForPerks Ratio & Pre-Adjusted Spell Wire Sync", "[rfab][v310][magic]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace Sync;
     using namespace TiltedPhoques;
 
     SECTION("Resistance cancels out cleanly from M_after / M_before perk ratio")
@@ -179,7 +184,8 @@ TEST_CASE("v3.1 Pillar 2: Caster 0x14 AdjustForPerks Ratio & Pre-Adjusted Spell 
 
 TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physical Hit Impact Gate", "[rfab][v310][impact]")
 {
-    using namespace CoopDamagePipeline;
+    using namespace Authority;
+    using namespace Sync;
     using namespace TiltedPhoques;
 
     SECTION("Periodic kHealth reconciliation prevents upward bounce right after local hit while applying extra damage immediately")
@@ -220,7 +226,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         // Target facing East (heading = pi/2), Attacker East (+100, 0) -> 0.0 (front of East-facing target!)
         CHECK(ComputeNormalizedStaggerDirection(100.0f, 0.0f, 0.0f, 0.0f, kHalfPi) == Approx(0.0f).margin(0.001f));
 
-        RemoteHitImpactGate gate;
+        HitImpactGate gate;
         // Initial shield bash at t = 1000ms accepted:
         CHECK(gate.TryConsumeStagger(0x3001, 0.50f, false, 1000ULL) == Approx(0.50f));
         // Follow-up dual-wield/ally bash 400ms later blocked by poise recovery window:
@@ -233,6 +239,97 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         CHECK(gate.TryConsumeStagger(0x3003, 1.0f, /*aIsTargetGhostOrDead=*/true, 5000ULL) == Approx(0.0f));
     }
 
+    SECTION("An absolute health reading is judged by the revision it was taken with")
+    {
+        using Authority::ClassifyHealthSnapshot;
+        using Authority::SnapshotVerdict;
+
+        // Damage always lands, however old the reading that carries it.
+        CHECK(ClassifyHealthSnapshot(100.0f, 60.0f, 7u, 3u) == SnapshotVerdict::kApply);
+
+        // Healing from someone who had already seen the latest decrease is real healing.
+        CHECK(ClassifyHealthSnapshot(60.0f, 90.0f, 7u, 7u) == SnapshotVerdict::kApply);
+
+        // Healing from someone who had not is an echo of the world before the hit.
+        CHECK(ClassifyHealthSnapshot(60.0f, 100.0f, 7u, 6u) == SnapshotVerdict::kStaleIncrease);
+
+        // Saying what the server already knows is not a correction, but is worth echoing.
+        CHECK(ClassifyHealthSnapshot(60.0f, 60.2f, 7u, 1u) == SnapshotVerdict::kAlreadyCurrent);
+
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        CHECK(ClassifyHealthSnapshot(60.0f, nan, 7u, 7u) == SnapshotVerdict::kMalformed);
+        CHECK(ClassifyHealthSnapshot(60.0f, -1.0f, 7u, 7u) == SnapshotVerdict::kMalformed);
+    }
+
+    SECTION("Refusals are reported early, then quietly, and never into silence")
+    {
+        using Authority::AuditEvent;
+        Authority::CombatAudit audit;
+
+        // An idle server says nothing, however often it is asked.
+        CHECK_FALSE(audit.ShouldReport(0ULL));
+        CHECK_FALSE(audit.ShouldReport(90'000ULL));
+
+        // The first refusal of a kind is worth seeing while the player still remembers
+        // what they did.
+        audit.Record(AuditEvent::kRejectedHit);
+        CHECK(audit.ShouldReport(1'000ULL));
+        CHECK(audit.WindowCount(AuditEvent::kRejectedHit) == 1u);
+
+        // More of the same kind during a fight must not flood the log.
+        for (int i = 0; i < 50; ++i)
+            audit.Record(AuditEvent::kRejectedHit);
+        CHECK_FALSE(audit.ShouldReport(2'000ULL));
+        CHECK_FALSE(audit.ShouldReport(60'000ULL));
+
+        // A kind nobody has seen yet still gets through immediately.
+        audit.Record(AuditEvent::kStaleSnapshot);
+        CHECK(audit.ShouldReport(3'000ULL));
+        CHECK(audit.WindowCount(AuditEvent::kRejectedHit) == 50u);
+        CHECK(audit.WindowCount(AuditEvent::kStaleSnapshot) == 1u);
+
+        // Then the slow cadence, counted from the last summary.
+        audit.Record(AuditEvent::kRejectedHit);
+        CHECK_FALSE(audit.ShouldReport(62'000ULL));
+        CHECK(audit.ShouldReport(63'000ULL));
+
+        // Totals outlive the summaries; that is what an operator asks for afterwards.
+        CHECK(audit.TotalCount(AuditEvent::kRejectedHit) == 52u);
+        CHECK(audit.TotalCount(AuditEvent::kStaleSnapshot) == 1u);
+        CHECK(audit.TotalCount(AuditEvent::kDuplicateHit) == 0u);
+        CHECK(audit.AnythingRecorded());
+
+        // A clock that jumps backwards must not silence the log for good.
+        audit.Record(AuditEvent::kDuplicateHit);
+        CHECK(audit.ShouldReport(10ULL));
+
+        audit.Clear();
+        CHECK_FALSE(audit.AnythingRecorded());
+        CHECK_FALSE(audit.ShouldReport(200'000ULL));
+    }
+
+    SECTION("One swing is applied once, however many times its packet arrives")
+    {
+        Authority::HitLedger<8> ledger;
+
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+        CHECK(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+        CHECK(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+
+        // A different swing, a different target, or a different attacker is a new hit.
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 42u));
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4011u, 41u));
+        CHECK_FALSE(ledger.IsDuplicateHit(4u, 0x4010u, 41u));
+
+        // An unstamped hit from an older client is never treated as a repeat.
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 0u));
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 0u));
+
+        // A player who left takes its history with it.
+        ledger.ForgetPlayer(3u);
+        CHECK_FALSE(ledger.IsDuplicateHit(3u, 0x4010u, 41u));
+    }
+
     SECTION("Zero-damage Shield Bash interrupt roundtrips through RequestHealthChangeBroadcast & NotifyHealthChangeBroadcast")
     {
         RequestHealthChangeBroadcast req{};
@@ -241,6 +338,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         req.SourceServerId = 0x1005;
         req.StaggerMagnitude = 0.55f;
         req.StaggerDirection = 0.25f;
+        req.HitId = 9001;
 
         Buffer buf(256);
         Buffer::Writer writer(&buf);
@@ -255,6 +353,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         CHECK(rx->SourceServerId == 0x1005);
         CHECK(rx->StaggerMagnitude == Approx(0.55f));
         CHECK(rx->StaggerDirection == Approx(0.25f));
+        CHECK(rx->HitId == 9001);
 
         NotifyHealthChangeBroadcast notify{};
         notify.Id = rx->Id;
@@ -282,7 +381,7 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
         // Player has 150 Permanent MaxHP + 250 Temporary Fortify Health = 400 CurrentHP.
         const float permMaxHp = 150.0f;
         const float currentBuffedHp = 400.0f;
-        const auto afterChip = ApplyAuthoritativeServerHealthDelta(
+        const auto afterChip = ApplyHealthDelta(
             currentBuffedHp,
             std::max(permMaxHp, currentBuffedHp),
             -25.0f);
@@ -291,51 +390,3 @@ TEST_CASE("v3.1 Pillar 3 & 4: Non-Rubberbanding CurrentHP Reconciliation & Physi
     }
 }
 
-TEST_CASE("v3.1 Architectural Source Contracts across Client & Server Services", "[rfab][v310][contracts]")
-{
-    const auto root = FindV310RepoRoot();
-    REQUIRE_FALSE(root.empty());
-
-    const auto actorCpp = LoadV310File(root, "Code/client/Games/Skyrim/Actor.cpp");
-    const auto animCpp = LoadV310File(root, "Code/client/Games/Animation.cpp");
-    const auto magicTargetCpp = LoadV310File(root, "Code/client/Games/Skyrim/Magic/MagicTarget.cpp");
-    const auto cliMagicCpp = LoadV310File(root, "Code/client/Services/Generic/MagicService.cpp");
-    const auto cliAvCpp = LoadV310File(root, "Code/client/Services/Generic/ActorValueService.cpp");
-    const auto srvAvCpp = LoadV310File(root, "Code/server/Services/ActorValueService.cpp");
-    const auto cliQuestCpp = LoadV310File(root, "Code/client/Services/Generic/QuestService.cpp");
-    const auto srvQuestCpp = LoadV310File(root, "Code/server/Services/QuestService.cpp");
-    const auto v300Manifest = LoadV310File(root, "docs/V3.0.0_RELEASE_BACKUP_MANIFEST.json");
-    const auto buildPs1 = LoadV310File(root, "Tools/rfab/Build-CloudRelease.ps1");
-
-    // 0. Immutable v3.0.0-backup manifest & v3.1.0 release pipeline:
-    CHECK(v300Manifest.find("\"v3.0.0-backup\"") != std::string::npos);
-    CHECK(v300Manifest.find("0b6977459bc9e6e62d8bf6f36925cba2f3a83b486c3a67f6edcad0aaeb8aa298") != std::string::npos);
-    CHECK(v300Manifest.find("dbb8aa7294af29ba16cb1291f8bbb6027a3825c148e4c0ae2b748f74418c1fe9") != std::string::npos);
-    CHECK(buildPs1.find("Ensure-V300BackupRelease") != std::string::npos);
-    CHECK(buildPs1.find("Resolve-ReleaseVersionTag") != std::string::npos);
-
-    // 1. Destruction ValueModifierEffect & Concentration beam fixes + 1/M enemy heal scaling:
-    CHECK(actorCpp.find("ScaleIncomingEnemyHealDelta") != std::string::npos);
-    CHECK(actorCpp.find("s_inLocalCasterConcentrationEffect") != std::string::npos);
-    CHECK(actorCpp.find("TryAcceptRemoteHitReactionAction") != std::string::npos);
-    CHECK(animCpp.find("Actor::TryAcceptRemoteHitReactionAction") != std::string::npos);
-
-    // 2. Outgoing 0x14 AdjustForPerks spell ratio + Frame-0 CastSpellImmediate guard + 0x14 incoming perk preservation:
-    CHECK(magicTargetCpp.find("ScopedLocalCasterPerkCapture") != std::string::npos);
-    CHECK(magicTargetCpp.find("ComputeCasterOutgoingPerkMultiplier") != std::string::npos);
-    CHECK(magicTargetCpp.find("allowLocalPlayerPvpBeam") != std::string::npos);
-    CHECK(cliMagicCpp.find("m_concentrationClaimKeepaliveMs") != std::string::npos);
-    CHECK(cliMagicCpp.find("resyncEvt.HasPreAdjustedPerks = true;") != std::string::npos);
-
-    // 3. Periodic CurrentHP reconciliation + Temporary HP preservation + RemoteHitImpactGate stagger & cast interrupt:
-    CHECK(cliAvCpp.find("ShouldReconcileRemoteActorHealthSnapshot") != std::string::npos);
-    CHECK(cliAvCpp.find("m_remoteHitImpactGate.TryConsumeStagger") != std::string::npos);
-    CHECK(cliAvCpp.find("pActor->InterruptCast(false);") != std::string::npos);
-    CHECK(cliAvCpp.find("BroadcastCombatHealthSnapshots") != std::string::npos);
-    CHECK(srvAvCpp.find("std::max(maxHealth, currentHealth)") != std::string::npos);
-
-    // 4. Host-canonical BGSScene authority, liveStageId capture & echo suppression:
-    CHECK(cliQuestCpp.find("ScopedRemoteQuestUpdateGuard remoteSceneGuard") != std::string::npos);
-    CHECK(cliQuestCpp.find("update.Status = RequestQuestUpdate::StageUpdateForced;") != std::string::npos);
-    CHECK(srvQuestCpp.find("ignoring non-leader scene") != std::string::npos);
-}

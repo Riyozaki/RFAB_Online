@@ -4,6 +4,7 @@
 #include <Messages/CharacterSpawnRequest.h>
 #include <CoopExperienceLedger.h>
 #include <CoopHairColorSync.h>
+#include <Authority/Lease.h>
 #include <CoopOwnership.h>
 #include <CoopWorldStabilizer.h>
 #include <CoopWorldView.h>
@@ -218,7 +219,7 @@ private:
 
     float m_cachedExperience = 0.f;
     CoopExperienceLedger::ClientRfabXpTracker m_rfabXpTracker{};
-    mutable CoopOwnership::ClientEpochTracker m_ownershipEpochTracker{};
+    mutable Authority::LeaseTable m_ownershipLeases{};
     mutable CoopWorldView::CancelledCookieTracker<64> m_cancelledCookies{};
     mutable CoopWorldStabilizer::AuthoritativePlacedActorRegistry m_authoritativePlacedBases{};
     mutable CoopWorldStabilizer::RelinquishClaimCooldownTracker m_relinquishClaimCooldowns{};

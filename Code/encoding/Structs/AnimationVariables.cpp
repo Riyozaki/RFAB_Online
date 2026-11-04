@@ -29,17 +29,28 @@ void AnimationVariables::VectorBool_to_String(const Vector<bool>& bools, TiltedP
             *citer |= *biter++ ? mask : 0;
 }
 
-// The Vector<bool> must be the correct size when called.
+// Unpacks a bitstream into bools. The two sizes are independent: the counts come from
+// one part of the packet and the packed bytes from another, so a sender can declare more
+// values than it paid bytes for. The loop used to walk the output and read the input in
+// lockstep without ever checking the input end - a remote read past the string, which
+// AddressSanitizer reports as a stack-buffer-overflow on a short (SSO) string.
+// Bits the packet did not carry stay false.
 //
 void AnimationVariables::String_to_VectorBool(const TiltedPhoques::String& chars, Vector<bool>& bools)
 {
     bools.assign(bools.size(), false);
 
-    auto citer = chars.begin();
-    auto biter = bools.begin();
-    for (uint32_t mask = 1; biter < bools.end(); mask = 1, citer++)
-        for (; mask < 0x100 && biter < bools.end(); mask <<= 1)
-            *biter++ = (*citer & mask) ? true : false;
+    const size_t count = bools.size();
+    size_t index = 0;
+    for (const char packedChar : chars)
+    {
+        if (index >= count)
+            break;
+
+        const auto packed = static_cast<uint8_t>(packedChar);
+        for (uint32_t mask = 1; mask < 0x100 && index < count; mask <<= 1)
+            bools[index++] = (packed & mask) != 0;
+    }
 }
 
 

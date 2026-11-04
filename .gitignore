@@ -115,3 +115,9 @@ RFAB_ref/
 # Generated artifacts (see Tools/rfab/parse_rfab_esp.py: regenerate locally from your own RFAB.esp)
 docs/rfab/rfab_records.tsv
 build_logs_and_report/
+
+# The CEF UI is build output: Code/skyrim_ui -> dist/UI, produced by
+# `pnpm run deploy:production` and staged by Tools/rfab/Package-Release.ps1.
+# Committing a bundle is what made the shipped UI diverge from the sources.
+Code/skyrim_ui/dist/
+dist_ready/RFAB_Online_MO2/SkyrimTogetherReborn/UI/

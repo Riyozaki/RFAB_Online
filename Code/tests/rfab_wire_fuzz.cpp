@@ -21,11 +21,13 @@
 #include <TiltedCore/ViewBuffer.hpp>
 
 #include <Messages/ClientMessageFactory.h>
+#include <Structs/AnimationVariables.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Opcodes.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #include <vector>
@@ -52,6 +54,26 @@ void FillSmallAlphabet(uint8_t* apData, size_t aSize, uint32_t aSeed) noexcept
     uint32_t state = aSeed | 1u;
     for (size_t i = 0; i < aSize; ++i)
         apData[i] = static_cast<uint8_t>(NextXorShift(state) & 0x7u);
+}
+
+// How many random payloads to try per opcode and length. One pass is enough to keep the
+// fast loop fast; the sanitized CI job raises it with RFAB_FUZZ_SEEDS, where each extra
+// pass is a real chance to catch a deserializer reading past its buffer.
+size_t FuzzPasses() noexcept
+{
+    static const size_t passes = []() -> size_t {
+        const char* pEnv = std::getenv("RFAB_FUZZ_SEEDS");
+        if (!pEnv)
+            return 4u;
+
+        const long parsed = std::strtol(pEnv, nullptr, 10);
+        if (parsed <= 0)
+            return 1u;
+
+        return static_cast<size_t>(parsed > 4096 ? 4096 : parsed);
+    }();
+
+    return passes;
 }
 
 std::string Describe(const char* apKind, size_t aOpcode, size_t aSize, const char* apCase)
@@ -121,10 +143,14 @@ TEST_CASE("Wire: every ClientOpcode survives truncated and random payloads", "[w
     {
         for (size_t size : kPayloadSizes)
         {
-            std::vector<uint8_t> payload(size);
-            FillSmallAlphabet(payload.data(), payload.size(), static_cast<uint32_t>(opcode * 131u + size * 17u + 1u));
-            ExpectSafeExtract<ClientMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
-                                                                  "client", "small-alphabet");
+            for (size_t pass = 0; pass < FuzzPasses(); ++pass)
+            {
+                std::vector<uint8_t> payload(size);
+                FillSmallAlphabet(payload.data(), payload.size(),
+                                  static_cast<uint32_t>(opcode * 131u + size * 17u + pass * 7919u + 1u));
+                ExpectSafeExtract<ClientMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
+                                                                      "client", "small-alphabet");
+            }
         }
 
         // Maximal varint: 8 x 0xFF decodes to a huge unsigned value.
@@ -145,10 +171,14 @@ TEST_CASE("Wire: every ServerOpcode survives truncated and random payloads", "[w
     {
         for (size_t size : kPayloadSizes)
         {
-            std::vector<uint8_t> payload(size);
-            FillSmallAlphabet(payload.data(), payload.size(), static_cast<uint32_t>(opcode * 197u + size * 13u + 7u));
-            ExpectSafeExtract<ServerMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
-                                                                  "server", "small-alphabet");
+            for (size_t pass = 0; pass < FuzzPasses(); ++pass)
+            {
+                std::vector<uint8_t> payload(size);
+                FillSmallAlphabet(payload.data(), payload.size(),
+                                  static_cast<uint32_t>(opcode * 197u + size * 13u + pass * 6271u + 7u));
+                ExpectSafeExtract<ServerMessageFactory>(factory, static_cast<uint32_t>(opcode), payload,
+                                                                      "server", "small-alphabet");
+            }
         }
 
         std::vector<uint8_t> maximal(8, 0xFF);
@@ -242,5 +272,60 @@ TEST_CASE("Wire: a valid message truncated at every byte boundary stays safe", "
         INFO("authentication prefix " << prefix << " of " << fullSize);
         CHECK_FALSE(threw);
         CHECK_FALSE(opcodeMismatch);
+    }
+}
+
+// A packet declares how many animation variables it carries and, separately, the packed
+// bits for them. Nothing forces the two to agree, so the unpacker must never read past
+// the bytes it was actually given. AddressSanitizer caught this as a stack-buffer-overflow
+// reachable straight from AnimationVariables::ApplyDiff.
+TEST_CASE("Wire: an animation diff that promises more values than it carries stays in bounds",
+          "[rfab][wire][fuzz][animation]")
+{
+    using namespace TiltedPhoques;
+
+    auto applyDiff = [](size_t aBooleans, size_t aIntegers, size_t aFloats, const std::string& acPackedBits) {
+        Buffer buffer(1024);
+        Buffer::Writer writer(&buffer);
+        Serialization::WriteVarInt(writer, aBooleans);
+        Serialization::WriteVarInt(writer, aIntegers);
+        Serialization::WriteVarInt(writer, aFloats);
+        Serialization::WriteString(writer, String(acPackedBits.c_str(), acPackedBits.size()));
+
+        Buffer::Reader reader(&buffer);
+        AnimationVariables variables{};
+        variables.ApplyDiff(reader);
+        return variables;
+    };
+
+    SECTION("no packed bytes at all")
+    {
+        const auto variables = applyDiff(64, 0, 0, "");
+        REQUIRE(variables.Booleans.size() == 64);
+        CHECK(std::count(variables.Booleans.begin(), variables.Booleans.end(), true) == 0);
+    }
+
+    SECTION("one byte for sixty-four booleans")
+    {
+        const auto variables = applyDiff(64, 0, 0, std::string(1, '\xFF'));
+        REQUIRE(variables.Booleans.size() == 64);
+        // The eight bits that were sent are set; the rest were never paid for.
+        for (size_t i = 0; i < 8; ++i)
+            CHECK(variables.Booleans[i]);
+        CHECK(std::count(variables.Booleans.begin(), variables.Booleans.end(), true) == 8);
+    }
+
+    SECTION("more packed bytes than values is harmless too")
+    {
+        const auto variables = applyDiff(4, 0, 0, std::string(32, '\xFF'));
+        REQUIRE(variables.Booleans.size() == 4);
+        CHECK(std::count(variables.Booleans.begin(), variables.Booleans.end(), true) == 4);
+    }
+
+    SECTION("the changed-table for integers and floats is bounded as well")
+    {
+        const auto variables = applyDiff(0, 16, 16, std::string(1, '\x01'));
+        CHECK(variables.Integers.size() == 16);
+        CHECK(variables.Floats.size() == 16);
     }
 }

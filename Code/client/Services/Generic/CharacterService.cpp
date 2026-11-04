@@ -76,6 +76,7 @@
 #include <Messages/NotifyRelinquishControl.h>
 #include <Messages/NotifyEquipmentChanges.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Authority/Hits.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <DefaultObjectManager.h>
 
@@ -652,7 +653,7 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
         return false;
     }
 
-    if (aOwnershipEpoch != 0 && !m_ownershipEpochTracker.AcceptGrant(acServerId, aOwnershipEpoch))
+    if (aOwnershipEpoch != 0 && !m_ownershipLeases.AcceptEpoch(acServerId, aOwnershipEpoch, true))
     {
         spdlog::debug("Ignored stale TakeOwnership grant for {:X} (epoch {})", acServerId, aOwnershipEpoch);
         return false;
@@ -664,7 +665,7 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
     if (!pActor->IsDead() && pActor->formID != 0x14)
         pActor->EvaluatePackage();
 
-    const uint64_t effectiveEpoch = aOwnershipEpoch != 0 ? aOwnershipEpoch : m_ownershipEpochTracker.GetEpoch(acServerId);
+    const uint64_t effectiveEpoch = aOwnershipEpoch != 0 ? aOwnershipEpoch : m_ownershipLeases.EpochOf(acServerId);
     m_cachedRemoteSpawns.erase(acServerId);
     m_remoteModels.erase(acServerId);
     m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId, effectiveEpoch);
@@ -1234,7 +1235,7 @@ void CharacterService::NotifySaveLoadReset() noexcept
     m_rfabXpTracker.Reset();
     m_authoritativePlacedBases.Clear();
     m_relinquishClaimCooldowns.Clear();
-    m_ownershipEpochTracker.Clear();
+    m_ownershipLeases.Clear();
     m_cancelledCookies.Clear();
     m_pendingRemoteMounts.clear();
     m_pendingLocalMount = {};
@@ -1312,7 +1313,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
     if (acMessage.Owner)
     {
-        m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch);
+        m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, true);
         spdlog::info(__FUNCTION__ ": received local actor, form id: {:X}, {}", pActor->formID, pActor->baseForm ? pActor->baseForm->GetName() : "<null>");
 
         if (const auto modelIt = m_remoteModels.find(acMessage.ServerId);
@@ -1428,12 +1429,13 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             RequestHealthChangeBroadcast hpSync{};
             hpSync.Id = acMessage.ServerId;
             hpSync.DeltaHealth = waitingSnapshot.PendingHealthDelta;
+            hpSync.HitId = Authority::NextOutgoingHitId();
             m_transport.Send(hpSync);
         }
     }
     else
     {
-        m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch);
+        m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, false);
         spdlog::info(__FUNCTION__ ": received remote actor, form id: {:X}, isweapondrawn: {}, {}", pActor->formID, acMessage.IsWeaponDrawn, pActor->baseForm ? pActor->baseForm->GetName() : "<null>");
 
         if (const auto modelIt = m_remoteModels.find(acMessage.ServerId);
@@ -1471,6 +1473,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
             RequestHealthChangeBroadcast hpSync{};
             hpSync.Id = acMessage.ServerId;
             hpSync.DeltaHealth = waitingSnapshot.PendingHealthDelta;
+            hpSync.HitId = Authority::NextOutgoingHitId();
             m_transport.Send(hpSync);
         }
 
@@ -1687,7 +1690,7 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
 void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) const noexcept
 {
-    if (!m_ownershipEpochTracker.AcceptGrant(acMessage.ServerId, acMessage.OwnershipEpoch))
+    if (!m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, true))
     {
         spdlog::debug("Ignored stale NotifyOwnershipTransfer for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
         return;
@@ -1731,7 +1734,7 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
 
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
 {
-    m_ownershipEpochTracker.Forget(acMessage.ServerId);
+    m_ownershipLeases.Forget(acMessage.ServerId);
     m_cachedRemoteSpawns.erase(acMessage.ServerId);
 
     bool isNetworkModel = false;
@@ -1794,7 +1797,7 @@ void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage)
 
 void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& acMessage) noexcept
 {
-    if (!m_ownershipEpochTracker.AcceptRelinquish(acMessage.ServerId, acMessage.OwnershipEpoch))
+    if (!m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, false))
     {
         spdlog::debug("Ignored stale NotifyRelinquishControl for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
         return;

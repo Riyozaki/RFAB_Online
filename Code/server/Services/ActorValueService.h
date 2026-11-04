@@ -1,8 +1,8 @@
 #pragma once
 
 #include <Events/PacketEvent.h>
-#include <CoopDamagePipeline.h>
-
+#include <Authority/Audit.h>
+#include <Authority/Hits.h>
 struct World;
 struct UpdateEvent;
 struct PlayerLeaveEvent;
@@ -25,12 +25,22 @@ struct ActorValueService
     void RecordCombatClaim(
         uint32_t aAttackerPlayerId,
         uint32_t aTargetServerId,
-        CoopDamagePipeline::ServerHitClaimKind aKind) const noexcept;
+        Authority::HitKind aKind) const noexcept;
     void RecordPlayerDownedState(uint32_t aPlayerId, bool aIsDowned) const noexcept;
 
+    //! @brief Print everything the server has refused since it started.
+    //!
+    //! Exposed because the answer to "combat felt wrong" has to be something a server
+    //! operator can actually fetch, not a debug build.
+    void LogCombatAudit() const noexcept;
+
 private:
+    //! Say out loud what was just refused, at most as often as the policy allows.
+    void ReportAudit(uint64_t aNowMs) const noexcept;
+
     World& m_world;
-    mutable CoopDamagePipeline::ServerCombatAuthorityLedger<64> m_combatAuthorityLedger{};
+    mutable Authority::HitLedger<64> m_combatAuthorityLedger{};
+    mutable Authority::CombatAudit m_combatAudit{};
 
     void OnPlayerLeave(const PlayerLeaveEvent& acEvent) const noexcept;
     void OnActorValueChanges(const PacketEvent<RequestActorValueChanges>& acMessage) const noexcept;

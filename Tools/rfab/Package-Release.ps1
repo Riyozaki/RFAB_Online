@@ -3,7 +3,12 @@
     [string]$BuildMode = "releasedbg"
 )
 
-$script:RfabRepoRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$script:RfabScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+# This script lives in <repo>/Tools/rfab, so the repository root is two levels up.
+# Resolving it from the script directory kept VERSION unreadable and made the whole
+# release abort in under a second the first time the tag was not passed in by hand.
+$script:RfabRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RfabScriptRoot ".."))
+$script:RfabRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RfabRepoRoot ".."))
 
 # Single source of truth for the release number: <repo>/VERSION.
 function Resolve-ReleaseVersionTag {
@@ -87,12 +92,14 @@ foreach ($binName in @("SkyrimSE.exe", "EarlyLoad.dll", "TPProcess.exe")) {
 Copy-Item -LiteralPath (Join-Path $StageClient "SkyrimSE.exe") `
           -Destination (Join-Path $StageClient "SkyrimTogether.exe") -Force
 
-# Always stage our custom compiled RFAB Online Angular CEF UI bundle (with «Единство в битве» Right-Ctrl toggle)
-# over any upstream xmake skyrim-together-ui package files in $DistribBin\UI!
-$CustomUi = Join-Path $RepoRoot "dist_ready\RFAB_Online_MO2\SkyrimTogetherReborn\UI"
-if (Test-Path -LiteralPath (Join-Path $CustomUi "index.html")) {
-    Invoke-RobocopySafe -Src $CustomUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/MIR")
+# The CEF UI ships straight from the Angular build output (Build-CloudRelease.ps1
+# step [6/8]), never from a bundle committed to the repository. A missing bundle is
+# a hard error: shipping a stale UI silently is exactly the failure this replaces.
+$BuiltUi = Join-Path $RepoRoot "Code\skyrim_ui\dist\UI"
+if (-not (Test-Path -LiteralPath (Join-Path $BuiltUi "index.html"))) {
+    throw "Angular UI bundle missing at $BuiltUi. Build it with: cd Code\skyrim_ui; corepack pnpm@8.15.9 install --frozen-lockfile; corepack pnpm@8.15.9 run deploy:production"
 }
+Invoke-RobocopySafe -Src $BuiltUi -Dst (Join-Path $StageClient "UI") -ExtraArgs @("/MIR")
 
 Write-Host "==> [3/6] Staging Standalone Dedicated Server (RFAB_Online_Server)..." -ForegroundColor Cyan
 foreach ($srvBin in @("SkyrimTogetherServer.exe", "STServer.dll")) {

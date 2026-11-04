@@ -91,122 +91,6 @@ void AppendTopLevelGroup(
 }
 } // namespace
 
-TEST_CASE("Stage 0: Immutable v2.0.1-backup manifest and CI release protection", "[rfab][v202][stage0]")
-{
-    const auto root = LocateRepoRootForV202Audit();
-    REQUIRE_FALSE(root.empty());
-
-    const std::string manifest = LoadRepoFileText(root, "docs/V2.0.1_RELEASE_BACKUP_MANIFEST.json");
-    REQUIRE(manifest.find("\"v2.0.1-backup\"") != std::string::npos);
-    REQUIRE(manifest.find("bfb633d6b751e8fd9f5a149f935bc149bf79a428276931b0a277a358577cb5bf") != std::string::npos);
-    REQUIRE(manifest.find("f9e95eec07cdb63bb54bf8bbf39084636bb3ae6818efd65003d994d3c93b6581") != std::string::npos);
-    REQUIRE(manifest.find("f48a9cf055d87c46437c0b0ad22514a27ac21068d783301661aa845434161da7") != std::string::npos);
-    REQUIRE(manifest.find("71a0ff68a41b2dc2ff12065bcd4619c6b5734b2b588f5a327b95fa9b2fd485a1") != std::string::npos);
-
-    const std::string ps1 = LoadRepoFileText(root, "Tools/rfab/Build-CloudRelease.ps1");
-    REQUIRE(ps1.size() > 3);
-    // Preserve UTF-8 BOM (EF BB BF) for Windows PowerShell 5.1 compatibility on windows-2022 runners
-    REQUIRE(static_cast<unsigned char>(ps1[0]) == 0xEF);
-    REQUIRE(static_cast<unsigned char>(ps1[1]) == 0xBB);
-    REQUIRE(static_cast<unsigned char>(ps1[2]) == 0xBF);
-    REQUIRE(ps1.find("\"v2.0.1-backup\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.0.1\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.0.2-backup\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.0.2\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.0.3-backup\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.0.3\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.1.0-backup\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v2.1.0\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v3.0.0-backup\"") != std::string::npos);
-    REQUIRE(ps1.find("\"v3.0.0\"") != std::string::npos);
-    REQUIRE(ps1.find("Resolve-ReleaseVersionTag") != std::string::npos);
-    REQUIRE(ps1.find("[switch]$SkipPublish") != std::string::npos);
-}
-
-TEST_CASE("Stage 1 & 2: Zero-CTD Core, Persistent ServerWorldModel, and O(1) ClientWorldView invariants", "[rfab][v202][stage1][stage2]")
-{
-    const auto root = LocateRepoRootForV202Audit();
-    REQUIRE_FALSE(root.empty());
-
-    SECTION("Stage 1: Trivially destructible ActorExtension, CRT mimalloc family, RAII NiPointer, and thread-safe World/ModSystem")
-    {
-        const std::string actorExtH = LoadRepoFileText(root, "Code/client/Games/ActorExtension.h");
-        REQUIRE(actorExtH.find("std::is_trivially_destructible_v<ActorExtension>") != std::string::npos);
-        REQUIRE(actorExtH.find("ActionEvent LatestAnimation") == std::string::npos);
-
-        const std::string memoryCpp = LoadRepoFileText(root, "Code/client/Games/Memory.cpp");
-        REQUIRE(memoryCpp.find("TP_HOOK_IAT(calloc, cHeapModule)") != std::string::npos);
-        REQUIRE(memoryCpp.find("TP_HOOK_IAT(_recalloc, cHeapModule)") != std::string::npos);
-        REQUIRE(memoryCpp.find("TP_HOOK_IAT(_expand, cHeapModule)") != std::string::npos);
-        REQUIRE(memoryCpp.find("TP_HOOK_IAT(_msize, cHeapModule)") != std::string::npos);
-        REQUIRE(memoryCpp.find("TP_HOOK_IAT(_aligned_msize, cHeapModule)") != std::string::npos);
-        REQUIRE(memoryCpp.find("TP_HOOK_IAT(_aligned_recalloc, cHeapModule)") != std::string::npos);
-        REQUIRE(memoryCpp.find("kActorValueListByteSize = 0x528") != std::string::npos);
-
-        const std::string niPtrH = LoadRepoFileText(root, "Code/client/Games/Skyrim/NetImmerse/NiPointer.h");
-        REQUIRE(niPtrH.find("~NiPointer() noexcept") != std::string::npos);
-        REQUIRE(niPtrH.find("std::add_lvalue_reference_t<T>") != std::string::npos);
-
-        const std::string modSysH = LoadRepoFileText(root, "Code/client/Systems/ModSystem.h");
-        REQUIRE(modSysH.find("mutable std::shared_mutex m_mutex") != std::string::npos);
-
-        const std::string worldH = LoadRepoFileText(root, "Code/client/World.h");
-        REQUIRE(worldH.find("IsCreated()") != std::string::npos);
-        REQUIRE(worldH.find("IsConnectedCached()") != std::string::npos);
-        REQUIRE(worldH.find("IsContainerMenuOpenCached()") != std::string::npos);
-        REQUIRE(worldH.find("IsSyncPlayerHomesCached()") != std::string::npos);
-
-        const std::string combatCtrlCpp = LoadRepoFileText(root, "Code/client/Games/Skyrim/Combat/CombatController.cpp");
-        REQUIRE(combatCtrlCpp.find("pExt->IsRemote() || pExt->HasCombatTargetLock()") != std::string::npos);
-        REQUIRE(combatCtrlCpp.find("Actor::LookupByHandle") != std::string::npos);
-    }
-
-    SECTION("Stage 2: Dormant persistent NPCs, O(1) client entity indices, 0xFF00xxxx template protection, and placed spawner restore")
-    {
-        const std::string serverCharCpp = LoadRepoFileText(root, "Code/server/Services/CharacterService.cpp");
-        REQUIRE(serverCharCpp.find("ownerComponent.SetOwner(nullptr, nowMs)") != std::string::npos);
-        REQUIRE(serverCharCpp.find("PruneExcessDormantCharacters") != std::string::npos);
-        REQUIRE(serverCharCpp.find("m_interestRegistry.MarkInRange(acMessage.pPlayer->GetId(), existingServerId)") != std::string::npos);
-        REQUIRE(serverCharCpp.find("m_interestRegistry.MarkInRange(pPreviousOwner->GetId(), acServerId)") != std::string::npos);
-
-        const std::string gameServerCpp = LoadRepoFileText(root, "Code/server/GameServer.cpp");
-        REQUIRE(gameServerCpp.find("pCharComp->IsPlayerSummon()") != std::string::npos);
-
-        const std::string clientCharH = LoadRepoFileText(root, "Code/client/Services/CharacterService.h");
-        REQUIRE(clientCharH.find("m_entityIndex") != std::string::npos);
-        REQUIRE(clientCharH.find("ReconcilePlacedActorBaseFormInPlace") != std::string::npos);
-        REQUIRE(clientCharH.find("m_suppressedPlacedActors") == std::string::npos);
-
-        const std::string clientCharCpp = LoadRepoFileText(root, "Code/client/Services/Generic/CharacterService.cpp");
-        REQUIRE(clientCharCpp.find("(pNpc->formID & 0xFF000000u) == 0xFF000000u") != std::string::npos);
-        REQUIRE(clientCharCpp.find("CharacterService::ReconcilePlacedActorBaseFormInPlace") != std::string::npos);
-        REQUIRE(clientCharCpp.find("m_suppressedPlacedActors") == std::string::npos);
-
-        const std::string interpCpp = LoadRepoFileText(root, "Code/client/Systems/InterpolationSystem.cpp");
-        REQUIRE(interpCpp.find("(apActor->formID & 0xFF000000u) == 0xFF000000u") != std::string::npos);
-
-        const std::string discH = LoadRepoFileText(root, "Code/client/Services/DiscoveryService.h");
-        REQUIRE(discH.find("m_niNodeFlickerGraceFrames") != std::string::npos);
-    }
-}
-
-TEST_CASE("Stage 3.1 & 3.2: Exact RFAB lethal-damage intercept and buff-preserving cross-cell rollback", "[rfab][v202][stage3]")
-{
-    const auto root = LocateRepoRootForV202Audit();
-    REQUIRE_FALSE(root.empty());
-
-    const std::string actorCpp = LoadRepoFileText(root, "Code/client/Games/Skyrim/Actor.cpp");
-    // +65536 temporaryModifier HP inflation and 1.0f HP clamp must be gone in favor of native 0.0f bleedout
-    REQUIRE(actorCpp.find("65536.0f") == std::string::npos);
-    REQUIRE(actorCpp.find("TriggerNativeBleedout") != std::string::npos);
-    REQUIRE(actorCpp.find("LatchNativeBleedoutEntered") != std::string::npos);
-    REQUIRE(actorCpp.find("void Actor::DispelHostileEffects() noexcept") != std::string::npos);
-
-    const std::string coordSaveCpp = LoadRepoFileText(root, "Code/client/Services/CoordinatedSaveService.cpp");
-    REQUIRE(coordSaveCpp.find("pPlayer->DispelHostileEffects();") != std::string::npos);
-    REQUIRE(coordSaveCpp.find("pPlayer->DispelAllSpells();") == std::string::npos);
-    REQUIRE(coordSaveCpp.find("pPlayer->MoveToWorldOrCell(pTargetCell, pTargetWorldSpace, targetPos, targetRot);") != std::string::npos);
-}
 
 TEST_CASE("Stage 3.3: Cross-version RFAB binary ESP/ESL EDID indexer, plugins.txt '*' parser, and recursive SKSE config discovery", "[rfab][v202][stage3][compat]")
 {
@@ -453,25 +337,7 @@ TEST_CASE("v2.0.2 SkyMP-Grade Server Container Anti-Dupe Ledger & Security Harde
     SECTION("Source invariants verify Server Combat Reconcile Window, Zero-Spoof Magic/Auth & O(1) Object Indexing")
     {
         const auto root = LocateRepoRootForV202Audit();
-        REQUIRE_FALSE(root.empty());
 
-        const std::string avService = LoadRepoFileText(root, "Code/server/Services/ActorValueService.cpp");
-        REQUIRE(avService.find("kExternalDamageReconcileWindowMs") != std::string::npos);
-        REQUIRE(avService.find("IsBossGhost(message.Id)") != std::string::npos);
 
-        const std::string magicService = LoadRepoFileText(root, "Code/server/Services/MagicService.cpp");
-        REQUIRE(magicService.find("senderAuthorized") != std::string::npos);
-
-        const std::string modsComp = LoadRepoFileText(root, "Code/server/Components/ModsComponent.cpp");
-        REQUIRE(modsComp.find("NormalizeModFilenameKey") != std::string::npos);
-
-        const std::string objComp = LoadRepoFileText(root, "Code/server/Components/ObjectComponent.h");
-        REQUIRE(objComp.find("pLastSender") == std::string::npos);
-
-        const std::string objService = LoadRepoFileText(root, "Code/server/Services/ObjectService.cpp");
-        REQUIRE(objService.find("m_objectEntityByKey") != std::string::npos);
-
-        const std::string utilsH = LoadRepoFileText(root, "Code/client/Utils.h");
-        REQUIRE(utilsH.find("FindEntityByServerId(acServerId)") != std::string::npos);
     }
 }

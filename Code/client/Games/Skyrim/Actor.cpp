@@ -4,7 +4,9 @@
 #include <Misc/MiddleProcess.h>
 #include <Havok/bhkCharacterController.h>
 #include <CoopOwnership.h>
-#include <CoopDamagePipeline.h>
+#include <Authority/Health.h>
+#include <Sync/HitImpact.h>
+#include <Authority/ScriptDamage.h>
 #include <CoopWorldStabilizer.h>
 #include <Misc/GameVM.h>
 #include <DefaultObjectManager.h>
@@ -1376,7 +1378,7 @@ void Actor::ResurrectInPlace() noexcept
 
 namespace
 {
-CoopDamagePipeline::ScriptDamageAuthLedger<64> s_scriptDamageAuthLedger{};
+Authority::ScriptDamageLedger<64> s_scriptDamageAuthLedger{};
 thread_local bool s_inApplyActorEffect = false;
 thread_local bool s_inLocalCasterConcentrationEffect = false;
 thread_local uint32_t s_localConcentrationCasterFormId = 0;
@@ -1645,7 +1647,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
     const auto* pTargetExtForScale = apThis->GetExtension();
     const bool scaleTargetIncomingDamage =
         pTargetExtForScale &&
-        CoopDamagePipeline::ShouldScaleIncomingEnemyDamage(
+        Authority::ShouldScaleIncomingEnemyDamage(
             pTargetExtForScale->IsPlayer(),
             apThis->IsPlayerTeammate(),
             apThis->IsPlayerSummon(),
@@ -1654,7 +1656,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
 
     const float currentHealth = apThis->GetActorValue(ActorValueInfo::kHealth);
     const float rawEstimatedDamage = GameplayFormulas::CalculateRealDamage(apThis, aDamage, aKillMove);
-    const float estimatedRealDamage = -CoopDamagePipeline::ScaleIncomingEnemyDamageDelta(
+    const float estimatedRealDamage = -Authority::ScaleIncomingEnemyDamageDelta(
         -rawEstimatedDamage,
         World::GetEnemyHealthMultiplierCached(),
         scaleTargetIncomingDamage);
@@ -1711,7 +1713,7 @@ bool TP_MAKE_THISCALL(HookDamageActor, Actor, float aDamage, Actor* apHitter, bo
             if (std::isfinite(rawStagger) && rawStagger > 0.05f)
             {
                 capturedStaggerMag = std::clamp(rawStagger, 0.15f, 1.0f);
-                capturedStaggerDir = CoopDamagePipeline::ComputeNormalizedStaggerDirection(
+                capturedStaggerDir = Sync::ComputeNormalizedStaggerDirection(
                     apHitter->position.x,
                     apHitter->position.y,
                     apThis->position.x,
@@ -1931,7 +1933,7 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
         {
             if (const auto* pScaleExt = apThis->GetExtension())
             {
-                const bool shouldScaleEnemyTarget = CoopDamagePipeline::ShouldScaleIncomingEnemyDamage(
+                const bool shouldScaleEnemyTarget = Authority::ShouldScaleIncomingEnemyDamage(
                     pScaleExt->IsPlayer(),
                     apThis->IsPlayerTeammate(),
                     apThis->IsPlayerSummon(),
@@ -1940,7 +1942,7 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                 const float enemyMult = World::GetEnemyHealthMultiplierCached();
                 if (aValue < 0.0f)
                 {
-                    aValue = CoopDamagePipeline::ScaleIncomingEnemyDamageDelta(
+                    aValue = Authority::ScaleIncomingEnemyDamageDelta(
                         aValue,
                         enemyMult,
                         shouldScaleEnemyTarget);
@@ -1950,7 +1952,7 @@ void TP_MAKE_THISCALL(HookRestoreActorValue, Actor, ActorValueOwner::ForceMode a
                     const float nativeMaxHp = std::max(
                         apThis->GetActorPermanentValue(ActorValueInfo::kHealth),
                         apThis->GetActorValue(ActorValueInfo::kHealth));
-                    aValue = CoopDamagePipeline::ScaleIncomingEnemyHealDelta(
+                    aValue = Authority::ScaleIncomingEnemyHealDelta(
                         aValue,
                         nativeMaxHp,
                         enemyMult,

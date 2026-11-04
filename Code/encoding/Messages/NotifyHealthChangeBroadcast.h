@@ -21,6 +21,7 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
                SourceServerId == acRhs.SourceServerId &&
                StaggerMagnitude == acRhs.StaggerMagnitude &&
                StaggerDirection == acRhs.StaggerDirection &&
+               HealthRevision == acRhs.HealthRevision &&
                GetOpcode() == acRhs.GetOpcode();
     }
 
@@ -29,4 +30,7 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
     uint32_t SourceServerId{};
     float StaggerMagnitude{};
     float StaggerDirection{};
+
+    // The actor's health version after this hit was applied.
+    uint32_t HealthRevision{};
 };

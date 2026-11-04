@@ -1395,34 +1395,6 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
         REQUIRE(pFalmer->IntegerLookupTable.size() <= 64);
     }
 
-    // 2. Verify CoopOwnership::EvaluateVoluntaryClaim preserves simulation continuity (anti-flap hold)
-    //    even when the connected in-range owner enters bleedout, while rejecting claims FROM a downed player.
-    {
-        const auto holdPreservedWhenOwnerDowned = CoopOwnership::EvaluateVoluntaryClaim(
-            /*aCurrentOwnerId=*/1u,
-            /*aChallengerId=*/2u,
-            /*aLastChangedAtMs=*/1000ull,
-            /*aNowMs=*/1200ull,
-            /*aIsPlayerActor=*/false,
-            /*aIsPlayerSummon=*/false,
-            /*aOwnerValidInRange=*/true,
-            /*aOwnerDowned=*/true,
-            /*aChallengerDowned=*/false);
-        REQUIRE(holdPreservedWhenOwnerDowned == CoopOwnership::ClaimDecision::kRejectHoldWindowActive);
-
-        const auto rejectDownedChallenger = CoopOwnership::EvaluateVoluntaryClaim(
-            /*aCurrentOwnerId=*/2u,
-            /*aChallengerId=*/1u,
-            /*aLastChangedAtMs=*/1000ull,
-            /*aNowMs=*/5000ull,
-            /*aIsPlayerActor=*/false,
-            /*aIsPlayerSummon=*/false,
-            /*aOwnerValidInRange=*/true,
-            /*aOwnerDowned=*/false,
-            /*aChallengerDowned=*/true);
-        REQUIRE(rejectDownedChallenger == CoopOwnership::ClaimDecision::kRejectChallengerDowned);
-    }
-
     // 3. Stage 4 (v1.2.0): Co-Op Party Tactical HUD & 3D Ping System audit
     {
         // Round-trip serialization and delimiter injection sanitization

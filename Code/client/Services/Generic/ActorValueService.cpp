@@ -40,6 +40,8 @@ namespace
 #include <Messages/RequestDeathStateChange.h>
 
 #include <Misc/ActorValueOwner.h>
+#include <Authority/Health.h>
+#include <Authority/Hits.h>
 
 ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept
     : m_world(aWorld)
@@ -148,6 +150,8 @@ void ActorValueService::BroadcastActorValues() noexcept
 
         RequestActorValueChanges requestValueChanges;
         requestValueChanges.Id = localComponent.Id;
+        if (const auto revIt = m_knownHealthRevisions.find(localComponent.Id); revIt != m_knownHealthRevisions.end())
+            requestValueChanges.HealthRevision = revIt->second;
         RequestActorMaxValueChanges requestMaxValueChanges;
         requestMaxValueChanges.Id = localComponent.Id;
 
@@ -274,6 +278,7 @@ void ActorValueService::OnHealthChange(const HealthChangeEvent& acEvent) noexcep
     requestHealthChange.SourceServerId = sourceServerId;
     requestHealthChange.StaggerMagnitude = hasImmediateImpact ? acEvent.StaggerMagnitude : 0.0f;
     requestHealthChange.StaggerDirection = hasImmediateImpact ? acEvent.StaggerDirection : 0.0f;
+    requestHealthChange.HitId = Authority::NextOutgoingHitId();
 
     m_transport.Send(requestHealthChange);
 
@@ -307,6 +312,8 @@ void ActorValueService::BroadcastCombatHealthSnapshots() noexcept
             actorValuesComponent.CurrentActorValues.ActorValuesList[ActorValueInfo::kHealth] = newHp;
             RequestActorValueChanges req;
             req.Id = localComponent.Id;
+            if (const auto revIt = m_knownHealthRevisions.find(localComponent.Id); revIt != m_knownHealthRevisions.end())
+                req.HealthRevision = revIt->second;
             req.Values.insert({ActorValueInfo::kHealth, newHp});
             m_transport.Send(req);
         }
@@ -336,6 +343,7 @@ void ActorValueService::RunSmallHealthUpdates() noexcept
             requestHealthChange.DeltaHealth = value.second;
             if (const auto srcIt = m_smallHealthAttackerIds.find(value.first); srcIt != m_smallHealthAttackerIds.end())
                 requestHealthChange.SourceServerId = srcIt->second;
+            requestHealthChange.HitId = Authority::NextOutgoingHitId();
 
             m_transport.Send(requestHealthChange);
 
@@ -401,6 +409,9 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 
 void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept
 {
+    if (acMessage.HealthRevision != 0)
+        m_knownHealthRevisions[acMessage.Id] = acMessage.HealthRevision;
+
     if (acMessage.DeltaHealth != 0.0f)
         m_world.GetCharacterService().SyncRemoteCachedHealthDelta(acMessage.Id, acMessage.DeltaHealth);
 
@@ -476,6 +487,9 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
 
 void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMessage) const noexcept
 {
+    if (acMessage.HealthRevision != 0)
+        m_knownHealthRevisions[acMessage.Id] = acMessage.HealthRevision;
+
     m_world.GetCharacterService().SyncRemoteCachedActorValues(acMessage.Id, acMessage.Values, /*aIsMaxValues=*/false);
 
     const entt::entity entity = m_world.GetCharacterService().FindEntityByServerId(acMessage.Id);
@@ -550,7 +564,7 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
                 pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, targetHp);
                 continue;
             }
-            if (CoopDamagePipeline::ShouldReconcileRemoteActorHealthSnapshot(
+            if (Authority::ShouldReconcileRemoteActorHealthSnapshot(
                     isRemoteNonPlayer,
                     pActor->IsDead(),
                     localHp,

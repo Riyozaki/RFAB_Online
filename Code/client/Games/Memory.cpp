@@ -1,7 +1,7 @@
 #include <TiltedOnlinePCH.h>
 
 #include <Games/Memory.h>
-#include <CoopDamagePipeline.h>
+#include <Hooks/TrampolineTarget.h>
 #include <Games/References.h>
 
 #include <TiltedCore/MimallocAllocator.hpp>
@@ -120,7 +120,7 @@ static bool IsFormAllocateReplacedByEF(TFormAllocate** appOutEngineFixesAlloc) n
             break;
         }
 
-        const uintptr_t target = CoopDamagePipeline::DecodeHookJumpTargetLive(reinterpret_cast<const void*>(cursor), /*aMaxHops=*/1);
+        const uintptr_t target = Hooks::DecodeHookJumpTargetLive(reinterpret_cast<const void*>(cursor), /*aMaxHops=*/1);
         if (target == 0 || target == cursor)
             break;
 
