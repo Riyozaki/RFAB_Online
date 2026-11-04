@@ -528,3 +528,73 @@ TEST_CASE("Authority: a player's own character cannot be given up either",
     CHECK(summon.Result == Outcome::kDeniedPinnedEntity);
 }
 
+
+TEST_CASE("Lease table: a packet without an epoch cannot rewrite an epoch the table knows",
+          "[authority][lease][table]")
+{
+    // A peer that does not track epochs sends no ordering information. Before this rule
+    // both table paths applied such an update unconditionally, so that peer could take an
+    // entity from its owner - or hand it to itself - regardless of how much newer the real
+    // grant was. Two owners and zero owners both start exactly here.
+    LeaseTable table;
+    CHECK(table.Apply(10u, OwnedBy(kGuest, 7ull, 1000ull)));
+    CHECK(table.OwnerOf(10u) == kGuest);
+
+    // "It is not yours" arriving with no epoch must not undo epoch 7.
+    CHECK_FALSE(table.AcceptEpoch(10u, kUnknownEpoch, false));
+    CHECK(table.OwnerOf(10u) == kGuest);
+    CHECK(table.EpochOf(10u) == 7ull);
+
+    // Nor may it hand the entity to this peer.
+    CHECK_FALSE(table.AcceptEpoch(10u, kUnknownEpoch, true));
+    CHECK(table.OwnerOf(10u) == kGuest);
+
+    // The same through the replication path.
+    CHECK_FALSE(table.Apply(10u, OwnedBy(kNoOwner, kUnknownEpoch, 9000ull)));
+    CHECK(table.OwnerOf(10u) == kGuest);
+    CHECK(table.EpochOf(10u) == 7ull);
+}
+
+TEST_CASE("Lease table: first contact without an epoch is still accepted",
+          "[authority][lease][table]")
+{
+    // Nothing is lost by believing the first thing a peer says about an entity the table
+    // has never seen - that is what keeps a session working with an older client.
+    LeaseTable table;
+    CHECK(table.AcceptEpoch(11u, kUnknownEpoch, true));
+    CHECK(table.OwnerOf(11u) == kLocalOwner);
+    CHECK(table.EpochOf(11u) == kUnknownEpoch);
+
+    CHECK(table.Apply(12u, OwnedBy(kHost, kUnknownEpoch, 0ull)));
+    CHECK(table.OwnerOf(12u) == kHost);
+}
+
+TEST_CASE("Lease table: an equal epoch corrects a belief but cannot duplicate a decision",
+          "[authority][lease][table]")
+{
+    LeaseTable table;
+    CHECK(table.AcceptEpoch(20u, 4ull, true));
+    CHECK(table.OwnerOf(20u) == kLocalOwner);
+
+    // The server rejects this peer's handoff and answers at the epoch the peer already
+    // holds ("you are not the owner, still epoch 4"). Dropping it would leave the client
+    // simulating an actor nobody else does, so equal epochs are applied on this path.
+    CHECK(table.AcceptEpoch(20u, 4ull, false));
+    CHECK(table.OwnerOf(20u) == kNoOwner);
+    CHECK(table.EpochOf(20u) == 4ull);
+
+    // A correction only moves ownership: the timestamps it was never about stay put.
+    LeaseTable expiring;
+    CHECK(expiring.Apply(21u, OwnedBy(kHost, 2ull, 500ull, 9000ull)));
+    CHECK(expiring.AcceptEpoch(21u, 2ull, false));
+    CHECK(expiring.OwnerOf(21u) == kNoOwner);
+    CHECK(expiring.Find(21u)->GrantedAtMs == 500ull);
+    CHECK(expiring.Find(21u)->ExpiresAtMs == 9000ull);
+
+    // Replicating a decision is the other case: the same epoch says nothing new, and a
+    // duplicated packet must not resurrect a stale owner.
+    LeaseTable mirror;
+    CHECK(mirror.Apply(22u, OwnedBy(kHost, 5ull, 100ull)));
+    CHECK_FALSE(mirror.Apply(22u, OwnedBy(kGuest, 5ull, 200ull)));
+    CHECK(mirror.OwnerOf(22u) == kHost);
+}

@@ -197,7 +197,7 @@ Decision Reassign(const Lease& acCurrent, const Subject& acSubject, const std::v
     return Changed(Grant(acCurrent, pBest->PlayerId, aNowMs, acPolicy), Outcome::kGranted);
 }
 
-bool LeaseTable::Apply(uint32_t aEntityId, const Lease& acLease) noexcept
+bool LeaseTable::Apply(uint32_t aEntityId, const Lease& acLease, EqualEpochPolicy aEqualEpoch) noexcept
 {
     const auto it = m_leases.find(aEntityId);
     if (it == m_leases.end())
@@ -206,9 +206,19 @@ bool LeaseTable::Apply(uint32_t aEntityId, const Lease& acLease) noexcept
         return true;
     }
 
-    // Monotonic: an update that describes an older world is dropped. Equal epochs
-    // are dropped as well, so a duplicated packet cannot resurrect a stale owner.
-    if (acLease.Epoch != kUnknownEpoch && acLease.Epoch <= it->second.Epoch)
+    // No epoch means no ordering information: the sender cannot say whether it is older
+    // than what this table already knows, so it does not get to rewrite it. First contact
+    // is handled above, where there was nothing to lose.
+    if (acLease.Epoch == kUnknownEpoch)
+        return false;
+
+    // Monotonic: an update that describes an older world is dropped.
+    if (acLease.Epoch < it->second.Epoch)
+        return false;
+
+    // Equal epoch: a duplicate when replicating a decision, a correction when the
+    // authority is fixing this peer's belief about the epoch it already has.
+    if (acLease.Epoch == it->second.Epoch && aEqualEpoch == EqualEpochPolicy::kDrop)
         return false;
 
     it->second = acLease;
@@ -218,36 +228,41 @@ bool LeaseTable::Apply(uint32_t aEntityId, const Lease& acLease) noexcept
 bool LeaseTable::AcceptEpoch(uint32_t aEntityId, uint64_t aEpoch, bool aOwnedLocally) noexcept
 {
     const auto it = m_leases.find(aEntityId);
+    const uint32_t desiredOwner = aOwnedLocally ? kLocalOwner : kNoOwner;
+
     if (aEpoch == kUnknownEpoch)
     {
-        // A peer that does not track epochs: take its word, but do not let it rewrite
-        // an epoch we already know.
         if (it == m_leases.end())
         {
             Lease lease{};
-            lease.OwnerId = aOwnedLocally ? kLocalOwner : kNoOwner;
+            lease.OwnerId = desiredOwner;
             m_leases.emplace(aEntityId, lease);
+            return true;
         }
-        else
-        {
-            it->second.OwnerId = aOwnedLocally ? kLocalOwner : kNoOwner;
-        }
+
+        // No epoch means nothing to order this message by, so it may only do what cannot
+        // produce a second simulator: adopt an entity nobody owns, or let go of the one
+        // this peer owns. Taking an actor away from *another* peer on no evidence is the
+        // case that leaves two peers animating one body, and it is the case the table used
+        // to allow. The epoch stays as it is, because this message said nothing about time.
+        const uint32_t currentOwner = it->second.OwnerId;
+        if (currentOwner == desiredOwner)
+            return false;
+        if (currentOwner != kNoOwner && currentOwner != kLocalOwner)
+            return false;
+
+        it->second.OwnerId = desiredOwner;
         return true;
     }
 
-    if (it != m_leases.end() && aEpoch < it->second.Epoch)
-        return false;
+    // One ordering rule for the whole table: build the lease this message describes and
+    // let Apply judge it. Keeping the timestamps means a correction changes only what the
+    // message is actually about - who owns the entity.
+    Lease incoming = it != m_leases.end() ? it->second : Lease{};
+    incoming.OwnerId = desiredOwner;
+    incoming.Epoch = aEpoch;
 
-    Lease lease = it != m_leases.end() ? it->second : Lease{};
-    lease.OwnerId = aOwnedLocally ? kLocalOwner : kNoOwner;
-    lease.Epoch = aEpoch;
-
-    if (it == m_leases.end())
-        m_leases.emplace(aEntityId, lease);
-    else
-        it->second = lease;
-
-    return true;
+    return Apply(aEntityId, incoming, EqualEpochPolicy::kAccept);
 }
 
 const Lease* LeaseTable::Find(uint32_t aEntityId) const noexcept
