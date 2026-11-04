@@ -121,3 +121,7 @@ build_logs_and_report/
 # Committing a bundle is what made the shipped UI diverge from the sources.
 Code/skyrim_ui/dist/
 dist_ready/RFAB_Online_MO2/SkyrimTogetherReborn/UI/
+
+# Server checkpoint history written by the integration harness (Tools/rfab/linux-server):
+# `SaveSnapshotService` stores it next to the process, and the harness removes it on exit.
+Data/rfab_checkpoints.bin
