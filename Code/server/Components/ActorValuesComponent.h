@@ -64,4 +64,51 @@ struct ActorValuesComponent
         CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = written.Value;
         HealthRevision = written.Revision;
     }
+
+    // Wholesale assignment of an authoritative snapshot: ownership transfer, observer
+    // adoption, saved-value restore. Every other actor value is a plain copy - health is
+    // the one number a revision describes, so the copy leaves the current HP in place and
+    // the incoming value goes through `SetHealth`.
+    //
+    // Without this a transfer changed health without moving the revision, and a reading
+    // sampled before it still carried the current revision and was believed afterwards:
+    // §8E of Authority/Health.h, still open on this path because the snapshot was written
+    // straight into the map. With it, the stale reading is refused - which is what stops a
+    // handoff from rolling health back and then locking the new owner out of corrections.
+    //
+    // aIsDead is part of the snapshot's own statement: a dead actor has zero health,
+    // whatever the accompanying numbers say.
+    void AssignAuthoritative(const ActorValues& acIncoming, bool aIsDead) noexcept
+    {
+        float currentHp = 0.0f;
+        const bool hasCurrentHp = TryGetHealth(currentHp);
+
+        float incomingHp = 0.0f;
+        bool hasIncomingHp = false;
+        const auto incomingHpIt = acIncoming.ActorValuesList.find(kHealthActorValueIndex);
+        if (incomingHpIt != acIncoming.ActorValuesList.end())
+        {
+            incomingHp = incomingHpIt->second;
+            hasIncomingHp = true;
+        }
+
+        float incomingMaxHp = 0.0f;
+        const auto incomingMaxIt = acIncoming.ActorMaxValuesList.find(kMaxHealthActorValueIndex);
+        if (incomingMaxIt != acIncoming.ActorMaxValuesList.end())
+            incomingMaxHp = incomingMaxIt->second;
+
+        CurrentActorValues = acIncoming;
+        // Put back the health this actor already has: SetHealth decides that number.
+        if (hasCurrentHp)
+            CurrentActorValues.ActorValuesList[kHealthActorValueIndex] = currentHp;
+
+        if (aIsDead)
+        {
+            SetHealth(0.0f, incomingMaxHp);
+            return;
+        }
+
+        if (hasIncomingHp)
+            SetHealth(incomingHp, incomingMaxHp);
+    }
 };
