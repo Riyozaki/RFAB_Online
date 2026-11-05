@@ -44,13 +44,28 @@
 #include <Events/PacketEvent.h>
 #include <Events/PlayerLeaveEvent.h>
 #include <Events/PlayerJoinEvent.h>
+#include <Messages/AssignCharacterRequest.h>
+#include <Messages/AssignCharacterResponse.h>
+#include <Messages/CharacterSpawnRequest.h>
+#include <Messages/ClientMessageFactory.h>
+#include <Messages/ClientReferencesMoveRequest.h>
+#include <Messages/CoordinatedSaveAck.h>
+#include <Messages/NotifyActorValueChanges.h>
+#include <Messages/NotifyDeathStateChange.h>
+#include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Messages/NotifyOwnershipTransfer.h>
+#include <Messages/NotifyRelinquishControl.h>
+#include <Messages/NotifySpawnData.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
 #include <Messages/RequestInventoryChanges.h>
-#include <Messages/CoordinatedSaveAck.h>
 #include <Messages/RequestOwnershipClaim.h>
+#include <Messages/RequestOwnershipTransfer.h>
+#include <Messages/ServerMessageFactory.h>
 
+#include <Services/CharacterService.h>
+#include <Services/PartyService.h>
 #include <Services/SaveSnapshotService.h>
 
 #include "TransportSpy.h"
@@ -58,6 +73,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -122,6 +138,60 @@ template <class T> void Deliver(World& aWorld, T aPacket, Player* apSender)
 {
     aWorld.GetDispatcher().enqueue<PacketEvent<T>>(&aPacket, apSender);
     aWorld.GetDispatcher().update();
+}
+
+// Serializes a client packet onto a real TiltedPhoques::Buffer, extracts it through
+// ClientMessageFactory::Extract (exercising the real wire bitstream parser), and
+// dispatches the decoded message into the shipping server World.
+template <class T> bool DeliverWire(World& aWorld, const T& acOutgoing, Player* apSender)
+{
+    TiltedPhoques::Buffer raw(65536);
+    TiltedPhoques::Buffer::Writer writer(&raw);
+    acOutgoing.Serialize(writer);
+
+    TiltedPhoques::Buffer::Reader reader(&raw);
+    const ClientMessageFactory factory;
+    auto pExtracted = factory.Extract(reader);
+    if (!pExtracted || pExtracted->GetOpcode() != acOutgoing.GetOpcode())
+        return false;
+
+    auto* pTyped = static_cast<T*>(pExtracted.get());
+    aWorld.GetDispatcher().enqueue<PacketEvent<T>>(pTyped, apSender);
+    aWorld.GetDispatcher().update();
+    return true;
+}
+
+// Extracts all server packets sent to `aConn` (or broadcast via k_HSteamNetConnection_Invalid)
+// from Harness::Outbox() using the real ServerMessageFactory::Extract bitstream decoder.
+template <class TServerMsg>
+std::vector<TServerMsg> DecodeOutboxMessagesFor(TiltedPhoques::ConnectionId_t aConn)
+{
+    std::vector<TServerMsg> decoded;
+    const ServerMessageFactory factory;
+    for (const auto& pkt : Harness::Outbox())
+    {
+        if (pkt.Connection != aConn && pkt.Connection != k_HSteamNetConnection_Invalid)
+            continue;
+        if (pkt.Bytes.empty())
+            continue;
+
+        // Pad with 16 zero bytes so TiltedCore's 64-bit word bit-reader never reads past allocation.
+        TiltedPhoques::Buffer buf(pkt.Bytes.size() + 16);
+        std::memset(buf.GetWriteData(), 0, pkt.Bytes.size() + 16);
+        std::memcpy(buf.GetWriteData(), pkt.Bytes.data(), pkt.Bytes.size());
+        TiltedPhoques::Buffer::Reader reader(&buf);
+        auto pMsg = factory.Extract(reader);
+        if (pMsg && pMsg->GetOpcode() == TServerMsg::Opcode)
+            decoded.push_back(*static_cast<const TServerMsg*>(pMsg.get()));
+    }
+    return decoded;
+}
+
+template <class TMap>
+bool HasApproxValue(const TMap& acMap, uint32_t aKey, float aExpected, float aEps = 0.01f)
+{
+    const auto it = acMap.find(aKey);
+    return it != acMap.end() && std::fabs(it->second - aExpected) < aEps;
 }
 
 // How many save events of one kind the server recorded for one epoch. The flight ring is the
@@ -815,6 +885,268 @@ int main(int argc, char** argv)
     // Leave no checkpoint history behind: the scenes above wrote one, and the next run would
     // otherwise restore it before the first assertion.
     std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
+
+    // =========================================================================
+    // v4.0.0 Full Wire-Decoded Multi-Peer Protocol & Authority Integration Suite
+    // =========================================================================
+    std::printf("v4.0.0 wire-decoded multi-peer protocol & authority\n");
+    {
+        GameServer server{registry};
+        World& world = server.GetWorld();
+
+        constexpr TiltedPhoques::ConnectionId_t kHostConn = 101;
+        constexpr TiltedPhoques::ConnectionId_t kGuest2Conn = 102;
+        constexpr TiltedPhoques::ConnectionId_t kGuest3Conn = 103;
+        const GameId kDungeonCell{0u, 0x0009ABCDu};
+        const GameId kFarCell{0u, 0x0009FFFEu};
+        const GameId kPlacedRefId{1u, 0x000E5F72u};
+        const GameId kRestlessDraugrBase{2u, 0x00023BC0u};
+        const GameId kDraugrScourgeBase{2u, 0x00023BC1u};
+
+        Player* pHost = world.GetPlayerManager().Create(kHostConn);
+        Player* pGuest2 = world.GetPlayerManager().Create(kGuest2Conn);
+        Player* pGuest3 = world.GetPlayerManager().Create(kGuest3Conn);
+        Check(pHost && pGuest2 && pGuest3, "three co-op peers connect to the server");
+
+        TimeModel t0{};
+        t0.Time = 12.0f;
+        t0.Day = 5;
+        t0.Month = 3;
+        t0.Year = 201;
+        world.GetDispatcher().trigger(PlayerJoinEvent{pHost, {}, {}, DateTime{t0}});
+        world.GetDispatcher().trigger(PlayerJoinEvent{pGuest2, {}, {}, DateTime{t0}});
+        world.GetDispatcher().trigger(PlayerJoinEvent{pGuest3, {}, {}, DateTime{t0}});
+
+        Check(world.GetPartyService().IsPlayerLeader(pHost) &&
+                  world.GetPartyService().IsPlayerInParty(pGuest2) &&
+                  world.GetPartyService().IsPlayerInParty(pGuest3),
+              "auto-party binds Host as party leader and both guests as party members");
+
+        pHost->SetCellComponent(CellIdComponent{kFarCell});
+        pGuest2->SetCellComponent(CellIdComponent{kDungeonCell});
+        pGuest3->SetCellComponent(CellIdComponent{kFarCell});
+
+        // 1. Guest2 streams the dungeon cell first and assigns a placed TESLevCharacter
+        //    rolled locally as Restless Draugr (250/250 HP). Everything below is verified
+        //    strictly from ServerMessageFactory-decoded wire bytes — zero server RAM peeking!
+        Harness::ClearOutbox();
+        AssignCharacterRequest g2Assign{};
+        g2Assign.Cookie = 11u;
+        g2Assign.ReferenceId = kPlacedRefId;
+        g2Assign.FormId = kRestlessDraugrBase;
+        g2Assign.CellId = kDungeonCell;
+        g2Assign.Position = {100.0f, 200.0f, 0.0f};
+        g2Assign.CurrentActorData.BaseId = kRestlessDraugrBase;
+        g2Assign.CurrentActorData.InitialActorValues.ActorValuesList[24] = 250.0f;
+        g2Assign.CurrentActorData.InitialActorValues.ActorMaxValuesList[24] = 250.0f;
+        Check(DeliverWire(world, g2Assign, pGuest2), "Guest2 AssignCharacterRequest round-trips over the wire");
+
+        const auto g2AssignResps = DecodeOutboxMessagesFor<AssignCharacterResponse>(kGuest2Conn);
+        Check(g2AssignResps.size() == 1 && g2AssignResps[0].Owner && g2AssignResps[0].OwnershipEpoch >= 1 &&
+                  g2AssignResps[0].HealthRevision >= 1,
+              "AssignCharacterResponse delivers initial OwnershipEpoch and non-zero HealthRevision on the wire");
+
+        const uint32_t npcServerId = g2AssignResps.empty() ? 0u : g2AssignResps[0].ServerId;
+        uint64_t g2KnownEpoch = g2AssignResps.empty() ? 0ull : g2AssignResps[0].OwnershipEpoch;
+        uint32_t g2KnownHealthRev = g2AssignResps.empty() ? 0u : g2AssignResps[0].HealthRevision;
+
+        // 2. Guest2 (owner) lands a -40 HP hit -> server sends empty-Values NotifyActorValueChanges
+        //    revision ack back to Guest2 so Guest2's next regen snapshot is NOT falsely rejected!
+        Harness::ClearOutbox();
+        RequestHealthChangeBroadcast g2Hit{};
+        g2Hit.Id = npcServerId;
+        g2Hit.DeltaHealth = -40.0f;
+        g2Hit.HitId = 501u;
+        Check(DeliverWire(world, g2Hit, pGuest2), "Guest2 RequestHealthChangeBroadcast round-trips over the wire");
+
+        const auto g2HitAcks = DecodeOutboxMessagesFor<NotifyActorValueChanges>(kGuest2Conn);
+        Check(g2HitAcks.size() == 1 && g2HitAcks[0].Id == npcServerId && g2HitAcks[0].Values.empty() &&
+                  g2HitAcks[0].HealthRevision == g2KnownHealthRev + 1,
+              "owner health delta emits an empty-Values NotifyActorValueChanges HealthRevision ack on the wire");
+        if (!g2HitAcks.empty())
+            g2KnownHealthRev = g2HitAcks[0].HealthRevision;
+
+        // Guest3 enters the cell to observe Guest2's subsequent regen broadcast.
+        pGuest3->SetCellComponent(CellIdComponent{kDungeonCell});
+        world.GetCharacterService().ReconcileAllEntitiesForObserver(pGuest3);
+        const auto g3InitialSpawns = DecodeOutboxMessagesFor<CharacterSpawnRequest>(kGuest3Conn);
+        Check(!g3InitialSpawns.empty() && g3InitialSpawns.back().ServerId == npcServerId &&
+                  g3InitialSpawns.back().BaseId == kRestlessDraugrBase &&
+                  g3InitialSpawns.back().HealthRevision == g2KnownHealthRev,
+              "CharacterSpawnRequest delivers BaseId and current HealthRevision to arriving observer");
+
+        // Now Guest2 reports legitimate +15 HP Requiem troll/draugr regen (210 -> 225) echoing g2KnownHealthRev.
+        Harness::ClearOutbox();
+        RequestActorValueChanges g2Regen{};
+        g2Regen.Id = npcServerId;
+        g2Regen.HealthRevision = g2KnownHealthRev;
+        g2Regen.Values[24] = 225.0f;
+        Check(DeliverWire(world, g2Regen, pGuest2), "Guest2 regen RequestActorValueChanges round-trips over the wire");
+
+        const auto g2RegenAcks = DecodeOutboxMessagesFor<NotifyActorValueChanges>(kGuest2Conn);
+        const auto g3RegenBroadcasts = DecodeOutboxMessagesFor<NotifyActorValueChanges>(kGuest3Conn);
+        Check(g2RegenAcks.size() == 1 && g2RegenAcks[0].Values.empty() &&
+                  g2RegenAcks[0].HealthRevision == g2KnownHealthRev + 1,
+              "legitimate owner regen echoing acked HealthRevision is accepted and acked (never kStaleIncrease)");
+        Check(g3RegenBroadcasts.size() == 1 &&
+                  HasApproxValue(g3RegenBroadcasts[0].Values, 24u, 225.0f) &&
+                  g3RegenBroadcasts[0].HealthRevision == g2KnownHealthRev + 1,
+              "accepted owner regen broadcasts updated HP=225 and new HealthRevision to observers");
+        if (!g2RegenAcks.empty())
+            g2KnownHealthRev = g2RegenAcks[0].HealthRevision;
+
+        // 3. Party Leader (pHost) enters the cell where RFAB rolled Draugr Scourge for the SAME placed ref!
+        //    Verify calm leader takeover preserves wounded HP=225 AND propagates Draugr Scourge BaseId to peers!
+        pHost->SetCellComponent(CellIdComponent{kDungeonCell});
+        Harness::ClearOutbox();
+        AssignCharacterRequest hostAssign{};
+        hostAssign.Cookie = 22u;
+        hostAssign.ReferenceId = kPlacedRefId;
+        hostAssign.FormId = kDraugrScourgeBase;
+        hostAssign.CellId = kDungeonCell;
+        hostAssign.Position = {100.0f, 200.0f, 0.0f};
+        hostAssign.CurrentActorData.BaseId = kDraugrScourgeBase;
+        hostAssign.CurrentActorData.InitialActorValues.ActorValuesList[24] = 400.0f;
+        hostAssign.CurrentActorData.InitialActorValues.ActorMaxValuesList[24] = 400.0f;
+        Check(DeliverWire(world, hostAssign, pHost), "Host AssignCharacterRequest round-trips over the wire");
+
+        const auto hostAssignResps = DecodeOutboxMessagesFor<AssignCharacterResponse>(kHostConn);
+        const auto g2Relinquishes = DecodeOutboxMessagesFor<NotifyRelinquishControl>(kGuest2Conn);
+        const auto g2SpawnDatas = DecodeOutboxMessagesFor<NotifySpawnData>(kGuest2Conn);
+        const auto g3SpawnDatas = DecodeOutboxMessagesFor<NotifySpawnData>(kGuest3Conn);
+
+        Check(hostAssignResps.size() == 1 && hostAssignResps[0].Owner &&
+                  hostAssignResps[0].OwnershipEpoch > g2KnownEpoch &&
+                  hostAssignResps[0].HealthRevision >= g2KnownHealthRev &&
+                  HasApproxValue(hostAssignResps[0].AllActorValues.ActorValuesList, 24u, 225.0f),
+              "Party Leader calm takeover grants new epoch, carries HealthRevision, and preserves wounded HP=225");
+        Check(g2Relinquishes.size() == 1 && g2Relinquishes[0].ServerId == npcServerId &&
+                  g2Relinquishes[0].OwnershipEpoch == hostAssignResps[0].OwnershipEpoch,
+              "previous owner receives NotifyRelinquishControl with matching authoritative epoch");
+        Check(!g2SpawnDatas.empty() && g2SpawnDatas.back().NewActorData.BaseId == kDraugrScourgeBase &&
+                  !g3SpawnDatas.empty() && g3SpawnDatas.back().NewActorData.BaseId == kDraugrScourgeBase &&
+                  g2SpawnDatas.back().HealthRevision == hostAssignResps[0].HealthRevision,
+              "TESLevCharacter static BaseId parity propagates to all peers via NotifySpawnData on takeover");
+
+        uint64_t hostEpoch = hostAssignResps[0].OwnershipEpoch;
+        uint32_t authHealthRev = hostAssignResps[0].HealthRevision;
+
+        // 4. Pure server-granted RequestOwnershipClaim rules:
+        //    (a) Out-of-range peer claim is rejected with NotifyRelinquishControl.
+        //    (b) Current owner redundant claim (kAlreadyOwner) does NOT emit NotifyOwnershipTransfer (no loop!).
+        pGuest3->SetCellComponent(CellIdComponent{kFarCell});
+        Harness::ClearOutbox();
+        RequestOwnershipClaim farClaim{};
+        farClaim.ServerId = npcServerId;
+        farClaim.NewActorData = hostAssign.CurrentActorData;
+        farClaim.NewActorData.InitialActorValues.ActorValuesList[24] = 225.0f;
+        Check(DeliverWire(world, farClaim, pGuest3), "out-of-range RequestOwnershipClaim round-trips over the wire");
+        const auto farRejects = DecodeOutboxMessagesFor<NotifyRelinquishControl>(kGuest3Conn);
+        const auto farGrants = DecodeOutboxMessagesFor<NotifyOwnershipTransfer>(kGuest3Conn);
+        Check(farRejects.size() == 1 && farGrants.empty() && farRejects[0].OwnershipEpoch == hostEpoch,
+              "out-of-range RequestOwnershipClaim is rejected with NotifyRelinquishControl at current epoch");
+
+        Harness::ClearOutbox();
+        RequestOwnershipClaim ownerSelfClaim{};
+        ownerSelfClaim.ServerId = npcServerId;
+        ownerSelfClaim.NewActorData = farClaim.NewActorData;
+        Check(DeliverWire(world, ownerSelfClaim, pHost), "owner kAlreadyOwner RequestOwnershipClaim round-trips");
+        const auto selfClaimGrants = DecodeOutboxMessagesFor<NotifyOwnershipTransfer>(kHostConn);
+        Check(selfClaimGrants.empty(),
+              "kAlreadyOwner RequestOwnershipClaim never echoes NotifyOwnershipTransfer (zero claim/grant loop)");
+
+        // 5. Self-healing WorldNpcLeasePolicy expiry:
+        //    - Unpaused idle keepalives renew Host's lease without churning epoch.
+        //    - Solo menu pause (no active peer in range) NEVER revokes Host's lease.
+        //    - Co-op menu pause while Guest2 is actively simulating hands off cleanly on the wire!
+        pGuest2->SetCellComponent(CellIdComponent{kFarCell});
+        const uint64_t baseMs = 5'000'000'000ull;
+        world.GetCharacterService().NotePlayerSimulationActivity(pHost, baseMs);
+
+        ClientReferencesMoveRequest idleKeepalive{};
+        idleKeepalive.Tick = 100u;
+        Check(DeliverWire(world, idleKeepalive, pHost), "5-byte empty unpaused keepalive round-trips over the wire");
+
+        // Re-anchor deterministic timestamps for exact lease boundary checks:
+        world.GetCharacterService().NotePlayerSimulationActivity(pHost, baseMs + 2000ull);
+        Harness::ClearOutbox();
+        world.GetCharacterService().SweepExpiredWorldNpcLeases(baseMs + 15000ull); // > 8000ms, Guest2/Guest3 out of range
+        Check(DecodeOutboxMessagesFor<NotifyRelinquishControl>(kHostConn).empty(),
+              "solo pause menu (>8s without keepalives, no active peer in range) never revokes world NPC lease");
+
+        // Host closes solo pause menu at baseMs + 16000 -> RefreshUnrevoked restores lease without epoch bump.
+        world.GetCharacterService().NotePlayerSimulationActivity(pHost, baseMs + 16000ull);
+        Check(world.get<OwnerComponent>(static_cast<entt::entity>(npcServerId)).GetOwner() == pHost,
+              "resuming simulation after solo pause keeps Host as owner without churn");
+
+        // Now Guest2 enters the cell and actively simulates while Host pauses in StatsMenu for >8s!
+        pGuest2->SetCellComponent(CellIdComponent{kDungeonCell});
+        pGuest3->SetCellComponent(CellIdComponent{kDungeonCell});
+        world.GetCharacterService().NotePlayerSimulationActivity(pGuest2, baseMs + 24500ull);
+        world.GetCharacterService().NotePlayerSimulationActivity(pGuest3, baseMs + 24500ull);
+        Harness::ClearOutbox();
+        world.GetCharacterService().SweepExpiredWorldNpcLeases(baseMs + 25000ull); // Host last active at +16000 (9s ago!)
+
+        const auto hostExpiredRelinquish = DecodeOutboxMessagesFor<NotifyRelinquishControl>(kHostConn);
+        const auto g2ExpiredGrant = DecodeOutboxMessagesFor<NotifyOwnershipTransfer>(kGuest2Conn);
+        Check(hostExpiredRelinquish.size() == 1 && g2ExpiredGrant.size() == 1 &&
+                  g2ExpiredGrant[0].ServerId == npcServerId &&
+                  g2ExpiredGrant[0].OwnershipEpoch == hostExpiredRelinquish[0].OwnershipEpoch &&
+                  g2ExpiredGrant[0].OwnershipEpoch > hostEpoch &&
+                  g2ExpiredGrant[0].HealthRevision >= authHealthRev,
+              "co-op menu pause (>8s) hands expired world NPC lease to active peer with matching epoch & HealthRevision");
+
+        const uint64_t g2HandedEpoch = g2ExpiredGrant.empty() ? 0ull : g2ExpiredGrant[0].OwnershipEpoch;
+
+        // 6. 3-peer cascade DeclineList: Guest2 declines (streaming cell -> Position {0,0,0});
+        //    Host is already in DeclineList and Guest2 is added -> server must pick Guest3 (never bounce to Host!).
+        Harness::ClearOutbox();
+        RequestOwnershipTransfer g2Decline{};
+        g2Decline.ServerId = npcServerId;
+        g2Decline.OwnershipEpoch = g2HandedEpoch;
+        Check(DeliverWire(world, g2Decline, pGuest2), "Guest2 DeclineGrant RequestOwnershipTransfer round-trips");
+
+        const auto g3CascadeGrant = DecodeOutboxMessagesFor<NotifyOwnershipTransfer>(kGuest3Conn);
+        const auto hostCascadeGrant = DecodeOutboxMessagesFor<NotifyOwnershipTransfer>(kHostConn);
+        Check(g3CascadeGrant.size() == 1 && hostCascadeGrant.empty() &&
+                  g3CascadeGrant[0].OwnershipEpoch > g2HandedEpoch,
+              "3-peer cascade decline skips both declined peers and grants Guest3 without ping-pong");
+
+        const uint32_t revBeforeKill = g3CascadeGrant.empty() ? authHealthRev : g3CascadeGrant[0].HealthRevision;
+
+        // 7. Wire NotifyDeathStateChange carries HealthRevision and blocks stale pre-death snapshots.
+        Harness::ClearOutbox();
+        RequestDeathStateChange g2Kill{};
+        g2Kill.Id = npcServerId;
+        g2Kill.IsDead = true;
+        Check(DeliverWire(world, g2Kill, pGuest2), "RequestDeathStateChange round-trips over the wire");
+
+        const auto g3DeathNotifies = DecodeOutboxMessagesFor<NotifyDeathStateChange>(kGuest3Conn);
+        const auto g2KillRevAcks = DecodeOutboxMessagesFor<NotifyActorValueChanges>(kGuest2Conn);
+        Check(g3DeathNotifies.size() == 1 && g3DeathNotifies[0].IsDead &&
+                  g3DeathNotifies[0].HealthRevision > revBeforeKill &&
+                  g2KillRevAcks.size() == 1 &&
+                  g2KillRevAcks[0].HealthRevision == g3DeathNotifies[0].HealthRevision,
+              "NotifyDeathStateChange delivers bumped HealthRevision to peers and acks killer on the wire");
+
+        const uint32_t deadWireRev = g3DeathNotifies.empty() ? 0u : g3DeathNotifies[0].HealthRevision;
+
+        // Guest3 (current owner) sends an in-flight pre-death health reading echoing revBeforeKill -> refused & corrected!
+        Harness::ClearOutbox();
+        RequestActorValueChanges staleOwnerSnap{};
+        staleOwnerSnap.Id = npcServerId;
+        staleOwnerSnap.HealthRevision = revBeforeKill;
+        staleOwnerSnap.Values[24] = 225.0f;
+        Check(DeliverWire(world, staleOwnerSnap, pGuest3), "stale owner snapshot round-trips over the wire");
+
+        const auto g3Corrections = DecodeOutboxMessagesFor<NotifyActorValueChanges>(kGuest3Conn);
+        Check(g3Corrections.size() == 1 &&
+                  HasApproxValue(g3Corrections[0].Values, 24u, 0.0f) &&
+                  g3Corrections[0].HealthRevision == deadWireRev,
+              "stale pre-death snapshot is refused and answered on the wire with HP=0 and dead HealthRevision");
+
+        std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
+    }
 
     std::printf("%s (%d failure%s)\n", g_failures == 0 ? "PASSED" : "FAILED", g_failures,
                 g_failures == 1 ? "" : "s");

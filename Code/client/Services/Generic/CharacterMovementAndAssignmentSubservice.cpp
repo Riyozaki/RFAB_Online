@@ -97,12 +97,26 @@ uint64_t ComputeLocalPlayerAppearanceFingerprint(PlayerCharacter* apPlayer) noex
 
 void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessage) noexcept
 {
+    m_world.GetActorValueService().NoteAuthoritativeHealthRevision(acMessage.Id, acMessage.HealthRevision);
+
+    const bool hasStaticBaseId =
+        acMessage.NewActorData.BaseId != GameId{} &&
+        acMessage.NewActorData.BaseId.ModId != std::numeric_limits<uint32_t>::max();
+
     if (auto modelIt = m_remoteModels.find(acMessage.Id); modelIt != m_remoteModels.end())
     {
         modelIt.value().SpawnRequest.InitialActorValues = acMessage.NewActorData.InitialActorValues;
         modelIt.value().SpawnRequest.InventoryContent = acMessage.NewActorData.InitialInventory;
         modelIt.value().SpawnRequest.IsDead = acMessage.NewActorData.IsDead;
         modelIt.value().SpawnRequest.IsWeaponDrawn = acMessage.NewActorData.IsWeaponDrawn;
+        if (acMessage.HealthRevision != 0)
+            modelIt.value().SpawnRequest.HealthRevision = acMessage.HealthRevision;
+        if (hasStaticBaseId)
+        {
+            modelIt.value().SpawnRequest.BaseId = acMessage.NewActorData.BaseId;
+            if (!modelIt.value().SpawnRequest.IsPlayer && modelIt.value().SpawnRequest.FormId != GameId{})
+                RecordAuthoritativePlacedBase(modelIt.value().SpawnRequest.FormId, acMessage.NewActorData.BaseId);
+        }
     }
 
     const entt::entity entity = FindEntityByServerId(acMessage.Id);
@@ -115,12 +129,23 @@ void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessag
         pWaitingFor3D->SpawnRequest.InventoryContent = acMessage.NewActorData.InitialInventory;
         pWaitingFor3D->SpawnRequest.IsDead = acMessage.NewActorData.IsDead;
         pWaitingFor3D->SpawnRequest.IsWeaponDrawn = acMessage.NewActorData.IsWeaponDrawn;
+        if (acMessage.HealthRevision != 0)
+            pWaitingFor3D->SpawnRequest.HealthRevision = acMessage.HealthRevision;
+        if (hasStaticBaseId)
+            pWaitingFor3D->SpawnRequest.BaseId = acMessage.NewActorData.BaseId;
     }
 
     auto& formIdComponent = m_world.get<FormIdComponent>(entity);
     Actor* pActor = Cast<Actor>(TESForm::GetById(formIdComponent.Id));
     if (!pActor)
         return;
+
+    const bool isLocalOwner = m_world.all_of<LocalComponent>(entity);
+    if (!isLocalOwner && hasStaticBaseId)
+    {
+        if (!ReconcilePlacedActorBaseFormInPlace(pActor, acMessage.NewActorData.BaseId))
+            (void)ReconcileLoadedRemoteSpeciesMismatch(pActor, acMessage.NewActorData.BaseId);
+    }
 
     // Never run SetActorInventory while 3D is still streaming (GetNiNode() == nullptr): stage into WaitingFor3D instead.
     if (pActor->GetNiNode() && !pActor->IsStillLoading())
@@ -133,15 +158,21 @@ void CharacterService::OnRemoteSpawnDataReceived(const NotifySpawnData& acMessag
         pending3D.ServerId = acMessage.Id;
         pending3D.InitialActorValues = acMessage.NewActorData.InitialActorValues;
         pending3D.InventoryContent = acMessage.NewActorData.InitialInventory;
+        pending3D.BaseId = hasStaticBaseId ? acMessage.NewActorData.BaseId : GameId{};
         pending3D.IsDead = acMessage.NewActorData.IsDead;
         pending3D.IsWeaponDrawn = acMessage.NewActorData.IsWeaponDrawn;
+        pending3D.HealthRevision = acMessage.HealthRevision;
         m_world.emplace_or_replace<WaitingFor3D>(entity, pending3D);
     }
 
     pActor->SetActorValues(acMessage.NewActorData.InitialActorValues);
+    if (isLocalOwner)
+    {
+        if (auto* pAvComp = m_world.try_get<ActorValuesComponent>(entity))
+            pAvComp->CurrentActorValues = acMessage.NewActorData.InitialActorValues;
+    }
     m_weaponDrawUpdates[pActor->formID] = {acMessage.NewActorData.IsWeaponDrawn};
 
-    const bool isLocalOwner = m_world.all_of<LocalComponent>(entity);
     if (!isLocalOwner)
     {
         if (auto* pInterp = m_world.try_get<InterpolationComponent>(entity))
@@ -348,8 +379,8 @@ void CharacterService::ProcessNewEntity(entt::entity aEntity) const noexcept
             !pActor->IsMount() &&
             !pActor->IsPlayerSummon())
         {
-            spdlog::info("Sending ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
-            TakeOwnership(pActor->formID, pRemoteComponent->Id, aEntity);
+            spdlog::info("Sending voluntary ownership claim for actor {:X} with server id {:X}", pActor->formID, pRemoteComponent->Id);
+            (void)RequestVoluntaryOwnershipClaim(pActor->formID, pRemoteComponent->Id, aEntity);
         }
         else
         {

@@ -94,6 +94,47 @@ struct Policy
     uint64_t DormantSettleMs{1000};
 };
 
+// Self-healing lease policy for non-player, non-summon, non-mount world NPCs.
+// Unpaused owners renew every <= 2000 ms via simulation snapshots/keepalives; if an
+// owner pauses its simulation (StatsMenu / InventoryMenu / OS stall) while another
+// standing in-range peer is actively simulating, the expired lease hands off cleanly.
+inline constexpr uint64_t kWorldNpcLeaseDurationMs = 8000ull;
+inline constexpr uint64_t kActivePeerSimulationWindowMs = 4000ull;
+inline constexpr uint64_t kDefaultDeclineTtlMs = 15000ull;
+
+[[nodiscard]] constexpr Policy WorldNpcLeasePolicy() noexcept
+{
+    Policy policy{};
+    policy.LeaseDurationMs = kWorldNpcLeaseDurationMs;
+    return policy;
+}
+
+// Pure, zero-pointer, time-bounded decline set replacing raw `Player*` blacklists in ECS.
+// When a peer declines a grant while its cell/3D is still streaming, it is skipped during
+// reassignment for `aTtlMs`, then automatically becomes eligible again without needing
+// disconnect/ABA pointer sweeps.
+class DeclineList
+{
+public:
+    struct Entry
+    {
+        uint32_t PlayerId{kNoOwner};
+        uint64_t ExpiresAtMs{0};
+    };
+
+    void Add(uint32_t aPlayerId, uint64_t aNowMs, uint64_t aTtlMs = kDefaultDeclineTtlMs) noexcept;
+    [[nodiscard]] bool Contains(uint32_t aPlayerId, uint64_t aNowMs) const noexcept;
+    [[nodiscard]] std::vector<uint32_t> CollectActive(uint64_t aNowMs) noexcept;
+    void PruneExpired(uint64_t aNowMs) noexcept;
+    void ForgetPlayer(uint32_t aPlayerId) noexcept;
+    void Clear() noexcept { m_entries.clear(); }
+    [[nodiscard]] bool Empty() const noexcept { return m_entries.empty(); }
+    [[nodiscard]] size_t Size() const noexcept { return m_entries.size(); }
+
+private:
+    std::vector<Entry> m_entries;
+};
+
 // What the entity is. Some entities are structurally pinned to one peer and can
 // never change hands: a player's own avatar, and a summon bound to its summoner.
 struct Subject
@@ -174,6 +215,13 @@ struct Decision
 // decision when the sender is not the owner or the lease already lapsed.
 [[nodiscard]] Decision Renew(const Lease& acCurrent, uint32_t aSenderId, uint64_t aNowMs,
                              const Policy& acPolicy = {}) noexcept;
+
+// Refreshes the current owner's lease window when the server never revoked the owner
+// (e.g. a solo player resuming simulation after an uncontested pause menu). Unlike
+// Renew(), this refreshes an already-elapsed ExpiresAtMs as long as OwnerId still matches,
+// without advancing Epoch since ownership never changed hands.
+[[nodiscard]] Decision RefreshUnrevoked(const Lease& acCurrent, uint32_t aSenderId, uint64_t aNowMs,
+                                        const Policy& acPolicy = {}) noexcept;
 
 // May the server hand this unowned entity to an observer yet? False while the
 // entity is still settling, and for anything that already has an owner.

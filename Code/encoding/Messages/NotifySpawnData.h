@@ -17,9 +17,11 @@ struct NotifySpawnData final : ServerMessage
 
     bool operator==(const NotifySpawnData& acRhs) const noexcept
     {
-        return GetOpcode() == acRhs.GetOpcode() && Id == acRhs.Id && NewActorData == acRhs.NewActorData;
+        return GetOpcode() == acRhs.GetOpcode() && Id == acRhs.Id && NewActorData == acRhs.NewActorData &&
+               HealthRevision == acRhs.HealthRevision;
     }
 
     uint32_t Id{};
     ActorData NewActorData{};
+    uint32_t HealthRevision{0};
 };

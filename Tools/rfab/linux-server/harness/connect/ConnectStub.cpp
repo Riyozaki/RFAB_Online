@@ -45,9 +45,10 @@ void Record(TiltedPhoques::ConnectionId_t aConnection, const TiltedPhoques::Pack
     if (apPacket != nullptr && apPacket->IsValid())
     {
         const auto* pData = reinterpret_cast<const uint8_t*>(apPacket->GetData());
-        // The first bytes are transport framing; the tests only care that a message was
-        // produced and to whom, so the payload is kept opaquely rather than parsed here.
-        record.Bytes.assign(pData, pData + apPacket->GetTotalSize());
+        // Packet::GetData() already skips the 1-byte TiltedConnect framing header,
+        // so [pData, pData + GetSize()) is the exact ServerMessage bitstream handed
+        // to TransportService::OnConsume on the client.
+        record.Bytes.assign(pData, pData + apPacket->GetSize());
     }
     Outbox().push_back(std::move(record));
 }

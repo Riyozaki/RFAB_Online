@@ -76,6 +76,7 @@ struct CharacterService
     static void DeleteTempActor(const uint32_t aFormId) noexcept;
 
     bool TakeOwnership(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity, uint64_t aOwnershipEpoch = 0) const noexcept;
+    bool RequestVoluntaryOwnershipClaim(const uint32_t acFormId, const uint32_t acServerId, const entt::entity acEntity) const noexcept;
 
     void OnActorAdded(const ActorAddedEvent& acEvent) noexcept;
     void OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept;
@@ -151,6 +152,7 @@ private:
         Rotator2_NetQuantize LatestRotation{};
         uint64_t DematerializeGraceUntilMs{0};
         uint64_t PendingOwnershipEpoch{0};
+        uint32_t PendingHealthRevision{0};
         bool IsMaterialized{false};
         bool HasAuthoritativeSpawnPacket{false};
     };
@@ -223,6 +225,7 @@ private:
     mutable CoopWorldView::CancelledCookieTracker<64> m_cancelledCookies{};
     mutable CoopWorldStabilizer::AuthoritativePlacedActorRegistry m_authoritativePlacedBases{};
     mutable CoopWorldStabilizer::RelinquishClaimCooldownTracker m_relinquishClaimCooldowns{};
+    mutable Map<uint32_t, uint64_t> m_lastVoluntaryClaimMs{};
     mutable Map<uint32_t, CharacterSpawnRequest> m_cachedRemoteSpawns{};
     mutable Map<uint32_t, RemoteEntityModel> m_remoteModels{};
     mutable Map<uint32_t, uint32_t> m_playerServerIds{};

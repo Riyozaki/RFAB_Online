@@ -211,7 +211,7 @@ void DebugService::DisplayRemoteComponent(RemoteComponent& aRemoteComponent, con
             [acEntity, acFormId]()
             {
                 if (auto* pRemoteCompoment = World::Get().try_get<RemoteComponent>(acEntity))
-                    World::Get().GetCharacterService().TakeOwnership(acFormId, pRemoteCompoment->Id, acEntity);
+                    (void)World::Get().GetCharacterService().RequestVoluntaryOwnershipClaim(acFormId, pRemoteCompoment->Id, acEntity);
             });
     }
 }

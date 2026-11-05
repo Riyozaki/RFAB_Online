@@ -1273,8 +1273,11 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
 
         bool hpChanged = false;
         float prevHp = savedState.CurrentHealth;
+        uint32_t prevHealthRev = 0;
+        uint32_t updatedHealthRev = 0;
         if (auto* pAv = m_world.try_get<ActorValuesComponent>(entity))
         {
+            prevHealthRev = pAv->HealthRevision;
             if (savedState.MaxHealth > 0.0f)
                 pAv->CurrentActorValues.ActorMaxValuesList[kHealthAvIndex] = savedState.MaxHealth;
 
@@ -1286,16 +1289,20 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             // restore undid itself, and a boss the party had wiped stood back up at whatever the
             // last straggler happened to see.
             pAv->SetHealth(savedState.CurrentHealth, savedState.MaxHealth);
+            updatedHealthRev = pAv->HealthRevision;
             hpChanged = std::abs(prevHp - savedState.CurrentHealth) > 0.05f;
         }
 
+        bool sentHealthRevisionCarrier = false;
         if (!preferLiveEssBarrier && deathChanged)
         {
             NotifyDeathStateChange deathNotify{};
             deathNotify.Id = serverEntityId;
             deathNotify.IsDead = savedState.IsDead;
+            deathNotify.HealthRevision = updatedHealthRev;
             if (auto* pServer = GameServer::Get())
                 pServer->SendToPlayers(deathNotify, nullptr);
+            sentHealthRevisionCarrier = true;
         }
 
         if (!preferLiveEssBarrier && spatialChanged && !savedState.IsDead)
@@ -1318,8 +1325,19 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
             NotifyHealthChangeBroadcast hpNotify{};
             hpNotify.Id = serverEntityId;
             hpNotify.DeltaHealth = savedState.CurrentHealth - prevHp;
+            hpNotify.HealthRevision = updatedHealthRev;
             if (auto* pServer = GameServer::Get())
                 pServer->SendToPlayers(hpNotify, nullptr);
+            sentHealthRevisionCarrier = true;
+        }
+
+        if (!preferLiveEssBarrier && !sentHealthRevisionCarrier && updatedHealthRev != prevHealthRev)
+        {
+            NotifyActorValueChanges revSync{};
+            revSync.Id = serverEntityId;
+            revSync.HealthRevision = updatedHealthRev;
+            if (auto* pServer = GameServer::Get())
+                pServer->SendToPlayers(revSync, nullptr);
         }
     }
 

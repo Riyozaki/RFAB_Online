@@ -62,6 +62,19 @@ check(version_file.is_file(), "VERSION is missing from the repository root")
 version = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else ""
 check(bool(SEMVER.match(version)), f"VERSION must be semver, got {version!r}")
 
+compat_header = ROOT / "Code" / "common" / "RfabModpackCompat.h"
+check(compat_header.is_file(), "Code/common/RfabModpackCompat.h is missing")
+if compat_header.is_file():
+    compat_match = re.search(
+        r'kRfabOnlineVersion\s*=\s*"([^"]+)"',
+        compat_header.read_text(encoding="utf-8"),
+    )
+    compat_ver = compat_match.group(1) if compat_match else None
+    check(
+        compat_ver == version,
+        f"RfabModpackCompat.h kRfabOnlineVersion ({compat_ver!r}) disagrees with VERSION ({version!r})",
+    )
+
 tags = git("tag", "--list")
 if tags is None:
     notes.append("git tags unavailable, skipped the published-tag check")

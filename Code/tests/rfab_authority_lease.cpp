@@ -598,3 +598,81 @@ TEST_CASE("Lease table: an equal epoch corrects a belief but cannot duplicate a 
     CHECK_FALSE(mirror.Apply(22u, OwnedBy(kGuest, 5ull, 200ull)));
     CHECK(mirror.OwnerOf(22u) == kHost);
 }
+
+TEST_CASE("Authority v4.0.0: out-of-range challengers never get unowned or expired entities",
+          "[rfab][authority][v400]")
+{
+    Candidate farAway = Peer(kGuest);
+    farAway.InRange = false;
+
+    CHECK(Claim(Lease{}, kWorldActor, kOwnerPresent, farAway, 1000ull).Result == Outcome::kDeniedNoCandidate);
+
+    const Lease expired = OwnedBy(kHost, 3ull, 1000ull, 9000ull);
+    CHECK(Claim(expired, kWorldActor, kOwnerPresent, farAway, 9500ull, WorldNpcLeasePolicy()).Result ==
+          Outcome::kDeniedNoCandidate);
+}
+
+TEST_CASE("Authority v4.0.0: WorldNpcLeasePolicy expires after 8s and RefreshUnrevoked resumes cleanly",
+          "[rfab][authority][v400]")
+{
+    const Policy npcPolicy = WorldNpcLeasePolicy();
+    REQUIRE(npcPolicy.LeaseDurationMs == kWorldNpcLeaseDurationMs);
+
+    const auto initial = Claim(Lease{}, kWorldActor, kOwnerPresent, Peer(kHost), 1000ull, npcPolicy);
+    REQUIRE(initial.Result == Outcome::kGranted);
+    CHECK(initial.Next.ExpiresAtMs == 1000ull + kWorldNpcLeaseDurationMs);
+    CHECK_FALSE(initial.Next.IsExpired(8999ull));
+    CHECK(initial.Next.IsExpired(9000ull));
+
+    // Solo pause menu: Renew() refuses a lapsed lease, whereas RefreshUnrevoked() extends the
+    // uncontested owner's lease window without churning Epoch when the player closes the menu.
+    CHECK(Renew(initial.Next, kHost, 12000ull, npcPolicy).Result == Outcome::kDeniedStaleEpoch);
+
+    const auto refreshed = RefreshUnrevoked(initial.Next, kHost, 12000ull, npcPolicy);
+    CHECK(refreshed.Result == Outcome::kGranted);
+    CHECK(refreshed.Changed);
+    CHECK(refreshed.Next.OwnerId == kHost);
+    CHECK(refreshed.Next.Epoch == initial.Next.Epoch);
+    CHECK(refreshed.Next.ExpiresAtMs == 12000ull + kWorldNpcLeaseDurationMs);
+
+    // Non-owner cannot refresh someone else's lease.
+    CHECK(RefreshUnrevoked(refreshed.Next, kGuest, 13000ull, npcPolicy).Result == Outcome::kDeniedNotOwner);
+}
+
+TEST_CASE("Authority v4.0.0: DeclineList cascades across 3 peers and self-heals after TTL",
+          "[rfab][authority][v400]")
+{
+    DeclineList declines;
+    Lease current = OwnedBy(kHost, 1ull, 1000ull, 9000ull);
+    const std::vector<Candidate> inRangePeers = {Peer(kHost), Peer(kGuest), Peer(kThird)};
+
+    // Host relinquishes at t=2000; Host is added to DeclineList -> Guest wins epoch 2.
+    declines.Add(kHost, 2000ull);
+    const auto toGuest = Reassign(current, kWorldActor, inRangePeers, declines.CollectActive(2000ull), 2000ull,
+                                  WorldNpcLeasePolicy());
+    REQUIRE(toGuest.Result == Outcome::kGranted);
+    REQUIRE(toGuest.Next.OwnerId == kGuest);
+    REQUIRE(toGuest.Next.Epoch == 2ull);
+    current = toGuest.Next;
+
+    // Guest's cell is still streaming at t=2100, so Guest also declines. Because DeclineList was
+    // NOT wiped on Apply(), BOTH Host and Guest remain declined -> Third wins epoch 3 (zero ping-pong!).
+    declines.Add(kGuest, 2100ull);
+    const auto toThird = Reassign(current, kWorldActor, inRangePeers, declines.CollectActive(2100ull), 2100ull,
+                                  WorldNpcLeasePolicy());
+    REQUIRE(toThird.Result == Outcome::kGranted);
+    CHECK(toThird.Next.OwnerId == kThird);
+    CHECK(toThird.Next.Epoch == 3ull);
+    current = toThird.Next;
+
+    // After kDefaultDeclineTtlMs (15s), Host and Guest automatically become eligible again.
+    const uint64_t afterTtl = 2100ull + kDefaultDeclineTtlMs;
+    CHECK(declines.CollectActive(afterTtl).empty());
+    CHECK(declines.Empty());
+
+    // ForgetPlayer removes a disconnecting peer immediately before TTL.
+    declines.Add(kGuest, 20000ull);
+    REQUIRE(declines.Contains(kGuest, 20001ull));
+    declines.ForgetPlayer(kGuest);
+    CHECK_FALSE(declines.Contains(kGuest, 20001ull));
+}

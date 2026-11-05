@@ -81,6 +81,8 @@ void CharacterService::OnMountRequest(const PacketEvent<MountRequest>& acMessage
             NotifyOwnershipTransfer grant{};
             grant.ServerId = message.MountId;
             grant.OwnershipEpoch = pMountOwner->GetEpoch();
+            if (const auto* pAv = m_world.try_get<ActorValuesComponent>(mountEntity))
+                grant.HealthRevision = pAv->HealthRevision;
             acMessage.pPlayer->Send(grant);
         }
     }

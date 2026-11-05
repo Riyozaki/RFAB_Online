@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$VersionTag = "",
     [string]$BuildMode = "releasedbg",
     [bool]$PublishRelease = $true,
@@ -36,7 +36,7 @@ if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF -and ($env:GITHUB_REF -n
     $PublishRelease = $false
 }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6", "v3.1.7-backup", "v3.1.7")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6", "v3.1.7-backup", "v3.1.7", "v3.1.8")
 if ($PublishRelease -and ($VersionTag -in $ProtectedTags)) {
     throw "Release policy violation: '$VersionTag' is an immutable protected release. Bump VERSION and cut a new tag instead of overwriting it."
 }

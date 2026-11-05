@@ -23,7 +23,10 @@ struct Player;
 // "two owners" or "silently no owner" impossible to express.
 struct OwnerComponent
 {
-    OwnerComponent(Player* apPlayer, uint64_t aNowMs = 0) { ForceOwner(apPlayer, aNowMs); }
+    OwnerComponent(Player* apPlayer, uint64_t aNowMs = 0, const Authority::Policy& acPolicy = {})
+    {
+        ForceOwner(apPlayer, aNowMs, acPolicy);
+    }
 
     [[nodiscard]] Player* GetOwner() const noexcept { return pOwner; }
     [[nodiscard]] const Authority::Lease& GetLease() const noexcept { return CurrentLease; }
@@ -41,33 +44,60 @@ struct OwnerComponent
 
         CurrentLease = acDecision.Next;
         pOwner = apNewOwner;
-        InvalidOwners.clear();
         return CurrentLease.Epoch;
+    }
+
+    // Refreshes the lease window for the current unrevoked owner when simulation activity arrives.
+    bool RefreshLease(uint64_t aNowMs, const Authority::Policy& acPolicy) noexcept
+    {
+        if (!pOwner)
+            return false;
+
+        const auto decision = Authority::RefreshUnrevoked(
+            CurrentLease,
+            GetOwnerPlayerId(pOwner),
+            aNowMs,
+            acPolicy);
+        if (!decision.Changed)
+            return false;
+
+        CurrentLease = decision.Next;
+        return true;
     }
 
     // Server-side override used when the server itself decides the owner (an observer
     // was picked, a reload reassigned the entity, the owner disconnected). Keeps the
     // epoch monotonic and never produces a transition when nothing actually changed.
-    uint64_t ForceOwner(Player* apPlayer, uint64_t aNowMs = 0) noexcept
+    uint64_t ForceOwner(Player* apPlayer, uint64_t aNowMs = 0, const Authority::Policy& acPolicy = {}) noexcept
     {
+        const uint32_t ownerId = GetOwnerPlayerId(apPlayer);
+        const uint64_t expiresAt = (apPlayer && acPolicy.LeaseDurationMs != 0ull)
+            ? (aNowMs + acPolicy.LeaseDurationMs)
+            : 0ull;
+
         if (pOwner == apPlayer && CurrentLease.Epoch != Authority::kUnknownEpoch)
+        {
+            CurrentLease.ExpiresAtMs = expiresAt;
             return CurrentLease.Epoch;
+        }
 
         pOwner = apPlayer;
         ++CurrentLease.Epoch;
-        CurrentLease.OwnerId = GetOwnerPlayerId(apPlayer);
+        CurrentLease.OwnerId = ownerId;
         CurrentLease.GrantedAtMs = aNowMs;
-        CurrentLease.ExpiresAtMs = 0ull;
+        CurrentLease.ExpiresAtMs = expiresAt;
         return CurrentLease.Epoch;
     }
 
     // Historical name kept so call sites read the same; identical semantics.
-    uint64_t SetOwner(Player* apPlayer, uint64_t aNowMs = 0) noexcept { return ForceOwner(apPlayer, aNowMs); }
+    uint64_t SetOwner(Player* apPlayer, uint64_t aNowMs = 0, const Authority::Policy& acPolicy = {}) noexcept
+    {
+        return ForceOwner(apPlayer, aNowMs, acPolicy);
+    }
 
     Authority::Lease CurrentLease{};
     Player* pOwner{nullptr};
 
-    // Peers that cannot take this entity right now (failed to load it, refused it).
-    // Authority::Reassign consumes this as its declined list.
-    Vector<const Player*> InvalidOwners{};
+    // Time-bounded zero-pointer decline set replacing raw Vector<const Player*>.
+    Authority::DeclineList InvalidOwners{};
 };
