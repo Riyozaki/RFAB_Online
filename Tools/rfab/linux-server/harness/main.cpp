@@ -23,10 +23,10 @@
 //   8. an ack that arrives after the barrier is gone cannot commit anything;
 //   9. a duplicate ack does not commit twice;
 //  10. a player who leaves is no longer waited for;
-//  11. a rollback restores the checkpoint's health *and* moves the revision, so a reading
-//      sampled before the rollback cannot undo the restore;
-//  12. the checkpoint file survives its own round trip - what the server writes is exactly what
-//      it reads back, and a corrupted file is refused instead of becoming a world.
+//  11. the checkpoint file survives its own round trip and corruption is refused;
+//  12. a rollback restores health and moves the revision;
+//  13. a fresh server rebuilds actors, objects, progression, loot and calendar from the
+//      checkpoint; the first join cannot overwrite the restored calendar.
 //
 // The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
 // was never observed is the wiring: who is told, and what the server records when a player
@@ -41,9 +41,11 @@
 
 #include <Events/PacketEvent.h>
 #include <Events/PlayerLeaveEvent.h>
+#include <Events/PlayerJoinEvent.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestDeathStateChange.h>
 #include <Messages/RequestHealthChangeBroadcast.h>
+#include <Messages/RequestInventoryChanges.h>
 #include <Messages/CoordinatedSaveAck.h>
 #include <Messages/RequestOwnershipClaim.h>
 
@@ -51,6 +53,7 @@
 
 #include "TransportSpy.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -61,6 +64,42 @@
 namespace
 {
 int g_failures = 0;
+
+// Never let the harness delete or overwrite a real server's Data/rfab_checkpoints.bin.
+class TemporaryWorkingDirectory
+{
+public:
+    TemporaryWorkingDirectory() : m_original(std::filesystem::current_path())
+    {
+        const auto seed = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (unsigned i = 0; i < 100; ++i)
+        {
+            m_path = std::filesystem::temp_directory_path() /
+                     ("rfab-server-harness-" + std::to_string(seed) + "-" + std::to_string(i));
+            std::error_code ec;
+            if (std::filesystem::create_directory(m_path, ec))
+            {
+                std::filesystem::current_path(m_path);
+                return;
+            }
+            if (ec)
+                throw std::filesystem::filesystem_error("create harness directory", m_path, ec);
+        }
+        throw std::runtime_error("could not create a unique harness directory");
+    }
+
+    ~TemporaryWorkingDirectory()
+    {
+        std::error_code ec;
+        std::filesystem::current_path(m_original, ec);
+        if (!ec)
+            std::filesystem::remove_all(m_path, ec);
+    }
+
+private:
+    std::filesystem::path m_original;
+    std::filesystem::path m_path;
+};
 
 void Check(bool aCondition, const char* acWhat)
 {
@@ -106,6 +145,18 @@ void WriteAllBytes(const std::filesystem::path& acPath, const std::vector<uint8_
     out.write(reinterpret_cast<const char*>(acBytes.data()), static_cast<std::streamsize>(acBytes.size()));
 }
 
+size_t CountCharactersByFormId(World& aWorld, const GameId& acFormId)
+{
+    size_t count = 0;
+    auto view = aWorld.view<FormIdComponent, CharacterComponent>();
+    for (const entt::entity entity : view)
+    {
+        if (view.get<FormIdComponent>(entity).Id == acFormId)
+            ++count;
+    }
+    return count;
+}
+
 float HealthOf(const ActorValuesComponent& acValues)
 {
     float hp = -1.0f;
@@ -121,6 +172,7 @@ int main()
     pConsoleLogger->set_level(spdlog::level::warn);
     spdlog::set_default_logger(pConsoleLogger);
 
+    TemporaryWorkingDirectory isolatedDirectory;
     Console::ConsoleRegistry registry{"ConOut"};
 
     // The service restores persisted checkpoints from `cwd/Data` on construction. A file left by
@@ -129,6 +181,12 @@ int main()
     std::error_code removeEc;
     std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
 
+    const GameId restartActorFormId{0u, 0x00012345u};
+    const GameId restartContainerId{0u, 0x00054321u};
+    const GameId depletedItemId{0u, 0x00023456u};
+    const GameId remainingItemId{0u, 0x00034567u};
+    uint64_t restartEpoch = 0;
+    {
     GameServer server{registry};
 
     World& world = server.GetWorld();
@@ -140,6 +198,19 @@ int main()
         std::printf("FAIL could not create players\n");
         return 1;
     }
+
+    // With no checkpoint, the first host still seeds the calendar.
+    Check(world.GetSaveSnapshotService().GetSnapshotCount() == 0, "a new server has no checkpoint");
+    TimeModel initialHostTime{};
+    initialHostTime.Time = 2.0f;
+    initialHostTime.Day = 2;
+    initialHostTime.Month = 1;
+    initialHostTime.Year = 100;
+    world.GetDispatcher().trigger(PlayerJoinEvent{pOwner, {}, {}, DateTime{initialHostTime}});
+    Check(world.GetCalendarService().GetDate() == CalendarService::TDate{2, 1, 100},
+          "a new server seeds its date from the first player");
+    Check(world.GetCalendarService().GetTime() == CalendarService::TTime{2, 0},
+          "a new server seeds its time from the first player");
 
     // Both peers stand in the same cell as the NPC: range filtering is what decides
     // whether a report is even considered, and a player without a cell is nowhere.
@@ -424,7 +495,7 @@ int main()
 
     std::printf("the rollback path\n");
 
-    // 11. A rollback is an absolute write of the checkpoint's health, like a death or a transfer -
+    // 12. A rollback is an absolute write of the checkpoint's health, like a death or a transfer -
     //     so it has to move the revision. Written straight into the map it does not, and a reading
     //     that was in flight before the rollback still carries the current revision: the restore is
     //     undone, and a boss the party wiped comes back at whatever the last straggler saw.
@@ -468,6 +539,177 @@ int main()
                 Check(Authority::ClassifyHealthSnapshot(restoredHp, 55.0f, pAv->HealthRevision, revisionAtDeath) ==
                           Authority::SnapshotVerdict::kStaleIncrease,
                       "a reading sampled before the rollback cannot undo the restore");
+            }
+        }
+    }
+
+    std::printf("the restart path\n");
+    {
+        auto& saves = world.GetSaveSnapshotService();
+        auto& coordinator = saves.GetCoordinator();
+        auto& calendar = world.GetCalendarService();
+        auto& ledger = world.GetRfabProgressionService().GetLedger();
+        // Persistent actors need spatial state to be recreated after startup.
+        auto& movement = world.get_or_emplace<MovementComponent>(actor);
+        movement.Position = {123.0f, 456.0f, 789.0f};
+        world.get<CharacterComponent>(actor).SetDead(false);
+        values.SetHealth(40.0f, 100.0f);
+        Check(calendar.SetDate(12, 4, 205), "the checkpoint date is set");
+        Check(calendar.SetTime(13, 17, 33.0f), "the checkpoint time is set");
+        Check(ledger.TryGrantXp("restart-test", 123).Accepted, "the checkpoint progression is set");
+
+        LockData lock{};
+        lock.IsLocked = true;
+        lock.LockLevel = 42;
+        Inventory contents{};
+        Inventory::Entry depleted{};
+        depleted.BaseId = depletedItemId;
+        depleted.Count = 3;
+        contents.AddOrRemoveEntry(depleted);
+        Inventory::Entry remaining{};
+        remaining.BaseId = remainingItemId;
+        remaining.Count = 7;
+        contents.AddOrRemoveEntry(remaining);
+        world.GetObjectService().UpsertRestoredObject(restartContainerId, kCell, {}, {}, lock, contents);
+        entt::entity container = entt::null;
+        auto objects = world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
+        for (const auto entity : objects)
+            if (objects.get<FormIdComponent>(entity).Id == restartContainerId)
+                container = entity;
+        Check(container != entt::null, "the checkpoint container exists");
+        if (container != entt::null)
+        {
+            RequestInventoryChanges withdrawal{};
+            withdrawal.ServerId = World::ToInteger(container);
+            withdrawal.Item = depleted;
+            withdrawal.Item.Count = -3;
+            withdrawal.UpdateClients = false;
+            Deliver(world, withdrawal, pOwner);
+            const auto depletion = world.GetInventoryService().CaptureLootLedgerSnapshot();
+            Check(depletion.size() == 1, "a real withdrawal records the depletion");
+        }
+
+        Check(saves.TriggerCoordinatedSave(true, nullptr), "a save starts for the restart checkpoint");
+        const auto pending = coordinator.GetPendingBarrier();
+        Check(pending.has_value(), "the restart checkpoint has a pending barrier");
+        if (pending.has_value())
+        {
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pOwner);
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pAlly);
+            Check(coordinator.GetLastCommittedEpoch() == pending->EpochId, "the restart checkpoint commits");
+            restartEpoch = pending->EpochId;
+        }
+        Check(saves.SaveCheckpointsToDisk(SaveSnapshotService::GetDefaultCheckpointStorePath()),
+              "the restart checkpoint is written to the default path");
+    }
+    } // Destroy the first server and its world before constructing the next one.
+
+    {
+        Console::ConsoleRegistry restartRegistry{"ConOut"};
+        GameServer restarted{restartRegistry};
+        World& restored = restarted.GetWorld();
+        const auto& saves = restored.GetSaveSnapshotService();
+        Check(restartEpoch != 0 && saves.GetLastCommittedEpoch() == restartEpoch,
+              "a fresh server reads the committed epoch in its constructor");
+        Check(CountCharactersByFormId(restored, restartActorFormId) == 1,
+              "a fresh server rebuilds the persistent actor exactly once");
+        auto actors = restored.view<FormIdComponent, CharacterComponent>();
+        for (const entt::entity entity : actors)
+        {
+            if (actors.get<FormIdComponent>(entity).Id != restartActorFormId)
+                continue;
+            auto* pAv = restored.try_get<ActorValuesComponent>(entity);
+            float hp = -1.0f;
+            Check(pAv != nullptr && pAv->TryGetHealth(hp) && std::fabs(hp - 40.0f) < 0.01f,
+                  "the rebuilt actor carries the checkpoint's health");
+            Check(!actors.get<CharacterComponent>(entity).IsDead(), "the rebuilt actor is alive");
+            Check(restored.all_of<OwnerComponent>(entity) && restored.get<OwnerComponent>(entity).GetOwner() == nullptr,
+                  "the rebuilt actor starts without an owner");
+            const auto* pMov = restored.try_get<MovementComponent>(entity);
+            Check(pMov && std::fabs(pMov->Position.x - 123.0f) < 0.01f &&
+                      std::fabs(pMov->Position.y - 456.0f) < 0.01f &&
+                      std::fabs(pMov->Position.z - 789.0f) < 0.01f,
+                  "the rebuilt actor carries the checkpoint's position");
+        }
+        auto restoredObjects = restored.view<FormIdComponent, ObjectComponent, InventoryComponent>();
+        size_t containerCount = 0;
+        entt::entity restoredContainer = entt::null;
+        for (const auto entity : restoredObjects)
+        {
+            if (restoredObjects.get<FormIdComponent>(entity).Id == restartContainerId)
+            {
+                ++containerCount;
+                restoredContainer = entity;
+            }
+        }
+        Check(containerCount == 1, "the fresh server rebuilds the checkpoint container exactly once");
+        if (restoredContainer != entt::null)
+        {
+            const auto& obj = restoredObjects.get<ObjectComponent>(restoredContainer);
+            const auto& inventory = restoredObjects.get<InventoryComponent>(restoredContainer).Content;
+            GameId lookupDepleted = depletedItemId;
+            GameId lookupRemaining = remainingItemId;
+            Check(obj.CurrentLockData.IsLocked && obj.CurrentLockData.LockLevel == 42,
+                  "the restored container keeps its lock");
+            Check(inventory.GetEntryCountById(lookupDepleted) == 0 &&
+                      inventory.GetEntryCountById(lookupRemaining) == 7,
+                  "the restored container keeps its checkpoint inventory");
+            const auto depletion = restored.GetInventoryService().CaptureLootLedgerSnapshot();
+            const auto stableKey = restored.GetInventoryService().ResolveLootContainerKey(restoredContainer, 0);
+            Check(depletion.size() == 1 && depletion[0].ContainerServerId == stableKey &&
+                      depletion[0].ModId == depletedItemId.ModId && depletion[0].BaseId == depletedItemId.BaseId &&
+                      depletion[0].ClaimantPlayerId == 1,
+                  "the depletion ledger survives with the restored container's stable key");
+        }
+        const auto progress = restored.GetRfabProgressionService().GetLedger().CaptureSnapshot();
+        Check(progress.GrantedXpBySource.count("restart-test") == 1,
+              "the fresh server restores the progression ledger");
+        Check(restored.GetCalendarService().GetDate() == CalendarService::TDate{12, 4, 205},
+              "the fresh server restores the checkpoint date");
+        Check(restored.GetCalendarService().GetTime() == CalendarService::TTime{13, 17},
+              "the fresh server restores the checkpoint time");
+        // GameServer::UpdateTimeScale deliberately reapplies its configured scale at startup.
+        Check(std::fabs(restored.GetCalendarService().GetTimeScale() - 20.0f) < 0.01f,
+              "the configured time scale still takes precedence at server startup");
+        Check(!restored.GetCalendarService().RestoreCheckpoint(99, 17, 20.0f, 12, 4, 205),
+              "an invalid checkpoint calendar is rejected");
+        Check(restored.GetCalendarService().GetTime() == CalendarService::TTime{13, 17} &&
+                  restored.GetCalendarService().GetDate() == CalendarService::TDate{12, 4, 205},
+              "a rejected calendar leaves the existing state untouched");
+        Player* pHost = restored.GetPlayerManager().Create(3);
+        Check(pHost != nullptr, "a player can join the restarted server");
+        if (pHost)
+        {
+            TimeModel hostTime{};
+            hostTime.Time = 2.0f;
+            hostTime.Day = 2;
+            hostTime.Month = 1;
+            hostTime.Year = 100;
+            restored.GetDispatcher().trigger(PlayerJoinEvent{pHost, {}, {}, DateTime{hostTime}});
+            Check(restored.GetCalendarService().GetDate() == CalendarService::TDate{12, 4, 205},
+                  "the first player does not overwrite the restored date");
+            Check(restored.GetCalendarService().GetTime() == CalendarService::TTime{13, 17},
+                  "the first player does not overwrite the restored time");
+            if (restoredContainer != entt::null)
+            {
+                // Model a client that already awarded itself a duplicated item. The server must
+                // use the persisted depletion to remove it again through the normal packet path.
+                const entt::entity playerEntity = restored.create();
+                auto& playerInventory = restored.emplace<InventoryComponent>(playerEntity).Content;
+                Inventory::Entry duplicate{};
+                duplicate.BaseId = depletedItemId;
+                duplicate.Count = 1;
+                playerInventory.AddOrRemoveEntry(duplicate);
+                pHost->SetCharacter(playerEntity);
+                RequestInventoryChanges lateWithdrawal{};
+                lateWithdrawal.ServerId = World::ToInteger(restoredContainer);
+                lateWithdrawal.Item = duplicate;
+                lateWithdrawal.Item.Count = -1;
+                lateWithdrawal.UpdateClients = false;
+                Deliver(restored, lateWithdrawal, pHost);
+                GameId lookup = depletedItemId;
+                Check(playerInventory.GetEntryCountById(lookup) == 0,
+                      "the restored depletion rejects a late peer's duplicate withdrawal");
             }
         }
     }

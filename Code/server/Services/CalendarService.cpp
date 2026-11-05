@@ -107,6 +107,23 @@ bool CalendarService::SetDate(int aDay, int aMonth, float aYear) noexcept
     return false;
 }
 
+bool CalendarService::RestoreCheckpoint(int aHour, int aMinutes, float aScale, int aDay, int aMonth, float aYear) noexcept
+{
+    if (aHour < 0 || aHour > 23 || aMinutes < 0 || aMinutes > 59 ||
+        !std::isfinite(aScale) || aScale < 0.f || aScale > 1000.f ||
+        !std::isfinite(aYear) || aYear < 0.f || aYear > 999.f || aMonth < 0 || aMonth >= 12 ||
+        aDay < 0 || aDay >= static_cast<int>(m_dateTime.GetNumberOfDaysByMonthIndex(aMonth)))
+        return false;
+
+    m_dateTime.m_timeModel.Time = RfabCompat::EncodeSkyrimGameHour(aHour, aMinutes);
+    m_dateTime.m_timeModel.TimeScale = aScale;
+    m_dateTime.m_timeModel.Day = static_cast<uint32_t>(aDay);
+    m_dateTime.m_timeModel.Month = static_cast<uint32_t>(aMonth);
+    m_dateTime.m_timeModel.Year = static_cast<uint32_t>(aYear);
+    m_timeSetFromFirstPlayer = true;
+    return true;
+}
+
 void CalendarService::SendTimeResync() noexcept
 {
     ServerTimeSettings timeMsg;

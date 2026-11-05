@@ -804,6 +804,14 @@ void SaveSnapshotService::HydratePersistedWorldState() noexcept
     if (auto* pInv = m_world.ctx().find<InventoryService>())
         pInv->RestoreLootLedgerSnapshot(latest.LootLedger);
 
+    if (auto* pCalendar = m_world.ctx().find<CalendarService>())
+    {
+        const auto& calendar = latest.Calendar;
+        if (!pCalendar->RestoreCheckpoint(calendar.Hour, calendar.Minute, calendar.TimeScale,
+                                          calendar.Day, calendar.Month, calendar.Year))
+            spdlog::warn("[RFAB SaveSnapshot] Ignoring invalid persisted calendar");
+    }
+
     if (auto* pObj = m_world.ctx().find<ObjectService>())
     {
         for (const auto& objRec : latest.TrackedObjects)
