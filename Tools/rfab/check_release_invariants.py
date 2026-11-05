@@ -75,6 +75,31 @@ if compat_header.is_file():
         f"RfabModpackCompat.h kRfabOnlineVersion ({compat_ver!r}) disagrees with VERSION ({version!r})",
     )
 
+stub_build_info = ROOT / "Tools" / "rfab" / "linux-server" / "stub" / "BuildInfo.h"
+if stub_build_info.is_file():
+    stub_match = re.search(
+        r'#define\s+BUILD_COMMIT\s+"([^"]+)"',
+        stub_build_info.read_text(encoding="utf-8"),
+    )
+    stub_ver = stub_match.group(1) if stub_match else None
+    check(
+        stub_ver == f"v{version}",
+        f"linux-server stub/BuildInfo.h BUILD_COMMIT ({stub_ver!r}) disagrees with v{version!r}",
+    )
+
+for ps1_rel in (
+    "Tools/rfab/Setup-RfabOnline.ps1",
+    "Tools/rfab/Build-CloudRelease.ps1",
+    "Tools/rfab/Package-Release.ps1",
+    "Tools/rfab/Deploy-RfabOnline.ps1",
+):
+    ps1_file = ROOT / ps1_rel
+    if ps1_file.is_file():
+        check(
+            ps1_file.read_bytes()[:3] == b"\xef\xbb\xbf",
+            f"{ps1_rel} is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1",
+        )
+
 tags = git("tag", "--list")
 if tags is None:
     notes.append("git tags unavailable, skipped the published-tag check")

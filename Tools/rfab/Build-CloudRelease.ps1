@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$VersionTag = "",
     [string]$BuildMode = "releasedbg",
     [bool]$PublishRelease = $true,
