@@ -4,7 +4,10 @@
 
 #include <Actor.h>
 #include <Components.h>
+#include <Forms/TESNPC.h>
 #include <World.h>
+
+#include <limits>
 
 void CharacterService::OnFormIdIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept
 {
