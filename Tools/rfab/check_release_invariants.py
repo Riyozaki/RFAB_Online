@@ -27,6 +27,7 @@ execute code instead of reading it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -105,11 +106,14 @@ if tags is None:
     notes.append("git tags unavailable, skipped the published-tag check")
 else:
     published = {t.strip() for t in tags.splitlines() if t.strip()}
-    check(
-        f"v{version}" not in published,
-        f"VERSION {version} names an already published tag (v{version}); "
-        "bump it instead of overwriting a release players are running",
-    )
+    if os.environ.get("RFAB_PUBLISHING_RELEASE", "1") == "1":
+        check(
+            f"v{version}" not in published,
+            f"VERSION {version} names an already published tag (v{version}); "
+            "bump it instead of overwriting a release players are running",
+        )
+    elif f"v{version}" in published:
+        notes.append(f"v{version} already published; PublishRelease=false artifact-only build")
 
 # 2. No build output in git ----------------------------------------------------
 tracked = git("ls-files")
