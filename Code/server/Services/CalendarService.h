@@ -25,6 +25,10 @@ public:
     bool SetTime(int aHour, int aMinutes, float aScale) noexcept;
     bool SetDate(int aDay, int aMonth, float aYear) noexcept;
 
+    // Restore during World construction, before the GameServer world and scripts exist.
+    // Unlike interactive setters this must not broadcast or invoke script callbacks.
+    bool RestoreCheckpoint(int aHour, int aMinutes, float aScale, int aDay, int aMonth, float aYear) noexcept;
+
     // returns hours, minutes
     TTime GetTime() const noexcept;
     static TTime GetRealTime() noexcept;
