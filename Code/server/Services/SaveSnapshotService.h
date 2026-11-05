@@ -103,6 +103,9 @@ public:
         std::unordered_map<uint64_t, ActorStateRecord> PersistentActorsByKey{};
         std::vector<ObjectStateRecord> TrackedObjects{};
         CoopLootLedger::ContainerLootLedger::Snapshot LootLedger{};
+        // Runtime provenance only; never serialized. IDs read from disk cannot identify a player
+        // in the current process. This applies to every loaded checkpoint, including older ones.
+        bool LootClaimantsFromDisk{false};
         RfabProgressionLedger::Snapshot Progression{};
         CalendarStateRecord Calendar{};
     };

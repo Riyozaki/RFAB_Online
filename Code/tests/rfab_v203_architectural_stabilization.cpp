@@ -284,3 +284,49 @@ TEST_CASE("v2.0.3 playtest hardening: level-sync must never demolish a live acto
     }
 
 }
+
+TEST_CASE("Loot checkpoint claimant IDs are scoped to the server process", "[rfab][loot][checkpoint]")
+{
+    using CoopLootLedger::ContainerLootLedger;
+    constexpr uint32_t chest = 0x80123456u;
+    constexpr uint32_t item = 0x1234u;
+    ContainerLootLedger original;
+    const auto first = original.EvaluateWithdrawal(chest, 0, item, 1, 1, 1, false, 100);
+    REQUIRE(first.GrantedTake == 1);
+    const auto snapshot = original.CaptureSnapshot();
+    REQUIRE(snapshot.size() == 1);
+    REQUIRE(snapshot[0].ClaimantPlayerId == 1);
+
+    SECTION("same-process rollback preserves the existing same-player exception")
+    {
+        ContainerLootLedger restored;
+        restored.RestoreSnapshot(snapshot);
+        REQUIRE(restored.CaptureSnapshot()[0].ClaimantPlayerId == 1);
+        const auto same = restored.EvaluateWithdrawal(chest, 0, item, 1, 0, 1, false, 101);
+        REQUIRE(same.GrantedTake == 1);
+        REQUIRE(same.OverdrawnRollback == 0);
+    }
+
+    SECTION("disk restoration treats every valid player ID as distinct from the former claimant")
+    {
+        ContainerLootLedger restored;
+        restored.RestoreSnapshot(snapshot, true);
+        const auto unknown = restored.CaptureSnapshot();
+        REQUIRE(unknown.size() == 1);
+        REQUIRE(unknown[0].ContainerServerId == chest);
+        REQUIRE(unknown[0].BaseId == item);
+        REQUIRE(unknown[0].ClaimantPlayerId == 0);
+        REQUIRE(unknown[0].DepletedAtMs == 100);
+        const auto collision = restored.EvaluateWithdrawal(chest, 0, item, 1, 0, 1, false, 101);
+        REQUIRE(collision.GrantedTake == 0);
+        REQUIRE(collision.OverdrawnRollback == 1);
+        const auto other = restored.EvaluateWithdrawal(chest, 0, item, 2, 0, 1, false, 102);
+        REQUIRE(other.GrantedTake == 0);
+        REQUIRE(other.OverdrawnRollback == 1);
+        const auto quest = restored.EvaluateWithdrawal(chest, 0, item, 1, 0, 1, true, 103);
+        REQUIRE(quest.GrantedTake == 1);
+        restored.RecordDeposit(chest, 0, item);
+        const auto afterDeposit = restored.EvaluateWithdrawal(chest, 0, item, 1, 0, 1, false, 104);
+        REQUIRE(afterDeposit.GrantedTake == 1);
+    }
+}

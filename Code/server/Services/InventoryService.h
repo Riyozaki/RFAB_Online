@@ -36,7 +36,10 @@ public:
     void ForgetContainerForEntity(entt::entity aEntity, uint32_t aFallbackServerId) noexcept;
     [[nodiscard]] uint32_t ResolveLootContainerKey(entt::entity aEntity, uint32_t aFallbackServerId) const noexcept;
     [[nodiscard]] CoopLootLedger::ContainerLootLedger::Snapshot CaptureLootLedgerSnapshot() const { return m_lootLedger.CaptureSnapshot(); }
-    void RestoreLootLedgerSnapshot(const CoopLootLedger::ContainerLootLedger::Snapshot& acSnapshot) { m_lootLedger.RestoreSnapshot(acSnapshot); }
+    void RestoreLootLedgerSnapshot(const CoopLootLedger::ContainerLootLedger::Snapshot& acSnapshot, bool aForgetClaimants = false)
+    {
+        m_lootLedger.RestoreSnapshot(acSnapshot, aForgetClaimants);
+    }
 
 private:
     World& m_world;
