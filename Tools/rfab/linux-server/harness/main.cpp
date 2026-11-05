@@ -23,7 +23,9 @@
 //   8. an ack that arrives after the barrier is gone cannot commit anything;
 //   9. a duplicate ack does not commit twice;
 //  10. a player who leaves is no longer waited for;
-//  11. the checkpoint file survives its own round trip - what the server writes is exactly what
+//  11. a rollback restores the checkpoint's health *and* moves the revision, so a reading
+//      sampled before the rollback cannot undo the restore;
+//  12. the checkpoint file survives its own round trip - what the server writes is exactly what
 //      it reads back, and a corrupted file is refused instead of becoming a world.
 //
 // The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
@@ -418,6 +420,56 @@ int main()
 
         std::filesystem::remove(firstPath, ec);
         std::filesystem::remove(secondPath, ec);
+    }
+
+    std::printf("the rollback path\n");
+
+    // 11. A rollback is an absolute write of the checkpoint's health, like a death or a transfer -
+    //     so it has to move the revision. Written straight into the map it does not, and a reading
+    //     that was in flight before the rollback still carries the current revision: the restore is
+    //     undone, and a boss the party wiped comes back at whatever the last straggler saw.
+    {
+        auto& saves = world.GetSaveSnapshotService();
+        auto& coordinator = saves.GetCoordinator();
+
+        world.get<CharacterComponent>(actor).SetDead(false);
+        values.SetHealth(40.0f, 100.0f);
+        Check(std::fabs(HealthOf(values) - 40.0f) < 0.01f, "the actor is alive at 40 of 100 before the checkpoint");
+
+        Check(saves.TriggerCoordinatedSave(true, nullptr), "a save starts for the checkpoint");
+        const auto pending = coordinator.GetPendingBarrier();
+        if (pending.has_value())
+        {
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pOwner);
+            Deliver(world, MakeAck(pending->EpochId, pending->SlotName, true, ""), pAlly);
+        }
+        Check(saves.GetSnapshotCount() > 0, "the checkpoint is recorded before the rollback");
+
+        // After the checkpoint: the fight is lost, the actor is dead.
+        values.SetHealth(0.0f, 100.0f);
+        world.get<CharacterComponent>(actor).SetDead(true);
+        const uint32_t revisionAtDeath = values.HealthRevision;
+        Check(std::fabs(HealthOf(values)) < 0.01f, "the actor is dead before the rollback");
+
+        Check(saves.TriggerRollbackToLatest(false), "the rollback runs");
+
+        Check(world.valid(actor), "the checkpoint's actor survives the rollback");
+        if (world.valid(actor))
+        {
+            auto* pChar = world.try_get<CharacterComponent>(actor);
+            auto* pAv = world.try_get<ActorValuesComponent>(actor);
+            Check(pChar != nullptr && !pChar->IsDead(), "the rollback brings the actor back alive");
+            if (pAv != nullptr)
+            {
+                float restoredHp = -1.0f;
+                (void)pAv->TryGetHealth(restoredHp);
+                Check(std::fabs(restoredHp - 40.0f) < 0.01f, "the rollback restores the checkpoint's health");
+                Check(pAv->HealthRevision != revisionAtDeath, "the restore moves the health revision");
+                Check(Authority::ClassifyHealthSnapshot(restoredHp, 55.0f, pAv->HealthRevision, revisionAtDeath) ==
+                          Authority::SnapshotVerdict::kStaleIncrease,
+                      "a reading sampled before the rollback cannot undo the restore");
+            }
+        }
     }
 
     // Leave no checkpoint history behind: the scenes above wrote one, and the next run would
