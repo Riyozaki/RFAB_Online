@@ -655,7 +655,7 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
         return false;
     }
 
-    if (aOwnershipEpoch != 0 && !m_ownershipLeases.AcceptEpoch(acServerId, aOwnershipEpoch, true))
+    if (!m_ownershipLeases.AcceptEpoch(acServerId, aOwnershipEpoch, true))
     {
         spdlog::debug("Ignored stale TakeOwnership grant for {:X} (epoch {})", acServerId, aOwnershipEpoch);
         return false;
@@ -668,6 +668,7 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
         pActor->EvaluatePackage();
 
     const uint64_t effectiveEpoch = aOwnershipEpoch != 0 ? aOwnershipEpoch : m_ownershipLeases.EpochOf(acServerId);
+    m_lastVoluntaryClaimMs.erase(acServerId);
     m_cachedRemoteSpawns.erase(acServerId);
     m_remoteModels.erase(acServerId);
     m_world.emplace_or_replace<LocalComponent>(acEntity, acServerId, effectiveEpoch);
@@ -680,6 +681,43 @@ bool CharacterService::TakeOwnership(const uint32_t acFormId, const uint32_t acS
 
     m_transport.Send(request);
 
+    return true;
+}
+
+bool CharacterService::RequestVoluntaryOwnershipClaim(
+    const uint32_t acFormId,
+    const uint32_t acServerId,
+    const entt::entity acEntity) const noexcept
+{
+    if (!m_transport.IsOnline() || acServerId == 0 || acEntity == entt::null || !m_world.valid(acEntity))
+        return false;
+
+    if (!m_world.all_of<RemoteComponent>(acEntity))
+        return false;
+
+    Actor* pActor = Cast<Actor>(TESForm::GetById(acFormId));
+    if (!pActor || pActor->IsStillLoading() || pActor->IsDeleted())
+        return false;
+
+    ActorExtension* pExtension = pActor->GetExtension();
+    if (!pExtension || pExtension->IsRemotePlayer() || pActor->IsPlayerSummon())
+        return false;
+
+    constexpr uint64_t kVoluntaryClaimThrottleMs = 1500ULL;
+    const uint64_t nowMs = NowSteadyWorldViewMs();
+    if (const auto it = m_lastVoluntaryClaimMs.find(acServerId);
+        it != m_lastVoluntaryClaimMs.end() && nowMs > it->second && (nowMs - it->second) < kVoluntaryClaimThrottleMs)
+    {
+        return false;
+    }
+    m_lastVoluntaryClaimMs[acServerId] = nowMs;
+
+    // Pure server-granted lease request: keep RemoteComponent intact until the server
+    // validates authority rules and replies with NotifyOwnershipTransfer(epoch, healthRevision).
+    RequestOwnershipClaim request{};
+    request.ServerId = acServerId;
+    request.NewActorData = BuildActorData(pActor);
+    m_transport.Send(request);
     return true;
 }
 
@@ -1240,10 +1278,12 @@ void CharacterService::NotifySaveLoadReset() noexcept
     m_rfabXpTracker.Reset();
     m_authoritativePlacedBases.Clear();
     m_relinquishClaimCooldowns.Clear();
+    m_lastVoluntaryClaimMs.clear();
     m_ownershipLeases.Clear();
     m_cancelledCookies.Clear();
     m_pendingRemoteMounts.clear();
     m_pendingLocalMount = {};
+    m_world.GetActorValueService().ResetForWorldReload();
 }
 
 void CharacterService::NotifyInSessionRollbackApplied() noexcept
@@ -1315,6 +1355,8 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
         m_world.emplace_or_replace<PlayerComponent>(cEntity, acMessage.PlayerId);
         m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
     }
+
+    m_world.GetActorValueService().NoteAuthoritativeHealthRevision(acMessage.ServerId, acMessage.HealthRevision);
 
     if (acMessage.Owner)
     {
@@ -1531,6 +1573,8 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
     if (m_engineWorldLoadInProgress)
         return;
 
+    m_world.GetActorValueService().NoteAuthoritativeHealthRevision(acMessage.ServerId, acMessage.HealthRevision);
+
     if (acMessage.IsPlayer && acMessage.PlayerId != 0)
     {
         if (const auto prevPlayerIt = m_playerServerIds.find(acMessage.PlayerId);
@@ -1695,11 +1739,15 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
 
 void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMessage) const noexcept
 {
-    if (!m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, true))
+    const uint64_t knownEpoch = m_ownershipLeases.EpochOf(acMessage.ServerId);
+    if ((acMessage.OwnershipEpoch != 0 && acMessage.OwnershipEpoch < knownEpoch) ||
+        (acMessage.OwnershipEpoch == 0 && knownEpoch != 0))
     {
         spdlog::debug("Ignored stale NotifyOwnershipTransfer for {:X} (epoch {})", acMessage.ServerId, acMessage.OwnershipEpoch);
         return;
     }
+
+    m_world.GetActorValueService().NoteAuthoritativeHealthRevision(acMessage.ServerId, acMessage.HealthRevision);
 
     // Which of the four things a grant can mean for this peer: take the actor, renew an
     // actor it already simulates, remember the epoch while a world model is still queued,
@@ -1729,6 +1777,9 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
     }
     case RemoteLifecycle::GrantAction::Renew:
     {
+        if (!m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, true))
+            return;
+        m_lastVoluntaryClaimMs.erase(acMessage.ServerId);
         // The epoch moved, the simulator did not. Refresh the epoch this peer will quote
         // on its next release and send nothing: neither a claim (it already has the
         // actor) nor a RequestOwnershipTransfer (that is the self-eviction).
@@ -1744,7 +1795,9 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
         // materializes — NEVER prematurely decline and strand the NPC in `Owner == nullptr` dormant limbo!
         if (auto modelIt = m_remoteModels.find(acMessage.ServerId); modelIt != m_remoteModels.end())
         {
+            (void)m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, false);
             modelIt.value().PendingOwnershipEpoch = acMessage.OwnershipEpoch;
+            modelIt.value().PendingHealthRevision = acMessage.HealthRevision;
             spdlog::info(
                 "Deferred ownership claim for queued WorldModel {:X} (epoch {}) until FormView materializes",
                 acMessage.ServerId,
@@ -1758,6 +1811,7 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
         break;
     }
 
+    (void)m_ownershipLeases.AcceptEpoch(acMessage.ServerId, acMessage.OwnershipEpoch, false);
     spdlog::warn("Actor for ownership transfer not found {:X}", acMessage.ServerId);
 
     RequestOwnershipTransfer request{};
@@ -1770,6 +1824,8 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
 {
     m_ownershipLeases.Forget(acMessage.ServerId);
+    m_lastVoluntaryClaimMs.erase(acMessage.ServerId);
+    m_world.GetActorValueService().ForgetHealthRevision(acMessage.ServerId);
     m_cachedRemoteSpawns.erase(acMessage.ServerId);
 
     bool isNetworkModel = false;
@@ -1840,6 +1896,13 @@ void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& 
         return;
     }
 
+    m_lastVoluntaryClaimMs.erase(acMessage.ServerId);
+    if (auto queuedIt = m_remoteModels.find(acMessage.ServerId); queuedIt != m_remoteModels.end())
+    {
+        queuedIt.value().PendingOwnershipEpoch = 0;
+        queuedIt.value().PendingHealthRevision = 0;
+    }
+
     // O(1) server-id lookup through the entity index.
     // The previous implementation walked every `FormIdComponent` in the registry and logged an error for each
     // entity that has no `Local`/`RemoteComponent` (the vast majority: the player, objects, waiting entities).
@@ -1866,11 +1929,14 @@ void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& 
 
     const uint32_t actorFormId = pFormIdComponent->Id;
     const uint32_t serverId = acMessage.ServerId;
+    m_relinquishClaimCooldowns.RecordRelinquished(actorFormId, NowSteadyWorldViewMs());
 
     if (m_world.all_of<LocalComponent>(entity))
     {
-        m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
+        // Emplace RemoteComponent BEFORE removing LocalComponent so EntityIndexTable
+        // never drops the ServerId -> entity binding inside OnLocalIndexDestroyed.
         m_world.emplace_or_replace<RemoteComponent>(entity, acMessage.ServerId, actorFormId);
+        m_world.remove<LocalAnimationComponent, LocalComponent>(entity);
     }
 
     Actor* pActor = Cast<Actor>(TESForm::GetById(actorFormId));
@@ -2552,7 +2618,10 @@ Actor* CharacterService::MaterializeRemoteView(
     // promotes it to `TakeOwnership` on the exact frame `GetNiNode() != nullptr`.
     if (deferredGrantEpoch != 0 && pActor->GetNiNode() && !pActor->IsStillLoading())
     {
+        const uint32_t deferredRev = aModel.PendingHealthRevision;
         aModel.PendingOwnershipEpoch = 0;
+        aModel.PendingHealthRevision = 0;
+        m_world.GetActorValueService().NoteAuthoritativeHealthRevision(spawnedServerId, deferredRev);
         pActor->SetActorInventory(viewSpawnCopy.InventoryContent);
         (void)TakeOwnership(pActor->formID, spawnedServerId, aEntity, deferredGrantEpoch);
     }
@@ -2702,7 +2771,23 @@ void CharacterService::RunLocalUpdates() const noexcept
     }
 
     if (!message.Updates.empty())
+    {
         m_transport.Send(message, hasAnyActions ? TiltedPhoques::kReliable : TiltedPhoques::kUnreliableNoNagle);
+    }
+    else if (m_transport.IsOnline())
+    {
+        // Unpaused simulation heartbeat: RunLocalUpdates() runs strictly inside UpdateEvent
+        // (never during UpdatePausedPump in StatsMenu / InventoryMenu / OS stall). Sending an
+        // empty 5-byte keepalive every 2s when all local actors are stationary lets the server
+        // distinguish an unpaused stationary player from a paused/hung client.
+        static std::chrono::steady_clock::time_point s_lastIdleKeepaliveTimePoint;
+        constexpr auto cIdleKeepaliveInterval = 2000ms;
+        if (now - s_lastIdleKeepaliveTimePoint >= cIdleKeepaliveInterval)
+        {
+            s_lastIdleKeepaliveTimePoint = now;
+            m_transport.Send(message, TiltedPhoques::kUnreliableNoNagle);
+        }
+    }
 }
 
 void CharacterService::RunRemoteUpdates() noexcept
@@ -2809,13 +2894,18 @@ void CharacterService::RunRemoteUpdates() noexcept
 
         const uint32_t resolvedServerId = activeSpawn.ServerId;
         uint64_t pendingGrantEpoch = 0;
+        uint32_t pendingHealthRev = activeSpawn.HealthRevision;
         if (resolvedServerId != 0)
         {
             if (auto modelIt = m_remoteModels.find(resolvedServerId); modelIt != m_remoteModels.end())
             {
                 pendingGrantEpoch = modelIt.value().PendingOwnershipEpoch;
+                if (modelIt.value().PendingHealthRevision != 0)
+                    pendingHealthRev = modelIt.value().PendingHealthRevision;
                 modelIt.value().PendingOwnershipEpoch = 0;
+                modelIt.value().PendingHealthRevision = 0;
             }
+            m_world.GetActorValueService().NoteAuthoritativeHealthRevision(resolvedServerId, pendingHealthRev);
         }
 
         toRemove.push_back(entity);

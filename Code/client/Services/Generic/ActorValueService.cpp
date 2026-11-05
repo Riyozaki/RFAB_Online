@@ -49,6 +49,7 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
     , m_transport(aTransport)
 {
     m_world.on_construct<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
+    m_world.on_update<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
     m_world.on_destroy<LocalComponent>().connect<&ActorValueService::OnLocalComponentRemoved>(this);
     m_dispatcher.sink<DisconnectedEvent>().connect<&ActorValueService::OnDisconnected>(this);
     m_dispatcher.sink<ActorRemovedEvent>().connect<&ActorValueService::OnActorRemoved>(this);
@@ -101,8 +102,25 @@ void ActorValueService::ResetForWorldReload() noexcept
     m_smallHealthChanges.clear();
     m_smallHealthAttackerIds.clear();
     m_lastLocalPredictedHitMs.clear();
+    m_knownHealthRevisions.clear();
     m_remoteHitImpactGate.Clear();
     m_world.clear<ActorValuesComponent>();
+}
+
+void ActorValueService::NoteAuthoritativeHealthRevision(uint32_t aServerId, uint32_t aRevision) const noexcept
+{
+    if (aServerId == 0 || aRevision == 0)
+        return;
+
+    auto& stored = m_knownHealthRevisions[aServerId];
+    if (aRevision > stored)
+        stored = aRevision;
+}
+
+void ActorValueService::ForgetHealthRevision(uint32_t aServerId) const noexcept
+{
+    if (aServerId != 0)
+        m_knownHealthRevisions.erase(aServerId);
 }
 
 void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
@@ -409,8 +427,7 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 
 void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) const noexcept
 {
-    if (acMessage.HealthRevision != 0)
-        m_knownHealthRevisions[acMessage.Id] = acMessage.HealthRevision;
+    NoteAuthoritativeHealthRevision(acMessage.Id, acMessage.HealthRevision);
 
     if (acMessage.DeltaHealth != 0.0f)
         m_world.GetCharacterService().SyncRemoteCachedHealthDelta(acMessage.Id, acMessage.DeltaHealth);
@@ -487,8 +504,10 @@ void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcas
 
 void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMessage) const noexcept
 {
-    if (acMessage.HealthRevision != 0)
-        m_knownHealthRevisions[acMessage.Id] = acMessage.HealthRevision;
+    NoteAuthoritativeHealthRevision(acMessage.Id, acMessage.HealthRevision);
+
+    if (acMessage.Values.empty())
+        return;
 
     m_world.GetCharacterService().SyncRemoteCachedActorValues(acMessage.Id, acMessage.Values, /*aIsMaxValues=*/false);
 
@@ -517,7 +536,12 @@ void ActorValueService::OnActorValueChanges(const NotifyActorValueChanges& acMes
         {
             const auto hpIt = acMessage.Values.find(ActorValueInfo::kHealth);
             if (hpIt != acMessage.Values.end() && std::isfinite(hpIt->second))
-                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, std::clamp(hpIt->second, 0.0f, 100000.0f));
+            {
+                const float clampedHp = std::clamp(hpIt->second, 0.0f, 100000.0f);
+                pActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, clampedHp);
+                if (auto* pAvComp = m_world.try_get<ActorValuesComponent>(entity))
+                    pAvComp->CurrentActorValues.ActorValuesList[ActorValueInfo::kHealth] = clampedHp;
+            }
         }
         return;
     }
@@ -627,6 +651,7 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
 
 void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessage) const noexcept
 {
+    NoteAuthoritativeHealthRevision(acMessage.Id, acMessage.HealthRevision);
     m_world.GetCharacterService().SyncRemoteCachedDeathState(acMessage.Id, acMessage.IsDead);
 
     Actor* pActor = Utils::GetByServerId<Actor>(acMessage.Id);

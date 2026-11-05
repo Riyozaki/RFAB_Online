@@ -15,6 +15,7 @@ void AssignCharacterResponse::SerializeRaw(TiltedPhoques::Buffer::Writer& aWrite
     Serialization::WriteBool(aWriter, IsDead);
     Serialization::WriteBool(aWriter, IsWeaponDrawn);
     Serialization::WriteVarInt(aWriter, OwnershipEpoch);
+    Serialization::WriteVarInt(aWriter, HealthRevision);
 }
 
 void AssignCharacterResponse::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -32,4 +33,5 @@ void AssignCharacterResponse::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
     IsDead = Serialization::ReadBool(aReader);
     IsWeaponDrawn = Serialization::ReadBool(aReader);
     OwnershipEpoch = Serialization::ReadVarInt(aReader);
+    HealthRevision = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

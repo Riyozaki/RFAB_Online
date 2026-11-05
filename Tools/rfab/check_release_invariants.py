@@ -27,6 +27,7 @@ execute code instead of reading it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -62,16 +63,57 @@ check(version_file.is_file(), "VERSION is missing from the repository root")
 version = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else ""
 check(bool(SEMVER.match(version)), f"VERSION must be semver, got {version!r}")
 
+compat_header = ROOT / "Code" / "common" / "RfabModpackCompat.h"
+check(compat_header.is_file(), "Code/common/RfabModpackCompat.h is missing")
+if compat_header.is_file():
+    compat_match = re.search(
+        r'kRfabOnlineVersion\s*=\s*"([^"]+)"',
+        compat_header.read_text(encoding="utf-8"),
+    )
+    compat_ver = compat_match.group(1) if compat_match else None
+    check(
+        compat_ver == version,
+        f"RfabModpackCompat.h kRfabOnlineVersion ({compat_ver!r}) disagrees with VERSION ({version!r})",
+    )
+
+stub_build_info = ROOT / "Tools" / "rfab" / "linux-server" / "stub" / "BuildInfo.h"
+if stub_build_info.is_file():
+    stub_match = re.search(
+        r'#define\s+BUILD_COMMIT\s+"([^"]+)"',
+        stub_build_info.read_text(encoding="utf-8"),
+    )
+    stub_ver = stub_match.group(1) if stub_match else None
+    check(
+        stub_ver == f"v{version}",
+        f"linux-server stub/BuildInfo.h BUILD_COMMIT ({stub_ver!r}) disagrees with v{version!r}",
+    )
+
+for ps1_rel in (
+    "Tools/rfab/Setup-RfabOnline.ps1",
+    "Tools/rfab/Build-CloudRelease.ps1",
+    "Tools/rfab/Package-Release.ps1",
+    "Tools/rfab/Deploy-RfabOnline.ps1",
+):
+    ps1_file = ROOT / ps1_rel
+    if ps1_file.is_file():
+        check(
+            ps1_file.read_bytes()[:3] == b"\xef\xbb\xbf",
+            f"{ps1_rel} is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1",
+        )
+
 tags = git("tag", "--list")
 if tags is None:
     notes.append("git tags unavailable, skipped the published-tag check")
 else:
     published = {t.strip() for t in tags.splitlines() if t.strip()}
-    check(
-        f"v{version}" not in published,
-        f"VERSION {version} names an already published tag (v{version}); "
-        "bump it instead of overwriting a release players are running",
-    )
+    if os.environ.get("RFAB_PUBLISHING_RELEASE", "1") == "1":
+        check(
+            f"v{version}" not in published,
+            f"VERSION {version} names an already published tag (v{version}); "
+            "bump it instead of overwriting a release players are running",
+        )
+    elif f"v{version}" in published:
+        notes.append(f"v{version} already published; PublishRelease=false artifact-only build")
 
 # 2. No build output in git ----------------------------------------------------
 tracked = git("ls-files")

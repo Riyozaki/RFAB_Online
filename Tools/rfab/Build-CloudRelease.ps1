@@ -29,19 +29,28 @@ function Resolve-ReleaseVersionTag {
 
 if ([string]::IsNullOrWhiteSpace($VersionTag)) { $VersionTag = Resolve-ReleaseVersionTag }
 
-# Hard rule: CI never publishes from a branch or pull request, only from a pushed tag.
-# This guard lives in the script (not only in the workflow) so a stale workflow file
-# cannot accidentally overwrite an already published release.
-if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF -and ($env:GITHUB_REF -notlike "refs/tags/v*")) {
-    $PublishRelease = $false
+# Hard rule: CI never publishes from feature/PR branches (e.g. arena/**).
+# Publishing happens ONLY from refs/tags/v* OR from refs/heads/main when VERSION
+# names a brand-new, not-yet-published release tag (preserving immutability once published).
+if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF) {
+    if ($env:GITHUB_REF -eq "refs/heads/main") {
+        & cmd.exe /d /s /c "gh release view $VersionTag >nul 2>&1"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[RELEASE] $VersionTag already exists on GitHub Releases; keeping it immutable (PublishRelease=false)." -ForegroundColor Yellow
+            $PublishRelease = $false
+        }
+    } elseif ($env:GITHUB_REF -notlike "refs/tags/v*") {
+        $PublishRelease = $false
+    }
 }
+$env:RFAB_PUBLISHING_RELEASE = if ($PublishRelease) { "1" } else { "0" }
 
-$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6", "v3.1.7-backup", "v3.1.7")
+$ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6", "v3.1.7-backup", "v3.1.7", "v3.1.8")
 if ($PublishRelease -and ($VersionTag -in $ProtectedTags)) {
     throw "Release policy violation: '$VersionTag' is an immutable protected release. Bump VERSION and cut a new tag instead of overwriting it."
 }
 
-$IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main")
+$IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main" -and ($env:GITHUB_REF -notlike "refs/tags/v*"))
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
@@ -946,6 +955,9 @@ try {
 
     Invoke-LoggedCmd "[1/8] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
     Invoke-LoggedCmd "[2/8] SE 1.5.97 Port Audit + Release Invariants" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\check_release_invariants.py"
+    if ($PublishRelease) {
+        & git tag -f $VersionTag HEAD
+    }
     Invoke-LoggedCmd "[3/8] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
     $script:PackagesReady = $true
 

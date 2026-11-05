@@ -60,6 +60,8 @@ struct CharacterService
         float aCurrentHealth = 0.0f,
         float aMaxHealth = 0.0f) const noexcept;
     [[nodiscard]] const CoopWorldView::ServerInterestRegistry& GetInterestRegistry() const noexcept { return m_interestRegistry; }
+    void NotePlayerSimulationActivity(Player* apPlayer, uint64_t aNowMs) const noexcept;
+    void SweepExpiredWorldNpcLeases(uint64_t aNowMs) const noexcept;
 
 protected:
     void OnUpdate(const UpdateEvent& acEvent) const noexcept;
@@ -101,6 +103,9 @@ private:
     World& m_world;
     mutable CoopWorldView::ServerInterestRegistry m_interestRegistry{};
     mutable std::unordered_map<uint64_t, entt::entity> m_characterByFormKey{};
+    mutable std::unordered_map<uint32_t, uint64_t> m_lastPlayerSimulationActivityMs{};
+    mutable uint64_t m_lastWakeSweepMs{0};
+    mutable uint64_t m_lastExpiredLeaseSweepMs{0};
 
     entt::scoped_connection m_charIndexConstructConn;
     entt::scoped_connection m_charIndexDestroyConn;

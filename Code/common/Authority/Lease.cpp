@@ -55,6 +55,9 @@ Decision Claim(const Lease& acCurrent, const Subject& acSubject, const OwnerStat
     if (acChallenger.PlayerId == kNoOwner)
         return Unchanged(acCurrent, Outcome::kDeniedNoCandidate);
 
+    if (!acChallenger.InRange)
+        return Unchanged(acCurrent, Outcome::kDeniedNoCandidate);
+
     if (acCurrent.OwnerId == acChallenger.PlayerId && !acCurrent.IsExpired(aNowMs))
         return Unchanged(acCurrent, Outcome::kAlreadyOwner);
 
@@ -70,9 +73,6 @@ Decision Claim(const Lease& acCurrent, const Subject& acSubject, const OwnerStat
     // that cannot simulate it right now.
     if (acChallenger.IsDowned)
         return Unchanged(acCurrent, Outcome::kDeniedChallengerDowned);
-
-    if (!acChallenger.InRange)
-        return Unchanged(acCurrent, Outcome::kDeniedNoCandidate);
 
     if (!acChallenger.IsPartyLeader && acCurrent.HeldForMs(aNowMs) < acPolicy.MinHoldMs)
         return Unchanged(acCurrent, Outcome::kDeniedHoldWindow);
@@ -148,6 +148,26 @@ Decision Renew(const Lease& acCurrent, uint32_t aSenderId, uint64_t aNowMs, cons
 
     if (acPolicy.LeaseDurationMs == 0ull)
         return Unchanged(acCurrent, Outcome::kAlreadyOwner);
+
+    Lease next = acCurrent;
+    next.ExpiresAtMs = aNowMs + acPolicy.LeaseDurationMs;
+    return Changed(next, Outcome::kGranted);
+}
+
+Decision RefreshUnrevoked(const Lease& acCurrent, uint32_t aSenderId, uint64_t aNowMs, const Policy& acPolicy) noexcept
+{
+    if (!SenderIsCurrent(acCurrent, aSenderId, kUnknownEpoch))
+        return Unchanged(acCurrent, Outcome::kDeniedNotOwner);
+
+    if (acPolicy.LeaseDurationMs == 0ull)
+    {
+        if (acCurrent.ExpiresAtMs == 0ull)
+            return Unchanged(acCurrent, Outcome::kAlreadyOwner);
+
+        Lease next = acCurrent;
+        next.ExpiresAtMs = 0ull;
+        return Changed(next, Outcome::kGranted);
+    }
 
     Lease next = acCurrent;
     next.ExpiresAtMs = aNowMs + acPolicy.LeaseDurationMs;
@@ -314,5 +334,75 @@ void LeaseTable::Forget(uint32_t aEntityId) noexcept
 void LeaseTable::Clear() noexcept
 {
     m_leases.clear();
+}
+
+void DeclineList::Add(uint32_t aPlayerId, uint64_t aNowMs, uint64_t aTtlMs) noexcept
+{
+    if (aPlayerId == kNoOwner)
+        return;
+
+    PruneExpired(aNowMs);
+    const uint64_t expiresAt = (aTtlMs == 0ull) ? 0ull : (aNowMs + aTtlMs);
+    for (auto& entry : m_entries)
+    {
+        if (entry.PlayerId == aPlayerId)
+        {
+            entry.ExpiresAtMs = expiresAt;
+            return;
+        }
+    }
+    m_entries.push_back(Entry{aPlayerId, expiresAt});
+}
+
+bool DeclineList::Contains(uint32_t aPlayerId, uint64_t aNowMs) const noexcept
+{
+    if (aPlayerId == kNoOwner)
+        return false;
+
+    for (const auto& entry : m_entries)
+    {
+        if (entry.PlayerId != aPlayerId)
+            continue;
+        if (entry.ExpiresAtMs == 0ull || aNowMs < entry.ExpiresAtMs)
+            return true;
+    }
+    return false;
+}
+
+std::vector<uint32_t> DeclineList::CollectActive(uint64_t aNowMs) noexcept
+{
+    PruneExpired(aNowMs);
+    std::vector<uint32_t> out;
+    out.reserve(m_entries.size());
+    for (const auto& entry : m_entries)
+        out.push_back(entry.PlayerId);
+    return out;
+}
+
+void DeclineList::PruneExpired(uint64_t aNowMs) noexcept
+{
+    m_entries.erase(
+        std::remove_if(
+            m_entries.begin(),
+            m_entries.end(),
+            [aNowMs](const Entry& acEntry) noexcept
+            {
+                return acEntry.PlayerId == kNoOwner ||
+                       (acEntry.ExpiresAtMs != 0ull && aNowMs >= acEntry.ExpiresAtMs);
+            }),
+        m_entries.end());
+}
+
+void DeclineList::ForgetPlayer(uint32_t aPlayerId) noexcept
+{
+    if (aPlayerId == kNoOwner)
+        return;
+
+    m_entries.erase(
+        std::remove_if(
+            m_entries.begin(),
+            m_entries.end(),
+            [aPlayerId](const Entry& acEntry) noexcept { return acEntry.PlayerId == aPlayerId; }),
+        m_entries.end());
 }
 } // namespace Authority

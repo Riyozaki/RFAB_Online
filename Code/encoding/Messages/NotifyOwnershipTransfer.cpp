@@ -4,6 +4,7 @@ void NotifyOwnershipTransfer::SerializeRaw(TiltedPhoques::Buffer::Writer& aWrite
 {
     Serialization::WriteVarInt(aWriter, ServerId);
     Serialization::WriteVarInt(aWriter, OwnershipEpoch);
+    Serialization::WriteVarInt(aWriter, HealthRevision);
 }
 
 void NotifyOwnershipTransfer::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -12,4 +13,5 @@ void NotifyOwnershipTransfer::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
 
     ServerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     OwnershipEpoch = Serialization::ReadVarInt(aReader);
+    HealthRevision = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

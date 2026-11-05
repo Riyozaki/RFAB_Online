@@ -165,9 +165,9 @@ void CharacterService::OnMountEvent(const MountEvent& acEvent) const noexcept
 
     m_pendingLocalMount = {};
 
-    if (m_world.try_get<RemoteComponent>(cMountEntity))
-        TakeOwnership(acEvent.MountID, *mountServerIdRes, cMountEntity);
-
+    // Server OnMountRequest validates rider ownership, executes TransferOwnership, and replies
+    // with an authoritative NotifyOwnershipTransfer(ServerId, newEpoch, HealthRevision) — never
+    // flip mount ownership locally at epoch 0 before the server grants the lease.
     MountRequest request;
     request.MountId = mountServerIdRes.value();
     request.RiderId = riderServerIdRes.value();
@@ -192,8 +192,10 @@ void CharacterService::OnNotifyMount(const NotifyMount& acMessage) const noexcep
 
         if (m_world.all_of<LocalComponent>(mountEntity))
         {
-            m_world.remove<LocalAnimationComponent, LocalComponent>(mountEntity);
+            // Emplace RemoteComponent BEFORE removing LocalComponent so EntityIndexTable
+            // never drops the ServerId -> entity mapping during OnLocalIndexDestroyed.
             m_world.emplace_or_replace<RemoteComponent>(mountEntity, acMessage.MountId, mountFormIdComponent.Id);
+            m_world.remove<LocalAnimationComponent, LocalComponent>(mountEntity);
         }
 
         pMount = Cast<Actor>(TESForm::GetById(mountFormIdComponent.Id));

@@ -32,6 +32,8 @@ public:
     TP_NOCOPYMOVE(ActorValueService);
 
     void ResetForWorldReload() noexcept;
+    void NoteAuthoritativeHealthRevision(uint32_t aServerId, uint32_t aRevision) const noexcept;
+    void ForgetHealthRevision(uint32_t aServerId) const noexcept;
 
 private:
     enum ValueType : uint8_t

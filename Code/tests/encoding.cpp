@@ -619,3 +619,134 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
         REQUIRE(update == recvUpdate);
     }
 }
+
+TEST_CASE("v4.0.0 HealthRevision and ActorData::BaseId wire round-trips", "[encoding.v400]")
+{
+    const ServerMessageFactory serverFactory;
+    const ClientMessageFactory clientFactory;
+
+    SECTION("AssignCharacterResponse carries OwnershipEpoch and HealthRevision")
+    {
+        AssignCharacterResponse outgoing{};
+        outgoing.Cookie = 77u;
+        outgoing.ServerId = 0x1020u;
+        outgoing.PlayerId = 0u;
+        outgoing.Owner = true;
+        outgoing.IsDead = false;
+        outgoing.IsWeaponDrawn = true;
+        outgoing.OwnershipEpoch = 19ull;
+        outgoing.HealthRevision = 42u;
+        outgoing.AllActorValues.ActorValuesList[24] = 185.5f;
+        outgoing.AllActorValues.ActorMaxValuesList[24] = 250.0f;
+
+        Buffer buff(4096);
+        Buffer::Writer writer(&buff);
+        outgoing.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+        auto pDecoded = serverFactory.Extract(reader);
+        REQUIRE(pDecoded);
+        auto pMsg = CastUnique<AssignCharacterResponse>(std::move(pDecoded));
+        REQUIRE(*pMsg == outgoing);
+        REQUIRE(pMsg->OwnershipEpoch == 19ull);
+        REQUIRE(pMsg->HealthRevision == 42u);
+    }
+
+    SECTION("CharacterSpawnRequest carries BaseId and HealthRevision")
+    {
+        CharacterSpawnRequest outgoing{};
+        outgoing.ServerId = 0x2040u;
+        outgoing.FormId = GameId(1u, 0x0E5F72u);
+        outgoing.BaseId = GameId(3u, 0x023BC1u);
+        outgoing.CellId = GameId(0u, 0x009ABCu);
+        outgoing.HealthRevision = 13u;
+        outgoing.InitialActorValues.ActorValuesList[24] = 95.0f;
+        outgoing.InitialActorValues.ActorMaxValuesList[24] = 200.0f;
+
+        Buffer buff(4096);
+        Buffer::Writer writer(&buff);
+        outgoing.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+        auto pDecoded = serverFactory.Extract(reader);
+        REQUIRE(pDecoded);
+        auto pMsg = CastUnique<CharacterSpawnRequest>(std::move(pDecoded));
+        REQUIRE(*pMsg == outgoing);
+        REQUIRE(pMsg->BaseId == GameId(3u, 0x023BC1u));
+        REQUIRE(pMsg->HealthRevision == 13u);
+    }
+
+    SECTION("NotifySpawnData and RequestOwnershipClaim carry ActorData::BaseId and HealthRevision")
+    {
+        NotifySpawnData outgoing{};
+        outgoing.Id = 0x3050u;
+        outgoing.HealthRevision = 88u;
+        outgoing.NewActorData.BaseId = GameId(4u, 0x045678u);
+        outgoing.NewActorData.IsDead = false;
+        outgoing.NewActorData.IsWeaponDrawn = true;
+        outgoing.NewActorData.InitialActorValues.ActorValuesList[24] = 120.0f;
+
+        Buffer buff(4096);
+        Buffer::Writer writer(&buff);
+        outgoing.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+        auto pDecoded = serverFactory.Extract(reader);
+        REQUIRE(pDecoded);
+        auto pMsg = CastUnique<NotifySpawnData>(std::move(pDecoded));
+        REQUIRE(*pMsg == outgoing);
+        REQUIRE(pMsg->HealthRevision == 88u);
+        REQUIRE(pMsg->NewActorData.BaseId == GameId(4u, 0x045678u));
+
+        RequestOwnershipClaim claimOutgoing{};
+        claimOutgoing.ServerId = 0x3050u;
+        claimOutgoing.NewActorData = outgoing.NewActorData;
+
+        Buffer claimBuff(4096);
+        Buffer::Writer claimWriter(&claimBuff);
+        claimOutgoing.Serialize(claimWriter);
+
+        Buffer::Reader claimReader(&claimBuff);
+        auto pClaimDecoded = clientFactory.Extract(claimReader);
+        REQUIRE(pClaimDecoded);
+        auto pClaim = CastUnique<RequestOwnershipClaim>(std::move(pClaimDecoded));
+        REQUIRE(*pClaim == claimOutgoing);
+        REQUIRE(pClaim->NewActorData.BaseId == GameId(4u, 0x045678u));
+    }
+
+    SECTION("NotifyOwnershipTransfer and NotifyDeathStateChange carry HealthRevision")
+    {
+        NotifyOwnershipTransfer grant{};
+        grant.ServerId = 0x4060u;
+        grant.OwnershipEpoch = 31ull;
+        grant.HealthRevision = 64u;
+
+        Buffer grantBuff(1024);
+        Buffer::Writer grantWriter(&grantBuff);
+        grant.Serialize(grantWriter);
+
+        Buffer::Reader grantReader(&grantBuff);
+        auto pGrantDecoded = serverFactory.Extract(grantReader);
+        REQUIRE(pGrantDecoded);
+        auto pGrant = CastUnique<NotifyOwnershipTransfer>(std::move(pGrantDecoded));
+        REQUIRE(*pGrant == grant);
+        REQUIRE(pGrant->OwnershipEpoch == 31ull);
+        REQUIRE(pGrant->HealthRevision == 64u);
+
+        NotifyDeathStateChange death{};
+        death.Id = 0x4060u;
+        death.IsDead = true;
+        death.HealthRevision = 65u;
+
+        Buffer deathBuff(1024);
+        Buffer::Writer deathWriter(&deathBuff);
+        death.Serialize(deathWriter);
+
+        Buffer::Reader deathReader(&deathBuff);
+        auto pDeathDecoded = serverFactory.Extract(deathReader);
+        REQUIRE(pDeathDecoded);
+        auto pDeath = CastUnique<NotifyDeathStateChange>(std::move(pDeathDecoded));
+        REQUIRE(*pDeath == death);
+        REQUIRE(pDeath->HealthRevision == 65u);
+    }
+}

@@ -34,7 +34,8 @@ struct CharacterSpawnRequest final : ServerMessage
                InventoryContent == acRhs.InventoryContent && FactionsContent == acRhs.FactionsContent &&
                ActionsToReplay == acRhs.ActionsToReplay && FaceTints == acRhs.FaceTints && PlayerId == acRhs.PlayerId &&
                IsDead == acRhs.IsDead && IsPlayer == acRhs.IsPlayer && IsWeaponDrawn == acRhs.IsWeaponDrawn &&
-               IsPlayerSummon == acRhs.IsPlayerSummon && IsDragon == acRhs.IsDragon && GetOpcode() == acRhs.GetOpcode();
+               IsPlayerSummon == acRhs.IsPlayerSummon && IsDragon == acRhs.IsDragon &&
+               HealthRevision == acRhs.HealthRevision && GetOpcode() == acRhs.GetOpcode();
     }
 
     uint32_t ServerId{};
@@ -57,4 +58,5 @@ struct CharacterSpawnRequest final : ServerMessage
     bool IsWeaponDrawn{};
     bool IsPlayerSummon{};
     bool IsDragon{};
+    uint32_t HealthRevision{0};
 };

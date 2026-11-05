@@ -135,6 +135,7 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
     const auto* pCharComp = m_world.try_get<CharacterComponent>(*it);
     auto& actorValuesComponent = actorValuesView.get<ActorValuesComponent>(*it);
+    const uint32_t prevHealthRevision = actorValuesComponent.HealthRevision;
     for (const auto& [id, value] : message.Values)
     {
         if (id >= kActorValueCount || id == kInfamyActorValueIndex || !std::isfinite(value))
@@ -220,6 +221,18 @@ void ActorValueService::OnActorValueChanges(const PacketEvent<RequestActorValueC
 
         actorValuesComponent.CurrentActorValues.ActorValuesList[id] = sanitized;
         notify.Values[id] = sanitized;
+    }
+
+    if (actorValuesComponent.HealthRevision != prevHealthRevision)
+    {
+        // SendToPlayersInRange excludes acMessage.pPlayer, so acknowledge the advanced
+        // authoritative HealthRevision back to the owner via an empty-Values packet.
+        // Without this ack, the owner's next legitimate regen/heal snapshot still echoes
+        // the pre-write revision and gets rejected as kStaleIncrease.
+        NotifyActorValueChanges revAck{};
+        revAck.Id = message.Id;
+        revAck.HealthRevision = actorValuesComponent.HealthRevision;
+        acMessage.pPlayer->Send(revAck);
     }
 
     if (notify.Values.empty())
@@ -413,7 +426,16 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     // Health changed, so the revision moves with it - in the one function allowed to
     // write it. Every absolute reading sampled before this moment is now out of date and
     // says so by carrying the previous number.
+    const uint32_t prevHealthRevision = actorValuesComponent.HealthRevision;
     actorValuesComponent.SetHealth(applied.UpdatedHealth, maxHealth);
+
+    if (actorValuesComponent.HealthRevision != prevHealthRevision)
+    {
+        NotifyActorValueChanges revAck{};
+        revAck.Id = message.Id;
+        revAck.HealthRevision = actorValuesComponent.HealthRevision;
+        acMessage.pPlayer->Send(revAck);
+    }
 
     NotifyHealthChangeBroadcast notify;
     notify.Id = message.Id;
@@ -470,16 +492,32 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
 
     characterComponent.SetDead(message.IsDead);
 
-    if (message.IsDead)
+    uint32_t prevHealthRevision = 0;
+    uint32_t currentHealthRevision = 0;
+    if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
     {
-        if (auto* pActorValues = m_world.try_get<ActorValuesComponent>(*it))
+        prevHealthRevision = pActorValues->HealthRevision;
+        if (message.IsDead)
         {
             // Death is an absolute write like any other, and it is the one that used to
             // lose the race: without a revision bump, a snapshot sampled just before the
             // killing blow still matched and handed the corpse its health back.
             pActorValues->SetHealth(0.0f);
         }
+        currentHealthRevision = pActorValues->HealthRevision;
+    }
+
+    if (message.IsDead)
+    {
         m_world.GetRfabProgressionService().GetLedger().ClearBossGhostState(message.Id);
+    }
+
+    if (currentHealthRevision != prevHealthRevision)
+    {
+        NotifyActorValueChanges revAck{};
+        revAck.Id = message.Id;
+        revAck.HealthRevision = currentHealthRevision;
+        acMessage.pPlayer->Send(revAck);
     }
 
     spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
@@ -487,6 +525,7 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     NotifyDeathStateChange notify;
     notify.Id = message.Id;
     notify.IsDead = message.IsDead;
+    notify.HealthRevision = currentHealthRevision;
 
     const entt::entity cEntity = static_cast<entt::entity>(message.Id);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cEntity, acMessage.pPlayer))

@@ -4,7 +4,10 @@
 
 #include <Actor.h>
 #include <Components.h>
+#include <Forms/TESNPC.h>
 #include <World.h>
+
+#include <limits>
 
 void CharacterService::OnFormIdIndexUpdated(entt::registry& aRegistry, entt::entity aEntity) noexcept
 {
@@ -205,6 +208,25 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
     actorData.InitialInventory = apActor->GetActorInventory();
     actorData.IsDead = apActor->IsDead();
     actorData.IsWeaponDrawn = apActor->actorState.IsWeaponFullyDrawn();
+
+    if (apActor->formID != 0x14)
+    {
+        TESNPC* pResolvedNpc = apActor->GetLeveledTemplateBase();
+        if (!pResolvedNpc)
+            pResolvedNpc = Cast<TESNPC>(apActor->baseForm);
+        if (pResolvedNpc && pResolvedNpc->IsTemporary())
+            pResolvedNpc = pResolvedNpc->GetTemplateBase();
+
+        if (pResolvedNpc && !pResolvedNpc->IsTemporary())
+        {
+            GameId resolvedBaseId{};
+            if (m_world.GetModSystem().GetServerModId(pResolvedNpc->formID, resolvedBaseId) &&
+                resolvedBaseId.ModId != std::numeric_limits<uint32_t>::max())
+            {
+                actorData.BaseId = resolvedBaseId;
+            }
+        }
+    }
 
     return actorData;
 }

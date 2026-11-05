@@ -23,7 +23,8 @@ struct AssignCharacterResponse final : ServerMessage
     bool operator==(const AssignCharacterResponse& achRhs) const noexcept
     {
         return GetOpcode() == achRhs.GetOpcode() && Cookie == achRhs.Cookie && ServerId == achRhs.ServerId && PlayerId == achRhs.PlayerId && Position == achRhs.Position && CellId == achRhs.CellId && WorldSpaceId == achRhs.WorldSpaceId && AllActorValues == achRhs.AllActorValues &&
-               CurrentInventory == achRhs.CurrentInventory && ActionsToReplay == achRhs.ActionsToReplay && Owner == achRhs.Owner && IsDead == achRhs.IsDead && IsWeaponDrawn == achRhs.IsWeaponDrawn && OwnershipEpoch == achRhs.OwnershipEpoch;
+               CurrentInventory == achRhs.CurrentInventory && ActionsToReplay == achRhs.ActionsToReplay && Owner == achRhs.Owner && IsDead == achRhs.IsDead && IsWeaponDrawn == achRhs.IsWeaponDrawn && OwnershipEpoch == achRhs.OwnershipEpoch &&
+               HealthRevision == achRhs.HealthRevision;
     }
 
     uint32_t Cookie{};
@@ -39,4 +40,5 @@ struct AssignCharacterResponse final : ServerMessage
     bool IsDead{};
     bool IsWeaponDrawn{};
     uint64_t OwnershipEpoch{0};
+    uint32_t HealthRevision{0};
 };
