@@ -129,7 +129,10 @@ public:
         return out;
     }
 
-    void RestoreSnapshot(const Snapshot& acSnapshot)
+    // Disk checkpoints can outlive the process that assigned player IDs. In that case the
+    // claimant is unknown, not a player in the new process: zero cannot match a valid player ID.
+    // In-memory rollback preserves claimant IDs and the existing same-player behavior.
+    void RestoreSnapshot(const Snapshot& acSnapshot, bool aForgetClaimants = false)
     {
         Clear();
         for (const auto& entry : acSnapshot)
@@ -138,7 +141,7 @@ public:
                 continue;
             RecordDepletion(
                 LootSlotKey{entry.ContainerServerId, entry.ModId, entry.BaseId},
-                entry.ClaimantPlayerId,
+                aForgetClaimants ? 0u : entry.ClaimantPlayerId,
                 entry.DepletedAtMs);
         }
     }

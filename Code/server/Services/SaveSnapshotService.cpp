@@ -470,6 +470,7 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
         for (uint64_t sIdx = 0; sIdx < snapCount; ++sIdx)
         {
             WorldSnapshot snap{};
+            snap.LootClaimantsFromDisk = true;
             snap.EpochId = Serialization::ReadVarInt(reader);
             snap.SlotName = ReadStdString(reader);
             snap.IsAutoCheckpoint = Serialization::ReadBool(reader);
@@ -802,7 +803,7 @@ void SaveSnapshotService::HydratePersistedWorldState() noexcept
         pProg->GetLedger().RestoreSnapshot(latest.Progression);
 
     if (auto* pInv = m_world.ctx().find<InventoryService>())
-        pInv->RestoreLootLedgerSnapshot(latest.LootLedger);
+        pInv->RestoreLootLedgerSnapshot(latest.LootLedger, latest.LootClaimantsFromDisk);
 
     if (auto* pCalendar = m_world.ctx().find<CalendarService>())
     {
@@ -1386,7 +1387,7 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
 
     // 5. Clear downed/revive/wipe states and restore container anti-dupe ledger to exact checkpoint epoch
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
-    m_world.GetInventoryService().RestoreLootLedgerSnapshot(acSnapshot.LootLedger);
+    m_world.GetInventoryService().RestoreLootLedgerSnapshot(acSnapshot.LootLedger, acSnapshot.LootClaimantsFromDisk);
 
     // 6. Drop snapshots strictly newer than the restored epoch & persist updated store to disk
     while (!m_snapshots.empty() && m_snapshots.back().EpochId > acSnapshot.EpochId)

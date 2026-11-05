@@ -26,7 +26,9 @@
 //  11. the checkpoint file survives its own round trip and corruption is refused;
 //  12. a rollback restores health and moves the revision;
 //  13. a fresh server rebuilds actors, objects, progression, loot and calendar from the
-//      checkpoint; the first join cannot overwrite the restored calendar.
+//      checkpoint; the first join cannot overwrite the restored calendar;
+//  14. after an actual process restart, a reused player ID cannot reclaim depleted loot,
+//      including after rollback to either the latest or an older on-disk checkpoint.
 //
 // The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
 // was never observed is the wiring: who is told, and what the server records when a player
@@ -58,8 +60,12 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <system_error>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace
 {
@@ -162,15 +168,68 @@ float HealthOf(const ActorValuesComponent& acValues)
     float hp = -1.0f;
     return acValues.TryGetHealth(hp) ? hp : -1.0f;
 }
+// Executed with exec in a separate process: unlike a second World in this process, the static
+// Player ID generator starts at 1. The parent has left a checkpoint whose claimant was player 1.
+int CheckRestartedLoot()
+{
+    Console::ConsoleRegistry registry{"ConOut"};
+    GameServer server{registry};
+    World& world = server.GetWorld();
+    Player* pPlayer = world.GetPlayerManager().Create(3);
+    Check(pPlayer && pPlayer->GetId() == 1, "a new process reuses the former claimant's player ID");
+    Check(world.GetSaveSnapshotService().GetSnapshotCount() >= 2, "the new process loads checkpoint history");
+    if (!pPlayer)
+        return 1;
+
+    const GameId containerId{0u, 0x00054321u};
+    const GameId itemId{0u, 0x00023456u};
+    const entt::entity playerEntity = world.create();
+    world.emplace<InventoryComponent>(playerEntity);
+    pPlayer->SetCharacter(playerEntity);
+    const auto attempt = [&]() {
+        entt::entity container = entt::null;
+        auto objects = world.view<FormIdComponent, ObjectComponent, InventoryComponent>();
+        for (const auto entity : objects)
+            if (objects.get<FormIdComponent>(entity).Id == containerId)
+                container = entity;
+        if (container == entt::null)
+            return false;
+        auto& inventory = world.get<InventoryComponent>(playerEntity).Content;
+        inventory = Inventory{};
+        Inventory::Entry item{};
+        item.BaseId = itemId;
+        item.Count = 1;
+        inventory.AddOrRemoveEntry(item); // the client already awarded itself the item
+        RequestInventoryChanges withdrawal{};
+        withdrawal.ServerId = World::ToInteger(container);
+        withdrawal.Item = item;
+        withdrawal.Item.Count = -1;
+        withdrawal.UpdateClients = false;
+        Deliver(world, withdrawal, pPlayer);
+        GameId lookup = itemId;
+        return inventory.GetEntryCountById(lookup) == 0;
+    };
+    Check(attempt(), "reused player ID cannot withdraw previously depleted loot after restart");
+    Check(world.GetSaveSnapshotService().TriggerRollbackToLatest(false), "the persisted checkpoint can be rolled back");
+    Check(attempt(), "rollback to a persisted checkpoint still rejects the reused player ID");
+    const uint64_t latestEpoch = world.GetSaveSnapshotService().GetLastCommittedEpoch();
+    Check(world.GetSaveSnapshotService().TriggerRollbackToPrevious(), "an older persisted checkpoint can be rolled back");
+    Check(world.GetSaveSnapshotService().GetLastCommittedEpoch() < latestEpoch, "rollback selected an older epoch");
+    Check(attempt(), "rollback to an older persisted checkpoint also rejects the reused player ID");
+    return g_failures == 0 ? 0 : 1;
+}
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     // The console registry asserts on a logger named by its caller; the server logs through
     // "ConOut" as well.
     auto pConsoleLogger = spdlog::stdout_color_mt("ConOut");
     pConsoleLogger->set_level(spdlog::level::warn);
     spdlog::set_default_logger(pConsoleLogger);
+
+    if (argc == 2 && std::string(argv[1]) == "--check-restarted-loot")
+        return CheckRestartedLoot();
 
     TemporaryWorkingDirectory isolatedDirectory;
     Console::ConsoleRegistry registry{"ConOut"};
@@ -557,6 +616,7 @@ int main()
         Check(calendar.SetDate(12, 4, 205), "the checkpoint date is set");
         Check(calendar.SetTime(13, 17, 33.0f), "the checkpoint time is set");
         Check(ledger.TryGrantXp("restart-test", 123).Accepted, "the checkpoint progression is set");
+        Check(pOwner->GetId() == 1, "the checkpoint claimant is player ID 1");
 
         LockData lock{};
         lock.IsLocked = true;
@@ -599,10 +659,44 @@ int main()
             Check(coordinator.GetLastCommittedEpoch() == pending->EpochId, "the restart checkpoint commits");
             restartEpoch = pending->EpochId;
         }
+        // Keep two consecutive checkpoints containing this depletion, to exercise older history.
+        Check(saves.TriggerCoordinatedSave(true, nullptr), "a second restart checkpoint starts");
+        const auto secondPending = coordinator.GetPendingBarrier();
+        Check(secondPending.has_value(), "the second checkpoint has a pending barrier");
+        if (secondPending)
+        {
+            Deliver(world, MakeAck(secondPending->EpochId, secondPending->SlotName, true, ""), pOwner);
+            Deliver(world, MakeAck(secondPending->EpochId, secondPending->SlotName, true, ""), pAlly);
+            Check(coordinator.GetLastCommittedEpoch() == secondPending->EpochId, "the second checkpoint commits");
+            restartEpoch = secondPending->EpochId;
+        }
+        Check(saves.TriggerRollbackToLatest(false), "an in-process checkpoint can be rolled back");
+        const auto sameProcessLedger = world.GetInventoryService().CaptureLootLedgerSnapshot();
+        Check(sameProcessLedger.size() == 1 && sameProcessLedger[0].ClaimantPlayerId == pOwner->GetId(),
+              "an in-process rollback keeps the current process's claimant ID");
         Check(saves.SaveCheckpointsToDisk(SaveSnapshotService::GetDefaultCheckpointStorePath()),
               "the restart checkpoint is written to the default path");
     }
     } // Destroy the first server and its world before constructing the next one.
+
+    std::printf("the real process restart path\n");
+    const auto storePath = SaveSnapshotService::GetDefaultCheckpointStorePath();
+    const auto originalCheckpoint = ReadAllBytes(storePath);
+    Check(!originalCheckpoint.empty(), "the child receives a nonempty checkpoint");
+    std::fflush(nullptr);
+    const pid_t child = fork();
+    if (child == 0)
+    {
+        execl("/proc/self/exe", "servertests", "--check-restarted-loot", static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int childStatus = 0;
+    const bool childWaited = child > 0 && waitpid(child, &childStatus, 0) == child;
+    Check(childWaited && WIFEXITED(childStatus) && WEXITSTATUS(childStatus) == 0,
+          "the checkpoint survives a fresh process and a reused player ID");
+    // Child rollbacks rewrote the store; restore the original file for the independent tests below.
+    if (!originalCheckpoint.empty())
+        WriteAllBytes(storePath, originalCheckpoint);
 
     {
         Console::ConsoleRegistry restartRegistry{"ConOut"};
@@ -611,6 +705,10 @@ int main()
         const auto& saves = restored.GetSaveSnapshotService();
         Check(restartEpoch != 0 && saves.GetLastCommittedEpoch() == restartEpoch,
               "a fresh server reads the committed epoch in its constructor");
+        const auto rewrittenPath = std::filesystem::current_path() / "Data" / "checkpoint-rewritten.bin";
+        Check(saves.SaveCheckpointsToDisk(rewrittenPath), "the loaded checkpoint can be written again");
+        Check(ReadAllBytes(rewrittenPath) == originalCheckpoint,
+              "forgetting runtime claimant IDs does not alter the checkpoint file");
         Check(CountCharactersByFormId(restored, restartActorFormId) == 1,
               "a fresh server rebuilds the persistent actor exactly once");
         auto actors = restored.view<FormIdComponent, CharacterComponent>();
@@ -658,8 +756,8 @@ int main()
             const auto stableKey = restored.GetInventoryService().ResolveLootContainerKey(restoredContainer, 0);
             Check(depletion.size() == 1 && depletion[0].ContainerServerId == stableKey &&
                       depletion[0].ModId == depletedItemId.ModId && depletion[0].BaseId == depletedItemId.BaseId &&
-                      depletion[0].ClaimantPlayerId == 1,
-                  "the depletion ledger survives with the restored container's stable key");
+                      depletion[0].ClaimantPlayerId == 0,
+                  "the depletion keeps its stable key but its old claimant is unknown");
         }
         const auto progress = restored.GetRfabProgressionService().GetLedger().CaptureSnapshot();
         Check(progress.GrantedXpBySource.count("restart-test") == 1,
