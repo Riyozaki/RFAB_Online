@@ -1929,7 +1929,7 @@ void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& 
 
     const uint32_t actorFormId = pFormIdComponent->Id;
     const uint32_t serverId = acMessage.ServerId;
-    m_relinquishClaimCooldowns.RecordRelinquish(actorFormId, NowSteadyWorldViewMs());
+    m_relinquishClaimCooldowns.RecordRelinquished(actorFormId, NowSteadyWorldViewMs());
 
     if (m_world.all_of<LocalComponent>(entity))
     {
