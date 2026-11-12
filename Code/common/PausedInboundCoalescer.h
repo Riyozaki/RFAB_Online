@@ -20,6 +20,18 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
+#include <optional>
+
+// Self-contained: the encoding headers below normally rely on EncodingPch.h, which consumers such
+// as the Windows TPTests target do not force-include.
+#include <TiltedCore/Stl.hpp>
+#include <TiltedCore/Allocator.hpp>
+#include <TiltedCore/Buffer.hpp>
+#include <TiltedCore/Serialization.hpp>
+
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
 
 #include <Messages/ServerReferencesMoveRequest.h>
 
