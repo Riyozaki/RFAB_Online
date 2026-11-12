@@ -358,7 +358,7 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_deferredLoadMenuCloseFrames = 0;
     m_deferredInSessionRollback.reset();
 
-    m_transport.ClearPausedInboundPackets();
+    m_transport.DiscardPausedWorldPacketsForReload();
     m_world.GetDownedStateService().ResetAllStates();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
     m_world.GetCharacterService().BeginEngineWorldLoad();

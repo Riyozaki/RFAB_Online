@@ -360,28 +360,6 @@ static_assert(sizeof(NiPoint2) == 8);
 static_assert(offsetof(NiPoint2, x) == 0);
 static_assert(offsetof(NiPoint2, y) == 4);
 
-struct BSRecursiveLock
-{
-    volatile DWORD m_tid;
-    volatile LONG m_counter;
-
-    void Lock();
-    void Unlock();
-};
-
-template <class T> struct BSScopedLock
-{
-    BSScopedLock(T& aLock)
-        : m_lock(aLock)
-    {
-        m_lock.Lock();
-    }
-    ~BSScopedLock() { m_lock.Unlock(); }
-
-private:
-    T& m_lock;
-};
-
 template <class T> struct GamePtr
 {
     GamePtr() noexcept
@@ -518,8 +496,5 @@ template <class T, class THandle = BSUntypedPointerHandle<>> struct BSPointerHan
     THandle handle{};
 };
 
-struct BSReadWriteLock
-{
-    uint32_t uiWriterThread;
-    volatile uint32_t uiLock;
-};
+// Engine locks (BSSpinLock, BSReadWriteLock, guards) live in BSCore/BSAtomic.h - see upstream #937.
+#include <BSCore/BSAtomic.h>

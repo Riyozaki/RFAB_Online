@@ -206,7 +206,7 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
     if (spManager)
     {
         BSAnimationGraphManager* pManager = spManager.get();
-        BSScopedLock<BSRecursiveLock> _{pManager->lock};
+        BSSpinLockGuard _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
         {
@@ -282,7 +282,7 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
     if (spManager)
     {
         BSAnimationGraphManager* pManager = spManager.get();
-        BSScopedLock<BSRecursiveLock> _{pManager->lock};
+        BSSpinLockGuard _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
         {

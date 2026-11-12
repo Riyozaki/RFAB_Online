@@ -6,7 +6,8 @@ ExtraDataList* ExtraDataList::New() noexcept
 {
     ExtraDataList* pExtraDataList = Memory::Allocate<ExtraDataList>();
     pExtraDataList->data = nullptr;
-    pExtraDataList->lock.m_counter = pExtraDataList->lock.m_tid = 0;
+    pExtraDataList->lock.uiWriterThread = 0;
+    pExtraDataList->lock.uiLock = 0;
     pExtraDataList->bitfield = Memory::Allocate<ExtraDataList::Bitfield>();
     memset(pExtraDataList->bitfield, 0, 0x18);
     return pExtraDataList;
@@ -38,16 +39,24 @@ bool ExtraDataList::Contains(ExtraDataType aType) const
 
 BSExtraData* ExtraDataList::GetByType(ExtraDataType aType) const
 {
-    BSScopedLock<BSRecursiveLock> _(lock);
+    // Upstream #937: this is the engine's BSReadWriteLock, so it MUST be taken through the engine's
+    // own LockForRead/UnlockRead. ScopedExtraDataOverride marks call sites that already run inside an
+    // engine write section on this list (PlayerCharacter/TESObjectREFR inventory hooks); locking again
+    // there would self-deadlock, which is why the guard (removed in v2.1.0) is back.
+    const bool cLock = !ScopedExtraDataOverride::IsOverriden();
+    if (cLock)
+        lock.LockForRead();
 
-    if (!Contains(aType))
-        return nullptr;
-
-    auto pEntry = data;
-    while (pEntry != nullptr && pEntry->GetType() != aType)
+    BSExtraData* pEntry = nullptr;
+    if (Contains(aType))
     {
-        pEntry = pEntry->next;
+        pEntry = data;
+        while (pEntry != nullptr && pEntry->GetType() != aType)
+            pEntry = pEntry->next;
     }
+
+    if (cLock)
+        lock.UnlockRead();
 
     return pEntry;
 }
@@ -57,7 +66,7 @@ bool ExtraDataList::Add(ExtraDataType aType, BSExtraData* apNewData)
     if (Contains(aType))
         return false;
 
-    BSScopedLock<BSRecursiveLock> _(lock);
+    BSWriteLockGuard _(lock);
 
     BSExtraData* pNext = data;
     data = apNewData;

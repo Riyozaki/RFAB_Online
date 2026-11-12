@@ -2,6 +2,7 @@
 
 #include "ExtraData.h"
 
+#include <BSCore/BSAtomic.h>
 #include <ExtraData/ExtraSoul.h>
 
 struct AlchemyItem;
@@ -45,7 +46,7 @@ struct ExtraDataList
     };
 
     Bitfield* bitfield{};
-    mutable BSRecursiveLock lock{};
+    mutable BSReadWriteLock lock{};
 };
 
 static_assert(sizeof(ExtraDataList) == 0x18);

@@ -51,6 +51,7 @@
 #include <ExtraData/ExtraLeveledCreature.h>
 #include <ExtraData/ExtraCharge.h>
 #include <ExtraData/ExtraCount.h>
+#include <common/DroppedItemMatch.h>
 #include <ExtraData/ExtraEnchantment.h>
 #include <ExtraData/ExtraHealth.h>
 #include <ExtraData/ExtraPoison.h>
@@ -2234,16 +2235,19 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
     if (arEntry.Count > 0)
     {
         // Despawn the matching temporary 0xFFxxxxxx dropped world reference near this actor so peers
-        // cannot pick up a second copy after someone already picked it up!
+        // cannot pick up a second copy after someone already picked it up. The protocol has no identity
+        // for dropped refs, so prefer an exact stack-count match close to the picker and never delete a
+        // far/unrelated stack (see common/DroppedItemMatch.h, registry N3).
         TESObjectREFR* pBestMatch = nullptr;
-        float bestDistSq = 2048.0f * 2048.0f;
+        DroppedItemMatch::Candidate best{};
+        bool hasBest = false;
 
         auto scanCell = [&](TESObjectCELL* apCell)
         {
             if (!apCell)
                 return;
 
-            BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);
+            BSSpinLockGuard cellLock(apCell->lock);
             if (!apCell->refData.refArray)
                 return;
 
@@ -2258,10 +2262,17 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
                 const float dx = pRef->position.x - position.x;
                 const float dy = pRef->position.y - position.y;
                 const float dz = pRef->position.z - position.z;
-                const float distSq = dx * dx + dy * dy + dz * dz;
-                if (distSq < bestDistSq)
+
+                const auto* pExtraCount = static_cast<const ExtraCount*>(pRef->extraData.GetByType(ExtraDataType::Count));
+                const int32_t refCount = DroppedItemMatch::StackCountOrOne(pExtraCount != nullptr, pExtraCount ? pExtraCount->count : 0);
+
+                DroppedItemMatch::Candidate candidate{};
+                candidate.CountMatches = refCount == arEntry.Count;
+                candidate.DistanceSq = dx * dx + dy * dy + dz * dz;
+                if (DroppedItemMatch::IsBetter(candidate, hasBest, best))
                 {
-                    bestDistSq = distSq;
+                    best = candidate;
+                    hasBest = true;
                     pBestMatch = pRef;
                 }
             }

@@ -211,7 +211,7 @@ bool BShkbAnimationGraph::ReSendEvent(BSFixedString* apEventName)
 
 uint32_t BSAnimationGraphManager::ReSendEvent(BSFixedString* apEventName)
 {
-    BSScopedLock<BSRecursiveLock> _(lock);
+    BSSpinLockGuard _(lock);
 
     uint32_t counter = 0;
 

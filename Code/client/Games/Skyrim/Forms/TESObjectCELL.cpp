@@ -80,7 +80,7 @@ Vector<TESObjectREFR*> TESObjectCELL::GetRefsByFormTypes(const Vector<FormType>&
 {
     Vector<TESObjectREFR*> references{};
 
-    BSScopedLock<BSRecursiveLock> cellLock(lock);
+    BSSpinLockGuard cellLock(lock);
     if (!refData.refArray)
         return references;
 

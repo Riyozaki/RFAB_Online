@@ -1042,6 +1042,9 @@ void CharacterService::BeginEngineWorldLoad() noexcept
 {
     m_engineWorldLoadInProgress = true;
     GetDeferredDialogueDeletes().clear();
+    // N4: the latest-animation cache is keyed by formID and 0xFFxxxxxx ids are recycled by the
+    // reloaded world, so a stale entry would be sent as LatestAction for an unrelated actor.
+    ActorExtension::ClearAllLatestAnimations();
     DetachAllActorsForEngineLoad();
 }
 

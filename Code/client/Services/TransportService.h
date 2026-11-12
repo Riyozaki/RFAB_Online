@@ -6,6 +6,7 @@
 #include <atomic>
 #include <deque>
 #include <Client.hpp>
+#include <Messages/ServerReferencesMoveRequest.h>
 
 struct ImguiService;
 struct UpdateEvent;
@@ -68,7 +69,11 @@ struct TransportService : Client
 
     void PollWhileSimulationPaused() noexcept;
     void FlushPausedInboundPackets() noexcept;
+    // Disconnect / full reset: drops everything that was received while paused.
     void ClearPausedInboundPackets() noexcept;
+    // In-session world reload: drops world-scoped packets but keeps session-scoped ones in order
+    // (CoopWorldStabilizer::MustSurviveWorldReload).
+    void DiscardPausedWorldPacketsForReload() noexcept;
     [[nodiscard]] size_t GetPausedInboundQueueSize() const noexcept { return m_pausedInboundQueue.size(); }
 
 protected:
@@ -80,6 +85,8 @@ protected:
     // Packet handlers
     void HandleAuthenticationResponse(const AuthenticationResponse& acMessage) noexcept;
     void HandleNotifySettingsChange(const NotifySettingsChange& acMessage) noexcept;
+
+    void FlushPausedMoveRequest() noexcept;
 
 private:
     World& m_world;
@@ -98,5 +105,8 @@ private:
     entt::scoped_connection m_disconnectedConnection;
     bool m_pollingWhilePaused{false};
     std::deque<UniquePtr<ServerMessage>> m_pausedInboundQueue{};
+    ServerReferencesMoveRequest m_pausedMoveRequest{};
+    bool m_hasPausedMoveRequest{false};
+    bool m_pausedBackPressureLogged{false};
     std::function<void(UniquePtr<ServerMessage>&)> m_messageHandlers[kServerOpcodeMax];
 };

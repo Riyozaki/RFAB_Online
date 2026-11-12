@@ -425,11 +425,21 @@ namespace CoopWorldStabilizer
     }
 
     /**
-     * Maximum number of reliable world-mutating packets buffered in FIFO order while Skyrim's
-     * simulation is paused (`Main::freezeTime == true`, e.g. reading RFAB perk trees in `StatsMenu`,
-     * viewing `MapMenu`, or pausing in `Journal Menu`).
+     * Back-pressure threshold for reliable packets buffered in FIFO order while Skyrim's simulation is
+     * paused (`Main::freezeTime == true`, e.g. RFAB perk trees in `StatsMenu`, `MapMenu`, `Journal Menu`).
+     *
+     * Reliable packets are NEVER dropped (up to v4.0.0 the oldest one was silently discarded at the cap,
+     * which could lose a spawn, a removal or a `StringCacheUpdate` and desync the session for good).
+     * Once the queue reaches this size the paused pump simply stops reading the socket, exactly like
+     * upstream Skyrim Together does during any pause: GameNetworkingSockets keeps buffering in order and
+     * keeps the connection alive on its own service thread, and reading resumes on unpause.
      */
-    inline constexpr size_t kMaxPausedInboundQueueSize = 4096;
+    inline constexpr size_t kMaxPausedInboundQueueSize = 8192;
+
+    [[nodiscard]] constexpr bool ShouldPumpSocketWhilePaused(size_t aQueuedReliablePackets) noexcept
+    {
+        return aQueuedReliablePackets < kMaxPausedInboundQueueSize;
+    }
 
     enum class MainLoopUpdateMode : uint8_t
     {
@@ -474,13 +484,18 @@ namespace CoopWorldStabilizer
         kDropStaleUnreliable,
         kDispatchImmediately,
         kQueueUntilUnpaused,
+        // Movement/animation snapshots: folded into one pending request (see PausedInboundCoalescer.h)
+        // instead of being dropped, so reliable ActionEvents received during a menu are not lost.
+        kCoalesceUntilUnpaused,
     };
 
     /**
      * Classifies inbound server packets received while local Skyrim simulation is paused (`freezeTime == true`):
      * - `kRejectOutOfRange`: corrupted/unknown opcode `>= kServerOpcodeMax`.
-     * - `kDropStaleUnreliable`: 30 Hz unreliable movement frames (`kServerReferencesMoveRequest`) that would
-     *   otherwise pile up thousands of stale snapshots during multi-minute RFAB `StatsMenu` perk planning.
+     * - `kCoalesceUntilUnpaused`: 30 Hz movement frames (`kServerReferencesMoveRequest`). They are folded into
+     *   one pending request (newest position + bounded causal ActionEvent tail per entity) instead of being
+     *   dropped: the server sends them RELIABLY whenever they carry animation actions, and dropping those
+     *   left remote actors in a stale animation state after every menu (v4.0.0 desync).
      * - `kDispatchImmediately`: pure overlay chat and coordinated save/load barrier control messages that have
      *   zero ordering coupling to player join/leave or world entity lifecycles.
      * - `kQueueUntilUnpaused`: ALL other reliable packets (`AuthenticationResponse`, `StringCacheUpdate`,
@@ -496,7 +511,7 @@ namespace CoopWorldStabilizer
         switch (static_cast<ServerOpcode>(aOpcode))
         {
         case kServerReferencesMoveRequest:
-            return PausedInboundPacketAction::kDropStaleUnreliable;
+            return PausedInboundPacketAction::kCoalesceUntilUnpaused;
 
         case kNotifyChatMessageBroadcast:
         case kNotifyPrepareSave:
@@ -506,6 +521,41 @@ namespace CoopWorldStabilizer
 
         default:
             return PausedInboundPacketAction::kQueueUntilUnpaused;
+        }
+    }
+
+    /**
+     * Session-level packets carry state the server never re-sends on its own (string table deltas, the
+     * player list, party membership, settings). When an in-session world reload discards the paused queue
+     * (`CoordinatedSaveService::PrepareEngineForWorldLoad`), these MUST survive - world packets (spawns,
+     * inventories, AV deltas ...) are rebuilt by the post-reload cell re-entry, these are not. Dropping a
+     * queued `StringCacheUpdate` in particular made the client reject every later delta as a gap (the server
+     * advances its per-player cursor on send), so every CachedString animation event name stayed unresolved
+     * for the rest of the session.
+     */
+    [[nodiscard]] constexpr bool MustSurviveWorldReload(uint32_t aOpcode) noexcept
+    {
+        if (aOpcode >= static_cast<uint32_t>(kServerOpcodeMax))
+            return false;
+
+        switch (static_cast<ServerOpcode>(aOpcode))
+        {
+        case kAuthenticationResponse:
+        case kStringCacheUpdate:
+        case kServerTimeSettings:
+        case kNotifySettingsChange:
+        case kNotifyPlayerList:
+        case kNotifyPlayerJoined:
+        case kNotifyPlayerLeft:
+        case kNotifyPlayerLevel:
+        case kNotifyPlayerCellChanged:
+        case kNotifyPartyInfo:
+        case kNotifyPartyInvite:
+        case kNotifyPartyJoined:
+        case kNotifyPartyLeft:
+            return true;
+        default:
+            return false;
         }
     }
 

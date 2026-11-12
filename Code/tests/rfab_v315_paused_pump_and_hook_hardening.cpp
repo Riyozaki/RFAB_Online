@@ -81,9 +81,10 @@ TEST_CASE("v3.1.5 MainLoop update mode & paused-menu inbound packet classificati
           PausedInboundPacketAction::kRejectOutOfRange);
     CHECK(ClassifyPausedInboundPacket(0xFFu) == PausedInboundPacketAction::kRejectOutOfRange);
 
-    // 30 Hz unreliable position frames are dropped while frozen so multi-minute StatsMenu sessions never overflow
+    // Movement frames are folded into one pending request while frozen (never dropped: the ones carrying
+    // animation ActionEvents are reliable) - see PausedInboundCoalescer.h / registry N2.
     CHECK(ClassifyPausedInboundPacket(kServerReferencesMoveRequest) ==
-          PausedInboundPacketAction::kDropStaleUnreliable);
+          PausedInboundPacketAction::kCoalesceUntilUnpaused);
 
     // Independent chat & coordinated save/load barrier control packets run immediately while paused
     CHECK(ClassifyPausedInboundPacket(kNotifyChatMessageBroadcast) == PausedInboundPacketAction::kDispatchImmediately);
