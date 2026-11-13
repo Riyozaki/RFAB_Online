@@ -554,7 +554,7 @@ TEST_CASE("v4.1.0 ClientLedger: randomized soak keeps the invariants", "[rfab][v
         {
             now += rng() % 400;
             const uint32_t id = 1 + rng() % 40;
-            switch (rng() % 9)
+            switch (rng() % 10)
             {
             case 0: ledger.NoteGap(Scope::kEntity, id, Reason::kUnknownEntityInMovement, now); break;
             case 1: ledger.NoteGap(Scope::kAllEntities, 0, Reason::kSpawnDroppedDuringWorldLoad, now); break;
@@ -562,6 +562,7 @@ TEST_CASE("v4.1.0 ClientLedger: randomized soak keeps the invariants", "[rfab][v
             case 3: ledger.NoteEntityKnown(id); break;
             case 4: ledger.NoteEntityRemoved(id, now); break;
             case 5: ledger.AbandonInFlight(now); inFlight.clear(); break;
+            case 7: ledger.NoteGap(Scope::kWorldItems, Session::Resync::kNoServerId, Reason::kWorldItemRevisionGap, now); break;
             case 6:
                 if (!inFlight.empty())
                 {
@@ -579,12 +580,21 @@ TEST_CASE("v4.1.0 ClientLedger: randomized soak keeps the invariants", "[rfab][v
                 REQUIRE(out.size() <= policy.MaxRequestsPerPoll);
                 if (!canSend)
                     REQUIRE(out.empty());
+                size_t worldItemRequests = 0;
                 for (const auto& r : out)
                 {
                     if (r.RequestScope == Scope::kEntity)
                         REQUIRE(r.ServerId != 0);
+                    if (r.RequestScope == Scope::kWorldItems)
+                    {
+                        // One snapshot answers every world-item gap: never two in one poll, never an id.
+                        // (In flight is the ledger's business: a lost reply times out and re-arms.)
+                        REQUIRE(r.ServerId == Session::Resync::kNoServerId);
+                        ++worldItemRequests;
+                    }
                     inFlight.push_back(r);
                 }
+                REQUIRE(worldItemRequests <= 1);
                 break;
             }
             }

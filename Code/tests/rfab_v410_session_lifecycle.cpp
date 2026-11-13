@@ -686,6 +686,7 @@ TEST_CASE("v4.1.0 lifecycle: every participant class implements Session::IPartic
         {ParticipantId::kCharacters, {"Services/CharacterService.h", "CharacterService"}},
         {ParticipantId::kObjects, {"Services/ObjectService.h", "ObjectService"}},
         {ParticipantId::kInventory, {"Services/InventoryService.h", "InventoryService"}},
+        {ParticipantId::kWorldItems, {"Services/WorldItemService.h", "WorldItemService"}},
         {ParticipantId::kMagic, {"Services/MagicService.h", "MagicService"}},
         {ParticipantId::kDowned, {"Services/DownedStateService.h", "DownedStateService"}},
         {ParticipantId::kCoordinatedSaves, {"Services/CoordinatedSaveService.h", "CoordinatedSaveService"}},
