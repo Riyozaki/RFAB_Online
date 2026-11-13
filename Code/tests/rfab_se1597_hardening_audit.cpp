@@ -1,4 +1,5 @@
 #include <common/RfabModpackCompat.h>
+#include <common/Compat/ConfigOverlay.h>
 #include <common/CoopOwnership.h>
 #include <common/CoopFlightDigest.h>
 #ifndef RFAB_STANDALONE_NO_ESLOADER
@@ -132,32 +133,41 @@ int main()
         assert(!RfabCompat::PatchEngineFixesTomlContent(v7BPefixToml));
     }
 
-    // 3. SkyrimSoulsRE.ini [SLOWMOTION] neutralizer + full MO2 VFS tree scan + BetterStealing auto-hide
+    // 3. Co-op config overlay: the co-op view is prepared in RFAB Online's own folder; the mods'
+    //    files (EngineFixes override, Skyrim Souls, BetterStealing) stay byte-identical (step 5).
     {
-        const fs::path tempRoot = fs::temp_directory_path() / "rfab_online_vfs_test_tree";
+        const fs::path tempRoot = fs::temp_directory_path() / "rfab_online_overlay_audit_tree";
         fs::remove_all(tempRoot);
-        fs::create_directories(tempRoot / "MO2" / "mods" / "Disable Quick Saves" / "skse" / "plugins");
-        fs::create_directories(tempRoot / "MO2" / "overwrite" / "SKSE" / "Plugins");
-        fs::create_directories(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins");
+        fs::create_directories(tempRoot / "Data" / "SKSE" / "Plugins");
+        fs::create_directories(tempRoot / "Data" / "NetScriptFramework" / "Plugins");
 
+        const std::string efOriginal = "[Patches]\nRegularQuicksaves = false\n";
+        const std::string soulsOriginal =
+            "[SLOWMOTION]\nfSlowMotionMultiplier = 0.250000\nbEnableSlowMotionInventoryMenu = true\n";
         {
-            std::ofstream f(tempRoot / "MO2" / "mods" / "Disable Quick Saves" / "skse" / "plugins" / "EngineFixes.toml");
-            f << "[Patches]\nRegularQuicksaves = false\n";
+            std::ofstream f(tempRoot / "Data" / "SKSE" / "Plugins" / "EngineFixes.toml", std::ios::binary);
+            f << efOriginal;
         }
         {
-            std::ofstream f(tempRoot / "MO2" / "overwrite" / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini");
-            f << "[SLOWMOTION]\nfSlowMotionMultiplier = 0.250000\nbEnableSlowMotionInventoryMenu = true\nbEnableSlowMotion_MagicMenu = true\n";
+            std::ofstream f(tempRoot / "Data" / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini", std::ios::binary);
+            f << soulsOriginal;
         }
         {
-            std::ofstream f(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll");
+            std::ofstream f(tempRoot / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll", std::ios::binary);
             f << "stub";
         }
 
-        const size_t patchedFiles = RfabCompat::EnsureEngineFixesPatchedUnderRoot(tempRoot);
-        assert(patchedFiles >= 2);
-        assert(!fs::exists(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll"));
-        assert(fs::exists(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll.mohidden"));
-        assert(RfabCompat::EnsureEngineFixesPatchedUnderRoot(tempRoot) == 0);
+        const auto outcomes = Compat::PrepareOverlays(tempRoot / "Data", tempRoot / "overlay");
+        assert(Compat::FindOutcome(outcomes, "enginefixes")->Status == Compat::OverlayStatus::kOverlaid);
+        assert(Compat::FindOutcome(outcomes, "skyrimsouls")->Status == Compat::OverlayStatus::kOverlaid);
+        assert(Compat::FindOutcome(outcomes, "betterstealing")->Status == Compat::OverlayStatus::kHidden);
+        std::string text;
+        assert(RfabCompat::Detail::ReadTextFile(tempRoot / "Data" / "SKSE" / "Plugins" / "EngineFixes.toml", text) && text == efOriginal);
+        assert(RfabCompat::Detail::ReadTextFile(tempRoot / "Data" / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini", text) && text == soulsOriginal);
+        assert(fs::exists(tempRoot / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll"));
+        assert(!fs::exists(tempRoot / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll.mohidden"));
+        assert(RfabCompat::Detail::ReadTextFile(tempRoot / "overlay" / "EngineFixes.toml", text) &&
+               text.find("MemoryManager = false") != std::string::npos);
         fs::remove_all(tempRoot);
     }
 
@@ -626,16 +636,18 @@ int main()
                 assert(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadEnd(aSucceeded)") != std::string::npos);
             }
 
-            // [Issue #2] StatsMenu CTD & Tab (TweenMenu) lockout: post-SKSE SoulsRE/CustomSkills/RFAB guards + ControlMap self-heal
+            // [Issue #2] StatsMenu CTD & Tab (TweenMenu) lockout: one post-SKSE menu pause policy
+            // (SoulsRE / CustomSkills / RFAB, common/Compat/MenuPausePolicy.h) + ControlMap self-heal
             {
                 const std::string skillsCpp = readTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp");
                 const std::string uiCpp = readTextFile("Code/client/Games/Skyrim/Interface/UI.cpp");
                 const std::string playerControlsH = readTextFile("Code/client/Games/Skyrim/AI/Movement/PlayerControls.h");
                 assert(skillsCpp.find("s_skillsMenuInit") == std::string::npos);
-                assert(skillsCpp.find("ApplyFallbackStatsMenuPatchesPostSkse()") != std::string::npos);
+                assert(skillsCpp.find("void ApplyStatsMenuInputPatches() noexcept") != std::string::npos);
                 assert(skillsCpp.find("CustomSkills.dll") != std::string::npos);
-                assert(uiCpp.find("if (IsSkyrimSoulsRuntimeActive())") != std::string::npos);
-                assert(uiCpp.find("ApplyFallbackStatsMenuPatchesPostSkse();") != std::string::npos);
+                assert(uiCpp.find("Compat::DecideMenuPausePolicy(environment)") != std::string::npos);
+                assert(uiCpp.find("if (s_menuPolicy.TogetherUnpauses(menuName))") != std::string::npos);
+                assert(uiCpp.find("ApplyStatsMenuInputPatches();") != std::string::npos);
                 assert(playerControlsH.find("GetEnabledControlsMask()") != std::string::npos);
                 assert(rfabSvcCpp.find("SelfHealFreeRoamMenuControls()") != std::string::npos);
             }
