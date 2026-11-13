@@ -44,10 +44,7 @@ RfabAdapterService::RfabAdapterService(World& aWorld, entt::dispatcher& aDispatc
     RefreshRuntimeBindings();
 }
 
-RfabAdapterService::~RfabAdapterService() noexcept
-{
-    m_xpAndBookSync.RestoreSoloRfabAutosave();
-}
+RfabAdapterService::~RfabAdapterService() noexcept = default;
 
 bool RfabAdapterService::IsTacticalHudFeatureEnabled() noexcept
 {
@@ -295,7 +292,6 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
 void RfabAdapterService::OnSessionBegin(const Session::Transition& acTransition) noexcept
 {
     RefreshRuntimeBindings();
-    m_xpAndBookSync.SuppressSoloRfabAutosave(m_formResolver.GetBindings());
     m_localPlayerId = acTransition.LocalPlayerId;
     m_hasLocalPlayerId = true;
     m_isServerHost = false;

@@ -18,7 +18,7 @@
 #include "utils/Registry.h"
 
 #include <BranchInfo.h>
-#include <common/RfabModpackCompat.h>
+#include "stubs/ConfigOverlayRedirect.h"
 
 // These symbols are defined within the client code skyrimtogetherclient
 extern void InstallStartHook();
@@ -115,33 +115,13 @@ int StartUp(int argc, char** argv)
     if (!oobe::SelectInstall(askSelect))
         DIE_STARTUP_NOW(L"Failed to select game install.");
 
-    // Ensure EngineFixes.toml (including MO2 overrides like RFAB's "Disable Quick Saves/skse/plugins/EngineFixes.toml")
-    // disables conflicting allocators and sets MaxStdio = 8192 while preserving RegularQuicksaves = true.
-    RfabCompat::EnsureEngineFixesPatchedUnderRoot(LC->gamePath);
-    {
-        const auto exeDir = TiltedPhoques::GetPath();
-        if (!exeDir.empty())
-        {
-            const auto mo2FromExe = exeDir.parent_path().parent_path().parent_path();
-            if (!mo2FromExe.empty() && mo2FromExe != LC->gamePath)
-                RfabCompat::EnsureEngineFixesPatchedUnderRoot(mo2FromExe);
-        }
-
-        std::error_code cwdEc;
-        const auto cwd = std::filesystem::current_path(cwdEc);
-        if (!cwdEc && !cwd.empty())
-        {
-            // When launched via MO2 from <MO2>/mods/RFAB_Online/SkyrimTogetherReborn, 3 parents up is <MO2> itself
-            // even when MO2 is installed on a completely separate drive/folder from LC->gamePath!
-            const auto mo2FromCwd = cwd.parent_path().parent_path().parent_path();
-            if (!mo2FromCwd.empty() && mo2FromCwd != LC->gamePath)
-                RfabCompat::EnsureEngineFixesPatchedUnderRoot(mo2FromCwd);
-        }
-    }
-
-    // Bind path environment, then re-verify virtualized Data/SKSE/Plugins/EngineFixes.toml under USVFS/path routing.
+    // Bind path environment (the working directory becomes the game folder), then prepare the
+    // co-op view of other mods' settings (EngineFixes, Skyrim Souls, [RFAB] Autosave, po3 Tweaks,
+    // BetterStealing) and redirect this process's reads to it. Must precede LoadProgram: the
+    // EngineFixes preloader and every SKSE / NetScriptFramework plugin load after it. No file
+    // outside the RFAB Online folder is modified (see common/Compat/ConfigOverlay.h).
     loader::InstallPathRouting(LC->gamePath);
-    RfabCompat::EnsureEngineFixesPatchedUnderRoot(LC->gamePath);
+    stubs::InitCoopConfigOverlay(LC->gamePath);
     steam::Load(LC->gamePath);
 
     if (!LoadProgram(*LC))

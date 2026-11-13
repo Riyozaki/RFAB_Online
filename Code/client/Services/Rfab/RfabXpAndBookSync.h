@@ -14,14 +14,16 @@ class RfabFormResolver;
 
 /**
  * Owns RFAB dual-pool experience application (RFAB_XP_Amount + PlayerCharacter::Skills::xp),
- * XPBooksReaded FormList synchronization, watched TESGlobal synchronization,
- * REQ_Combat_NoDeathHandling enforcement, and [RFAB] Autosave.ini session suppression/restore.
+ * XPBooksReaded FormList synchronization, watched TESGlobal synchronization and
+ * REQ_Combat_NoDeathHandling enforcement. ([RFAB] Autosave.ini is not touched at runtime: RFAB.dll
+ * reads it once at load, and the launcher's co-op config overlay already serves it with autosave off,
+ * see common/Compat/ConfigOverlay.h.)
  */
 class RfabXpAndBookSync
 {
 public:
     RfabXpAndBookSync() noexcept = default;
-    ~RfabXpAndBookSync() noexcept { RestoreSoloRfabAutosave(); }
+    ~RfabXpAndBookSync() noexcept = default;
 
     TP_NOCOPYMOVE(RfabXpAndBookSync);
 
@@ -30,9 +32,6 @@ public:
         TESGlobal* apRfabXpGlobal,
         int32_t aDelta,
         int32_t& aOutNewTotalXp) noexcept;
-
-    void SuppressSoloRfabAutosave(const RfabCompat::RfabBindingsConfig& acBindings) noexcept;
-    void RestoreSoloRfabAutosave() noexcept;
 
     void ApplySessionNoDeathHandling(RfabFormResolver& aResolver) noexcept;
     void RestoreSessionNoDeathHandling() noexcept;
@@ -65,10 +64,6 @@ private:
     TESGlobal* m_pNoDeathHandlingGlobal{nullptr};
     float m_savedNoDeathHandlingValue{0.0f};
     bool m_hasSavedNoDeathHandlingValue{false};
-
-    std::filesystem::path m_autosaveIniPath{};
-    std::string m_originalAutosaveIniContent{};
-    bool m_autosaveSuppressed{false};
 
     uint64_t m_currentWorldEpoch{1};
     bool m_scannedGlobalsOnce{false};
