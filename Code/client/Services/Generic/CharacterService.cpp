@@ -1574,7 +1574,15 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept
 {
     if (m_engineWorldLoadInProgress)
+    {
+        // The server marked this entity as delivered and will never send it again on its own:
+        // ask for the whole session once the load is over (common/Session/Resync.h).
+        m_world.GetSessionResyncService().NoteGap(
+            Session::Resync::Scope::kAllEntities, acMessage.ServerId, Session::Resync::Reason::kSpawnDroppedDuringWorldLoad);
         return;
+    }
+
+    m_world.GetSessionResyncService().NoteEntityKnown(acMessage.ServerId);
 
     m_world.GetActorValueService().NoteAuthoritativeHealthRevision(acMessage.ServerId, acMessage.HealthRevision);
 
@@ -1619,8 +1627,11 @@ void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) 
             const uint32_t cActorId = World::Get().GetModSystem().GetGameId(acMessage.FormId);
             if (cActorId == 0)
             {
+                // The placed reference's plugin is not loaded here: a resend would be refused the
+                // same way, so movement for this id must not be reported as a gap.
                 m_remoteModels.erase(acMessage.ServerId);
                 m_cachedRemoteSpawns.erase(acMessage.ServerId);
+                m_world.GetSessionResyncService().NoteEntityIgnored(acMessage.ServerId);
                 return;
             }
 
@@ -1826,6 +1837,7 @@ void CharacterService::OnOwnershipTransfer(const NotifyOwnershipTransfer& acMess
 
 void CharacterService::OnRemoveCharacter(const NotifyRemoveCharacter& acMessage) const noexcept
 {
+    m_world.GetSessionResyncService().NoteEntityRemoved(acMessage.ServerId);
     m_ownershipLeases.Forget(acMessage.ServerId);
     m_lastVoluntaryClaimMs.erase(acMessage.ServerId);
     m_world.GetActorValueService().ForgetHealthRevision(acMessage.ServerId);

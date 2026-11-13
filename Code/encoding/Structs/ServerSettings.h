@@ -55,4 +55,9 @@ struct ServerSettings
     float CombatLeashRadiusMeters{120.0f};
     bool CoordinatedSavesEnabled{true};
     uint32_t PostCombatAutosaveIntervalSec{180};
+
+    // v4.1.0: server-controlled feature switches, see common/Session/Features.h. "Disabled" bits so
+    // that 0 (and any bit a peer does not know) means the default behaviour. Read it through
+    // World::IsFeatureEnabled on the client, never directly from hooks.
+    uint32_t DisabledFeatureMask{0};
 };

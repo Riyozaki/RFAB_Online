@@ -11,7 +11,9 @@
 
 TEST_CASE("v4.0.0 Protocol version family and SSOT invariants", "[rfab][v400][version]")
 {
-    REQUIRE(RfabCompat::kRfabOnlineVersion == "4.0.0");
+    // The current version is pinned by rfab_v410_session_features_and_resync.cpp; this case keeps
+    // guarding the v4.0.x family rules it was written for.
+    REQUIRE(RfabCompat::kRfabOnlineVersion.substr(0, 2) == "4.");
 
     // Branch builds tagged from VERSION ("v4.0.0-g<sha>") interoperate with release "v4.0.0"
     // and strictly reject v3.1.x clients/servers across the v4.0.0 wire break.

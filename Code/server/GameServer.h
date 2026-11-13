@@ -4,6 +4,7 @@
 #include <Messages/AuthenticationRequest.h>
 #include <Messages/Message.h>
 #include <World.h>
+#include <common/Session/Features.h>
 
 using TiltedPhoques::ConnectionId_t;
 using TiltedPhoques::Server;
@@ -130,3 +131,8 @@ private:
 
     static inline GameServer* s_pInstance = nullptr;
 };
+
+// Effective coop feature switches (Gameplay:bEnable* cvars folded into one mask, see
+// common/Session/Features.h). Server services gate the relays they own with IsCoopFeatureEnabled.
+[[nodiscard]] uint32_t GetDisabledCoopFeatureMask() noexcept;
+[[nodiscard]] bool IsCoopFeatureEnabled(Session::Feature aFeature) noexcept;

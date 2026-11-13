@@ -30,11 +30,10 @@
 #include <algorithm>
 #include <chrono>
 
-namespace
-{
+// External linkage: GameServer.cpp folds both into the coop feature mask (Session::Feature::kSharedSkillXp /
+// kSharedRfabXp) so clients stop polling and broadcasting when the relay is switched off.
 Console::Setting bEnableXpSync{"Gameplay:bEnableXpSync", "Syncs combat XP within the party", true};
 Console::Setting bEnableRfabXpSync{"Gameplay:bEnableRfabXpSync", "Syncs RFAB XP gains within the party", true};
-} // namespace
 
 void CharacterService::OnFactionsChanges(const PacketEvent<RequestFactionsChanges>& acMessage) const noexcept
 {

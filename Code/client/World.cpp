@@ -38,6 +38,8 @@ World::World()
 {
     s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     ctx().emplace<ImguiService>();
+    // Before every service that reports gaps to it (CharacterService, StringCacheService, ...).
+    ctx().emplace<SessionResyncService>(*this, m_dispatcher, m_transport);
     m_pRfabAdapterService = &ctx().emplace<RfabAdapterService>(*this, m_dispatcher, m_transport);
     m_pDownedStateService = &ctx().emplace<DownedStateService>(*this, m_dispatcher, m_transport);
     ctx().emplace<CoordinatedSaveService>(*this, m_dispatcher, m_transport);
@@ -65,6 +67,22 @@ World::World()
     BehaviorVar::Get()->Init();
 }
 
+void World::PublishFeatureMask(uint32_t aDisabledMask) noexcept
+{
+    const uint32_t previous = s_disabledFeatureMaskCached.exchange(aDisabledMask, std::memory_order_acq_rel);
+    if (previous == aDisabledMask)
+        return;
+
+    // One line per change so a playtest log always shows which switches were active.
+    for (const auto& info : Session::kFeatureTable)
+    {
+        const bool wasEnabled = Session::IsEnabledIn(previous, info.Bit);
+        const bool isEnabled = Session::IsEnabledIn(aDisabledMask, info.Bit);
+        if (wasEnabled != isEnabled)
+            spdlog::info("[RFAB Features] {} is now {} (server setting)", std::string(info.Name), isEnabled ? "enabled" : "DISABLED");
+    }
+}
+
 World::~World()
 {
     {
@@ -77,6 +95,7 @@ World::~World()
     s_pvpEnabledCached.store(false, std::memory_order_release);
     s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
     s_currentTickCached.store(0, std::memory_order_release);
+    s_disabledFeatureMaskCached.store(0u, std::memory_order_release);
     s_worldCreated.store(false, std::memory_order_release);
 }
 
@@ -100,6 +119,9 @@ void World::Update() noexcept
     {
         s_isContainerMenuOpenCached.store(false, std::memory_order_release);
         s_currentTickCached.store(0, std::memory_order_release);
+        // A previous server's switches must not outlive its session (IsFeatureEnabled contract);
+        // the next server publishes its own mask in AuthenticationResponse. No-op when already 0.
+        PublishFeatureMask(0u);
     }
 
     const auto cNow = std::chrono::high_resolution_clock::now();

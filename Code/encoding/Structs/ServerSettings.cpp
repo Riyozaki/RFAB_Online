@@ -20,7 +20,8 @@ bool ServerSettings::operator==(const ServerSettings& acRhs) const noexcept
            PostReviveGraceSec == acRhs.PostReviveGraceSec &&
            CombatLeashRadiusMeters == acRhs.CombatLeashRadiusMeters &&
            CoordinatedSavesEnabled == acRhs.CoordinatedSavesEnabled &&
-           PostCombatAutosaveIntervalSec == acRhs.PostCombatAutosaveIntervalSec;
+           PostCombatAutosaveIntervalSec == acRhs.PostCombatAutosaveIntervalSec &&
+           DisabledFeatureMask == acRhs.DisabledFeatureMask;
 }
 
 bool ServerSettings::operator!=(const ServerSettings& acRhs) const noexcept
@@ -47,6 +48,7 @@ void ServerSettings::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noe
     Serialization::WriteFloat(aWriter, CombatLeashRadiusMeters);
     Serialization::WriteBool(aWriter, CoordinatedSavesEnabled);
     Serialization::WriteVarInt(aWriter, PostCombatAutosaveIntervalSec);
+    Serialization::WriteVarInt(aWriter, DisabledFeatureMask);
 }
 
 void ServerSettings::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -68,4 +70,5 @@ void ServerSettings::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcep
     CombatLeashRadiusMeters = Serialization::ReadFloat(aReader);
     CoordinatedSavesEnabled = Serialization::ReadBool(aReader);
     PostCombatAutosaveIntervalSec = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    DisabledFeatureMask = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 }

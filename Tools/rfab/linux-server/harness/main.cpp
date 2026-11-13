@@ -29,6 +29,9 @@
 //      checkpoint; the first join cannot overwrite the restored calendar;
 //  14. after an actual process restart, a reused player ID cannot reclaim depleted loot,
 //      including after rollback to either the latest or an older on-disk checkpoint.
+//  15. v4.1.0 self-healing resync: a client that lost state asks, the server resends the
+//      authoritative snapshot and terminates with NotifyResyncComplete - after the snapshots,
+//      to the requester only, within a per-player budget, and never when switched off.
 //
 // The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
 // was never observed is the wiring: who is told, and what the server records when a player
@@ -55,6 +58,8 @@
 #include <Messages/NotifyHealthChangeBroadcast.h>
 #include <Messages/NotifyOwnershipTransfer.h>
 #include <Messages/NotifyRelinquishControl.h>
+#include <Messages/NotifyRemoveCharacter.h>
+#include <Messages/NotifyResyncComplete.h>
 #include <Messages/NotifySpawnData.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestDeathStateChange.h>
@@ -62,6 +67,7 @@
 #include <Messages/RequestInventoryChanges.h>
 #include <Messages/RequestOwnershipClaim.h>
 #include <Messages/RequestOwnershipTransfer.h>
+#include <Messages/RequestResync.h>
 #include <Messages/ServerMessageFactory.h>
 
 #include <Services/CharacterService.h>
@@ -70,6 +76,7 @@
 
 #include "TransportSpy.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -82,6 +89,9 @@
 
 #include <sys/wait.h>
 #include <unistd.h>
+
+// v4.1.0: the self-healing switch lives in GameServer.cpp; the harness flips it like an operator would.
+extern Console::Setting<bool> bEnableSelfHealingResync;
 
 namespace
 {
@@ -185,6 +195,26 @@ std::vector<TServerMsg> DecodeOutboxMessagesFor(TiltedPhoques::ConnectionId_t aC
             decoded.push_back(*static_cast<const TServerMsg*>(pMsg.get()));
     }
     return decoded;
+}
+
+// Every server opcode sent to `aConn`, in send order. The reliable ordered channel delivers in this
+// order, so "the terminator comes after the snapshots" is an ordering property of the outbox.
+std::vector<uint32_t> OutboxOpcodesFor(TiltedPhoques::ConnectionId_t aConn)
+{
+    std::vector<uint32_t> opcodes;
+    const ServerMessageFactory factory;
+    for (const auto& pkt : Harness::Outbox())
+    {
+        if ((pkt.Connection != aConn && pkt.Connection != k_HSteamNetConnection_Invalid) || pkt.Bytes.empty())
+            continue;
+        TiltedPhoques::Buffer buf(pkt.Bytes.size() + 16);
+        std::memset(buf.GetWriteData(), 0, pkt.Bytes.size() + 16);
+        std::memcpy(buf.GetWriteData(), pkt.Bytes.data(), pkt.Bytes.size());
+        TiltedPhoques::Buffer::Reader reader(&buf);
+        if (auto pMsg = factory.Extract(reader))
+            opcodes.push_back(static_cast<uint32_t>(pMsg->GetOpcode()));
+    }
+    return opcodes;
 }
 
 template <class TMap>
@@ -1144,6 +1174,179 @@ int main(int argc, char** argv)
                   HasApproxValue(g3Corrections[0].Values, 24u, 0.0f) &&
                   g3Corrections[0].HealthRevision == deadWireRev,
               "stale pre-death snapshot is refused and answered on the wire with HP=0 and dead HealthRevision");
+
+        std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
+    }
+
+
+    // =========================================================================
+    // v4.1.0 Self-healing resync: RequestResync -> snapshots -> NotifyResyncComplete
+    // =========================================================================
+    std::printf("v4.1.0 self-healing resync over the wire\n");
+    {
+        using Session::Resync::Outcome;
+        using Session::Resync::Reason;
+        using Session::Resync::Scope;
+
+        GameServer server{registry};
+        World& world = server.GetWorld();
+
+        constexpr TiltedPhoques::ConnectionId_t kOwnerConn = 201;
+        constexpr TiltedPhoques::ConnectionId_t kObserverConn = 202;
+        const GameId kCell{0u, 0x0009ABCDu};
+        const GameId kRefId{1u, 0x000E5F80u};
+        const GameId kBaseId{2u, 0x00023BC0u};
+
+        Player* pOwner = world.GetPlayerManager().Create(kOwnerConn);
+        Player* pObserver = world.GetPlayerManager().Create(kObserverConn);
+        Check(pOwner && pObserver, "two peers connect for the resync scene");
+
+        TimeModel t0{};
+        t0.Time = 12.0f;
+        t0.Day = 5;
+        t0.Month = 3;
+        t0.Year = 201;
+        world.GetDispatcher().trigger(PlayerJoinEvent{pOwner, {}, {}, DateTime{t0}});
+        world.GetDispatcher().trigger(PlayerJoinEvent{pObserver, {}, {}, DateTime{t0}});
+        pOwner->SetCellComponent(CellIdComponent{kCell});
+        pObserver->SetCellComponent(CellIdComponent{kCell});
+
+        Harness::ClearOutbox();
+        AssignCharacterRequest assign{};
+        assign.Cookie = 21u;
+        assign.ReferenceId = kRefId;
+        assign.FormId = kBaseId;
+        assign.CellId = kCell;
+        assign.Position = {10.0f, 20.0f, 0.0f};
+        assign.CurrentActorData.BaseId = kBaseId;
+        assign.CurrentActorData.InitialActorValues.ActorValuesList[24] = 120.0f;
+        assign.CurrentActorData.InitialActorValues.ActorMaxValuesList[24] = 120.0f;
+        Check(DeliverWire(world, assign, pOwner), "owner assigns the NPC the observer will lose");
+        const auto assignResps = DecodeOutboxMessagesFor<AssignCharacterResponse>(kOwnerConn);
+        // The first character of a fresh server is entt entity 0 - exactly the id an "0 means none"
+        // shortcut would refuse. The scene keeps it on purpose.
+        Check(assignResps.size() == 1, "the NPC is assigned a server id");
+        const uint32_t npcServerId = assignResps.empty() ? Session::Resync::kNoServerId : assignResps[0].ServerId;
+
+        const auto requestFrom = [&](Player* apFrom, uint32_t aRequestId, Scope aScope, uint32_t aServerId, Reason aReason) {
+            Harness::ClearOutbox();
+            RequestResync request{};
+            request.RequestId = aRequestId;
+            request.RequestScope = aScope;
+            request.ServerId = aServerId;
+            request.GapReason = aReason;
+            return DeliverWire(world, request, apFrom);
+        };
+        const auto onlyComplete = [](TiltedPhoques::ConnectionId_t aConn) {
+            const auto completes = DecodeOutboxMessagesFor<NotifyResyncComplete>(aConn);
+            return completes.size() == 1 ? completes[0] : NotifyResyncComplete{};
+        };
+        const auto terminatorIsLast = [](TiltedPhoques::ConnectionId_t aConn) {
+            const auto opcodes = OutboxOpcodesFor(aConn);
+            return !opcodes.empty() && opcodes.back() == static_cast<uint32_t>(kNotifyResyncComplete) &&
+                   std::count(opcodes.begin(), opcodes.end(), static_cast<uint32_t>(kNotifyResyncComplete)) == 1;
+        };
+
+        // 1. The observer saw movement for an entity it never spawned (spawn dropped during its load).
+        Check(requestFrom(pObserver, 7u, Scope::kEntity, npcServerId, Reason::kUnknownEntityInMovement),
+              "RequestResync(entity) round-trips over the wire");
+        {
+            const auto spawns = DecodeOutboxMessagesFor<CharacterSpawnRequest>(kObserverConn);
+            const auto complete = onlyComplete(kObserverConn);
+            Check(spawns.size() == 1 && spawns[0].ServerId == npcServerId && spawns[0].BaseId == kBaseId,
+                  "entity resync resends exactly one authoritative CharacterSpawnRequest");
+            Check(complete.RequestId == 7u && complete.RequestScope == Scope::kEntity &&
+                      complete.ServerId == npcServerId && complete.Result == Outcome::kApplied &&
+                      complete.SnapshotsSent == 1u,
+                  "NotifyResyncComplete echoes the request and reports kApplied with one snapshot");
+            Check(terminatorIsLast(kObserverConn), "NotifyResyncComplete is sent once and after every snapshot");
+            Check(DecodeOutboxMessagesFor<CharacterSpawnRequest>(kOwnerConn).empty() &&
+                      DecodeOutboxMessagesFor<NotifyResyncComplete>(kOwnerConn).empty(),
+                  "an entity resync is answered to the requester only");
+        }
+
+        // 2. The owner asking for its own NPC cannot be fixed by a resend: no spawn, explicit outcome.
+        Check(requestFrom(pOwner, 8u, Scope::kEntity, npcServerId, Reason::kUnknownEntityInMovement),
+              "owner RequestResync round-trips over the wire");
+        Check(DecodeOutboxMessagesFor<CharacterSpawnRequest>(kOwnerConn).empty() &&
+                  onlyComplete(kOwnerConn).Result == Outcome::kOwnedByRequester,
+              "a request for an entity the requester owns answers kOwnedByRequester without spawning a duplicate");
+
+        // 3. An id the server no longer knows: the client is told to remove it.
+        constexpr uint32_t kGoneId = 0x00FFFF01u;
+        Check(requestFrom(pObserver, 9u, Scope::kEntity, kGoneId, Reason::kUnknownEntityInMovement),
+              "RequestResync for a vanished entity round-trips");
+        {
+            const auto removals = DecodeOutboxMessagesFor<NotifyRemoveCharacter>(kObserverConn);
+            Check(removals.size() == 1 && removals[0].ServerId == kGoneId &&
+                      onlyComplete(kObserverConn).Result == Outcome::kEntityGone && terminatorIsLast(kObserverConn),
+                  "a vanished entity answers NotifyRemoveCharacter then kEntityGone");
+        }
+
+        // 4. Malformed requests are refused explicitly, never guessed.
+        Check(requestFrom(pObserver, 10u, Scope::kEntity, Session::Resync::kNoServerId, Reason::kManual),
+              "entity RequestResync without an id round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kInvalid && OutboxOpcodesFor(kObserverConn).size() == 1,
+              "entity scope without a server id answers kInvalid and nothing else");
+        Check(requestFrom(pObserver, 11u, static_cast<Scope>(0x7Fu), npcServerId, Reason::kManual),
+              "RequestResync with an unknown scope byte round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kInvalid && OutboxOpcodesFor(kObserverConn).size() == 1,
+              "an unknown scope byte answers kInvalid and nothing else");
+
+        // 5. Whole-session rebuild resends the NPC, and a second one inside the interval is throttled.
+        Check(requestFrom(pObserver, 12u, Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kWorldPacketsDiscarded),
+              "RequestResync(all entities) round-trips");
+        {
+            const auto spawns = DecodeOutboxMessagesFor<CharacterSpawnRequest>(kObserverConn);
+            const auto complete = onlyComplete(kObserverConn);
+            const bool npcResent = std::any_of(spawns.begin(), spawns.end(),
+                                               [&](const CharacterSpawnRequest& s) { return s.ServerId == npcServerId; });
+            Check(npcResent && complete.Result == Outcome::kApplied && complete.SnapshotsSent >= 1u &&
+                      terminatorIsLast(kObserverConn),
+                  "whole-session resync resends the in-range NPC and terminates with kApplied");
+        }
+        Check(requestFrom(pObserver, 13u, Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kWorldPacketsDiscarded),
+              "a second whole-session request round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kThrottled &&
+                  DecodeOutboxMessagesFor<CharacterSpawnRequest>(kObserverConn).empty(),
+              "a whole-session rebuild inside the server interval is throttled and costs nothing");
+
+        // 6. String table.
+        Check(requestFrom(pObserver, 14u, Scope::kStringCache, Session::Resync::kNoServerId, Reason::kStringCacheRejected),
+              "RequestResync(string cache) round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kApplied && terminatorIsLast(kObserverConn),
+              "string table resync terminates with kApplied");
+
+        // 7. A client looping on single-entity requests is bounded by the burst budget.
+        {
+            uint32_t applied = 0;
+            uint32_t throttled = 0;
+            for (uint32_t i = 0; i < 64; ++i)
+            {
+                requestFrom(pObserver, 100u + i, Scope::kEntity, npcServerId, Reason::kUnknownEntityInMovement);
+                const auto result = onlyComplete(kObserverConn).Result;
+                applied += result == Outcome::kApplied ? 1u : 0u;
+                throttled += result == Outcome::kThrottled ? 1u : 0u;
+            }
+            // One token was spent by scene 1, one by scene 3; refill is 100 ms, the loop takes far less.
+            Check(applied <= Session::Resync::ServerPolicy{}.EntityBurst && throttled >= 64u - Session::Resync::ServerPolicy{}.EntityBurst &&
+                      applied + throttled == 64u,
+                  "a request storm is bounded by the per-player entity budget and every request is still answered");
+        }
+
+        // 8. The operator switch: answered, never served.
+        bEnableSelfHealingResync = false;
+        Check(requestFrom(pOwner, 200u, Scope::kStringCache, Session::Resync::kNoServerId, Reason::kManual), "RequestResync with resync disabled round-trips");
+        Check(onlyComplete(kOwnerConn).Result == Outcome::kDisabled && OutboxOpcodesFor(kOwnerConn).size() == 1,
+              "with Gameplay:bEnableSelfHealingResync off the server answers kDisabled and resends nothing");
+        Check(!Session::IsEnabledIn(GetDisabledCoopFeatureMask(), Session::Feature::kSelfHealingResync),
+              "the disabled switch is folded into the feature mask clients receive");
+        bEnableSelfHealingResync = true;
+
+        // 9. A player who leaves takes their budget with them; a reconnect starts clean.
+        world.GetDispatcher().trigger(PlayerLeaveEvent{pObserver});
+        Check(requestFrom(pOwner, 201u, Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kManual), "whole-session request from the remaining peer");
+        Check(onlyComplete(kOwnerConn).Result == Outcome::kApplied, "another player's budget is independent");
 
         std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
     }

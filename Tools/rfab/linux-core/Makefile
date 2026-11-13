@@ -93,7 +93,8 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/rfab_v316_adversarial_audit_hardening.cpp \
   $(REPO_ROOT)/Code/tests/rfab_v317_full_codebase_critical_audit.cpp \
   $(REPO_ROOT)/Code/tests/rfab_v400_protocol_and_authority.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v401_review_stability.cpp
+  $(REPO_ROOT)/Code/tests/rfab_v401_review_stability.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v410_session_features_and_resync.cpp
 
 CORE_SRCS     := $(filter-out %MimallocAllocator.cpp,$(wildcard $(TILTEDCORE)/Code/core/src/*.cpp)) \
                  $(TILTEDCORE)/Code/core/src/MimallocAllocator.cpp

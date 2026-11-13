@@ -53,6 +53,46 @@ RfabAdapterService::~RfabAdapterService() noexcept
     m_xpAndBookSync.RestoreSoloRfabAutosave();
 }
 
+bool RfabAdapterService::IsTacticalHudFeatureEnabled() noexcept
+{
+    return World::IsFeatureEnabled(Session::Feature::kTacticalHud);
+}
+
+bool RfabAdapterService::IsCombatRulesFeatureEnabled() noexcept
+{
+    return World::IsFeatureEnabled(Session::Feature::kRfabCombatRules);
+}
+
+void RfabAdapterService::ApplyAllyHitPolicy(bool aProtectAllies) noexcept
+{
+    m_combatRules.ApplyAllyHitGameSetting(aProtectAllies && IsCombatRulesFeatureEnabled());
+}
+
+void RfabAdapterService::ApplyFeatureSwitchChanges() noexcept
+{
+    const bool combatRules = IsCombatRulesFeatureEnabled();
+    if (combatRules != m_combatRulesFeatureApplied)
+    {
+        m_combatRulesFeatureApplied = combatRules;
+        ApplyAllyHitPolicy(m_allyProtectionEnabled.load(std::memory_order_relaxed));
+        if (!combatRules)
+            m_combatRules.ResetBossTracking();
+        RefreshCoopCombatSnapshot();
+        PushAllyProtectionStateToOverlay();
+    }
+
+    const bool hud = IsTacticalHudFeatureEnabled();
+    if (hud != m_tacticalHudFeatureApplied)
+    {
+        m_tacticalHudFeatureApplied = hud;
+        if (!hud)
+        {
+            m_hudAndPings.ResetOnDisconnect();
+            ClearTacticalHudSnapshot();
+        }
+    }
+}
+
 uint32_t RfabAdapterService::ResolveEffectiveLocalPlayerId() const noexcept
 {
     return m_hasLocalPlayerId ? m_localPlayerId : m_transport.GetLocalPlayerId();
@@ -179,7 +219,7 @@ void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept
 
 GamePtr<Actor> RfabAdapterService::FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept
 {
-    if (!apAttacker)
+    if (!apAttacker || !IsCombatRulesFeatureEnabled())
         return nullptr;
 
     CoopCombatSnapshot snapshot;
@@ -207,6 +247,14 @@ void RfabAdapterService::SetLocalAllyProtectionEnabled(bool aEnabled, bool aShow
         return;
     }
 
+    if (!IsCombatRulesFeatureEnabled())
+    {
+        if (aShowHudNotification)
+            Utils::ShowHudMessage(String("RFAB Online: боевые правила RFAB отключены на сервере"));
+        PushAllyProtectionStateToOverlay();
+        return;
+    }
+
     if (!IsLocalPlayerAllyProtectionHost())
     {
         if (aShowHudNotification)
@@ -216,7 +264,7 @@ void RfabAdapterService::SetLocalAllyProtectionEnabled(bool aEnabled, bool aShow
     }
 
     m_allyProtectionEnabled.store(aEnabled, std::memory_order_relaxed);
-    m_combatRules.ApplyAllyHitGameSetting(aEnabled);
+    ApplyAllyHitPolicy(aEnabled);
     RefreshCoopCombatSnapshot();
     SendHostAllyProtectionRequest(aEnabled, aShowHudNotification);
     PushAllyProtectionStateToOverlay();
@@ -232,7 +280,7 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
     Actor* apTarget,
     bool aIsBeneficialHealOrBuff) const noexcept
 {
-    if (!apAttacker || !apTarget || apAttacker == apTarget)
+    if (!apAttacker || !apTarget || apAttacker == apTarget || !IsCombatRulesFeatureEnabled())
         return {};
 
     // Read a mutex-protected snapshot built on the World::Update() thread instead of touching
@@ -256,7 +304,10 @@ void RfabAdapterService::OnConnected(const ConnectedEvent& acEvent) noexcept
     m_hasLocalPlayerId = true;
     m_isServerHost = false;
     m_allyProtectionEnabled.store(true, std::memory_order_relaxed);
-    m_combatRules.ApplyAllyHitGameSetting(true);
+    // Settings (and with them the feature mask) are applied before ConnectedEvent is raised.
+    m_combatRulesFeatureApplied = IsCombatRulesFeatureEnabled();
+    m_tacticalHudFeatureApplied = IsTacticalHudFeatureEnabled();
+    ApplyAllyHitPolicy(true);
     (void)GetNoAllyDamageAllowedSpellsList();
     RefreshCoopCombatSnapshot();
     PushAllyProtectionStateToOverlay();
@@ -320,7 +371,9 @@ void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
         return;
     }
 
-    if (m_hudAndPings.UpdatePingsAndInput(
+    ApplyFeatureSwitchChanges();
+
+    if (m_tacticalHudFeatureApplied && m_hudAndPings.UpdatePingsAndInput(
             m_world,
             m_transport,
             m_formResolver,
@@ -333,7 +386,8 @@ void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
     }
 
     RefreshCoopCombatSnapshot();
-    RefreshTacticalHudSnapshot();
+    if (m_tacticalHudFeatureApplied)
+        RefreshTacticalHudSnapshot();
 
     m_pollAccumulatorSec += acEvent.Delta;
     if (m_pollAccumulatorSec < 0.5)
@@ -343,7 +397,8 @@ void RfabAdapterService::OnUpdate(const UpdateEvent& acEvent) noexcept
     m_xpAndBookSync.EnforceNoDeathHandlingTick();
     PollReadXpBooks();
     PollSyncedGlobals();
-    PollBossEncounterState();
+    if (m_combatRulesFeatureApplied)
+        PollBossEncounterState();
 }
 
 void RfabAdapterService::PollReadXpBooks() noexcept
@@ -363,6 +418,9 @@ bool RfabAdapterService::IsBossActor(Actor* apActor) const noexcept
 
 void RfabAdapterService::BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept
 {
+    if (!IsCombatRulesFeatureEnabled())
+        return;
+
     if (!World::IsMainThread())
     {
         const GameId capturedObjectId = acObjectId;
@@ -406,6 +464,9 @@ void RfabAdapterService::OnNotifyProgressionEvent(const NotifyRfabProgressionEve
 
     case NotifyRfabProgressionEvent::EventKind::AllyProtectionSync:
     {
+        if (!IsCombatRulesFeatureEnabled())
+            break;
+
         const bool newState = (acMessage.GlobalValue >= 0.5f);
         m_allyProtectionEnabled.store(newState, std::memory_order_relaxed);
 
@@ -414,7 +475,7 @@ void RfabAdapterService::OnNotifyProgressionEvent(const NotifyRfabProgressionEve
         else
             m_isServerHost = false;
 
-        m_combatRules.ApplyAllyHitGameSetting(newState);
+        ApplyAllyHitPolicy(newState);
         RefreshCoopCombatSnapshot();
         PushAllyProtectionStateToOverlay();
 
@@ -429,11 +490,13 @@ void RfabAdapterService::OnNotifyProgressionEvent(const NotifyRfabProgressionEve
     }
 
     case NotifyRfabProgressionEvent::EventKind::BossEncounterSync:
-        m_combatRules.ApplyBossEncounterSyncEvent(m_world, acMessage);
+        if (IsCombatRulesFeatureEnabled())
+            m_combatRules.ApplyBossEncounterSyncEvent(m_world, acMessage);
         break;
 
     case NotifyRfabProgressionEvent::EventKind::TacticalPingSync:
-        m_hudAndPings.ApplyIncomingPingSyncEvent(acMessage, m_formResolver.GetBindings());
+        if (IsTacticalHudFeatureEnabled())
+            m_hudAndPings.ApplyIncomingPingSyncEvent(acMessage, m_formResolver.GetBindings());
         break;
     }
 }
@@ -477,12 +540,18 @@ void RfabAdapterService::SetTacticalHudMode(RfabCompat::TacticalHudMode aMode, b
 
 void RfabAdapterService::ClearLocalTacticalPings() noexcept
 {
+    if (!IsTacticalHudFeatureEnabled())
+        return;
+
     m_hudAndPings.ClearLocalPings(
         m_transport, ResolveEffectiveLocalPlayerId(), m_xpAndBookSync.GetCurrentWorldEpoch());
 }
 
 void RfabAdapterService::TriggerContextualTacticalPing(bool aForceDanger, const std::string& acCustomLabel) noexcept
 {
+    if (!IsTacticalHudFeatureEnabled())
+        return;
+
     m_hudAndPings.TriggerContextualPing(
         m_world,
         m_transport,
@@ -498,6 +567,9 @@ void RfabAdapterService::TriggerExplicitTacticalPing(
     RfabCompat::TacticalPingKind aKind,
     const std::string& acCustomLabel) noexcept
 {
+    if (!IsTacticalHudFeatureEnabled())
+        return;
+
     m_hudAndPings.TriggerExplicitPing(
         m_world,
         m_transport,
@@ -511,6 +583,9 @@ void RfabAdapterService::TriggerExplicitTacticalPing(
 
 void RfabAdapterService::ExecuteTacticalChatCommand(const RfabCompat::TacticalChatCommand& acCmd) noexcept
 {
+    if (!IsTacticalHudFeatureEnabled())
+        return;
+
     bool shouldClearSnapshot = false;
     if (m_hudAndPings.ExecuteChatCommand(
             m_world,

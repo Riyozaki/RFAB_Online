@@ -362,6 +362,10 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_world.GetDownedStateService().ResetAllStates();
     m_world.GetRfabAdapterService().NotifySaveLoadReset();
     m_world.GetCharacterService().BeginEngineWorldLoad();
+    // World packets queued during the pause were just discarded and spawns arriving during the
+    // load are dropped: ask for the whole session once the load is over (sent by
+    // SessionResyncService only when the player stands in a loaded cell again).
+    m_world.GetSessionResyncService().NoteWorldReloadStarted();
     m_world.GetDiscoveryService().ResetLoadedForms();
     m_world.GetObjectService().ResetForWorldReload();
     m_world.GetMagicService().ResetForWorldReload();

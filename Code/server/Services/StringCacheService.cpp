@@ -45,3 +45,18 @@ void StringCacheService::HandleUpdate(const UpdateEvent&) const noexcept
         pPlayer->Send(update);
     }
 }
+
+uint32_t StringCacheService::ResendAllTo(Player* apPlayer) const noexcept
+{
+    if (!apPlayer)
+        return 0;
+
+    auto& stringCache = StringCache::Get();
+    uint32_t startId = 0;
+    auto update = stringCache.Serialize(startId);
+    // The client applies a resend from 0 as "skip the common prefix, append the rest", so the
+    // per-player cursor simply moves to the end of the table as for a normal delta.
+    apPlayer->SetStringCacheId(startId);
+    apPlayer->Send(update);
+    return static_cast<uint32_t>(update.Values.size());
+}

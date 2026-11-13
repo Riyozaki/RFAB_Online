@@ -111,6 +111,12 @@ private:
     void SendHostAllyProtectionRequest(bool aEnabled, bool aNotifyPeers) const noexcept;
     void PushAllyProtectionStateToOverlay() const noexcept;
     [[nodiscard]] uint32_t ResolveEffectiveLocalPlayerId() const noexcept;
+    // Feature switches (common/Session/Features.h): the single place where the ally-hit GMSTs are
+    // written while connected, so a disabled kRfabCombatRules can never be overridden by a toggle.
+    void ApplyAllyHitPolicy(bool aProtectAllies) noexcept;
+    void ApplyFeatureSwitchChanges() noexcept;
+    [[nodiscard]] static bool IsTacticalHudFeatureEnabled() noexcept;
+    [[nodiscard]] static bool IsCombatRulesFeatureEnabled() noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -126,6 +132,8 @@ private:
     uint32_t m_localPlayerId{0};
     bool m_hasLocalPlayerId{false};
     bool m_isServerHost{false};
+    bool m_combatRulesFeatureApplied{true};
+    bool m_tacticalHudFeatureApplied{true};
     double m_pollAccumulatorSec{0.0};
     double m_controlMapHealAccumulatorSec{0.0};
 
