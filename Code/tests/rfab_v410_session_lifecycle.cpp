@@ -244,6 +244,15 @@ TEST_CASE("v4.1.0 lifecycle: participant order pins every known dependency", "[r
     for (const auto id : {ParticipantId::kCharacters, ParticipantId::kDowned, ParticipantId::kParty, ParticipantId::kPlayer})
         CHECK(Index(id) < Index(ParticipantId::kRfabAdapter));
 
+    // Server-owned dropped items: their references are deleted on a teardown BEFORE the character purge
+    // and the inventory reset (the pickup path reads both), and they are shown again only once the
+    // characters exist (materializing needs the local player's cell). The resync ledger, which they
+    // note gaps on, is after them.
+    CHECK(Index(ParticipantId::kCharacters) < Index(ParticipantId::kWorldItems));
+    CHECK(Index(ParticipantId::kInventory) < Index(ParticipantId::kWorldItems));
+    CHECK(Index(ParticipantId::kWorldItems) < Index(ParticipantId::kResync));
+    CHECK(kParticipantTable[Index(ParticipantId::kWorldItems)].ParticipantStage == Stage::kWorldModel);
+
     // UI after the state it shows; the resync ledger observes everything: last to begin (lower layers
     // may note gaps in their begin handlers), first to log its stats on the way down.
     CHECK(Index(ParticipantId::kRfabAdapter) < Index(ParticipantId::kOverlay));

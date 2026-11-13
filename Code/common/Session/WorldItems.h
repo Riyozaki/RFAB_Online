@@ -584,6 +584,20 @@ public:
     }
 
     [[nodiscard]] size_t PendingDropCount() const noexcept { return m_pendingDrops.size(); }
+
+    // The cookie of the own drop still waiting for its echo whose reference is `aFormId` (0: none). A
+    // pickup of such a reference cannot be claimed yet - the item has no id - so the service holds it
+    // until the echo binds the reference, or the drop times out and the pickup takes the legacy path.
+    [[nodiscard]] uint32_t FindPendingDropCookie(uint32_t aFormId) const noexcept
+    {
+        if (aFormId == 0)
+            return 0;
+        for (const auto& [cookie, pending] : m_pendingDrops)
+            if (pending.FormId == aFormId)
+                return cookie;
+        return 0;
+    }
+    [[nodiscard]] bool IsDropPending(uint32_t aCookie) const noexcept { return m_pendingDrops.find(aCookie) != m_pendingDrops.end(); }
     [[nodiscard]] uint32_t GetExpiredDropCount() const noexcept { return m_expiredDrops; }
 
     // --- deltas -------------------------------------------------------------------------------

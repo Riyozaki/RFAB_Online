@@ -370,6 +370,33 @@ TEST_CASE("v4.1.0 world items: the client mirror detects gaps and binds referenc
         CHECK(unbound[0] == 1);
     }
 
+    SECTION("a pickup of an own drop still waiting for its echo is found by its reference")
+    {
+        TestMirror mirror;
+        mirror.NotePendingDrop(7, 0xFF000901u, 0);
+        mirror.NotePendingDrop(8, 0xFF000902u, 0);
+        CHECK(mirror.FindPendingDropCookie(0xFF000902u) == 8);
+        CHECK(mirror.FindPendingDropCookie(0xFF000903u) == 0);
+        CHECK(mirror.FindPendingDropCookie(0) == 0);
+        CHECK(mirror.IsDropPending(7));
+        // Nothing to claim yet: the reference shows no server id.
+        CHECK(mirror.FindByFormId(0xFF000902u) == WorldItems::kNoItem);
+
+        // The echo binds it; the held pickup can now be claimed and the reference released.
+        const auto echo = mirror.Upsert(4, 2, kMe, 8, Interior(kCellA), {}, kMe);
+        CHECK(echo.AdoptedFormId == 0xFF000902u);
+        CHECK_FALSE(mirror.IsDropPending(8));
+        CHECK(mirror.FindPendingDropCookie(0xFF000902u) == 0);
+        CHECK(mirror.FindByFormId(0xFF000902u) == 4);
+        mirror.ReleaseConsumedReference(4, 100);
+        CHECK(mirror.FindByFormId(0xFF000902u) == WorldItems::kNoItem);
+        CHECK(mirror.CollectUnbound(100).empty());  // not shown again while the claim is in flight
+
+        // A drop that is never echoed times out: the held pickup then takes the legacy path.
+        CHECK(mirror.ExpirePendingDrops(mirror.GetPolicy().PendingDropTimeoutMs) == 1);
+        CHECK_FALSE(mirror.IsDropPending(7));
+    }
+
     SECTION("pending drops time out and are bounded, oldest evicted first")
     {
         ClientPolicy policy{};

@@ -69,6 +69,9 @@ struct TESObjectREFR : TESForm
 
     static void GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataList* apExtraDataList) noexcept;
     static ExtraDataList* GetExtraDataFromItem(const Inventory::Entry& arEntry) noexcept;
+    // Writes the item's extra data (charge, enchantment, poison, health, soul, optionally worn) into an
+    // existing list - a new inventory list or the list of a reference that shows the item in the world.
+    static void ApplyItemExtraData(ExtraDataList* apExtraDataList, const Inventory::Entry& arEntry, bool aIncludeWorn) noexcept;
 
     virtual void sub_3B();
     virtual void sub_3C();

@@ -11,6 +11,7 @@
 
 #include <Events/UpdateEvent.h>
 #include <Events/InventoryChangeEvent.h>
+#include <Services/WorldItemService.h>
 #include <Events/EquipmentChangeEvent.h>
 
 #include <World.h>
@@ -161,6 +162,18 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
             __FUNCTION__ ": skipping inventory change for unassigned form id: {:X}, isLeader: {}, item id: {:X}, count: {}", acEvent.FormId,
             isLeader, acEvent.Item.BaseId.LogFormat(), acEvent.Item.Count);
         return;
+    }
+
+    // World references (architecture step 4): with server-owned dropped items a drop registers the item
+    // on the server and a pickup of a synced reference is a claim the server arbitrates. Whatever the
+    // world item service does not take keeps the legacy RequestInventoryChanges(Drop) below.
+    if (acEvent.Drop)
+    {
+        auto& worldItems = m_world.ctx().at<WorldItemService>();
+        const bool handled = acEvent.Item.Count < 0 ? worldItems.HandleLocalDrop(acEvent, serverIdRes.value())
+                                                    : worldItems.HandleLocalPickup(acEvent, serverIdRes.value());
+        if (handled)
+            return;
     }
 
     // Coalesce per-shot arrow/bolt expenditure (`count < 0`, `!Drop`) on live non-player NPC archers

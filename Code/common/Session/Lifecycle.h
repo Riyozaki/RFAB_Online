@@ -69,6 +69,7 @@ enum class ParticipantId : uint8_t
     kCharacters,       // CharacterService: remote models, network actors, ownership leases
     kObjects,          // ObjectService: object entities
     kInventory,        // InventoryService: pending NPC ammo deltas
+    kWorldItems,       // WorldItemService: server-owned dropped items and their engine references
     kMagic,            // MagicService: queued effects
     // kGameplay
     kDowned,           // DownedStateService
@@ -104,6 +105,7 @@ inline constexpr std::array<ParticipantInfo, kParticipantCount> kParticipantTabl
     {ParticipantId::kCharacters, Stage::kWorldModel, "Characters"},
     {ParticipantId::kObjects, Stage::kWorldModel, "Objects"},
     {ParticipantId::kInventory, Stage::kWorldModel, "Inventory"},
+    {ParticipantId::kWorldItems, Stage::kWorldModel, "WorldItems"},
     {ParticipantId::kMagic, Stage::kWorldModel, "Magic"},
     {ParticipantId::kDowned, Stage::kGameplay, "Downed"},
     {ParticipantId::kCoordinatedSaves, Stage::kGameplay, "CoordinatedSaves"},

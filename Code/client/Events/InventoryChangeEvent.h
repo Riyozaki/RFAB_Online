@@ -35,4 +35,9 @@ struct InventoryChangeEvent
     Inventory::Entry Item{};
     bool Drop = false;
     bool UpdateClients = true;
+    // Drop/pickup of a world reference (architecture step 4, WorldItemService). Drop: the reference the
+    // engine created (0 if none). Pickup: the temporary reference that was picked up.
+    uint32_t WorldReferenceFormId = 0;
+    // Pickup only: the engine took the whole stack, so the reference is gone.
+    bool WholeStack = true;
 };
