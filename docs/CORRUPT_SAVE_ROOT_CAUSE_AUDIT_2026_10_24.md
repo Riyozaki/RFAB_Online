@@ -48,6 +48,7 @@
 ## 3. Реализованное чистое архитектурное решение
 
 1. **Автоматическое исправление `SaveGameMaxSize = false` на всех уровнях:**
+   > ⚠️ **Устарело с v4.1.0 (шаг 5, N5):** файлы `EngineFixes.toml` на диске больше не переписываются, `EnsureEngineFixesPatchedUnderRoot` и `patch_rfab_modpack_compat.py` удалены. Те же значения (`SaveGameMaxSize = false`, `MemoryManager = false`, `MaxStdio = 8192`) лаунчер подставляет только процессу коопа через копию в `rfab_coop_config/` (`Code/common/Compat/ConfigOverlay.h`); без готовой копии `EngineFixes.dll` в коопе не загружается. Ниже — историческое описание.
    - В `Code/common/RfabModpackCompat.h` (`PatchEngineFixesTomlContent` + `EnsureEngineFixesPatchedUnderRoot`), `Tools/rfab/Setup-RfabOnline.ps1`, `Tools/rfab/Package-Release.ps1` (`Update-Quick.ps1`) и `Tools/rfab/patch_rfab_modpack_compat.py` принудительно выставляется **`SaveGameMaxSize = false`** (для EngineFixes v5/v6) и `bOverrideScrapHeap = false` / `iSaveGameMaxSize = 64` (для v7).
    - Поскольку `Launcher.cpp` и `DllBlocklist.cpp` вызывают `EnsureEngineFixesPatchedUnderRoot` **до загрузки `SkyrimSE.exe` и `EngineFixes.dll`**, любой ранее пропатченный `EngineFixes.toml` (включая `MO2\mods\SSE Engine Fixes`, `MO2\mods\Disable Quick Saves`, `MO2\overwrite` и `Data\SKSE\Plugins`) автоматически лечится при первом же запуске игры или апдейтера.
    - В `SaveLoad.cpp` дополнительно вызывается CRT `_setmaxstdio(8192)` напрямую на `ucrtbase.dll` / `api-ms-win-crt-stdio-l1-1-0.dll`.

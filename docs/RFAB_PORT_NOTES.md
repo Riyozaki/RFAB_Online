@@ -9,7 +9,7 @@
 | Подсистема | Ключевые файлы | Назначение |
 |---|---|---|
 | **Бинарный порт `SE 1.5.97.0.8`** | `Code/client/**`, `Code/immersive_launcher/**`, `docs/se-1597-id-map.csv`, `Tools/rfab/verify_se1597_port.py` | `3 096 / 3 096` проверенных вызовов (`3 085` уникальных ID из `version-1-5-97-0.bin`), `9 / 9` `static_assert` структур (`ModManager`, `TESGlobal`, `CombatController`, `BSAnimationGraphManager` и др.), совместимость с `MO2 + EngineFixes + SSEDisplayTweaks + SkyrimSoulsRE`. |
-| **Адаптивность к обновлениям `drake1ch/RFAB`** | `Data/SKSE/Plugins/RFAB_Online_Bindings.json`, `Code/common/RfabModpackCompat.h`, `Code/client/Services/RfabAdapterService.*`, `Tools/rfab/patch_rfab_modpack_compat.py` | **Нулевая жёсткая привязка к численным `FormID` `RFAB.esp`**: разрешение форм на лету через `TESForm::LookupByEditorID` (`SE 14464`, включено в `po3_Tweaks.ini`), чтение внешнего манифеста `RFAB_Online_Bindings.json` и живых таблиц `StorageUtilData/{Experience.ini, Quests.ini, BossList.json, RaceList.json, RFAB_XP_Settings.json}`. |
+| **Адаптивность к обновлениям `drake1ch/RFAB`** | `Data/SKSE/Plugins/RFAB_Online_Bindings.json`, `Code/common/RfabModpackCompat.h`, `Code/client/Services/RfabAdapterService.*`, `Code/common/Compat/ConfigOverlay.h` | **Нулевая жёсткая привязка к численным `FormID` `RFAB.esp`**: разрешение форм на лету через `TESForm::LookupByEditorID` (`SE 14464`, включено в `po3_Tweaks.ini`), чтение внешнего манифеста `RFAB_Online_Bindings.json` и живых таблиц `StorageUtilData/{Experience.ini, Quests.ini, BossList.json, RaceList.json, RFAB_XP_Settings.json}`. |
 | **Двухфазные серверные сохранения и снапшоты** | `Code/server/Services/SaveSnapshotService.*`, `Code/client/Services/CoordinatedSaveService.*`, `Code/client/Games/Skyrim/SaveLoad.*` | Двухфазный барьер `PREPARE -> ACK -> COMMIT` для ручного сохранения/загрузки Хостом, авточекпоинт после завершения боя, кольцевой буфер слотов `RFAB_MP_<Session>_Slot<K>` + атомарный `ServerWorldSnapshot` (`Epoch N`) с откатом при `Total Party Wipe`. |
 | **Система `0 HP Downed-on-Knee` и честные границы боя** | `Code/server/Services/EncounterService.*`, `Code/client/Services/DownedStateService.*`, `Code/client/Games/Skyrim/Actor.cpp` | Перехват летального урона до смерти (`REQ_DeathHandler` не срабатывает, баффы и статы сохраняются), полная блокировка всех положительных изменений `kHealth` на уровне C++-хуков движка (`SE 37513 ActorValueOwner::RestoreActorValue`, `HookRegenAttributes`, `HookApplyActorEffect`), сброс агро врагов на живых игроков, реанимация союзником (`~4.0s` удержания `E`), автоподъём (`~30% HP`) строго после честной победы и перезагрузка чекпоинта при падении всей группы. |
 | **Полная прогрессия `RFAB` и дедупликация спавнов `1×`** | `Code/server/Services/RfabProgressionService.*`, `Code/server/Services/CharacterService.cpp`, `Code/client/Services/RfabAdapterService.*` | Дедуплицированный серверный журнал `ServerXpLedger` (убийства, квесты, книги `XPBooksReaded`), синхронное обновление `RFAB_XP_Amount` и ванильной шкалы `PlayerCharacter::pSkills->data->xp` по `Experience.ini`, синхронизация счётчиков и фаз боссов `RFAB_Global_*`, `1-к-1` дедупликация скриптовых засад `PlaceActorAtMe` (`0xFF000000`). |
@@ -58,11 +58,11 @@ Data/SKSE/Plugins/RFAB_Online_Bindings.json
 
 ## 4. Скрипты проверки и подготовки (`Tools/rfab/`)
 
-- Проверка совместимости папки модпака MO2 (dry-run / автопатч конфигов):
-  ```bash
-  python3 Tools/rfab/patch_rfab_modpack_compat.py --root "/path/to/MO2/RFAB"
-  python3 Tools/rfab/patch_rfab_modpack_compat.py --root "/path/to/MO2/RFAB" --apply
-  ```
+- Настройки других модов (EngineFixes, Skyrim Souls RE, `[RFAB] Autosave`, po3 Tweaks, BetterStealing) с v4.1.0
+  **не изменяются на диске**: лаунчер готовит их копию для совместной игры в `<клиент>/rfab_coop_config/` и подставляет
+  её только своему процессу (`Code/common/Compat/ConfigOverlay.h`). Что именно отличается от настроек RFAB — в
+  `rfab_coop_config/coop_config_report.txt` и в логе клиента (`[RFAB Compat]`). Прежний `patch_rfab_modpack_compat.py`
+  удалён; правки прежних версий откатывает `Tools/rfab/Restore-ModConfigs.ps1` (вызывается установщиком и Quick Update).
 - Полная побайтовая проверка всех `3 096` вызовов `SE 1.5.97.0.8` против `version-1-5-97-0.bin`:
   ```bash
   python3 Tools/rfab/verify_se1597_port.py --strict-migrated --addrlib "/path/to/version-1-5-97-0.bin"

@@ -22,7 +22,8 @@
 2. Закройте игру и **Mod Organizer 2**, затем запустите **`INSTALL_RFAB_ONLINE.bat`**:
    - Откроется окно выбора папки сборки RFAB (автоматически найдёт `ModOrganizer.exe` и проверит `SkyrimSE.exe 1.5.97` по `ModOrganizer.ini`).
    - **Автоматическая чистая замена старой версии:** установщик сам остановит запущенный сервер, **полностью удалит старые файлы прошлых версий** из `MO2\mods\RFAB_Online`, `RFAB_Online_Server` и устаревшие хвосты в `MO2\overwrite` (сохранив и обновив ваш `STServer.ini`), после чего установит свежую сборку без наслоения файлов.
-   - Включит `+RFAB_Online`, `*SkyrimTogether.esp` и `*SkyrimTogetherQuestPatches.esp` строго **ДО `RFAB.esp`** (чтобы `RFAB.esp` побеждал по 100% записей), настроит `EngineFixes.toml`, `SkyrimSoulsRE.ini`, `[RFAB] Autosave.ini`, скроет конфликтующий `BetterStealing.dll` и добавит кнопку **`RFAB Online - Play`** в MO2.
+   - Включит `+RFAB_Online`, `*SkyrimTogether.esp` и `*SkyrimTogetherQuestPatches.esp` (место в списке не критично: `RFAB.esp` помечен ESM и грузится с мастер-файлами, плагины коопа не перезаписывают записи RFAB) и добавит кнопку **`RFAB Online - Play`** в MO2.
+   - **Не изменит настройки других модов** (`EngineFixes`, `Skyrim Souls RE`, `[RFAB] Autosave`, `BetterStealing`): нужные для коопа значения лаунчер подставляет только процессу совместной игры. Правки прежних версий установщика откатываются автоматически.
    - Установит выделенный сервер в `<Папка_RFAB>\RFAB_Online_Server` и создаст ярлык **`START_RFAB_SERVER.bat`**.
 
 > 💡 **Хотите обновиться за пару секунд?** Распакуйте `RFAB_Online_{{VERSION_TAG}}_Quick_Update.zip` и запустите **`UPDATE_RFAB_ONLINE.bat`** — он также сам остановит старый сервер, вычистит устаревшие файлы прошлой версии и обновит клиент + UI + сервер.
