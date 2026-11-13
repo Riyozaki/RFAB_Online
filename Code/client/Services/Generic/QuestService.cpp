@@ -124,6 +124,11 @@ BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent,
     if (s_inRemoteQuestUpdate || !apEvent || !World::IsCreated() || !World::IsConnectedCached() || ScopedSaveLoadOverride::IsOverriden())
         return BSTEventResult::kOk;
 
+    // The quest only failed to start here (e.g. a required alias did not fill): it is not running on this
+    // client, so reporting it would send "stopped" and end it for the rest of the party (upstream 83d8080f).
+    if (apEvent->started && apEvent->failed)
+        return BSTEventResult::kOk;
+
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));
     if (pQuest == nullptr || IsNonSyncableQuest(pQuest))
         return BSTEventResult::kOk;

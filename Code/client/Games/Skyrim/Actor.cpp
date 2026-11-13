@@ -2543,6 +2543,11 @@ void TP_MAKE_THISCALL(HookAddDeathItems, Actor)
     if (const auto* pExt = apThis->GetExtension(); pExt && pExt->IsRemote())
         return;
 
+    // The game only skips reanimated corpses. A summon vanishes when it dies, so its death items (a flame atronach's
+    // fire salts) would only be synced to the server and the other players for a body nobody can loot (upstream 4ffec0a7).
+    if (apThis->IsCommandedActor())
+        return;
+
     TiltedPhoques::ThisCall(RealAddDeathItems, apThis);
 }
 

@@ -49,10 +49,10 @@ PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, Trans
     m_partyLeftConnection = aDispatcher.sink<PartyLeftEvent>().connect<&PlayerService::OnPartyLeftEvent>(this);
 }
 
-void PlayerService::OnUpdate(const UpdateEvent& acEvent) noexcept
+void PlayerService::OnUpdate(const UpdateEvent&) noexcept
 {
-    RunRespawnUpdates(acEvent.Delta);
-    RunPostDeathUpdates(acEvent.Delta);
+    RunRespawnUpdates();
+    RunPostDeathUpdates();
     RunDifficultyUpdates();
     RunLevelUpdates();
     RunBeastFormDetection();
@@ -102,7 +102,7 @@ void PlayerService::RestoreMultiplayerGlobalsAfterWorldReload() noexcept
     m_respawnTeleportGuard.NotifyConnected(NowSteadyMsForPlayerService());
     if (m_godmodeStart)
         PlayerCharacter::SetGodMode(false);
-    m_respawnTimer = 0.0;
+    m_respawnDeadline = {};
     m_knockdownStart = false;
     m_godmodeStart = false;
     m_cachedMainSpellId = 0;
@@ -147,7 +147,7 @@ void PlayerService::OnSessionEnd(const Session::Transition&) noexcept
     m_respawnTeleportGuard.NotifyDisconnected(NowSteadyMsForPlayerService());
     if (m_godmodeStart)
         PlayerCharacter::SetGodMode(false);
-    m_respawnTimer = 0.0;
+    m_respawnDeadline = {};
     m_knockdownStart = false;
     m_godmodeStart = false;
 
@@ -320,7 +320,9 @@ void PlayerService::OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept
     }
 }
 
-void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
+// Timers use the steady clock, not frame deltas: a stutter while dying (long frames clamped by the engine)
+// left the respawn or the post-respawn knockdown pending and the camera stuck (upstream 2e52a704, #878).
+void PlayerService::RunRespawnUpdates() noexcept
 {
     static bool s_startTimer = false;
 
@@ -328,7 +330,7 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
         m_respawnTeleportGuard.ShouldSuppressLegacyRespawnTeleport(NowSteadyMsForPlayerService()))
     {
         s_startTimer = false;
-        m_respawnTimer = 0.0;
+        m_respawnDeadline = {};
         return;
     }
 
@@ -349,7 +351,7 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
     if (!s_startTimer)
     {
         s_startTimer = true;
-        m_respawnTimer = 5.0;
+        m_respawnDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         FadeOutGame(true, true, 3.0f, true, 2.0f);
 
         // If a player dies not by its health reaching 0, getting it up from its bleedout state isn't possible
@@ -360,13 +362,11 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
         pPlayer->PayCrimeGoldToAllFactions();
     }
 
-    m_respawnTimer -= acDeltaTime;
-
-    if (m_respawnTimer <= 0.0)
+    if (std::chrono::steady_clock::now() >= m_respawnDeadline)
     {
         pPlayer->RespawnPlayer();
 
-        m_knockdownTimer = 1.5;
+        m_knockdownDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
         m_knockdownStart = true;
 
         m_transport.Send(PlayerRespawnRequest());
@@ -386,7 +386,7 @@ void PlayerService::RunRespawnUpdates(const double acDeltaTime) noexcept
 }
 
 // Doesn't seem to respawn quite yet
-void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
+void PlayerService::RunPostDeathUpdates() noexcept
 {
     if (!m_transport.IsConnected() || !m_isDeathSystemEnabled || m_world.GetServerSettings().DownedSystemEnabled ||
         m_respawnTeleportGuard.ShouldSuppressLegacyRespawnTeleport(NowSteadyMsForPlayerService()))
@@ -400,15 +400,15 @@ void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
 
     // If a player dies in ragdoll, it gets stuck.
     // This code ragdolls the player again upon respawning.
-    // It also makes the player invincible for 5 seconds.
+    // It also makes the player invincible for 10 seconds.
+    const auto cNow = std::chrono::steady_clock::now();
     if (m_knockdownStart)
     {
-        m_knockdownTimer -= acDeltaTime;
-        if (m_knockdownTimer <= 0.0)
+        if (cNow >= m_knockdownDeadline)
         {
             PlayerCharacter::SetGodMode(true);
             m_godmodeStart = true;
-            m_godmodeTimer = 10.0;
+            m_godmodeDeadline = cNow + std::chrono::seconds(10);
 
             if (PlayerCharacter* pPlayer = PlayerCharacter::Get(); pPlayer && pPlayer->currentProcess)
                 pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
@@ -421,8 +421,7 @@ void PlayerService::RunPostDeathUpdates(const double acDeltaTime) noexcept
 
     if (m_godmodeStart)
     {
-        m_godmodeTimer -= acDeltaTime;
-        if (m_godmodeTimer <= 0.0)
+        if (cNow >= m_godmodeDeadline)
         {
             PlayerCharacter::SetGodMode(false);
 

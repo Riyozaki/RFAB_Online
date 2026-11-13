@@ -3,6 +3,8 @@
 #include <common/CoopTeleportGuard.h>
 #include <common/Session/Lifecycle.h>
 
+#include <chrono>
+
 struct World;
 struct TransportService;
 
@@ -51,8 +53,8 @@ private:
     /**
      * @brief Run the respawn timer, and if it hits 0, respawn the player.
      */
-    void RunRespawnUpdates(const double acDeltaTime) noexcept;
-    void RunPostDeathUpdates(const double acDeltaTime) noexcept;
+    void RunRespawnUpdates() noexcept;
+    void RunPostDeathUpdates() noexcept;
     /**
      * @brief Make sure difficulty doesn't get changed while connected
      */
@@ -66,7 +68,7 @@ private:
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
 
-    double m_respawnTimer = 0.0;
+    std::chrono::steady_clock::time_point m_respawnDeadline{};
     int32_t m_serverDifficulty = 6;
     int32_t m_previousDifficulty = 6;
     float m_previousGreetDistance = 70.0f;
@@ -78,10 +80,10 @@ private:
     CoopTeleportGuard::LatchedDownedRespawnGuard m_respawnTeleportGuard{};
 
     bool m_knockdownStart = false;
-    double m_knockdownTimer = 0.0;
+    std::chrono::steady_clock::time_point m_knockdownDeadline{};
 
     bool m_godmodeStart = false;
-    double m_godmodeTimer = 0.0;
+    std::chrono::steady_clock::time_point m_godmodeDeadline{};
 
     uint32_t m_cachedMainSpellId = 0;
     uint32_t m_cachedSecondarySpellId = 0;
