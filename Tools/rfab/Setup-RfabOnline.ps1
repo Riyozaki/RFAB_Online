@@ -670,7 +670,9 @@ if (Test-Path -LiteralPath $Mo2OverwriteDir) {
 }
 Write-Ok "Чистая версия мода RFAB_Online установлена с нуля в $TargetModDir"
 
-# 6. Активация +RFAB_Online и *SkyrimTogether.esp (+ *SkyrimTogetherQuestPatches.esp) строго ДО RFAB.esp
+# 6. Активация +RFAB_Online и *SkyrimTogether.esp (+ *SkyrimTogetherQuestPatches.esp) в профиле MO2.
+# Место в списке почти ни на что не влияет: RFAB.esp помечен как ESM и движок грузит его вместе с
+# мастер-файлами, раньше любого обычного .esp, где бы он ни стоял в plugins.txt.
 Write-Step "Шаг 4/7. Включение +RFAB_Online и *SkyrimTogether.esp в профиле MO2"
 $HasQuestPatchesEsp = Test-Path -LiteralPath (Join-Path $TargetModDir "SkyrimTogetherQuestPatches.esp")
 $ProfileDirs = @(Get-ChildItem -LiteralPath $ProfilesDir -Directory -ErrorAction SilentlyContinue | Where-Object {
@@ -689,8 +691,8 @@ function Insert-StPluginsBeforeRfab([string[]]$Lines, [bool]$StarPrefix, [bool]$
             $clean.Add($l)
         }
     }
-    # Place strictly BEFORE RFAB.esp (or Requiem.esp) and AFTER all .esm/.esl/USSEP master plugins,
-    # guaranteeing RFAB.esp wins 100% of records while SkyrimTogether gets a deterministic early slot!
+    # Deterministic slot: after the .esm/.esl/USSEP masters, in front of the RFAB.esp / Requiem.esp line.
+    # Cosmetic for RFAB.esp itself (ESM-flagged, so the engine loads it with the masters anyway).
     $idx = -1
     $lastMasterIdx = -1
     for ($i = 0; $i -lt $clean.Count; $i++) {
@@ -811,90 +813,20 @@ $CleanLoadOrderText = [string]::Join("`n", $ActiveLoadOrder) + "`n"
 [System.IO.File]::WriteAllText((Join-Path $TargetModDir "loadorder.txt"), $CleanLoadOrderText, (New-Object System.Text.UTF8Encoding($false)))
 Write-Ok "Синхронизирован активный список плагинов ($($ActiveLoadOrder.Count) шт.) -> $TargetModDir\loadorder.txt"
 
-# 7. Патч совместимости конфигов модпака RFAB (EngineFixes.toml, SkyrimSoulsRE.ini, [RFAB] Autosave.ini, po3_Tweaks.ini, BetterStealing.dll)
-Write-Step "Шаг 5/7. Настройка совместимости конфигов сборки RFAB"
+# 7. Совместимость с модами сборки RFAB (EngineFixes, Skyrim Souls, [RFAB] Autosave, po3 Tweaks, BetterStealing)
+Write-Step "Шаг 5/7. Совместимость с модами сборки RFAB"
+# С v4.1.0 RFAB Online НЕ изменяет файлы других модов. Нужные для совместной игры значения
+# (EngineFixes без своего аллокатора, Skyrim Souls без замедления, без автосейва RFAB, BetterStealing
+# выключен) лаунчер готовит в своей папке и подставляет только процессу совместной игры
+# (Code/common/Compat/ConfigOverlay.h). Здесь лишь откатываются правки прежних версий установщика.
 $CompatRoots = @((Join-Path $Mo2BaseDir "overwrite"), $ModsDir, (Join-Path $GameRoot "Data")) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique
-
-function Ensure-SectionKeys([string]$Content, [string]$Section, [array]$Pairs) {
-    $nl = if ($Content.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $cur = $Content
-    # Guard against PowerShell single-element `@( @("Key","Val") )` array unrolling into `@("Key","Val")`!
-    if ($Pairs.Count -eq 2 -and ($Pairs[0] -is [string]) -and ($Pairs[1] -is [string])) {
-        $Pairs = @( , @($Pairs[0], $Pairs[1]) )
-    }
-    $missing = New-Object System.Collections.Generic.List[object]
-    foreach ($pair in $Pairs) {
-        $k = [string]$pair[0]; $v = [string]$pair[1]
-        $pat = "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n#;]+)(.*)$"
-        if ([regex]::IsMatch($cur, $pat)) {
-            $cur = [regex]::Replace($cur, $pat, "`${1}$v`${3}")
-        } else {
-            $missing.Add(@($k, $v))
-        }
-    }
-    if ($missing.Count -gt 0) {
-        $addLines = ($missing | ForEach-Object { "$($_[0]) = $($_[1])$nl" }) -join ""
-        $secPat = "(?mi)^(\s*\[$([regex]::Escape($Section))\][^\r\n]*\r?\n)"
-        $m = [regex]::Match($cur, $secPat)
-        if ($m.Success) {
-            $insertAt = $m.Index + $m.Length
-            $cur = $cur.Substring(0, $insertAt) + $addLines + $cur.Substring($insertAt)
-        } else {
-            $prefix = if ([string]::IsNullOrEmpty($cur) -or $cur.EndsWith("`n")) { "" } else { $nl }
-            $cur = "$cur$prefix[$Section]$nl$addLines"
-        }
-    }
-    return $cur
-}
-
-$EngineFixesFiles = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue
-}
-foreach ($ef in ($EngineFixesFiles | Select-Object -Unique -Property FullName)) {
-    $raw = [System.IO.File]::ReadAllText($ef.FullName, [System.Text.Encoding]::UTF8)
-    $updated = [regex]::Replace($raw, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
-    $hasV7Mm = [regex]::IsMatch($updated, '(?mi)^\s*\[MemoryManager\]')
-    if ($hasV7Mm) {
-        $updated = Ensure-SectionKeys $updated "MemoryManager" @(
-            @("OverrideVanilla", "false"),
-            @("OverrideScaleform", "false")
-        )
-        foreach ($pair in @(@("MemoryManager", "false"), @("ScaleformAllocator", "false"))) {
-            $k = $pair[0]; $v = $pair[1]
-            $updated = [regex]::Replace($updated, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n#;]+)(.*)$", "`${1}$v`${3}")
-        }
-        $updated = Ensure-SectionKeys $updated "Patches" @(
-            @("FormCaching", "false"),
-            @("TreeLODReferenceCaching", "false"),
-            @("RegularQuicksaves", "true"),
-            @("CleanSkseCosaves", "true"),
-            @("MaxStdio", "8192")
-        )
-    } else {
-        $updated = Ensure-SectionKeys $updated "Patches" @(
-            @("MemoryManager", "false"),
-            @("ScaleformAllocator", "false"),
-            @("FormCaching", "false"),
-            @("TreeLODReferenceCaching", "false"),
-            @("RegularQuicksaves", "true"),
-            @("CleanSkseCosaves", "true"),
-            @("MaxStdio", "8192")
-        )
-    }
-    $updated = [regex]::Replace($updated, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
-    # CRITICAL: EngineFixes v5/v6 PatchSaveGameMaxSize() lacks v7's MemoryManager/ScrapHeap guard!
-    # Setting SaveGameMaxSize = true while MemoryManager = false forces Win32FileType to allocate 128 MB
-    # from vanilla's 64 MB ScrapHeap -> nullptr -> truncated saves & "Файл сохранения поврежден"!
-    $updated = Ensure-SectionKeys $updated "Experimental" @(
-        , @("SaveGameMaxSize", "false")
-    )
-    if ($updated -ne $raw) {
-        Backup-Once $ef.FullName
-        [System.IO.File]::WriteAllText($ef.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Ok "Патч EngineFixes.toml применён: $($ef.FullName)"
-    } else {
-        Write-Ok "EngineFixes.toml проверен: $($ef.FullName)"
-    }
+$RestoreScript = Join-Path $PSScriptRoot "Restore-ModConfigs.ps1"
+if (Test-Path -LiteralPath $RestoreScript) {
+    . $RestoreScript
+    $restore = Invoke-RfabOnlineConfigRestore -Roots @($CompatRoots)
+    Write-Ok "Файлы других модов не изменяются; восстановлено после прежних версий: $($restore.Restored), BetterStealing возвращён: $($restore.Unhidden), оставлено как есть: $($restore.Kept)"
+} else {
+    Write-Warn "Restore-ModConfigs.ps1 не найден рядом с установщиком - откат правок прежних версий пропущен"
 }
 
 function Test-ValidSkyrimEssFile([string]$EssPath) {
@@ -1006,66 +938,6 @@ foreach ($sd in ($CandidateSaveDirs | Select-Object -Unique)) {
 }
 if ($TotalQuarantinedSaves -gt 0) {
     Write-Ok "Перемещено повреждённых/обрезанных .ess сохранений в карантин Quarantined_Corrupt_v100: $TotalQuarantinedSaves"
-}
-
-$SkyrimSoulsFiles = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "SkyrimSoulsRE.ini" -Recurse -ErrorAction SilentlyContinue
-}
-foreach ($sf in ($SkyrimSoulsFiles | Select-Object -Unique -Property FullName)) {
-    $raw = [System.IO.File]::ReadAllText($sf.FullName, [System.Text.Encoding]::UTF8)
-    $updated = [regex]::Replace($raw, '(?mi)^(\s*fSlowMotionMultiplier\s*=\s*)([^\r\n;#]+)(.*)$', '${1}1.000000${3}')
-    $updated = [regex]::Replace($updated, '(?mi)^(\s*bEnableSlowMotion[A-Za-z0-9_]*\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
-    $updated = [regex]::Replace($updated, '(?mi)^(\s*bStatsMenu\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
-    if ($updated -ne $raw) {
-        Backup-Once $sf.FullName
-        [System.IO.File]::WriteAllText($sf.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Ok "Отключён локальный SlowMotion в SkyrimSoulsRE.ini: $($sf.FullName)"
-    } else {
-        Write-Ok "SkyrimSoulsRE.ini проверен: $($sf.FullName)"
-    }
-}
-
-$AutosaveFiles = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -ieq "[RFAB] Autosave.ini"
-    }
-}
-foreach ($af in ($AutosaveFiles | Select-Object -Unique -Property FullName)) {
-    $raw = [System.IO.File]::ReadAllText($af.FullName, [System.Text.Encoding]::UTF8)
-    $updated = [regex]::Replace($raw, "(?mi)^(\s*Enabled\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}false`${3}")
-    foreach ($asKey in @("Enable autosave", "Save after combat", "Save on location change", "Save on sleep/wait")) {
-        $updated = [regex]::Replace($updated, "(?mi)^(\s*$([regex]::Escape($asKey))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}0`${3}")
-    }
-    if ($updated -ne $raw) {
-        Backup-Once $af.FullName
-        [System.IO.File]::WriteAllText($af.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Ok "Отключён локальный несинхронный автосейв [RFAB] Autosave.ini: $($af.FullName)"
-    } else {
-        Write-Ok "[RFAB] Autosave.ini проверен: $($af.FullName)"
-    }
-}
-
-$Po3Files = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "po3_Tweaks.ini" -Recurse -ErrorAction SilentlyContinue
-}
-foreach ($pf in ($Po3Files | Select-Object -Unique -Property FullName)) {
-    $raw = [System.IO.File]::ReadAllText($pf.FullName, [System.Text.Encoding]::UTF8)
-    if ($raw -notmatch '(?i)Load\s+EditorIDs\s*=\s*true') {
-        Backup-Once $pf.FullName
-        $updated = [regex]::Replace($raw, "(?mi)^(\s*Load\s+EditorIDs\s*=\s*)([^\r\n#]+)(.*)$", "`${1}true`${3}")
-        [System.IO.File]::WriteAllText($pf.FullName, $updated, (New-Object System.Text.UTF8Encoding($false)))
-        Write-Ok "Включён Load EditorIDs = true в: $($pf.FullName)"
-    } else {
-        Write-Ok "po3_Tweaks.ini проверен: $($pf.FullName)"
-    }
-}
-
-$BetterStealingFiles = foreach ($cr in $CompatRoots) {
-    Get-ChildItem -LiteralPath $cr -Filter "BetterStealing.dll" -Recurse -ErrorAction SilentlyContinue
-}
-foreach ($bs in ($BetterStealingFiles | Select-Object -Unique -Property FullName)) {
-    Rename-Item -LiteralPath $bs.FullName -NewName "BetterStealing.dll.mohidden" -Force
-    Write-Ok "Скрыт конфликтующий плагин BetterStealing.dll -> $($bs.FullName).mohidden"
 }
 
 try {
