@@ -96,7 +96,8 @@ PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/rfab_v401_review_stability.cpp \
   $(REPO_ROOT)/Code/tests/rfab_v410_session_features_and_resync.cpp \
   $(REPO_ROOT)/Code/tests/rfab_v410_session_lifecycle.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v410_main_thread_queue.cpp
+  $(REPO_ROOT)/Code/tests/rfab_v410_main_thread_queue.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v410_world_items.cpp
 
 CORE_SRCS     := $(filter-out %MimallocAllocator.cpp,$(wildcard $(TILTEDCORE)/Code/core/src/*.cpp)) \
                  $(TILTEDCORE)/Code/core/src/MimallocAllocator.cpp

@@ -43,8 +43,9 @@ enum class Scope : uint8_t
     kEntity = 0,       // one character, identified by server id
     kAllEntities = 1,  // every character the server considers in range of this observer
     kStringCache = 2,  // the shared CachedString table, resent from id 0
+    kWorldItems = 3,   // the server-owned dropped items (common/Session/WorldItems.h), one snapshot
 };
-inline constexpr uint8_t kScopeCount = 3;
+inline constexpr uint8_t kScopeCount = 4;
 
 enum class Reason : uint8_t
 {
@@ -55,8 +56,9 @@ enum class Reason : uint8_t
     kWorldPacketsDiscarded = 4,
     kManual = 5,
     kDigestMismatch = 6,
+    kWorldItemRevisionGap = 7,  // a dropped-item delta skipped a registry revision
 };
-inline constexpr uint8_t kReasonCount = 7;
+inline constexpr uint8_t kReasonCount = 8;
 
 enum class Outcome : uint8_t
 {
@@ -99,6 +101,7 @@ inline constexpr uint32_t kNoServerId = 0xFFFFFFFFu;
     case Scope::kEntity: return "entity";
     case Scope::kAllEntities: return "all-entities";
     case Scope::kStringCache: return "string-cache";
+    case Scope::kWorldItems: return "world-items";
     }
     return "?";
 }
@@ -114,6 +117,7 @@ inline constexpr uint32_t kNoServerId = 0xFFFFFFFFu;
     case Reason::kWorldPacketsDiscarded: return "world-packets-discarded";
     case Reason::kManual: return "manual";
     case Reason::kDigestMismatch: return "digest-mismatch";
+    case Reason::kWorldItemRevisionGap: return "world-item-revision-gap";
     }
     return "?";
 }
@@ -149,6 +153,7 @@ struct ClientPolicy
     uint64_t EntityCooldownMs{3000};
     uint64_t AllEntitiesCooldownMs{5000};
     uint64_t StringCacheCooldownMs{5000};
+    uint64_t WorldItemsCooldownMs{5000};
     // No NotifyResyncComplete within this window: the reply was lost (world reload discarded the
     // paused queue, ...) - the request is re-armed.
     uint64_t InFlightTimeoutMs{6000};
@@ -212,6 +217,13 @@ public:
             m_pendingStringsReason = aReason;
             return Accept(aReason);
 
+        case Scope::kWorldItems:
+            if (m_pendingWorldItems || HasInFlight(Scope::kWorldItems))
+                return Absorb();
+            m_pendingWorldItems = true;
+            m_pendingWorldItemsReason = aReason;
+            return Accept(aReason);
+
         case Scope::kEntity:
             return NoteEntityGap(aServerId, aReason, aNowMs);
         }
@@ -271,6 +283,16 @@ public:
             m_pendingStrings = false;
             m_lastStringsSentMs = aNowMs;
             Emit(Scope::kStringCache, kNoServerId, m_pendingStringsReason, aNowMs, aOut);
+            ++emitted;
+        }
+
+        // Independent of the entity tables: a whole-session resync does not include dropped items.
+        if (m_pendingWorldItems && !HasInFlight(Scope::kWorldItems) &&
+            CooledDown(m_lastWorldItemsSentMs, m_policy.WorldItemsCooldownMs, aNowMs) && budgetLeft())
+        {
+            m_pendingWorldItems = false;
+            m_lastWorldItemsSentMs = aNowMs;
+            Emit(Scope::kWorldItems, kNoServerId, m_pendingWorldItemsReason, aNowMs, aOut);
             ++emitted;
         }
 
@@ -374,6 +396,7 @@ public:
     {
         m_pendingAll = false;
         m_pendingStrings = false;
+        m_pendingWorldItems = false;
         m_pendingEntities.clear();
         m_inFlight.clear();
         m_history.clear();
@@ -381,11 +404,13 @@ public:
         m_ignored.clear();
         m_lastAllSentMs = kNever;
         m_lastStringsSentMs = kNever;
+        m_lastWorldItemsSentMs = kNever;
     }
 
     [[nodiscard]] const ClientStats& GetStats() const noexcept { return m_stats; }
     [[nodiscard]] bool HasPendingAllEntities() const noexcept { return m_pendingAll; }
     [[nodiscard]] bool HasPendingStringCache() const noexcept { return m_pendingStrings; }
+    [[nodiscard]] bool HasPendingWorldItems() const noexcept { return m_pendingWorldItems; }
     [[nodiscard]] size_t PendingEntityCount() const noexcept { return m_pendingEntities.size(); }
     [[nodiscard]] size_t InFlightCount() const noexcept { return m_inFlight.size(); }
     [[nodiscard]] size_t TrackedEntityCount() const noexcept { return m_history.size(); }
@@ -501,6 +526,10 @@ private:
             m_pendingStrings = true;
             m_pendingStringsReason = acFlight.Id.GapReason;
             break;
+        case Scope::kWorldItems:
+            m_pendingWorldItems = true;
+            m_pendingWorldItemsReason = acFlight.Id.GapReason;
+            break;
         case Scope::kEntity:
             if (!m_pendingAll)
             {
@@ -597,6 +626,8 @@ private:
     Reason m_pendingAllReason{Reason::kUnknown};
     bool m_pendingStrings{false};
     Reason m_pendingStringsReason{Reason::kUnknown};
+    bool m_pendingWorldItems{false};
+    Reason m_pendingWorldItemsReason{Reason::kUnknown};
     std::unordered_map<uint32_t, PendingEntity> m_pendingEntities{};
     std::vector<InFlight> m_inFlight{};
     std::unordered_map<uint32_t, EntityHistory> m_history{};
@@ -604,6 +635,7 @@ private:
     std::unordered_map<uint32_t, uint64_t> m_ignored{};
     uint64_t m_lastAllSentMs{kNever};
     uint64_t m_lastStringsSentMs{kNever};
+    uint64_t m_lastWorldItemsSentMs{kNever};
     uint32_t m_nextRequestId{0};
 };
 
@@ -611,6 +643,7 @@ struct ServerPolicy
 {
     uint64_t AllEntitiesMinIntervalMs{2000};
     uint64_t StringCacheMinIntervalMs{2000};
+    uint64_t WorldItemsMinIntervalMs{2000};
     uint32_t EntityBurst{24};
     uint64_t EntityRefillIntervalMs{100};  // 10 single-entity resends per second sustained
 };
@@ -636,6 +669,8 @@ public:
             return AdmitInterval(m_lastAllMs, m_policy.AllEntitiesMinIntervalMs, aNowMs);
         case Scope::kStringCache:
             return AdmitInterval(m_lastStringsMs, m_policy.StringCacheMinIntervalMs, aNowMs);
+        case Scope::kWorldItems:
+            return AdmitInterval(m_lastWorldItemsMs, m_policy.WorldItemsMinIntervalMs, aNowMs);
         case Scope::kEntity:
             Refill(aNowMs);
             if (m_entityTokens == 0)
@@ -675,6 +710,7 @@ private:
     ServerPolicy m_policy;
     uint64_t m_lastAllMs{kNever};
     uint64_t m_lastStringsMs{kNever};
+    uint64_t m_lastWorldItemsMs{kNever};
     uint32_t m_entityTokens;
     uint64_t m_lastRefillMs{kNever};
 };

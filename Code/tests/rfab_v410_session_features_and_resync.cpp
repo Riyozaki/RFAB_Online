@@ -267,8 +267,11 @@ TEST_CASE("v4.1.0 resync messages round-trip and sanitize corrupted enums", "[rf
 
     SECTION("opcodes are appended, never inserted, and the completion keeps causal order while paused")
     {
-        CHECK(static_cast<uint32_t>(kRequestResync) + 1 == static_cast<uint32_t>(kClientOpcodeMax));
-        CHECK(static_cast<uint32_t>(kNotifyResyncComplete) + 1 == static_cast<uint32_t>(kServerOpcodeMax));
+        // Step 4 appended the world-item opcodes right after the resync ones.
+        CHECK(static_cast<uint32_t>(kRequestResync) + 1 == static_cast<uint32_t>(kRequestWorldItemDrop));
+        CHECK(static_cast<uint32_t>(kRequestWorldItemPickup) + 1 == static_cast<uint32_t>(kClientOpcodeMax));
+        CHECK(static_cast<uint32_t>(kNotifyResyncComplete) + 1 == static_cast<uint32_t>(kNotifyWorldItemSpawn));
+        CHECK(static_cast<uint32_t>(kNotifyWorldItemSnapshot) + 1 == static_cast<uint32_t>(kServerOpcodeMax));
         CHECK(CoopWorldStabilizer::ClassifyPausedInboundPacket(kNotifyResyncComplete) ==
               CoopWorldStabilizer::PausedInboundPacketAction::kQueueUntilUnpaused);
         // World-scoped: a reload discards it and the client re-arms the request (AbandonInFlight).

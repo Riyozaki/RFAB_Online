@@ -553,6 +553,12 @@ namespace CoopWorldStabilizer
         case kNotifyPartyInvite:
         case kNotifyPartyJoined:
         case kNotifyPartyLeft:
+        // v4.1.0 step 4: dropped items are session state held in the client's mirror, not engine
+        // state rebuilt by the cell re-entry. Losing one would leave a revision gap (repaired, but
+        // only by a whole snapshot) or, for a despawn, a reference nobody may pick up.
+        case kNotifyWorldItemSpawn:
+        case kNotifyWorldItemDespawn:
+        case kNotifyWorldItemSnapshot:
             return true;
         default:
             return false;

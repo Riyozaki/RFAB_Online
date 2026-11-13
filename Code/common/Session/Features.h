@@ -41,9 +41,10 @@ enum class Feature : uint32_t
     kSharedSkillXp = 1u << 5,      // vanilla combat skill XP sharing inside the party
     kRfabCombatRules = 1u << 6,    // ally protection, smart standing-target pick, boss/arena sync
     kSelfHealingResync = 1u << 7,  // client gap detection + server resend (architecture step 1)
+    kServerOwnedWorldItems = 1u << 8,  // dropped items get a server id, claims are arbitrated (step 4)
 };
 
-inline constexpr uint32_t kAllKnownFeatureBits = 0xFFu;
+inline constexpr uint32_t kAllKnownFeatureBits = 0x1FFu;
 
 struct FeatureInfo
 {
@@ -51,7 +52,7 @@ struct FeatureInfo
     std::string_view Name;  // stable, used in logs and in the server console listing
 };
 
-inline constexpr std::array<FeatureInfo, 8> kFeatureTable{{
+inline constexpr std::array<FeatureInfo, 9> kFeatureTable{{
     {Feature::kDownedSystem, "DownedSystem"},
     {Feature::kCoordinatedSaves, "CoordinatedSaves"},
     {Feature::kTacticalHud, "TacticalHud"},
@@ -60,6 +61,7 @@ inline constexpr std::array<FeatureInfo, 8> kFeatureTable{{
     {Feature::kSharedSkillXp, "SharedSkillXp"},
     {Feature::kRfabCombatRules, "RfabCombatRules"},
     {Feature::kSelfHealingResync, "SelfHealingResync"},
+    {Feature::kServerOwnedWorldItems, "ServerOwnedWorldItems"},
 }};
 
 [[nodiscard]] constexpr uint32_t Bit(Feature aFeature) noexcept

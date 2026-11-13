@@ -65,6 +65,8 @@
 #include <Messages/CombatEncounterStateReport.h>
 #include <Messages/SyncRfabProgressionEvent.h>
 #include <Messages/RequestResync.h>
+#include <Messages/RequestWorldItemDrop.h>
+#include <Messages/RequestWorldItemPickup.h>
 
 using TiltedPhoques::UniquePtr;
 
@@ -80,7 +82,8 @@ struct ClientMessageFactory
             RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest, ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn, SyncExperienceRequest,
             RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest, PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
             RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, SyncRfabExperienceRequest,
-            RequestCoordinatedSaveLoad, CoordinatedSaveAck, SyncPlayerDownedState, ReviveActionRequest, CombatEncounterStateReport, SyncRfabProgressionEvent, RequestResync>;
+            RequestCoordinatedSaveLoad, CoordinatedSaveAck, SyncPlayerDownedState, ReviveActionRequest, CombatEncounterStateReport, SyncRfabProgressionEvent, RequestResync,
+            RequestWorldItemDrop, RequestWorldItemPickup>;
 
         return s_visitor(std::forward<T>(func));
     }
