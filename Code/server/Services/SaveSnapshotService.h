@@ -2,6 +2,7 @@
 
 #include <Events/PacketEvent.h>
 #include <Services/RfabProgressionService.h>
+#include <Services/WorldItemService.h>
 #include <Structs/GameId.h>
 #include <Structs/GridCellCoords.h>
 #include <Structs/Inventory.h>
@@ -108,6 +109,10 @@ public:
         bool LootClaimantsFromDisk{false};
         RfabProgressionLedger::Snapshot Progression{};
         CalendarStateRecord Calendar{};
+        // v4.1.0 step 4: the server-owned dropped items at the checkpoint. Synced dropped references
+        // are never written into the clients' save games (SkipSave), so this list is the only copy:
+        // a rollback restores exactly the items that existed with the inventories being restored.
+        std::vector<WorldItemRecord> WorldItems{};
     };
 
     SaveSnapshotService(World& aWorld, entt::dispatcher& aDispatcher) noexcept;

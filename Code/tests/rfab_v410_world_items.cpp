@@ -383,7 +383,8 @@ TEST_CASE("v4.1.0 world items: the client mirror detects gaps and binds referenc
         CHECK(mirror.PendingDropCount() == 3);
         CHECK(mirror.Upsert(1, 1, kMe, 1, Interior(kCellA), {}, kMe).AdoptedFormId == 0);
         CHECK(mirror.Upsert(2, 1, kMe, 2, Interior(kCellA), {}, kMe).AdoptedFormId == 0xFF000002u);
-        CHECK(mirror.ExpirePendingDrops(1'015) == 1);  // cookie 3 (created at 20) is due at 1020
+        CHECK(mirror.ExpirePendingDrops(1'019) == 0);  // cookie 3 (created at 20) is due at 1020
+        CHECK(mirror.ExpirePendingDrops(1'020) == 1);
         CHECK(mirror.ExpirePendingDrops(1'030) == 1);
         CHECK(mirror.PendingDropCount() == 0);
         CHECK(mirror.GetExpiredDropCount() == 2);
@@ -710,7 +711,7 @@ TEST_CASE("v4.1.0 world items: resync scope and feature switch", "[rfab][v410][w
         out.clear();
         ledger.Poll(40, true, out);
         CHECK(std::none_of(out.begin(), out.end(), [](const Request& r) { return r.RequestScope == Scope::kWorldItems; }));
-        ledger.Poll(10 + ClientPolicy{}.WorldItemsCooldownMs, true, out);
+        ledger.Poll(10 + Session::Resync::ClientPolicy{}.WorldItemsCooldownMs, true, out);
         CHECK(std::any_of(out.begin(), out.end(), [](const Request& r) { return r.RequestScope == Scope::kWorldItems; }));
 
         // A lost reply is re-armed by a world reload.

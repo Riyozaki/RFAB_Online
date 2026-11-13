@@ -352,9 +352,12 @@ private:
 
     void Refill(DropBucket& aBucket, uint64_t aNowMs) const noexcept
     {
-        if (aNowMs < aBucket.LastRefillMs || m_policy.DropRefillIntervalMs == 0)
+        // A clock that went backwards refills nothing (and does not move the reference point, which
+        // would credit the same time twice once it moves forward again).
+        if (aNowMs < aBucket.LastRefillMs)
+            return;
+        if (m_policy.DropRefillIntervalMs == 0)
         {
-            aBucket.LastRefillMs = aNowMs;
             aBucket.Tokens = m_policy.DropBurst;
             return;
         }

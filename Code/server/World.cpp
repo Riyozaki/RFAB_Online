@@ -13,6 +13,7 @@
 #include <Services/CommandService.h>
 #include <Services/StringCacheService.h>
 #include <Services/SessionResyncService.h>
+#include <Services/WorldItemService.h>
 #include <Services/CombatService.h>
 #include <Services/WeatherService.h>
 #include <Services/ScriptService.h>
@@ -38,6 +39,9 @@ World::World()
     ctx().emplace<PartyService>(*this, m_dispatcher);
     ctx().emplace<ActorValueService>(*this, m_dispatcher);
     ctx().emplace<InventoryService>(*this, m_dispatcher);
+    // After InventoryService (its one inventory writer) and before HydratePersistedWorldState below,
+    // which restores the dropped items of the latest checkpoint.
+    ctx().emplace<WorldItemService>(*this, m_dispatcher);
     ctx().emplace<MagicService>(*this, m_dispatcher);
     ctx().emplace<OverlayService>(*this, m_dispatcher);
     ctx().emplace<CommandService>(*this, m_dispatcher);

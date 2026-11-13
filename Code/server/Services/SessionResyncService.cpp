@@ -8,6 +8,7 @@
 #include <Services/CharacterService.h>
 #include <Services/SaveSnapshotService.h>
 #include <Services/StringCacheService.h>
+#include <Services/WorldItemService.h>
 #include <World.h>
 
 #include <chrono>
@@ -64,9 +65,12 @@ void SessionResyncService::OnRequestResync(const PacketEvent<RequestResync>& acM
 
     // A world reload barrier rebuilds every observer itself (ResetWorldEntitiesForCheckpointReload +
     // ForceResyncObserverAfterRollback); answering now would send pre-reload state. The client
-    // re-arms throttled requests and asks again after its cooldown.
+    // re-arms throttled requests and asks again after its cooldown. The string table and the dropped
+    // items are session state the barrier does not rebuild (the rollback already restored and
+    // broadcast the items): they are answered at once.
     const auto& saveCoordinator = m_world.GetSaveSnapshotService().GetCoordinator();
-    if (request.RequestScope != Scope::kStringCache && saveCoordinator.HasActiveReloadBarrier())
+    const bool rebuiltByBarrier = request.RequestScope == Scope::kEntity || request.RequestScope == Scope::kAllEntities;
+    if (rebuiltByBarrier && saveCoordinator.HasActiveReloadBarrier())
         return finish(Outcome::kThrottled, 0);
 
     const uint64_t nowMs = ResyncNowMs();
@@ -98,6 +102,15 @@ void SessionResyncService::OnRequestResync(const PacketEvent<RequestResync>& acM
         spdlog::info("[RFAB Resync] player {} string table ({}): {} strings resent", pPlayer->GetId(),
                      Session::Resync::ToString(request.GapReason), strings);
         return finish(Outcome::kApplied, strings);
+    }
+    case Scope::kWorldItems:
+    {
+        // Answered even with Feature::kServerOwnedWorldItems off: items registered before a live
+        // switch-off still exist and are still arbitrated.
+        const uint32_t items = m_world.ctx().at<WorldItemService>().SendSnapshotTo(pPlayer);
+        spdlog::info("[RFAB Resync] player {} dropped items ({}): snapshot with {} items", pPlayer->GetId(),
+                     Session::Resync::ToString(request.GapReason), items);
+        return finish(Outcome::kApplied, items);
     }
     }
 

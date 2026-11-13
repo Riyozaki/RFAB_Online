@@ -50,6 +50,21 @@ uint32_t ModManager::Spawn(NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCE
     return refrHandle;
 }
 
+uint32_t ModManager::SpawnReference(TESForm* apBaseForm, NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCELL* apParentCell, TESWorldSpace* apWorldSpace) noexcept
+{
+    if (!apBaseForm || !RealSpawnNewREFR)
+        return 0;
+
+    uint32_t refrHandle = 0;
+    // a10 is `const ObjectRefHandle& linkedRoom`: pass a real (null) handle instead of a null reference.
+    const uint32_t noLinkedRoom = 0;
+    TiltedPhoques::ThisCall(RealSpawnNewREFR, this, refrHandle, apBaseForm, &aPosition, &aRotation, apParentCell, apWorldSpace,
+                            static_cast<Actor*>(nullptr), 0, reinterpret_cast<uintptr_t>(&noLinkedRoom), static_cast<char>(0),
+                            static_cast<char>(1));
+
+    return refrHandle;
+}
+
 Mod* ModManager::GetByName(const char* acpName) const noexcept
 {
     if (!acpName || acpName[0] == '\0')

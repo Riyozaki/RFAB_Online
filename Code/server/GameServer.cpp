@@ -59,6 +59,10 @@ Console::Setting bEnableTacticalHud{"Gameplay:bEnableTacticalHud", "Enables the 
 Console::Setting bEnableHairColorSync{"Gameplay:bEnableHairColorSync", "Gives every remote player an isolated copy of their exact RGB hair colour (RaceMenu)", true};
 Console::Setting bEnableRfabCombatRules{"Gameplay:bEnableRfabCombatRules", "Enables RFAB coop combat rules: ally protection, standing-target selection, boss and arena barrier sync", true};
 Console::Setting bEnableSelfHealingResync{"Gameplay:bEnableSelfHealingResync", "Lets clients detect lost world state and ask the server to resend it (recommended)", true};
+Console::Setting bEnableServerOwnedWorldItems{"Gameplay:bEnableServerOwnedWorldItems",
+                                              "Dropped items get a server id: every player sees them (also after joining or reloading) and only one player can pick each up",
+                                              true};
+extern Console::Setting<bool> bEnableItemDrops;
 extern Console::Setting<bool> bEnableXpSync;
 extern Console::Setting<bool> bEnableRfabXpSync;
 // ModPolicy Stuff
@@ -214,6 +218,8 @@ uint32_t GetDisabledCoopFeatureMask() noexcept
     mask = Session::WithFeature(mask, Feature::kSharedSkillXp, bEnableXpSync);
     mask = Session::WithFeature(mask, Feature::kRfabCombatRules, bEnableRfabCombatRules);
     mask = Session::WithFeature(mask, Feature::kSelfHealingResync, bEnableSelfHealingResync);
+    // Without Gameplay:bEnableItemDrops no dropped item is synced at all, server-owned or not.
+    mask = Session::WithFeature(mask, Feature::kServerOwnedWorldItems, bEnableServerOwnedWorldItems && bEnableItemDrops);
     return mask;
 }
 

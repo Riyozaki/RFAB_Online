@@ -265,6 +265,8 @@ namespace CoopCheckpoint
         kContainerLootLedger = 0x0003u,
         kPersistentPlacedActors = 0x0004u,
         kV210PersistentActors = 0x0004u,
+        // v4.1.0 step 4: server-owned dropped items (common/Session/WorldItems.h), one list per snapshot.
+        kWorldItems = 0x0005u,
     };
 
     struct TlvChunkHeader
