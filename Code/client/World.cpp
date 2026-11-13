@@ -64,7 +64,73 @@ World::World()
     ctx().emplace<WeatherService>(*this, m_transport, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher, m_transport);
 
+    RegisterLifecycleParticipants();
+
     BehaviorVar::Get()->Init();
+}
+
+// The one list of subsystems with session- or world-scoped state. Registration order does not matter:
+// dispatch order is the Session::ParticipantId order (common/Session/Lifecycle.h), pinned by
+// Code/tests/rfab_v410_session_lifecycle.cpp together with the reason for every dependency.
+void World::RegisterLifecycleParticipants() noexcept
+{
+    using Session::ParticipantId;
+    const auto add = [this](ParticipantId aId, Session::IParticipant& aParticipant) {
+        if (!m_lifecycle.Register(aId, aParticipant))
+            spdlog::error("[RFAB Lifecycle] participant {} registered twice", std::string(Session::NameOf(aId)));
+    };
+
+    add(ParticipantId::kModTable, m_modSystem);
+    add(ParticipantId::kStringTable, ctx().at<StringCacheService>());
+    add(ParticipantId::kDiscovery, GetDiscoveryService());
+    add(ParticipantId::kActorValues, GetActorValueService());
+    add(ParticipantId::kCharacters, GetCharacterService());
+    add(ParticipantId::kObjects, GetObjectService());
+    add(ParticipantId::kInventory, GetInventoryService());
+    add(ParticipantId::kMagic, GetMagicService());
+    add(ParticipantId::kDowned, GetDownedStateService());
+    add(ParticipantId::kCoordinatedSaves, GetCoordinatedSaveService());
+    add(ParticipantId::kParty, GetPartyService());
+    add(ParticipantId::kPlayer, GetPlayerService());
+    add(ParticipantId::kCalendar, ctx().at<CalendarService>());
+    add(ParticipantId::kWeather, ctx().at<WeatherService>());
+    add(ParticipantId::kQuests, ctx().at<QuestService>());
+    add(ParticipantId::kRfabAdapter, GetRfabAdapterService());
+    add(ParticipantId::kOverlay, GetOverlayService());
+    add(ParticipantId::kResync, GetSessionResyncService());
+
+    for (const ParticipantId missing : m_lifecycle.MissingParticipants())
+        spdlog::error("[RFAB Lifecycle] participant {} is not registered: its session state will never be reset",
+                      std::string(Session::NameOf(missing)));
+
+    m_lifecycle.SetObserver(&World::LogLifecycleTransition, this);
+}
+
+void World::LogLifecycleTransition(void* apWorld, const Session::Transition& acTransition, Session::Phase aPhaseAfter) noexcept
+{
+    (void)apWorld;
+    switch (acTransition.Kind)
+    {
+    case Session::Signal::kSessionBegin:
+        spdlog::info("[RFAB Lifecycle] session #{} begins (player id {}) -> {}", acTransition.SessionGeneration,
+                     acTransition.LocalPlayerId, std::string(Session::ToString(aPhaseAfter)));
+        break;
+    case Session::Signal::kSessionEnd:
+        spdlog::info("[RFAB Lifecycle] session #{} ends ({}{}) -> {}", acTransition.SessionGeneration,
+                     acTransition.Reason == Session::EndReason::kReauthenticated ? "re-authenticated" : "transport lost",
+                     acTransition.DuringWorldLoad ? ", during a world load" : "", std::string(Session::ToString(aPhaseAfter)));
+        break;
+    case Session::Signal::kWorldLoadBegin:
+        spdlog::info("[RFAB Lifecycle] world #{} load begins ({}{}) -> {}", acTransition.WorldGeneration,
+                     acTransition.LiveReload ? "coordinated live reload" : (acTransition.Online ? "uncoordinated, session will close" : "offline"),
+                     acTransition.Repeated ? ", engine started the committed load" : "", std::string(Session::ToString(aPhaseAfter)));
+        break;
+    case Session::Signal::kWorldLoadEnd:
+        spdlog::info("[RFAB Lifecycle] world #{} load {} -> {}", acTransition.WorldGeneration,
+                     acTransition.Succeeded ? "finished" : (acTransition.Cancelled ? "cancelled before the engine started it" : "FAILED"),
+                     std::string(Session::ToString(aPhaseAfter)));
+        break;
+    }
 }
 
 void World::PublishFeatureMask(uint32_t aDisabledMask) noexcept
@@ -130,6 +196,9 @@ void World::Update() noexcept
 
     const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
     const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
+
+    if (m_lifecycle.SetPaused(false))
+        spdlog::debug("[RFAB Lifecycle] simulation resumed -> {}", std::string(Session::ToString(m_lifecycle.GetPhase())));
 
     m_transport.FlushPausedInboundPackets();
 
@@ -204,6 +273,9 @@ void World::UpdatePausedPump() noexcept
 
     const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
     const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
+
+    if (m_lifecycle.SetPaused(true))
+        spdlog::debug("[RFAB Lifecycle] simulation paused (menu) -> {}", std::string(Session::ToString(m_lifecycle.GetPhase())));
 
     m_isPausedPumpActive = true;
     m_transport.PollWhileSimulationPaused();

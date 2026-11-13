@@ -5,7 +5,6 @@
 #include <World.h>
 
 #include <Events/UpdateEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/CellChangeEvent.h>
 #include <Events/PartyJoinedEvent.h>
 #include <Events/SpellCastEvent.h>
@@ -120,7 +119,6 @@ MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
     , m_transport(aTransport)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&MagicService::OnUpdate>(this);
-    m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&MagicService::OnDisconnected>(this);
     m_cellChangeConnection = m_dispatcher.sink<CellChangeEvent>().connect<&MagicService::OnCellChangeEvent>(this);
     m_partyJoinedConnection = m_dispatcher.sink<PartyJoinedEvent>().connect<&MagicService::OnPartyJoinedEvent>(this);
     m_spellCastEventConnection = m_dispatcher.sink<SpellCastEvent>().connect<&MagicService::OnSpellCastEvent>(this);
@@ -135,9 +133,11 @@ MagicService::MagicService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
 
 void MagicService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    // Invariant, not a lifecycle reset: the cast/target handlers queue regardless of the connection,
+    // and nothing queued without a session may be replayed into the next one.
     if (!m_transport.IsConnected())
     {
-        ResetForWorldReload();
+        DropQueuedEffects();
         return;
     }
 
@@ -987,18 +987,23 @@ void MagicService::ResyncLocalPlayerActiveBuffs() noexcept
     }
 }
 
-void MagicService::ResetForWorldReload() noexcept
+void MagicService::OnSessionEnd(const Session::Transition&) noexcept
+{
+    DropQueuedEffects();
+}
+
+void MagicService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
+    DropQueuedEffects();
+}
+
+void MagicService::DropQueuedEffects() noexcept
 {
     m_queuedEffects = {};
     m_queuedRemoteEffects = {};
     m_activeLocalPlayerSpells.clear();
     m_concentrationClaimKeepaliveMs.clear();
     m_buffPollAccumulatorSec = 0.0;
-}
-
-void MagicService::OnDisconnected(const DisconnectedEvent&) noexcept
-{
-    ResetForWorldReload();
 }
 
 void MagicService::OnCellChangeEvent(const CellChangeEvent&) noexcept

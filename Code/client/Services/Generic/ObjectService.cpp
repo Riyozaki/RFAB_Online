@@ -5,7 +5,6 @@
 #include <common/RfabModpackCompat.h>
 #include <Services/RfabAdapterService.h>
 #include <World.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Events/CellChangeEvent.h>
 #include <Events/ActivateEvent.h>
@@ -34,7 +33,6 @@ ObjectService::ObjectService(World& aWorld, entt::dispatcher& aDispatcher, Trans
     : m_world(aWorld)
     , m_transport(aTransport)
 {
-    m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&ObjectService::OnDisconnected>(this);
     m_cellChangeConnection = aDispatcher.sink<CellChangeEvent>().connect<&ObjectService::OnCellChange>(this);
     m_onActivateConnection = aDispatcher.sink<ActivateEvent>().connect<&ObjectService::OnActivate>(this);
     m_activateConnection = aDispatcher.sink<NotifyActivate>().connect<&ObjectService::OnActivateNotify>(this);
@@ -128,7 +126,17 @@ bool ShouldSyncObject(const TESObjectREFR* apObject) noexcept
 }
 } // namespace
 
-void ObjectService::ResetForWorldReload() noexcept
+void ObjectService::OnSessionEnd(const Session::Transition&) noexcept
+{
+    DestroyObjectEntities();
+}
+
+void ObjectService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
+    DestroyObjectEntities();
+}
+
+void ObjectService::DestroyObjectEntities() noexcept
 {
     auto view = m_world.view<ObjectComponent>();
     Vector<entt::entity> toDestroy(view.begin(), view.end());
@@ -137,11 +145,6 @@ void ObjectService::ResetForWorldReload() noexcept
         if (m_world.valid(entity))
             m_world.destroy(entity);
     }
-}
-
-void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
-{
-    ResetForWorldReload();
 }
 
 void ObjectService::RefreshCurrentCellObjectsAfterRollback() noexcept

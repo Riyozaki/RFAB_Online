@@ -1,5 +1,6 @@
 #pragma once
 
+#include <common/Session/Lifecycle.h>
 #include <common/Session/Resync.h>
 
 #include <vector>
@@ -7,8 +8,6 @@
 struct World;
 struct TransportService;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct NotifyResyncComplete;
 
 /**
@@ -21,9 +20,14 @@ struct NotifyResyncComplete;
  *   - CoordinatedSaveService: in-session world reload discarded the paused world packets.
  * This service owns the decision of WHEN to ask the server (deduplicated, rate limited, deferred
  * while loading) and the bookkeeping of the answers. Main thread only; calls from other threads
- * are marshalled through the RunnerService.
+ * are marshalled through the RunnerService and dropped if their session ended meanwhile
+ * (Session::Token).
+ *
+ * Session::ParticipantId::kResync (stage kDiagnostics: last to begin, first to be torn down). The
+ * ledger is session state: it is emptied when the session ends - not when the next one begins, which
+ * would wipe gaps the layers below noted during their own begin handlers.
  */
-struct SessionResyncService
+struct SessionResyncService final : Session::IParticipant
 {
     using Scope = Session::Resync::Scope;
     using Reason = Session::Resync::Reason;
@@ -43,10 +47,15 @@ struct SessionResyncService
 
     [[nodiscard]] const Session::Resync::ClientStats& GetStats() const noexcept { return m_ledger.GetStats(); }
 
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+
 private:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+    // Runs aWork on the main thread: now if this is it, otherwise later - unless the session that was
+    // current when it was posted has ended by then.
+    template <class TWork> void OnMainThreadForThisSession(TWork&& aWork) noexcept;
     void OnResyncComplete(const NotifyResyncComplete& acMessage) noexcept;
 
     [[nodiscard]] bool CanSendNow() const noexcept;
@@ -60,7 +69,5 @@ private:
     double m_pollAccumulatorSec{0.0};
 
     entt::scoped_connection m_updateConnection;
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_resyncCompleteConnection;
 };

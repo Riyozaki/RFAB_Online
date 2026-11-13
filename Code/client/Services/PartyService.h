@@ -1,12 +1,12 @@
 #pragma once
 
 #include <atomic>
+#include <common/Session/Lifecycle.h>
 
 struct World;
 struct ImguiService;
 struct TransportService;
 struct UpdateEvent;
-struct DisconnectedEvent;
 struct NotifyPlayerList;
 struct NotifyPlayerJoined;
 struct NotifyPlayerLeft;
@@ -18,7 +18,7 @@ struct NotifyPartyLeft;
 /**
  * @brief Manages the party of the local player.
  */
-struct PartyService
+struct PartyService final : Session::IParticipant
 {
     PartyService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransportService) noexcept;
     ~PartyService() = default;
@@ -51,9 +51,12 @@ struct PartyService
     void KickPartyMember(const uint32_t aPlayerId) const noexcept;
     void ChangePartyLeader(const uint32_t aPlayerId) const noexcept;
 
+    // Session::ParticipantId::kParty: party, player list and invitations all belong to one server.
+    // A coordinated live reload keeps the session, so they survive it.
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+
 protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept;
     void OnPlayerJoined(const NotifyPlayerJoined& acPlayerJoined) noexcept;
     void OnPlayerLeft(const NotifyPlayerLeft& acPlayerLeft) noexcept;
@@ -78,7 +81,6 @@ private:
     TransportService& m_transport;
 
     entt::scoped_connection m_updateConnection;
-    entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_playerListConnection;
     entt::scoped_connection m_playerJoinedConnection;
     entt::scoped_connection m_playerLeftConnection;

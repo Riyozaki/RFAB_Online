@@ -4,8 +4,6 @@
 
 #include <Actor.h>
 #include <BSGraphics/BSGraphicsRenderer.h>
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/PartyJoinedEvent.h>
 #include <Events/PartyLeftEvent.h>
 #include <Events/UpdateEvent.h>
@@ -31,8 +29,6 @@ RfabAdapterService::RfabAdapterService(World& aWorld, entt::dispatcher& aDispatc
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
     , m_transport(aTransport)
-    , m_connectedConnection(aDispatcher.sink<ConnectedEvent>().connect<&RfabAdapterService::OnConnected>(this))
-    , m_disconnectedConnection(aDispatcher.sink<DisconnectedEvent>().connect<&RfabAdapterService::OnDisconnected>(this))
     , m_partyJoinedConnection(aDispatcher.sink<PartyJoinedEvent>().connect<&RfabAdapterService::OnPartyJoined>(this))
     , m_partyLeftConnection(aDispatcher.sink<PartyLeftEvent>().connect<&RfabAdapterService::OnPartyLeft>(this))
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&RfabAdapterService::OnUpdate>(this))
@@ -296,15 +292,15 @@ RfabCompat::CoopAllyActionPolicy RfabAdapterService::EvaluateCoopAction(
     return RfabCombatRules::EvaluateSnapshotAction(snapshot, apAttacker, apTarget, aIsBeneficialHealOrBuff);
 }
 
-void RfabAdapterService::OnConnected(const ConnectedEvent& acEvent) noexcept
+void RfabAdapterService::OnSessionBegin(const Session::Transition& acTransition) noexcept
 {
     RefreshRuntimeBindings();
     m_xpAndBookSync.SuppressSoloRfabAutosave(m_formResolver.GetBindings());
-    m_localPlayerId = acEvent.PlayerId;
+    m_localPlayerId = acTransition.LocalPlayerId;
     m_hasLocalPlayerId = true;
     m_isServerHost = false;
     m_allyProtectionEnabled.store(true, std::memory_order_relaxed);
-    // Settings (and with them the feature mask) are applied before ConnectedEvent is raised.
+    // Settings (and with them the feature mask) are applied before the session begins.
     m_combatRulesFeatureApplied = IsCombatRulesFeatureEnabled();
     m_tacticalHudFeatureApplied = IsTacticalHudFeatureEnabled();
     ApplyAllyHitPolicy(true);
@@ -316,7 +312,7 @@ void RfabAdapterService::OnConnected(const ConnectedEvent& acEvent) noexcept
     m_xpAndBookSync.SeedReadBooksOnConnect(m_formResolver);
 }
 
-void RfabAdapterService::OnDisconnected(const DisconnectedEvent&) noexcept
+void RfabAdapterService::OnSessionEnd(const Session::Transition&) noexcept
 {
     m_xpAndBookSync.ResetOnDisconnect();
     m_combatRules.ApplyAllyHitGameSetting(false);
@@ -343,7 +339,7 @@ void RfabAdapterService::OnPartyLeft(const PartyLeftEvent&) noexcept
     PushAllyProtectionStateToOverlay();
 }
 
-void RfabAdapterService::NotifySaveLoadReset() noexcept
+void RfabAdapterService::OnWorldLoadBegin(const Session::Transition&) noexcept
 {
     m_xpAndBookSync.ResetRuntimeWatches();
     // Allow 2.0s post-load settle window so BGSSaveLoadManager finishes restoring ESS state

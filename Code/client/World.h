@@ -22,6 +22,7 @@
 
 #include <Structs/ServerSettings.h>
 #include <common/Session/Features.h>
+#include <common/Session/Lifecycle.h>
 #include <Authority/Health.h>
 #include <atomic>
 #include <functional>
@@ -42,6 +43,10 @@ struct World : entt::registry
 
     RunnerService& GetRunner() noexcept;
     TransportService& GetTransport() noexcept;
+    // Session and world lifecycle (common/Session/Lifecycle.h): the only source of session begin/end
+    // and world load begin/end. Main thread only, except the *AnyThread() queries.
+    Session::Lifecycle& GetLifecycle() noexcept { return m_lifecycle; }
+    const Session::Lifecycle& GetLifecycle() const noexcept { return m_lifecycle; }
     ModSystem& GetModSystem() noexcept;
 
     PartyService& GetPartyService() noexcept { return ctx().at<PartyService>(); }
@@ -137,8 +142,15 @@ private:
     inline static std::atomic<uint32_t> s_disabledFeatureMaskCached{0};
 
     static void PublishFeatureMask(uint32_t aDisabledMask) noexcept;
+    static void LogLifecycleTransition(void* apWorld, const Session::Transition& acTransition, Session::Phase aPhaseAfter) noexcept;
+    void RegisterLifecycleParticipants() noexcept;
 
     entt::dispatcher m_dispatcher;
+    // Declared before m_transport: members are destroyed in reverse order, so the lifecycle outlives the
+    // transport (whose teardown may still report a closed socket). Participants may be destroyed before
+    // it (m_modSystem, a member declared after it) or after it (the ctx() services, owned by the
+    // registry base): the lifecycle never calls a participant from its destructor.
+    Session::Lifecycle m_lifecycle;
     RunnerService m_runner;
     TransportService m_transport;
     ModSystem m_modSystem;

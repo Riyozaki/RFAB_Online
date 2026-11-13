@@ -10,12 +10,12 @@
 #include <chrono>
 #include <unordered_map>
 #include <unordered_set>
+#include <common/Session/Lifecycle.h>
 
 struct World;
 struct TransportService;
 
 struct UpdateEvent;
-struct DisconnectedEvent;
 struct CellChangeEvent;
 struct PartyJoinedEvent;
 struct SpellCastEvent;
@@ -36,7 +36,7 @@ struct NotifyInterruptCast;
  *
  * Contact cosideci for more info.
  */
-struct MagicService
+struct MagicService final : Session::IParticipant
 {
     MagicService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
     ~MagicService() noexcept = default;
@@ -48,7 +48,11 @@ struct MagicService
      * @see UpdateRevealOtherPlayersEffect
      */
     void StartRevealingOtherPlayers() noexcept;
-    void ResetForWorldReload() noexcept;
+
+    // Session::ParticipantId::kMagic: queued local/remote effects and claims refer to actors of one
+    // world in one session.
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
 
   protected:
     /**
@@ -87,7 +91,7 @@ struct MagicService
      * @brief Handles removal of a spell
      */
     void OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+    void DropQueuedEffects() noexcept;
     void OnCellChangeEvent(const CellChangeEvent& acEvent) noexcept;
     void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
 
@@ -117,7 +121,6 @@ struct MagicService
     std::unordered_map<uint64_t, uint64_t> m_concentrationClaimKeepaliveMs{};
 
     entt::scoped_connection m_updateConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_cellChangeConnection;
     entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_spellCastEventConnection;

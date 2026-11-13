@@ -6,12 +6,11 @@
 #include <unordered_set>
 
 #include <common/Downed/Revive.h>
+#include <common/Session/Lifecycle.h>
 
 struct World;
 struct TransportService;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct NotifyPlayerDownedState;
 struct NotifyReviveState;
 struct Actor;
@@ -28,7 +27,7 @@ struct ActorValueOwner;
  * 4. Supports ~4.0s hold-E interactive ally revive, 30% MaxHP post-revive recovery, 3.0s grace
  *    invulnerability, and periodic CombatEncounterStateReport telemetry for the server coordinator.
  */
-class DownedStateService
+class DownedStateService final : public Session::IParticipant
 {
 public:
     struct ScopedReviveHealAllowance
@@ -88,6 +87,14 @@ public:
     void EnterLocalDownedState() noexcept;
     void ApplyAuthoritativeRevive(float aHealthFraction, float aGraceSec, bool aShowPostCombatNotice) noexcept;
     void ResetAllStates() noexcept;
+
+    // Session::ParticipantId::kDowned. Teardown runs before the character service's (kDowned >
+    // kCharacters): ResetAllStates walks the remote players to restore their targetability, so they
+    // must still exist.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+
     [[nodiscard]] std::atomic<bool>& GetAuthorizedHealFlag() noexcept { return m_allowAuthorizedHeal; }
 
 private:
@@ -108,8 +115,6 @@ private:
 
     void CompleteEnterLocalDownedState() noexcept;
     void SetDownedControlLock(bool aLocked) noexcept;
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnNotifyPlayerDownedState(const NotifyPlayerDownedState& acMessage) noexcept;
     void OnNotifyReviveState(const NotifyReviveState& acMessage) noexcept;
@@ -148,8 +153,6 @@ private:
     std::unordered_map<uint32_t, bool> m_remoteDownedByPlayerId{};
     std::unordered_set<uint32_t> m_playersBeingRevived{};
 
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_notifyDownedConnection;
     entt::scoped_connection m_notifyReviveConnection;

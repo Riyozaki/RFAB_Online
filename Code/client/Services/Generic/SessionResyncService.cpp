@@ -2,8 +2,6 @@
 
 #include <Services/SessionResyncService.h>
 
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Forms/TESObjectCELL.h>
 #include <Messages/NotifyResyncComplete.h>
@@ -24,8 +22,6 @@ SessionResyncService::SessionResyncService(World& aWorld, entt::dispatcher& aDis
     : m_world(aWorld)
     , m_transport(aTransport)
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&SessionResyncService::OnUpdate>(this))
-    , m_connectedConnection(aDispatcher.sink<ConnectedEvent>().connect<&SessionResyncService::OnConnected>(this))
-    , m_disconnectedConnection(aDispatcher.sink<DisconnectedEvent>().connect<&SessionResyncService::OnDisconnected>(this))
     , m_resyncCompleteConnection(aDispatcher.sink<NotifyResyncComplete>().connect<&SessionResyncService::OnResyncComplete>(this))
 {
 }
@@ -36,11 +32,26 @@ uint64_t SessionResyncService::NowMs() noexcept
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+template <class TWork> void SessionResyncService::OnMainThreadForThisSession(TWork&& aWork) noexcept
+{
+    if (World::IsMainThread())
+    {
+        aWork();
+        return;
+    }
+
+    const Session::Token token = m_world.GetLifecycle().GetTokenAnyThread();
+    m_world.GetRunner().Queue([this, token, work = std::forward<TWork>(aWork)]() mutable noexcept {
+        if (m_world.GetLifecycle().IsStillCurrentSession(token))
+            work();
+    });
+}
+
 void SessionResyncService::NoteGap(Scope aScope, uint32_t aServerId, Reason aReason) noexcept
 {
     if (!World::IsMainThread())
     {
-        m_world.GetRunner().Queue([this, aScope, aServerId, aReason]() noexcept { NoteGap(aScope, aServerId, aReason); });
+        OnMainThreadForThisSession([this, aScope, aServerId, aReason]() noexcept { NoteGap(aScope, aServerId, aReason); });
         return;
     }
 
@@ -56,33 +67,24 @@ void SessionResyncService::NoteGap(Scope aScope, uint32_t aServerId, Reason aRea
 
 void SessionResyncService::NoteEntityKnown(uint32_t aServerId) noexcept
 {
-    if (World::IsMainThread())
-        m_ledger.NoteEntityKnown(aServerId);
-    else
-        m_world.GetRunner().Queue([this, aServerId]() noexcept { m_ledger.NoteEntityKnown(aServerId); });
+    OnMainThreadForThisSession([this, aServerId]() noexcept { m_ledger.NoteEntityKnown(aServerId); });
 }
 
 void SessionResyncService::NoteEntityRemoved(uint32_t aServerId) noexcept
 {
-    if (World::IsMainThread())
-        m_ledger.NoteEntityRemoved(aServerId, NowMs());
-    else
-        m_world.GetRunner().Queue([this, aServerId]() noexcept { m_ledger.NoteEntityRemoved(aServerId, NowMs()); });
+    OnMainThreadForThisSession([this, aServerId]() noexcept { m_ledger.NoteEntityRemoved(aServerId, NowMs()); });
 }
 
 void SessionResyncService::NoteEntityIgnored(uint32_t aServerId) noexcept
 {
-    if (World::IsMainThread())
-        m_ledger.NoteEntityIgnored(aServerId, NowMs());
-    else
-        m_world.GetRunner().Queue([this, aServerId]() noexcept { m_ledger.NoteEntityIgnored(aServerId, NowMs()); });
+    OnMainThreadForThisSession([this, aServerId]() noexcept { m_ledger.NoteEntityIgnored(aServerId, NowMs()); });
 }
 
 void SessionResyncService::NoteWorldReloadStarted() noexcept
 {
     if (!World::IsMainThread())
     {
-        m_world.GetRunner().Queue([this]() noexcept { NoteWorldReloadStarted(); });
+        OnMainThreadForThisSession([this]() noexcept { NoteWorldReloadStarted(); });
         return;
     }
 
@@ -90,8 +92,8 @@ void SessionResyncService::NoteWorldReloadStarted() noexcept
     NoteGap(Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kWorldPacketsDiscarded);
 }
 
-// IsOnline (authenticated session), not IsConnected (socket up): the ledger is reset on ConnectedEvent,
-// which fires after AuthenticationResponse, and the server has no Player to answer before that.
+// IsOnline (authenticated session), not IsConnected (socket up): the server has no Player to answer
+// before the AuthenticationResponse was accepted.
 bool SessionResyncService::CanSendNow() const noexcept
 {
     if (!m_transport.IsOnline() || !World::IsFeatureEnabled(Session::Feature::kSelfHealingResync))
@@ -155,16 +157,25 @@ void SessionResyncService::OnResyncComplete(const NotifyResyncComplete& acMessag
     }
 }
 
-void SessionResyncService::OnConnected(const ConnectedEvent&) noexcept
+void SessionResyncService::OnSessionBegin(const Session::Transition&) noexcept
 {
-    m_ledger.Reset();
     m_pollAccumulatorSec = 0.0;
 }
 
-void SessionResyncService::OnDisconnected(const DisconnectedEvent&) noexcept
+void SessionResyncService::OnSessionEnd(const Session::Transition&) noexcept
 {
     LogStats("session end");
     m_ledger.Reset();
+    m_outgoing.clear();
+}
+
+void SessionResyncService::OnWorldLoadBegin(const Session::Transition& acTransition) noexcept
+{
+    // World packets queued during the pause are discarded with the reload and spawns arriving during
+    // the load are dropped: ask for the whole session once the load is over (sent only when the player
+    // stands in a loaded cell again). Offline loads have no session to resync.
+    if (acTransition.Online)
+        NoteWorldReloadStarted();
 }
 
 void SessionResyncService::LogStats(const char* acpWhen) const noexcept

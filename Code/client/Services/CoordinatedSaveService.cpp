@@ -9,8 +9,6 @@
 #include <common/CoopOwnership.h>
 #include <common/CoopWorldStabilizer.h>
 #include <common/RfabModpackCompat.h>
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
@@ -79,8 +77,6 @@ CoordinatedSaveService::CoordinatedSaveService(World& aWorld, entt::dispatcher& 
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
     , m_transport(aTransport)
-    , m_connectedConnection(aDispatcher.sink<ConnectedEvent>().connect<&CoordinatedSaveService::OnConnected>(this))
-    , m_disconnectedConnection(aDispatcher.sink<DisconnectedEvent>().connect<&CoordinatedSaveService::OnDisconnected>(this))
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&CoordinatedSaveService::OnUpdate>(this))
     , m_prepareSaveConnection(aDispatcher.sink<NotifyPrepareSave>().connect<&CoordinatedSaveService::OnNotifyPrepareSave>(this))
     , m_commitSaveConnection(aDispatcher.sink<NotifyCommitSave>().connect<&CoordinatedSaveService::OnNotifyCommitSave>(this))
@@ -337,8 +333,9 @@ void CoordinatedSaveService::ProcessReadyDeferredSaveOrLoad(BGSSaveLoadManager* 
             m_waitingForHostBarrierRelease = false;
             m_autoReconnectPendingAfterLoad = false;
             m_wasAutoReconnecting = false;
-            m_world.GetCharacterService().EndEngineWorldLoad();
-            m_world.GetDiscoveryService().ReconcileMissingWorldEntities();
+            // Closes the load the barrier committed if the engine never started it (no-op when the
+            // engine hook already reported the failed load). Discovery re-attaches the world.
+            m_world.GetLifecycle().OnWorldLoadCancel();
             if (wasLiveBarrierLoad)
                 SendReloadBarrierReadyAck(m_activeReloadBarrierEpoch, slot, false);
             spdlog::error("[RFAB SaveLoad] ExecuteDirectLoadFromProcessEvents failed for slot '{}'", slot);
@@ -359,23 +356,16 @@ void CoordinatedSaveService::PrepareEngineForWorldLoad(const char* acpFileName) 
     m_deferredInSessionRollback.reset();
 
     m_transport.DiscardPausedWorldPacketsForReload();
-    m_world.GetDownedStateService().ResetAllStates();
-    m_world.GetRfabAdapterService().NotifySaveLoadReset();
-    m_world.GetCharacterService().BeginEngineWorldLoad();
-    // World packets queued during the pause were just discarded and spawns arriving during the
-    // load are dropped: ask for the whole session once the load is over (sent by
-    // SessionResyncService only when the player stands in a loaded cell again).
-    m_world.GetSessionResyncService().NoteWorldReloadStarted();
-    m_world.GetDiscoveryService().ResetLoadedForms();
-    m_world.GetObjectService().ResetForWorldReload();
-    m_world.GetMagicService().ResetForWorldReload();
-    m_world.GetActorValueService().ResetForWorldReload();
-    m_world.GetInventoryService().ResetForWorldReload();
+
+    // The world teardown: every participant, in Session::ParticipantId order (descending). Repeated
+    // when the reload barrier already committed this load - whatever accumulated since is dropped too.
+    const bool liveReload = m_liveSessionWorldReloadPending && (m_transport.IsConnected() || m_transport.IsOnline());
+    m_world.GetLifecycle().OnWorldLoadBegin(liveReload);
 
     // Phase 3 (`WorldReloadBarrier`): when executing an authorized coordinated `.ess` reload (Party Wipe
     // or manual `F9`), KEEP `m_transport`, `PlayerId`, and `PartyService` open instead of calling
     // `m_transport.Close()`! Only fall back to disconnect + auto-reconnect on uncoordinated loads.
-    if (m_liveSessionWorldReloadPending && (m_transport.IsConnected() || m_transport.IsOnline()))
+    if (liveReload)
     {
         m_liveSessionWorldReloadPending = false;
         m_liveSessionWorldReloadInFlight = true;
@@ -411,7 +401,8 @@ void CoordinatedSaveService::NotifyEngineSaveCompleted(const char* acpFileName) 
 
 void CoordinatedSaveService::NotifyEngineLoadCompleted(const char* acpFileName, bool aSucceeded) noexcept
 {
-    m_world.GetCharacterService().EndEngineWorldLoad();
+    // Lifts the world-load gates; on failure Discovery re-attaches whatever world is left.
+    m_world.GetLifecycle().OnWorldLoadEnd(aSucceeded);
 
     const std::string norm = RfabCompat::Detail::NormalizeSaveSlotStem(acpFileName ? acpFileName : "");
     if (!m_authorizedPendingLoadSlot.empty() && norm == m_authorizedPendingLoadSlot)
@@ -425,7 +416,6 @@ void CoordinatedSaveService::NotifyEngineLoadCompleted(const char* acpFileName, 
             m_postReloadSyncPending = false;
             m_waitingForHostBarrierRelease = false;
             SendReloadBarrierReadyAck(m_activeReloadBarrierEpoch, m_activeReloadBarrierSlot, false);
-            m_world.GetDiscoveryService().ReconcileMissingWorldEntities();
         }
         return;
     }
@@ -554,7 +544,7 @@ bool CoordinatedSaveService::HandleEngineLoadAttempt(const char* acpFileName) no
     return false;
 }
 
-void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
+void CoordinatedSaveService::OnSessionBegin(const Session::Transition&) noexcept
 {
     const bool reconnectedAfterAuthorizedLoad = m_wasAutoReconnecting;
 
@@ -596,8 +586,13 @@ void CoordinatedSaveService::OnConnected(const ConnectedEvent&) noexcept
     }
 }
 
-void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
+void CoordinatedSaveService::OnSessionEnd(const Session::Transition&) noexcept
 {
+    // A live reload committed by the barrier but not yet started by the engine dies with the session
+    // (its deferred slot is dropped below). Close the world load it opened, or every world-load gate
+    // would stay shut until the next session. Delivered after this session end (FIFO).
+    const bool committedLoadNeverStarted = m_liveSessionWorldReloadPending;
+
     // Safety net: if a physical Wi-Fi/UDP blip occurred mid-reload, allow automatic reconnect once
     // the engine finishes loading.
     if ((m_liveSessionWorldReloadInFlight || m_postReloadSyncPending) && m_transport.HasLastServerEndpoint())
@@ -633,6 +628,13 @@ void CoordinatedSaveService::OnDisconnected(const DisconnectedEvent&) noexcept
     m_deferredLoadSlot.clear();
     m_deferredLoadMenuCloseFrames = 0;
     m_deferredInSessionRollback.reset();
+
+    if (committedLoadNeverStarted)
+    {
+        spdlog::warn("[RFAB WorldReloadBarrier] Session ended before the committed reload started (Epoch={}): cancelling it",
+                     m_activeReloadBarrierEpoch);
+        m_world.GetLifecycle().OnWorldLoadCancel();
+    }
 }
 
 void CoordinatedSaveService::SendReloadBarrierReadyAck(
@@ -1191,8 +1193,11 @@ void CoordinatedSaveService::OnNotifyExecuteLoad(const NotifyExecuteLoad& acMess
     m_activeReloadBarrierSlot = targetSlot;
     m_deferredLoadMenuCloseFrames = statsWasOpen ? 15 : 0;
 
-    // Immediately gate incoming remote actor materialization before `ExecuteDirectLoadFromProcessEvents` runs.
-    m_world.GetCharacterService().BeginEngineWorldLoad();
+    // The reload is committed: tear the world down and close every world-load gate now (remote actor
+    // materialization included), frames before `ExecuteDirectLoadFromProcessEvents` runs. The engine
+    // hook repeats the teardown when the load really starts; OnSessionEnd / the executor failure path
+    // cancel it if it never does.
+    m_world.GetLifecycle().OnWorldLoadBegin(true);
 
     spdlog::info(
         "[RFAB WorldReloadBarrier] Queueing live-socket .ess reload for slot '{}' (Epoch={}, PartyWipe={})",

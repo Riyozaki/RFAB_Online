@@ -4,6 +4,7 @@
 #include <Services/Rfab/RfabFormResolver.h>
 #include <Services/Rfab/RfabHudAndPings.h>
 #include <Services/Rfab/RfabXpAndBookSync.h>
+#include <common/Session/Lifecycle.h>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -11,8 +12,6 @@
 struct World;
 struct TransportService;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct PartyJoinedEvent;
 struct PartyLeftEvent;
 struct NotifyRfabProgressionEvent;
@@ -36,7 +35,7 @@ struct Mod;
  * - RfabCombatRules (ally-hit GMSTs, CoopCombatSnapshot rules, boss detection & arena barriers)
  * - RfabHudAndPings (peer HUD roster, 3D tactical pings, ControlMap self-healing, D3D11 HUD snapshot rendering)
  */
-class RfabAdapterService
+class RfabAdapterService final : public Session::IParticipant
 {
 public:
     RfabAdapterService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
@@ -81,15 +80,20 @@ public:
     [[nodiscard]] uint64_t GetCurrentWorldEpoch() const noexcept { return m_xpAndBookSync.GetCurrentWorldEpoch(); }
 
     void RefreshRuntimeBindings() noexcept;
-    void NotifySaveLoadReset() noexcept;
+
+    // Session::ParticipantId::kRfabAdapter (stage kModpack: reads the gameplay and world-model layers,
+    // so it begins after them and is torn down before them). Session begin applies the co-op rules
+    // (ally-hit policy, no-death handling, read books); session end reverts them. A world load drops
+    // the runtime watches and holds polling for 2 s while the save state settles.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
 
 private:
     struct CoopCombatSnapshot : RfabCombatSnapshot
     {
     };
 
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPartyJoined(const PartyJoinedEvent& acEvent) noexcept;
     void OnPartyLeft(const PartyLeftEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
@@ -143,8 +147,6 @@ private:
     mutable std::mutex m_tacticalHudSnapshotMutex{};
     RfabTacticalHudRenderSnapshot m_tacticalHudSnapshot{};
 
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_partyLeftConnection;
     entt::scoped_connection m_updateConnection;

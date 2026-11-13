@@ -1,8 +1,5 @@
 #pragma once
 
-#include "Events/ConnectedEvent.h"
-#include "Events/DisconnectedEvent.h"
-
 #include <atomic>
 #include <deque>
 #include <Client.hpp>
@@ -79,8 +76,6 @@ struct TransportService : Client
 protected:
     // Event handlers
     void HandleUpdate(const UpdateEvent& acEvent) noexcept;
-    void HandleConnected(const ConnectedEvent& acEvent) noexcept;
-    void HandleDisconnected(const DisconnectedEvent& acEvent) noexcept;
 
     // Packet handlers
     void HandleAuthenticationResponse(const AuthenticationResponse& acMessage) noexcept;
@@ -95,14 +90,12 @@ private:
     String m_serverPassword{};
     std::string m_lastServerEndpoint{};
     std::string m_lastServerPassword{};
-    uint32_t m_localPlayerId;
+    uint32_t m_localPlayerId{0};
     double m_lastPollTime{};
 
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_sendServerMessageConnection;
     entt::scoped_connection m_settingsChangeConnection;
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     bool m_pollingWhilePaused{false};
     std::deque<UniquePtr<ServerMessage>> m_pausedInboundQueue{};
     ServerReferencesMoveRequest m_pausedMoveRequest{};

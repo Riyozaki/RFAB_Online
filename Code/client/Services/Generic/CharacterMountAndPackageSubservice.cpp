@@ -330,7 +330,7 @@ void CharacterService::OnNotifyNewPackage(const NotifyNewPackage& acMessage) con
 
 void CharacterService::OnNotifyActorTeleport(const NotifyActorTeleport& acMessage) noexcept
 {
-    if (m_engineWorldLoadInProgress || m_savePurgeActive)
+    if (IsEngineWorldLoading() || m_savePurgeActive)
         return;
 
     const uint32_t cActorId = m_world.GetModSystem().GetGameId(acMessage.FormId);

@@ -31,8 +31,6 @@
 #include <Events/ActorAddedEvent.h>
 #include <Events/ActorRemovedEvent.h>
 #include <Events/UpdateEvent.h>
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/MountEvent.h>
 #include <Events/InitPackageEvent.h>
 #include <Events/BeastFormChangeEvent.h>
@@ -366,8 +364,6 @@ CharacterService::CharacterService(World& aWorld, entt::dispatcher& aDispatcher,
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&CharacterService::OnUpdate>(this);
     m_actionConnection = m_dispatcher.sink<ActionEvent>().connect<&CharacterService::OnActionEvent>(this);
 
-    m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&CharacterService::OnConnected>(this);
-    m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&CharacterService::OnDisconnected>(this);
 
     m_assignCharacterConnection = m_dispatcher.sink<AssignCharacterResponse>().connect<&CharacterService::OnAssignCharacter>(this);
     m_characterSpawnConnection = m_dispatcher.sink<CharacterSpawnRequest>().connect<&CharacterService::OnCharacterSpawn>(this);
@@ -828,7 +824,7 @@ void CharacterService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept
         {
             Actor* pLiveActor = Cast<Actor>(TESForm::GetById(acEvent.FormId));
             const bool isNetworkCreated = modelIt->second.SpawnRequest.FormId == GameId{} || IsNetworkCreatedActor(pLiveActor);
-            if (isNetworkCreated && pLiveActor && !m_savePurgeActive && !m_engineWorldLoadInProgress)
+            if (isNetworkCreated && pLiveActor && !m_savePurgeActive && !IsEngineWorldLoading())
             {
                 const auto obs = BuildLocalObserverState();
                 TESWorldSpace* pTargetWs = nullptr;
@@ -937,7 +933,7 @@ void CharacterService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 
 void CharacterService::EnsureLocalPlayerRegistered() noexcept
 {
-    if (m_engineWorldLoadInProgress || m_savePurgeActive)
+    if (IsEngineWorldLoading() || m_savePurgeActive)
         return;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
@@ -977,16 +973,15 @@ void CharacterService::EnsureLocalPlayerRegistered() noexcept
     }
 }
 
-void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexcept
+void CharacterService::OnSessionBegin(const Session::Transition&) noexcept
 {
     m_savePurgeActive = false;
-    m_engineWorldLoadInProgress = false;
     m_pendingPostSaveRemoteRestore = false;
     m_pendingLocalTempSpawns.clear();
     m_cachedRemoteSpawns.clear();
     m_remoteModels.clear();
     m_playerServerIds.clear();
-    NotifySaveLoadReset();
+    ResetWorldScopedCaches();
 
     EnsureLocalPlayerRegistered();
 
@@ -1025,32 +1020,32 @@ void CharacterService::OnConnected(const ConnectedEvent& acConnectedEvent) noexc
     }
 }
 
-void CharacterService::OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept
+void CharacterService::OnSessionEnd(const Session::Transition& acTransition) noexcept
 {
     ActorExtension::ClearAllLatestAnimations();
     m_localAppearanceResync.Reset();
     FaceGenSystem::InvalidateLocalPlayerHairTintIsolation();
     m_nextFaceGenMainThreadScheduleMs = 0;
 
-    if (m_engineWorldLoadInProgress)
+    // The world teardown already detached every actor; the engine discards the rest.
+    if (acTransition.DuringWorldLoad)
         return;
 
     PurgeNetworkActorsOnLiveDisconnect();
 }
 
-void CharacterService::BeginEngineWorldLoad() noexcept
+bool CharacterService::IsEngineWorldLoading() const noexcept
 {
-    m_engineWorldLoadInProgress = true;
+    return m_world.GetLifecycle().IsWorldLoadingAnyThread();
+}
+
+void CharacterService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
     GetDeferredDialogueDeletes().clear();
     // N4: the latest-animation cache is keyed by formID and 0xFFxxxxxx ids are recycled by the
     // reloaded world, so a stale entry would be sent as LatestAction for an unrelated actor.
     ActorExtension::ClearAllLatestAnimations();
     DetachAllActorsForEngineLoad();
-}
-
-void CharacterService::EndEngineWorldLoad() noexcept
-{
-    m_engineWorldLoadInProgress = false;
 }
 
 void CharacterService::PreSavePurgeDynamicActors() noexcept
@@ -1159,7 +1154,7 @@ void CharacterService::DetachAllActorsForEngineLoad() noexcept
     FaceGenSystem::InvalidateLocalPlayerHairTintIsolation();
     m_createdNetworkFormIds.clear();
     m_weaponDrawUpdates.clear();
-    NotifySaveLoadReset();
+    ResetWorldScopedCaches();
 
     auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     Vector<entt::entity> actorEntities(actorView.begin(), actorView.end());
@@ -1215,7 +1210,7 @@ void CharacterService::PurgeNetworkActorsOnLiveDisconnect() noexcept
     m_remoteModels.clear();
     m_playerServerIds.clear();
     m_weaponDrawUpdates.clear();
-    NotifySaveLoadReset();
+    ResetWorldScopedCaches();
 
     auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
     Vector<entt::entity> entitiesToDestroy;
@@ -1270,12 +1265,7 @@ void CharacterService::PurgeNetworkActorsOnLiveDisconnect() noexcept
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 }
 
-void CharacterService::PurgeAllDynamicActorsForWorldLoad() noexcept
-{
-    DetachAllActorsForEngineLoad();
-}
-
-void CharacterService::NotifySaveLoadReset() noexcept
+void CharacterService::ResetWorldScopedCaches() noexcept
 {
     m_cachedExperience = 0.f;
     m_rfabXpTracker.Reset();
@@ -1286,7 +1276,7 @@ void CharacterService::NotifySaveLoadReset() noexcept
     m_cancelledCookies.Clear();
     m_pendingRemoteMounts.clear();
     m_pendingLocalMount = {};
-    m_world.GetActorValueService().ResetForWorldReload();
+    // Actor values are their own participant (Session::ParticipantId::kActorValues).
 }
 
 void CharacterService::NotifyInSessionRollbackApplied() noexcept
@@ -1573,7 +1563,7 @@ void CharacterService::OnAssignCharacter(const AssignCharacterResponse& acMessag
 
 void CharacterService::OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept
 {
-    if (m_engineWorldLoadInProgress)
+    if (IsEngineWorldLoading())
     {
         // The server marked this entity as delivered and will never send it again on its own:
         // ask for the whole session once the load is over (common/Session/Resync.h).
@@ -2003,7 +1993,7 @@ void CharacterService::OnNotifyRelinquishControl(const NotifyRelinquishControl& 
 
 bool CharacterService::MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept
 {
-    if (!apActor || apActor->formID == 0x14 || apActor->IsStillLoading() || m_engineWorldLoadInProgress || m_savePurgeActive)
+    if (!apActor || apActor->formID == 0x14 || apActor->IsStillLoading() || IsEngineWorldLoading() || m_savePurgeActive)
         return false;
 
     PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
@@ -2168,7 +2158,7 @@ CoopWorldView::ObserverState CharacterService::BuildLocalObserverState() const n
 {
     CoopWorldView::ObserverState state{};
 
-    if (m_savePurgeActive || m_engineWorldLoadInProgress)
+    if (m_savePurgeActive || IsEngineWorldLoading())
         return state;
 
     if (UI* pUI = UI::Get())
@@ -2646,7 +2636,7 @@ Actor* CharacterService::MaterializeRemoteView(
 
 void CharacterService::ReconcileRemoteWorldViews() const noexcept
 {
-    if (m_savePurgeActive || m_engineWorldLoadInProgress)
+    if (m_savePurgeActive || IsEngineWorldLoading())
         return;
 
     FlushDeferredDialogueDeletes();

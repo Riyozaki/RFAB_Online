@@ -1,5 +1,7 @@
 #pragma once
 
+#include <common/Session/Lifecycle.h>
+
 #include <shared_mutex>
 
 struct Mods;
@@ -8,7 +10,7 @@ struct GameId;
 /**
  * @brief Makes sure that different clients can have independent load orders and mods.
  */
-struct ModSystem
+struct ModSystem final : Session::IParticipant
 {
     ModSystem(entt::dispatcher& aDispatcher) noexcept;
     ~ModSystem() = default;
@@ -22,7 +24,12 @@ struct ModSystem
 
 protected:
     void HandleMods(const Mods& acMods) noexcept;
-    void OnDisconnected(const struct DisconnectedEvent&) noexcept;
+
+public:
+    // Session::ParticipantId::kModTable. The table of a session is filled by HandleMods (the Mods
+    // packet arrives before the session begins) and dropped when the session ends - after the world
+    // model, which may still translate ids during its own teardown.
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
 
 private:
     struct GameMod
@@ -33,7 +40,6 @@ private:
 
     mutable std::shared_mutex m_mutex;
     entt::scoped_connection m_modsConnection;
-    entt::scoped_connection m_disconnectedConnection;
     Map<uint16_t, uint32_t> m_liteToServer;
     Map<uint32_t, GameMod> m_serverToGame;
     uint32_t m_standardToServer[0x100];

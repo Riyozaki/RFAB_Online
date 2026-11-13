@@ -891,7 +891,7 @@ void CharacterService::ApplyRemotePlayerHairColorForm(
 
 void CharacterService::PollLocalPlayerAppearanceSync() noexcept
 {
-    if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
+    if (!m_transport.IsOnline() || m_savePurgeActive || IsEngineWorldLoading())
         return;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
@@ -931,7 +931,7 @@ void CharacterService::PollLocalPlayerAppearanceSync() noexcept
 
 void CharacterService::ScheduleMainThreadFaceGenPass() noexcept
 {
-    if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
+    if (!m_transport.IsOnline() || m_savePurgeActive || IsEngineWorldLoading())
         return;
 
     if (!m_spFaceGenMainThreadPending || m_spFaceGenMainThreadPending->load(std::memory_order_acquire))

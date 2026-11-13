@@ -26,8 +26,6 @@ namespace
 
 #include <Events/UpdateEvent.h>
 #include <Events/ActorRemovedEvent.h>
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/HealthChangeEvent.h>
 
 #include <Messages/NotifyActorValueChanges.h>
@@ -51,7 +49,6 @@ ActorValueService::ActorValueService(World& aWorld, entt::dispatcher& aDispatche
     m_world.on_construct<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
     m_world.on_update<LocalComponent>().connect<&ActorValueService::OnLocalComponentAdded>(this);
     m_world.on_destroy<LocalComponent>().connect<&ActorValueService::OnLocalComponentRemoved>(this);
-    m_dispatcher.sink<DisconnectedEvent>().connect<&ActorValueService::OnDisconnected>(this);
     m_dispatcher.sink<ActorRemovedEvent>().connect<&ActorValueService::OnActorRemoved>(this);
     m_dispatcher.sink<UpdateEvent>().connect<&ActorValueService::OnUpdate>(this);
     m_dispatcher.sink<NotifyActorValueChanges>().connect<&ActorValueService::OnActorValueChanges>(this);
@@ -97,7 +94,17 @@ void ActorValueService::OnLocalComponentRemoved(entt::registry& aRegistry, const
         aRegistry.remove<ActorValuesComponent>(aEntity);
 }
 
-void ActorValueService::ResetForWorldReload() noexcept
+void ActorValueService::OnSessionEnd(const Session::Transition&) noexcept
+{
+    ResetPerWorldState();
+}
+
+void ActorValueService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
+    ResetPerWorldState();
+}
+
+void ActorValueService::ResetPerWorldState() noexcept
 {
     m_smallHealthChanges.clear();
     m_smallHealthAttackerIds.clear();
@@ -121,12 +128,6 @@ void ActorValueService::ForgetHealthRevision(uint32_t aServerId) const noexcept
 {
     if (aServerId != 0)
         m_knownHealthRevisions.erase(aServerId);
-}
-
-void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
-{
-    (void)acEvent;
-    ResetForWorldReload();
 }
 
 void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept

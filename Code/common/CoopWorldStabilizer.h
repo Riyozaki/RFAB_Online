@@ -501,7 +501,7 @@ namespace CoopWorldStabilizer
      * - `kQueueUntilUnpaused`: ALL other reliable packets (`AuthenticationResponse`, `StringCacheUpdate`,
      *   `NotifyPlayerList`, `NotifyPlayerJoined`, `NotifyPlayerLeft`, `NotifyParty*`, `NotifySpawnData`, etc.)
      *   queued in strict single-stream causal FIFO order so `PlayerJoined` can never overtake `PlayerLeft`
-     *   and `ConnectedEvent` never mutates cells/globals while `freezeTime == true`.
+     *   and the session begin (Session::Lifecycle) never mutates cells/globals while `freezeTime == true`.
      */
     [[nodiscard]] constexpr PausedInboundPacketAction ClassifyPausedInboundPacket(uint32_t aOpcode) noexcept
     {

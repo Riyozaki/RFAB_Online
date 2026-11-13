@@ -421,7 +421,7 @@ int main()
             assert(rfabSvcCpp.find("void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept") != std::string::npos);
             {
                 const auto evalPos = rfabSvcCpp.find("RfabAdapterService::EvaluateCoopAction(");
-                const auto onConnPos = rfabSvcCpp.find("void RfabAdapterService::OnConnected(");
+                const auto onConnPos = rfabSvcCpp.find("void RfabAdapterService::OnSessionBegin(");
                 assert(evalPos != std::string::npos && onConnPos != std::string::npos && evalPos < onConnPos);
                 const std::string evalBody = rfabSvcCpp.substr(evalPos, onConnPos - evalPos);
                 assert(evalBody.find("m_world.view<") == std::string::npos);
@@ -462,11 +462,11 @@ int main()
             const std::string cellH = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.h");
             const std::string cellCpp = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp");
             const std::string actorCpp = readTextFile("Code/client/Games/Skyrim/Actor.cpp");
-            assert(cellH.find("mutable BSRecursiveLock lock;") != std::string::npos);
+            assert(cellH.find("mutable BSSpinLock lock;") != std::string::npos);
             assert(cellH.find("static_assert(offsetof(TESObjectCELL, lock) == 0x118);") != std::string::npos);
-            assert(cellCpp.find("BSScopedLock<BSRecursiveLock> cellLock(lock);") != std::string::npos);
+            assert(cellCpp.find("BSSpinLockGuard cellLock(lock);") != std::string::npos);
             assert(cellCpp.find("if (!pRef || !pRef->baseForm)") != std::string::npos);
-            assert(actorCpp.find("BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);") != std::string::npos);
+            assert(actorCpp.find("BSSpinLockGuard cellLock(apCell->lock);") != std::string::npos);
 
             // (6) Stage 1 (v1.2.0): Boss & Arena Encounter Sync
             const std::string extraDataH = readTextFile("Code/client/Games/Skyrim/ExtraData/ExtraData.h");
@@ -536,7 +536,7 @@ int main()
             assert(serverQuestCpp.find("dedupHistory.ResetSceneMaster();") != std::string::npos);
             assert(serverPartyCpp.find("m_world.GetQuestService().SyncPartyQuestsForPlayer(aPlayer);") != std::string::npos);
             assert(refrCpp.find("WasObjectDirectlyActivatedRecently(apSelf->formID)") != std::string::npos);
-            assert(refrCpp.find("RecordDirectObjectActivation(apThis->formID);") != std::string::npos);
+            assert(refrCpp.find("RecordDirectObjectActivation(formID);") != std::string::npos);
 
             // Unit tests for Stage 2 quest classification helpers in RfabModpackCompat.h:
             {
@@ -587,11 +587,11 @@ int main()
                 assert(!RfabCompat::IsFriendlyScriptBuffEffectEditorId("RFAB_PoisonDecayCurse"));
             }
 
-            // (5) OverlayClient marshals all CEF UI actions onto World::Get().GetRunner().Queue(...) + PartyService null-guards GetOverlayApp()
+            // (5) OverlayClient marshals all CEF UI actions onto the main thread (QueueMainThreadTask / GetRunner().Queue) + PartyService null-guards GetOverlayApp()
             const std::string overlayCpp = readTextFile("Code/client/Services/Generic/OverlayClient.cpp");
             const std::string partyCpp = readTextFile("Code/client/Services/Generic/PartyService.cpp");
-            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().CreateParty(); });") != std::string::npos);
-            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().LeaveParty(); });") != std::string::npos);
+            assert(overlayCpp.find("World::Get().QueueMainThreadTask([]() { World::Get().GetPartyService().CreateParty(); });") != std::string::npos);
+            assert(overlayCpp.find("World::Get().QueueMainThreadTask([]() { World::Get().GetPartyService().LeaveParty(); });") != std::string::npos);
             assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetMagicService().StartRevealingOtherPlayers(); });") != std::string::npos);
             assert(partyCpp.find("GetOverlayApp()->ExecuteAsync") == std::string::npos);
 
@@ -621,8 +621,9 @@ int main()
 
                 const std::string coordSaveCpp = readTextFile("Code/client/Services/CoordinatedSaveService.cpp");
                 assert(coordSaveCpp.find("IsLocalPlayerAllyProtectionHost()") != std::string::npos);
-                assert(coordSaveCpp.find("BeginEngineWorldLoad()") != std::string::npos);
-                assert(coordSaveCpp.find("EndEngineWorldLoad()") != std::string::npos);
+                // v4.1.0: the engine-load bracket is fed to Session::Lifecycle, which owns the world-load gate.
+                assert(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadBegin(liveReload)") != std::string::npos);
+                assert(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadEnd(aSucceeded)") != std::string::npos);
             }
 
             // [Issue #2] StatsMenu CTD & Tab (TweenMenu) lockout: post-SKSE SoulsRE/CustomSkills/RFAB guards + ControlMap self-heal
@@ -963,7 +964,7 @@ int main()
             assert(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
             assert(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
             assert(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
-            assert(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
+            assert(clientMapCpp.find("if (!pLocation || (!Cast<TESWorldSpace>(pLocation) && !Cast<TESObjectCELL>(pLocation)))") != std::string::npos);
             assert(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
         }
 
@@ -1070,11 +1071,13 @@ int main()
 
             assert(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
             assert(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
-            assert(coordSaveCpp2.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+            // v4.1.0: Discovery resets its loaded forms as a lifecycle participant on every world-load begin.
+            assert(discoveryCpp.find("void DiscoveryService::OnWorldLoadBegin(") != std::string::npos);
+            assert(coordSaveCpp2.find("m_world.GetLifecycle().OnWorldLoadBegin(") != std::string::npos);
             assert(coordSaveCpp2.find("pPlayer->parentCell != nullptr") != std::string::npos);
             assert(coordSaveCpp2.find("m_autoReconnectAttemptsLeft") != std::string::npos);
             assert(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
-            assert(serverCharCpp.find("otherCell.IsInRange(cellIdComponent, false)") != std::string::npos);
+            assert(serverCharCpp.find("ReconcileAllEntitiesForObserver(acMessage.pPlayer)") != std::string::npos);
             assert(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
 
             assert(clientCharCpp.find("pWorldSpace->LoadCell") == std::string::npos);
@@ -1677,7 +1680,16 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
 
         REQUIRE(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
         REQUIRE(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
-        REQUIRE(coordSaveCpp.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+        // v4.1.0: Discovery resets its loaded forms as a lifecycle participant on every world-load begin.
+        {
+            const auto beginPos = discoveryCpp.find("void DiscoveryService::OnWorldLoadBegin(");
+            const auto endPos = discoveryCpp.find("void DiscoveryService::OnWorldLoadEnd(");
+            REQUIRE(beginPos != std::string::npos);
+            REQUIRE(endPos != std::string::npos);
+            REQUIRE(beginPos < endPos);
+            REQUIRE(discoveryCpp.substr(beginPos, endPos - beginPos).find("ResetLoadedForms();") != std::string::npos);
+            REQUIRE(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadBegin(") != std::string::npos);
+        }
         REQUIRE(coordSaveCpp.find("pPlayer->parentCell != nullptr") != std::string::npos);
         REQUIRE(coordSaveCpp.find("m_autoReconnectAttemptsLeft") != std::string::npos);
         REQUIRE(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);

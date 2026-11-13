@@ -17,7 +17,6 @@
 #include <Events/GridCellChangeEvent.h>
 #include <Events/CellChangeEvent.h>
 #include <Events/LocationChangeEvent.h>
-#include <Events/ConnectedEvent.h>
 #include <Events/ConnectionErrorEvent.h>
 
 #include <World.h>
@@ -41,7 +40,6 @@ DiscoveryService::DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher)
     , m_dispatcher(aDispatcher)
 {
     m_preUpdateConnection = m_dispatcher.sink<PreUpdateEvent>().connect<&DiscoveryService::OnUpdate>(this);
-    m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&DiscoveryService::OnConnected>(this);
 
     EventDispatcherManager::Get()->loadGameEvent.RegisterSink(this);
 }
@@ -290,6 +288,17 @@ void DiscoveryService::HoldActorRemoval(uint32_t aFormId, uint64_t aDurationMs) 
     m_demotionHoldTracker.ArmExplicitHold(aFormId, NowDiscoverySteadyMs(), aDurationMs);
 }
 
+void DiscoveryService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
+    ResetLoadedForms();
+}
+
+void DiscoveryService::OnWorldLoadEnd(const Session::Transition& acTransition) noexcept
+{
+    if (!acTransition.Succeeded)
+        ReconcileMissingWorldEntities();
+}
+
 void DiscoveryService::ResetLoadedForms() noexcept
 {
     m_forms.clear();
@@ -340,7 +349,7 @@ void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept
     VisitForms();
 }
 
-void DiscoveryService::OnConnected(const ConnectedEvent& acEvent) noexcept
+void DiscoveryService::OnSessionBegin(const Session::Transition&) noexcept
 {
     // uGridsToLoad should always be 5, as this is what the server enforces
     auto* pSetting = INISettingCollection::Get()->GetSetting("uGridsToLoad:General");
@@ -383,7 +392,7 @@ BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDis
 
     // Clear stale pre-load form IDs (especially 0x14 PlayerCharacter and nearby NPCs destroyed during
     // DetachAllActorsForEngineLoad) so VisitForms() immediately re-creates their EnTT entities once
-    // `EndEngineWorldLoad()` and the `WorldReloadBarrier` Host gate settle.
+    // the world load ends (Session::Lifecycle) and the `WorldReloadBarrier` Host gate settles.
     ResetLoadedForms();
     if (!m_world.GetCharacterService().IsEngineWorldLoading())
     {

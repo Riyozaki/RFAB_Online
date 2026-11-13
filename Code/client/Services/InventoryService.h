@@ -2,12 +2,12 @@
 
 #include <Structs/Inventory.h>
 #include <unordered_map>
+#include <common/Session/Lifecycle.h>
 
 struct World;
 struct TransportService;
 
 struct UpdateEvent;
-struct DisconnectedEvent;
 struct NotifyObjectInventoryChanges;
 struct NotifyInventoryChanges;
 struct InventoryChangeEvent;
@@ -25,7 +25,7 @@ struct NotifyDrawWeapon;
  * The InventoryService manages any changes to both the current equipment of actors,
  * and the contents of both actor and object inventories.
  */
-struct InventoryService
+struct InventoryService final : Session::IParticipant
 {
     InventoryService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
     ~InventoryService() noexcept = default;
@@ -55,7 +55,10 @@ struct InventoryService
      */
     void OnNotifyEquipmentChanges(const NotifyEquipmentChanges& acMessage) noexcept;
     void OnNotifyDrawWeapon(const NotifyDrawWeapon& acMessage) noexcept;
-    void ResetForWorldReload() noexcept;
+
+    // Session::ParticipantId::kInventory: pending NPC ammo deltas name actors of one world.
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
 
 private:
     struct PendingNpcAmmoDelta
@@ -66,7 +69,7 @@ private:
         bool UpdateClients{true};
     };
 
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
+    void DropPendingNpcAmmoDeltas() noexcept;
     void FlushPendingNpcAmmoDeltas(bool aForceFlushAll) noexcept;
 
     /**
@@ -88,7 +91,6 @@ private:
     std::unordered_map<uint64_t, PendingNpcAmmoDelta> m_pendingNpcAmmoDeltas{};
 
     entt::scoped_connection m_updateConnection;
-    entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_inventoryConnection;
     entt::scoped_connection m_equipmentConnection;
     entt::scoped_connection m_inventoryChangeConnection;

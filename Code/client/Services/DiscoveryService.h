@@ -3,12 +3,12 @@
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
 #include <CoopWorldStabilizer.h>
+#include <common/Session/Lifecycle.h>
 
 #include <Structs/GridCellCoords.h>
 
 struct World;
 
-struct ConnectedEvent;
 struct GameService;
 
 struct PreUpdateEvent;
@@ -21,14 +21,13 @@ struct TESWorldSpace;
  * Responsible for discovering loaded actors, dispatching cell changes,
  * and notifying the rest of the client about newly discovered actors.
  */
-struct DiscoveryService final : BSTEventSink<TESLoadGameEvent>
+struct DiscoveryService final : BSTEventSink<TESLoadGameEvent>, Session::IParticipant
 {
     DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher) noexcept;
     ~DiscoveryService() noexcept = default;
 
     TP_NOCOPYMOVE(DiscoveryService);
 
-    void ResetLoadedForms() noexcept;
     void ReconcileMissingWorldEntities() noexcept;
     void VisitCell(bool aForceTrigger = false) noexcept;
     void HoldActorRemoval(uint32_t aFormId, uint64_t aDurationMs = CoopWorldStabilizer::ActorDemotionHoldTracker::kDefaultDemotionHoldMs) noexcept;
@@ -52,10 +51,18 @@ protected:
      */
     void OnUpdate(const PreUpdateEvent& acPreUpdateEvent) noexcept;
 
-    /**
-     * On connect, forcefully dispatch the loaded actors and locational data.
-     */
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
+public:
+    // Session::ParticipantId::kDiscovery (first of the world model: everything below is built from it).
+    // Session begin: forcefully dispatch the loaded actors and locational data.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    // World load begin: every form this client had seen belongs to the world being torn down.
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+    // World load end, failed or cancelled: the old world is still there but its actor entities were
+    // detached - re-attach them now (a successful load re-discovers through TESLoadGameEvent).
+    void OnWorldLoadEnd(const Session::Transition& acTransition) noexcept override;
+
+protected:
+    void ResetLoadedForms() noexcept;
 
     /**
      * When the game finishes loading, forcefully dispatch the loaded actors and locational data.
@@ -107,5 +114,4 @@ private:
     struct TESForm* m_pLocation = nullptr;
 
     entt::scoped_connection m_preUpdateConnection;
-    entt::scoped_connection m_connectedConnection;
 };

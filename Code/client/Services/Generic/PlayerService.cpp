@@ -3,8 +3,6 @@
 #include <World.h>
 
 #include <Events/UpdateEvent.h>
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/GridCellChangeEvent.h>
 #include <Events/CellChangeEvent.h>
 #include <Events/PlayerDialogueEvent.h>
@@ -41,8 +39,6 @@ PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher, Trans
     , m_transport(aTransport)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&PlayerService::OnUpdate>(this);
-    m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&PlayerService::OnConnected>(this);
-    m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&PlayerService::OnDisconnected>(this);
     m_settingsConnection = m_dispatcher.sink<ServerSettings>().connect<&PlayerService::OnServerSettingsReceived>(this);
     m_notifyRespawnConnection = m_dispatcher.sink<NotifyPlayerRespawn>().connect<&PlayerService::OnNotifyPlayerRespawn>(this);
     m_gridCellChangeConnection = m_dispatcher.sink<GridCellChangeEvent>().connect<&PlayerService::OnGridCellChangeEvent>(this);
@@ -73,7 +69,7 @@ uint64_t NowSteadyMsForPlayerService() noexcept
 }
 } // namespace
 
-void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
+void PlayerService::OnSessionBegin(const Session::Transition&) noexcept
 {
     m_respawnTeleportGuard.NotifyConnected(NowSteadyMsForPlayerService());
 
@@ -93,6 +89,12 @@ void PlayerService::OnConnected(const ConnectedEvent& acEvent) noexcept
 
     if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
         pWorldEncountersEnabled->f = 0.f;
+
+    // Online, a vanilla death would end in the game-over load, an uncoordinated load that drops the
+    // session; the downed/death systems decide what happens instead. (Previously set by
+    // DownedStateService's connect handler, which ran after the settings were applied - same result.)
+    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+        pPlayer->SetPlayerRespawnMode(true);
 }
 
 void PlayerService::RestoreMultiplayerGlobalsAfterWorldReload() noexcept
@@ -140,7 +142,7 @@ void PlayerService::RestoreMultiplayerGlobalsAfterWorldReload() noexcept
     ToggleDeathSystem(settings.DeathSystemEnabled && !settings.DownedSystemEnabled);
 }
 
-void PlayerService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
+void PlayerService::OnSessionEnd(const Session::Transition&) noexcept
 {
     m_respawnTeleportGuard.NotifyDisconnected(NowSteadyMsForPlayerService());
     if (m_godmodeStart)

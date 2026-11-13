@@ -12,7 +12,7 @@ struct TESQuest;
 /**
  * @brief Handles quest sync
  */
-class QuestService final : public BSTEventSink<TESQuestStartStopEvent>, BSTEventSink<TESQuestStageEvent>, BSTEventSink<TESSceneEvent>, BSTEventSink<TESSceneActionEvent>, BSTEventSink<TESScenePhaseEvent>
+class QuestService final : public BSTEventSink<TESQuestStartStopEvent>, BSTEventSink<TESQuestStageEvent>, BSTEventSink<TESSceneEvent>, BSTEventSink<TESSceneActionEvent>, BSTEventSink<TESScenePhaseEvent>, public Session::IParticipant
 {
 public:
     QuestService(World&, entt::dispatcher&);
@@ -23,12 +23,13 @@ public:
     static bool StopQuest(uint32_t aformId);
     const uint32_t PlayerId() const noexcept { return m_playerId; }
 
+    // Session::ParticipantId::kQuests: the local player id of the session. (The old disconnect
+    // handler was never subscribed, so the id outlived its session.)
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+
 private:
     friend struct QuestEventHandler;
-
-    void OnConnected(const ConnectedEvent&) noexcept;
-    void Disconnected(const DisconnectedEvent&) noexcept { m_playerId = 0; }
-
 
     BSTEventResult OnEvent(const TESQuestStartStopEvent*, const EventDispatcher<TESQuestStartStopEvent>*) override;
     BSTEventResult OnEvent(const TESQuestStageEvent*, const EventDispatcher<TESQuestStageEvent>*) override;
@@ -43,10 +44,8 @@ private:
     bool CanAdvanceQuestForParty() const noexcept;
 
     World& m_world;
-    uint32_t m_playerId;
+    uint32_t m_playerId{0};
 
-    entt::scoped_connection m_joinedConnection;
-    entt::scoped_connection m_leftConnection;
     entt::scoped_connection m_questUpdateConnection;
     entt::scoped_connection m_questSceneUpdateConnection;
 };

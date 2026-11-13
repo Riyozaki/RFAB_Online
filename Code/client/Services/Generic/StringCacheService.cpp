@@ -1,27 +1,22 @@
 
 #include <TiltedOnlinePCH.h>
 
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
-
 #include <Services/StringCacheService.h>
 #include <World.h>
 #include "StringCache.h"
 
 StringCacheService::StringCacheService(entt::dispatcher& aDispatcher) noexcept
 {
-    m_connectedConnection = aDispatcher.sink<ConnectedEvent>().connect<&StringCacheService::HandleConnected>(this);
-    m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&StringCacheService::HandleDisconnected>(this);
     m_stringCacheUpdateConnection = aDispatcher.sink<StringCacheUpdate>().connect<&StringCacheService::HandleStringCacheUpdate>(this);
 }
 
-void StringCacheService::HandleConnected(const ConnectedEvent& acEvent) noexcept
+void StringCacheService::OnSessionBegin(const Session::Transition&) noexcept
 {
-    // Can never be too careful
+    // Ids are assigned by the server from 0 for every session: nothing from before can be valid.
     StringCache::Get().Clear();
 }
 
-void StringCacheService::HandleDisconnected(const DisconnectedEvent& acEvent) noexcept
+void StringCacheService::OnSessionEnd(const Session::Transition&) noexcept
 {
     StringCache::Get().Clear();
 }
