@@ -2,7 +2,6 @@
 
 #include <Systems/ModSystem.h>
 
-#include <Events/DisconnectedEvent.h>
 #include <Structs/Mods.h>
 #include <Structs/GameId.h>
 #include <common/CoopPacketSafety.h>
@@ -19,10 +18,9 @@ ModSystem::ModSystem(entt::dispatcher& aDispatcher) noexcept
     m_standardToServer[0xFF] = CoopPacketSafety::kRuntimeDynamicModId;
 
     m_modsConnection = aDispatcher.sink<Mods>().connect<&ModSystem::HandleMods>(this);
-    m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&ModSystem::OnDisconnected>(this);
 }
 
-void ModSystem::OnDisconnected(const DisconnectedEvent&) noexcept
+void ModSystem::OnSessionEnd(const Session::Transition&) noexcept
 {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     m_liteToServer.clear();

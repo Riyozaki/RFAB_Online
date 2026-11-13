@@ -53,6 +53,18 @@ Console::Setting bAutoScaleEnemyHealth{"Gameplay:bAutoScaleEnemyHealth", "Automa
 Console::Setting fHealthExtraBase{"Gameplay:fHealthExtraBase", "Extra baseline term added to connected player count for HP scaling (1.0 => 2p=3x, 3p=4x)", 1.0f};
 Console::Setting bEnableDownedSystem{"Gameplay:bEnableDownedSystem", "Enables RFAB 0-HP downed-on-knee bleedout, E-revive, strict combat leash, and party wipe checkpoint reload", true};
 Console::Setting bEnableCoordinatedSaves{"Gameplay:bEnableCoordinatedSaves", "Enables host-coordinated saves/loads and automatic post-combat world checkpoints", true};
+// v4.1.0 feature switches (common/Session/Features.h): every optional coop subsystem can be turned off
+// without a new build, so a playtest problem can be bisected one feature at a time.
+Console::Setting bEnableTacticalHud{"Gameplay:bEnableTacticalHud", "Enables the RFAB tactical HUD (peer roster, downed beacons) and 3D tactical pings", true};
+Console::Setting bEnableHairColorSync{"Gameplay:bEnableHairColorSync", "Gives every remote player an isolated copy of their exact RGB hair colour (RaceMenu)", true};
+Console::Setting bEnableRfabCombatRules{"Gameplay:bEnableRfabCombatRules", "Enables RFAB coop combat rules: ally protection, standing-target selection, boss and arena barrier sync", true};
+Console::Setting bEnableSelfHealingResync{"Gameplay:bEnableSelfHealingResync", "Lets clients detect lost world state and ask the server to resend it (recommended)", true};
+Console::Setting bEnableServerOwnedWorldItems{"Gameplay:bEnableServerOwnedWorldItems",
+                                              "Dropped items get a server id: every player sees them (also after joining or reloading) and only one player can pick each up",
+                                              true};
+extern Console::Setting<bool> bEnableItemDrops;
+extern Console::Setting<bool> bEnableXpSync;
+extern Console::Setting<bool> bEnableRfabXpSync;
 // ModPolicy Stuff
 Console::Setting bEnableModCheck{"ModPolicy:bEnableModCheck", "Bypass the checking of mods on the server", false, Console::SettingsFlags::kLocked};
 Console::Setting bAllowSKSE{"ModPolicy:bAllowSKSE", "Allow clients with SKSE active to join", true, Console::SettingsFlags::kLocked};
@@ -74,6 +86,25 @@ Console::Command<> TogglePvp(
         bEnablePvp = !bEnablePvp;
         spdlog::get("ConOut")->info("PvP has been {}.", bEnablePvp == true ? "enabled" : "disabled");
         GameServer::Get()->UpdateSettings();
+    });
+
+Console::Command<> ListFeatures(
+    "ListFeatures", "Lists the coop feature switches (Gameplay:bEnable*) and whether each one is on",
+    [](Console::ArgStack&)
+    {
+        const uint32_t mask = GetDisabledCoopFeatureMask();
+        auto out = spdlog::get("ConOut");
+        for (const auto& info : Session::kFeatureTable)
+            out->info("{:<20} {}", std::string(info.Name), Session::IsEnabledIn(mask, info.Bit) ? "on" : "OFF");
+        out->info("Live change: set Gameplay:bEnable<Name> false, then ReloadFeatures. STServer.ini edits apply on restart.");
+    });
+
+Console::Command<> ReloadFeatures(
+    "ReloadFeatures", "Re-sends the current server settings (including feature switches) to every client",
+    [](Console::ArgStack&)
+    {
+        GameServer::Get()->UpdateSettings();
+        spdlog::get("ConOut")->info("Settings re-sent to all clients.");
     });
 
 // A playtester can see what the server refused without a debug build: the summary
@@ -177,6 +208,26 @@ static bool IsMoPoActive()
     return bEnableModCheck;
 }
 
+uint32_t GetDisabledCoopFeatureMask() noexcept
+{
+    using Session::Feature;
+    uint32_t mask = Session::ComposeDisabledMask(0u, bEnableDownedSystem, bEnableCoordinatedSaves);
+    mask = Session::WithFeature(mask, Feature::kTacticalHud, bEnableTacticalHud);
+    mask = Session::WithFeature(mask, Feature::kHairColorSync, bEnableHairColorSync);
+    mask = Session::WithFeature(mask, Feature::kSharedRfabXp, bEnableRfabXpSync);
+    mask = Session::WithFeature(mask, Feature::kSharedSkillXp, bEnableXpSync);
+    mask = Session::WithFeature(mask, Feature::kRfabCombatRules, bEnableRfabCombatRules);
+    mask = Session::WithFeature(mask, Feature::kSelfHealingResync, bEnableSelfHealingResync);
+    // Without Gameplay:bEnableItemDrops no dropped item is synced at all, server-owned or not.
+    mask = Session::WithFeature(mask, Feature::kServerOwnedWorldItems, bEnableServerOwnedWorldItems && bEnableItemDrops);
+    return mask;
+}
+
+bool IsCoopFeatureEnabled(Session::Feature aFeature) noexcept
+{
+    return Session::IsEnabledIn(GetDisabledCoopFeatureMask(), aFeature);
+}
+
 ServerSettings GetSettings()
 {
     ServerSettings settings{};
@@ -191,6 +242,7 @@ ServerSettings GetSettings()
     settings.HealthExtraBase = std::isfinite(fHealthExtraBase.as_float()) ? std::clamp(fHealthExtraBase.as_float(), 0.0f, 10.0f) : 1.0f;
     settings.DownedSystemEnabled = bEnableDownedSystem;
     settings.CoordinatedSavesEnabled = bEnableCoordinatedSaves;
+    settings.DisabledFeatureMask = GetDisabledCoopFeatureMask();
     if (auto* pServer = GameServer::Get(); pServer && pServer->HasWorld())
     {
         const auto& encCfg = pServer->GetWorld().GetEncounterService().GetCoordinator().GetConfig();

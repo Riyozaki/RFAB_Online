@@ -536,6 +536,71 @@ void CharacterService::ForceResyncObserverAfterRollback(Player* apObserver) cons
     }
 }
 
+Session::Resync::Outcome CharacterService::ResyncEntityForObserver(
+    Player* apObserver,
+    uint32_t aServerId,
+    uint32_t& aOutSnapshots) const noexcept
+{
+    aOutSnapshots = 0;
+    if (!apObserver || aServerId == Session::Resync::kNoServerId)
+        return Session::Resync::Outcome::kInvalid;
+
+    const auto sendRemoval = [&]() {
+        m_interestRegistry.UnmarkInRange(apObserver->GetId(), aServerId);
+        NotifyRemoveCharacter removeMsg{};
+        removeMsg.ServerId = aServerId;
+        apObserver->Send(removeMsg);
+        ++aOutSnapshots;
+        return Session::Resync::Outcome::kEntityGone;
+    };
+
+    const auto entity = static_cast<entt::entity>(aServerId);
+    if (!m_world.valid(entity) || !m_world.all_of<CharacterComponent, CellIdComponent, OwnerComponent>(entity))
+        return sendRemoval();
+
+    const auto& ownerComp = m_world.get<OwnerComponent>(entity);
+    if (ownerComp.GetOwner() == apObserver)
+    {
+        // The client streams nothing for it although it owns it: a resend cannot fix ownership.
+        // Logged so the flight digest / step-2 session store can pick it up.
+        spdlog::warn("[RFAB Resync] player {} asked for entity {:X} it owns on the server", apObserver->GetId(), aServerId);
+        return Session::Resync::Outcome::kOwnedByRequester;
+    }
+
+    const auto& charComp = m_world.get<CharacterComponent>(entity);
+    const auto& cellComp = m_world.get<CellIdComponent>(entity);
+    const bool inRange = apObserver->GetCellComponent().IsInRange(cellComp, charComp.IsDragon());
+
+    // Same rule as ForceResyncObserverAfterRollback: other players are always spawned (the client
+    // keeps an out-of-range player model fed by NotifyPlayerCellChanged), NPCs only when in range.
+    if (!inRange && !charComp.IsPlayer())
+        return sendRemoval();
+
+    if (inRange)
+        m_interestRegistry.MarkInRange(apObserver->GetId(), aServerId);
+
+    CharacterSpawnRequest spawnMessage{};
+    Serialize(m_world, entity, &spawnMessage);
+    apObserver->Send(spawnMessage);
+    ++aOutSnapshots;
+    return Session::Resync::Outcome::kApplied;
+}
+
+uint32_t CharacterService::ResyncAllEntitiesForObserver(Player* apObserver) const noexcept
+{
+    if (!apObserver)
+        return 0;
+
+    // Deliberately the cell-change path (PlayerService runs ReconcileAllEntitiesForObserver on every
+    // cell/worldspace change): a whole-session resync has exactly the side effects of the requester
+    // entering the cell it stands in - dormant-NPC adoption and sticky leader authority included - and
+    // no others. Entities the requester owns are skipped there, so the client is never sent a remote
+    // copy of its own actor. Single-entity resyncs must NOT use it (see ResyncEntityForObserver).
+
+    ForceResyncObserverAfterRollback(apObserver);
+    return static_cast<uint32_t>(m_interestRegistry.EntitiesOfObserver(apObserver->GetId()).size());
+}
+
 void CharacterService::ResetWorldEntitiesForCheckpointReload(
     const std::unordered_set<uint64_t>& acCheckpointPersistentKeys,
     bool aHasCheckpointBaseline) const noexcept

@@ -62,37 +62,6 @@ bool RfabXpAndBookSync::ApplyDualPoolExperienceDelta(
     return true;
 }
 
-void RfabXpAndBookSync::SuppressSoloRfabAutosave(const RfabCompat::RfabBindingsConfig& acBindings) noexcept
-{
-    if (m_autosaveSuppressed)
-        return;
-
-    const std::filesystem::path candidate =
-        RfabFormResolver::DiscoverSkyrimRootDirectory() / acBindings.RfabAutosaveIniRelPath;
-    std::string raw;
-    if (!RfabCompat::Detail::ReadTextFile(candidate, raw))
-        return;
-
-    m_autosaveIniPath = candidate;
-    m_originalAutosaveIniContent = raw;
-    const std::string suppressed = RfabCompat::SuppressRfabAutosaveIniContent(raw);
-    if (suppressed != raw)
-        RfabCompat::Detail::WriteTextFile(candidate, suppressed);
-
-    m_autosaveSuppressed = true;
-}
-
-void RfabXpAndBookSync::RestoreSoloRfabAutosave() noexcept
-{
-    if (!m_autosaveSuppressed)
-        return;
-
-    if (!m_autosaveIniPath.empty() && !m_originalAutosaveIniContent.empty())
-        RfabCompat::Detail::WriteTextFile(m_autosaveIniPath, m_originalAutosaveIniContent);
-
-    m_autosaveSuppressed = false;
-}
-
 void RfabXpAndBookSync::ApplySessionNoDeathHandling(RfabFormResolver& aResolver) noexcept
 {
     m_pNoDeathHandlingGlobal = aResolver.ResolveNoDeathHandlingGlobal();
@@ -147,7 +116,6 @@ void RfabXpAndBookSync::ResetRuntimeWatches() noexcept
 
 void RfabXpAndBookSync::ResetOnDisconnect() noexcept
 {
-    RestoreSoloRfabAutosave();
     RestoreSessionNoDeathHandling();
     ResetRuntimeWatches();
     m_currentWorldEpoch = 1;

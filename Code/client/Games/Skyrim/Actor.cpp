@@ -33,6 +33,7 @@
 #include <Games/Skyrim/Interface/UI.h>
 #include <World.h>
 #include <Services/PapyrusService.h>
+#include <Services/WorldItemService.h>
 #include <Services/DownedStateService.h>
 #include <Services/RfabAdapterService.h>
 
@@ -51,6 +52,7 @@
 #include <ExtraData/ExtraLeveledCreature.h>
 #include <ExtraData/ExtraCharge.h>
 #include <ExtraData/ExtraCount.h>
+#include <common/DroppedItemMatch.h>
 #include <ExtraData/ExtraEnchantment.h>
 #include <ExtraData/ExtraHealth.h>
 #include <ExtraData/ExtraPoison.h>
@@ -2171,7 +2173,16 @@ void* TP_MAKE_THISCALL(HookPickUpObject, Actor, TESObjectREFR* apObject, int32_t
 
         const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
 
-        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), isTempDropPickup, true));
+        // GetItemFromExtraData reported the reference's whole stack; a partial pickup takes aCount.
+        const int32_t stackCount = item.Count;
+        const bool wholeStack = aCount <= 0 || aCount >= stackCount;
+        if (!wholeStack)
+            item.Count = aCount;
+
+        InventoryChangeEvent event(apThis->formID, std::move(item), isTempDropPickup, true);
+        event.WorldReferenceFormId = isTempDropPickup ? apObject->formID : 0;
+        event.WholeStack = wholeStack;
+        World::Get().GetRunner().Trigger(std::move(event));
     }
 
     return TiltedPhoques::ThisCall(RealPickUpObject, apThis, apObject, aCount, aUnk1, aUnk2);
@@ -2184,28 +2195,52 @@ void Actor::PickUpObject(TESObjectREFR* apObject, int32_t aCount, bool aUnk1, fl
 
 void* TP_MAKE_THISCALL(HookDropObject, Actor, void* apResult, TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation)
 {
-    if (World::IsCreated() &&
-        World::IsConnectedCached() &&
-        apThis &&
-        apObject &&
-        apThis->GetExtension() &&
-        !apThis->GetExtension()->IsRemote())
+    const bool cSync = World::IsCreated() &&
+                       World::IsConnectedCached() &&
+                       apThis &&
+                       apObject &&
+                       aCount > 0 &&
+                       apThis->GetExtension() &&
+                       !apThis->GetExtension()->IsRemote();
+
+    Inventory::Entry item{};
+    if (cSync)
     {
         auto& modSystem = World::Get().GetModSystem();
-
-        Inventory::Entry item{};
         modSystem.GetServerModId(apObject->formID, item.BaseId);
-        item.Count = -aCount;
 
+        // Read the extra data BEFORE the drop moves the list into the new reference. An inventory list
+        // can carry its own ExtraCount, which GetItemFromExtraData copies into Count: the delta is the
+        // number dropped whatever it says (a positive count here used to ADD the stack on the server).
         if (apExtraData)
             apThis->GetItemFromExtraData(item, apExtraData);
-
-        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), true));
+        item.Count = -aCount;
     }
 
-    ScopedInventoryOverride _;
+    void* pResult = nullptr;
+    {
+        ScopedInventoryOverride _;
+        pResult = TiltedPhoques::ThisCall(RealDropObject, apThis, apResult, apObject, apExtraData, aCount, apLocation, apRotation);
+    }
 
-    return TiltedPhoques::ThisCall(RealDropObject, apThis, apResult, apObject, apExtraData, aCount, apLocation, apRotation);
+    if (cSync)
+    {
+        // The reference the engine created for the drop: the server-owned item binds to it
+        // (WorldItemService). The event is queued, so it is raised after the drop either way.
+        uint32_t droppedFormId = 0;
+        if (apResult)
+        {
+            const auto* pHandle = static_cast<const BSPointerHandle<TESObjectREFR>*>(apResult);
+            if (GamePtr<TESObjectREFR> spDropped = TESObjectREFR::LookupByHandle(*pHandle))
+                droppedFormId = spDropped->formID;
+        }
+
+        InventoryChangeEvent event(apThis->formID, std::move(item), true);
+        event.WorldReferenceFormId = droppedFormId;
+        World::Get().GetRunner().Trigger(std::move(event));
+    }
+
+    return pResult;
 }
 
 void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLocation, NiPoint3* apRotation) noexcept
@@ -2234,16 +2269,22 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
     if (arEntry.Count > 0)
     {
         // Despawn the matching temporary 0xFFxxxxxx dropped world reference near this actor so peers
-        // cannot pick up a second copy after someone already picked it up!
+        // cannot pick up a second copy after someone already picked it up. The protocol has no identity
+        // for dropped refs, so prefer an exact stack-count match close to the picker and never delete a
+        // far/unrelated stack (see common/DroppedItemMatch.h, registry N3).
         TESObjectREFR* pBestMatch = nullptr;
-        float bestDistSq = 2048.0f * 2048.0f;
+        DroppedItemMatch::Candidate best{};
+        bool hasBest = false;
+        // A reference showing a server-owned item is removed by its NotifyWorldItemDespawn, never by
+        // this guess (architecture step 4). The mirror is main-thread state.
+        const WorldItemService* pWorldItems = World::IsMainThread() ? &World::Get().ctx().at<WorldItemService>() : nullptr;
 
         auto scanCell = [&](TESObjectCELL* apCell)
         {
             if (!apCell)
                 return;
 
-            BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);
+            BSSpinLockGuard cellLock(apCell->lock);
             if (!apCell->refData.refArray)
                 return;
 
@@ -2254,14 +2295,23 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
                     continue;
                 if ((pRef->formID & 0xFF000000) != 0xFF000000)
                     continue;
+                if (pWorldItems && pWorldItems->IsBoundReference(pRef->formID))
+                    continue;
 
                 const float dx = pRef->position.x - position.x;
                 const float dy = pRef->position.y - position.y;
                 const float dz = pRef->position.z - position.z;
-                const float distSq = dx * dx + dy * dy + dz * dz;
-                if (distSq < bestDistSq)
+
+                const auto* pExtraCount = static_cast<const ExtraCount*>(pRef->extraData.GetByType(ExtraDataType::Count));
+                const int32_t refCount = DroppedItemMatch::StackCountOrOne(pExtraCount != nullptr, pExtraCount ? pExtraCount->count : 0);
+
+                DroppedItemMatch::Candidate candidate{};
+                candidate.CountMatches = refCount == arEntry.Count;
+                candidate.DistanceSq = dx * dx + dy * dy + dz * dz;
+                if (DroppedItemMatch::IsBetter(candidate, hasBest, best))
                 {
-                    bestDistSq = distSq;
+                    best = candidate;
+                    hasBest = true;
                     pBestMatch = pRef;
                 }
             }
@@ -2491,6 +2541,11 @@ void TP_MAKE_THISCALL(HookAddDeathItems, Actor)
         return;
 
     if (const auto* pExt = apThis->GetExtension(); pExt && pExt->IsRemote())
+        return;
+
+    // The game only skips reanimated corpses. A summon vanishes when it dies, so its death items (a flame atronach's
+    // fire salts) would only be synced to the server and the other players for a body nobody can loot (upstream 4ffec0a7).
+    if (apThis->IsCommandedActor())
         return;
 
     TiltedPhoques::ThisCall(RealAddDeathItems, apThis);

@@ -4,7 +4,6 @@
 #include <Services/WeatherService.h>
 
 #include <Events/UpdateEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/PartyJoinedEvent.h>
 #include <Events/PartyLeftEvent.h>
 
@@ -31,7 +30,6 @@ PartyService::PartyService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
     , m_transport(aTransportService)
 {
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&PartyService::OnUpdate>(this);
-    m_disconnectConnection = aDispatcher.sink<DisconnectedEvent>().connect<&PartyService::OnDisconnected>(this);
 
     m_playerListConnection = aDispatcher.sink<NotifyPlayerList>().connect<&PartyService::OnPlayerList>(this);
     m_playerJoinedConnection = aDispatcher.sink<NotifyPlayerJoined>().connect<&PartyService::OnPlayerJoined>(this);
@@ -104,9 +102,12 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
     }
 }
 
-void PartyService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
+void PartyService::OnSessionEnd(const Session::Transition&) noexcept
 {
     DestroyParty();
+    // The next server sends its own NotifyPlayerList; until then nobody is online with us.
+    m_players.clear();
+    m_invitations.clear();
 }
 
 void PartyService::OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept

@@ -68,6 +68,9 @@ void CharacterService::OnAddExperienceEvent(const AddExperienceEvent& acEvent) n
 
 void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMessage) noexcept
 {
+    if (!World::IsFeatureEnabled(Session::Feature::kSharedSkillXp))
+        return;
+
     if (ResolveRfabXpGlobal() != nullptr)
         return;
 
@@ -80,6 +83,9 @@ void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMess
 
 void CharacterService::OnNotifySyncRfabExperience(const NotifySyncRfabExperience& acMessage) noexcept
 {
+    if (!World::IsFeatureEnabled(Session::Feature::kSharedRfabXp))
+        return;
+
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
     TESGlobal* pRfabXp = ResolveRfabXpGlobal();
     if (pPlayer == nullptr || pRfabXp == nullptr)
@@ -130,6 +136,12 @@ void CharacterService::RunExperienceUpdates() noexcept
 
     lastSendTimePoint = now;
 
+    if (!World::IsFeatureEnabled(Session::Feature::kSharedSkillXp))
+    {
+        m_cachedExperience = 0.f;
+        return;
+    }
+
     if (m_cachedExperience == 0.f || !World::Get().GetPartyService().IsInParty())
         return;
 
@@ -152,7 +164,9 @@ void CharacterService::RunRfabExperienceUpdates() noexcept
 
     lastSendTimePoint = now;
 
-    if (!m_transport.IsConnected())
+    // A disabled kSharedRfabXp behaves exactly like being offline for the tracker: no broadcast,
+    // no refund bookkeeping, and the baseline is re-seeded when the feature comes back.
+    if (!m_transport.IsConnected() || !World::IsFeatureEnabled(Session::Feature::kSharedRfabXp))
     {
         (void)m_rfabXpTracker.EvaluateLocalWalletPoll(0, false, false, 1.0f, NowSteadyWorldViewMs());
         return;

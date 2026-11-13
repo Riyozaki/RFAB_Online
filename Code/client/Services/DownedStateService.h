@@ -6,12 +6,12 @@
 #include <unordered_set>
 
 #include <common/Downed/Revive.h>
+#include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 
 struct World;
 struct TransportService;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct NotifyPlayerDownedState;
 struct NotifyReviveState;
 struct Actor;
@@ -28,7 +28,7 @@ struct ActorValueOwner;
  * 4. Supports ~4.0s hold-E interactive ally revive, 30% MaxHP post-revive recovery, 3.0s grace
  *    invulnerability, and periodic CombatEncounterStateReport telemetry for the server coordinator.
  */
-class DownedStateService
+class DownedStateService final : public Session::IParticipant
 {
 public:
     struct ScopedReviveHealAllowance
@@ -50,25 +50,25 @@ public:
 
     TP_NOCOPYMOVE(DownedStateService);
 
-    [[nodiscard]] bool IsSystemActive() const noexcept;
-    [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
-    [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
+    RFAB_ANY_THREAD [[nodiscard]] bool IsSystemActive() const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
+    RFAB_ANY_THREAD [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
     [[nodiscard]] double GetGraceRemainingSec() const noexcept { return m_graceRemainingSec; }
     [[nodiscard]] bool IsChannelingRevive() const noexcept { return m_channel.Active; }
     [[nodiscard]] uint32_t GetChannelTargetPlayerId() const noexcept { return m_channel.TargetPlayerId; }
     [[nodiscard]] float GetReviveChannelProgress() const noexcept;
     [[nodiscard]] bool IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept;
-    [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
     [[nodiscard]] bool IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept;
     [[nodiscard]] bool IsActorDowned(uint32_t aActorFormId) const noexcept;
 
     // Lock-free atomic latch called from HookDamageActor / HookRestoreActorValue / OnUpdate when 0x14 reaches 0.0f HP
     // under native Skyrim SE Essential + NoBleedoutRecovery. Defers all camera/control/aggro/network work to OnUpdate.
-    void LatchNativeBleedoutEntered(Actor* apPlayer) noexcept;
+    RFAB_ANY_THREAD void LatchNativeBleedoutEntered(Actor* apPlayer) noexcept;
 
     // Triggers a server-authoritative ally revive when a standing party member hits a downed ally with a Restoration heal spell.
-    void RequestAllySpellReviveOnActor(uint32_t aTargetFormId, float aHealMagnitude) noexcept;
-    void NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemoteCaster, float aHealMagnitude) noexcept;
+    RFAB_ANY_THREAD void RequestAllySpellReviveOnActor(uint32_t aTargetFormId, float aHealMagnitude) noexcept;
+    RFAB_ANY_THREAD void NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemoteCaster, float aHealMagnitude) noexcept;
 
     // Applies or clears kneeling bleedout posture on a remote player's Actor instance.
     void ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept;
@@ -88,6 +88,14 @@ public:
     void EnterLocalDownedState() noexcept;
     void ApplyAuthoritativeRevive(float aHealthFraction, float aGraceSec, bool aShowPostCombatNotice) noexcept;
     void ResetAllStates() noexcept;
+
+    // Session::ParticipantId::kDowned. Teardown runs before the character service's (kDowned >
+    // kCharacters): ResetAllStates walks the remote players to restore their targetability, so they
+    // must still exist.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+
     [[nodiscard]] std::atomic<bool>& GetAuthorizedHealFlag() noexcept { return m_allowAuthorizedHeal; }
 
 private:
@@ -108,8 +116,6 @@ private:
 
     void CompleteEnterLocalDownedState() noexcept;
     void SetDownedControlLock(bool aLocked) noexcept;
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnNotifyPlayerDownedState(const NotifyPlayerDownedState& acMessage) noexcept;
     void OnNotifyReviveState(const NotifyReviveState& acMessage) noexcept;
@@ -148,8 +154,6 @@ private:
     std::unordered_map<uint32_t, bool> m_remoteDownedByPlayerId{};
     std::unordered_set<uint32_t> m_playersBeingRevived{};
 
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_notifyDownedConnection;
     entt::scoped_connection m_notifyReviveConnection;

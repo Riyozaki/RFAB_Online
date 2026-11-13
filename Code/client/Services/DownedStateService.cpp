@@ -8,8 +8,6 @@
 #include <common/RfabModpackCompat.h>
 #include <Games/TES.h>
 #include <Components.h>
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/HealthChangeEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Forms/ActorValueInfo.h>
@@ -84,8 +82,6 @@ DownedStateService::DownedStateService(World& aWorld, entt::dispatcher& aDispatc
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
     , m_transport(aTransport)
-    , m_connectedConnection(aDispatcher.sink<ConnectedEvent>().connect<&DownedStateService::OnConnected>(this))
-    , m_disconnectedConnection(aDispatcher.sink<DisconnectedEvent>().connect<&DownedStateService::OnDisconnected>(this))
     , m_updateConnection(aDispatcher.sink<UpdateEvent>().connect<&DownedStateService::OnUpdate>(this))
     , m_notifyDownedConnection(aDispatcher.sink<NotifyPlayerDownedState>().connect<&DownedStateService::OnNotifyPlayerDownedState>(this))
     , m_notifyReviveConnection(aDispatcher.sink<NotifyReviveState>().connect<&DownedStateService::OnNotifyReviveState>(this))
@@ -654,17 +650,21 @@ void DownedStateService::ResetAllStates() noexcept
     m_world.GetRfabAdapterService().RefreshCoopCombatSnapshot();
 }
 
-void DownedStateService::OnConnected(const ConnectedEvent&) noexcept
+void DownedStateService::OnSessionBegin(const Session::Transition&) noexcept
 {
     m_downedSystemEnabledCached.store(m_world.GetServerSettings().DownedSystemEnabled, std::memory_order_release);
     ResetAllStates();
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pPlayer->SetPlayerRespawnMode(true);
+    // The session-level respawn mode is owned by PlayerService::OnSessionBegin (runs after this).
 }
 
-void DownedStateService::OnDisconnected(const DisconnectedEvent&) noexcept
+void DownedStateService::OnSessionEnd(const Session::Transition&) noexcept
 {
     m_downedSystemEnabledCached.store(false, std::memory_order_release);
+    ResetAllStates();
+}
+
+void DownedStateService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
     ResetAllStates();
 }
 

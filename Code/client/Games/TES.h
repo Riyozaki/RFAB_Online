@@ -112,6 +112,10 @@ struct ModManager
     static ModManager* Get() noexcept;
 
     uint32_t Spawn(NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCELL* apParentCell, TESWorldSpace* apWorldSpace, Actor* apCharacter) noexcept;
+    // Lets the engine allocate a new temporary reference of apBaseForm (TESDataHandler::
+    // CreateReferenceAtLocation with no pre-built reference, what PlaceAtMe does). Returns the
+    // reference handle, 0 on failure. Main thread only.
+    uint32_t SpawnReference(TESForm* apBaseForm, NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCELL* apParentCell, TESWorldSpace* apWorldSpace) noexcept;
     Mod* GetByName(const char* acpName) const noexcept;
     TESObjectCELL* GetCellFromCoordinates(int32_t aX, int32_t aY, TESWorldSpace* aWorldSpace, bool aSpawnCell) noexcept;
 

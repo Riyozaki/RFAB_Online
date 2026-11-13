@@ -1,4 +1,5 @@
 #include <common/RfabModpackCompat.h>
+#include <common/Compat/ConfigOverlay.h>
 #include <common/CoopOwnership.h>
 #include <common/CoopFlightDigest.h>
 #ifndef RFAB_STANDALONE_NO_ESLOADER
@@ -132,32 +133,41 @@ int main()
         assert(!RfabCompat::PatchEngineFixesTomlContent(v7BPefixToml));
     }
 
-    // 3. SkyrimSoulsRE.ini [SLOWMOTION] neutralizer + full MO2 VFS tree scan + BetterStealing auto-hide
+    // 3. Co-op config overlay: the co-op view is prepared in RFAB Online's own folder; the mods'
+    //    files (EngineFixes override, Skyrim Souls, BetterStealing) stay byte-identical (step 5).
     {
-        const fs::path tempRoot = fs::temp_directory_path() / "rfab_online_vfs_test_tree";
+        const fs::path tempRoot = fs::temp_directory_path() / "rfab_online_overlay_audit_tree";
         fs::remove_all(tempRoot);
-        fs::create_directories(tempRoot / "MO2" / "mods" / "Disable Quick Saves" / "skse" / "plugins");
-        fs::create_directories(tempRoot / "MO2" / "overwrite" / "SKSE" / "Plugins");
-        fs::create_directories(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins");
+        fs::create_directories(tempRoot / "Data" / "SKSE" / "Plugins");
+        fs::create_directories(tempRoot / "Data" / "NetScriptFramework" / "Plugins");
 
+        const std::string efOriginal = "[Patches]\nRegularQuicksaves = false\n";
+        const std::string soulsOriginal =
+            "[SLOWMOTION]\nfSlowMotionMultiplier = 0.250000\nbEnableSlowMotionInventoryMenu = true\n";
         {
-            std::ofstream f(tempRoot / "MO2" / "mods" / "Disable Quick Saves" / "skse" / "plugins" / "EngineFixes.toml");
-            f << "[Patches]\nRegularQuicksaves = false\n";
+            std::ofstream f(tempRoot / "Data" / "SKSE" / "Plugins" / "EngineFixes.toml", std::ios::binary);
+            f << efOriginal;
         }
         {
-            std::ofstream f(tempRoot / "MO2" / "overwrite" / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini");
-            f << "[SLOWMOTION]\nfSlowMotionMultiplier = 0.250000\nbEnableSlowMotionInventoryMenu = true\nbEnableSlowMotion_MagicMenu = true\n";
+            std::ofstream f(tempRoot / "Data" / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini", std::ios::binary);
+            f << soulsOriginal;
         }
         {
-            std::ofstream f(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll");
+            std::ofstream f(tempRoot / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll", std::ios::binary);
             f << "stub";
         }
 
-        const size_t patchedFiles = RfabCompat::EnsureEngineFixesPatchedUnderRoot(tempRoot);
-        assert(patchedFiles >= 2);
-        assert(!fs::exists(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll"));
-        assert(fs::exists(tempRoot / "MO2" / "mods" / "BetterStealing" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll.mohidden"));
-        assert(RfabCompat::EnsureEngineFixesPatchedUnderRoot(tempRoot) == 0);
+        const auto outcomes = Compat::PrepareOverlays(tempRoot / "Data", tempRoot / "overlay");
+        assert(Compat::FindOutcome(outcomes, "enginefixes")->Status == Compat::OverlayStatus::kOverlaid);
+        assert(Compat::FindOutcome(outcomes, "skyrimsouls")->Status == Compat::OverlayStatus::kOverlaid);
+        assert(Compat::FindOutcome(outcomes, "betterstealing")->Status == Compat::OverlayStatus::kHidden);
+        std::string text;
+        assert(RfabCompat::Detail::ReadTextFile(tempRoot / "Data" / "SKSE" / "Plugins" / "EngineFixes.toml", text) && text == efOriginal);
+        assert(RfabCompat::Detail::ReadTextFile(tempRoot / "Data" / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini", text) && text == soulsOriginal);
+        assert(fs::exists(tempRoot / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll"));
+        assert(!fs::exists(tempRoot / "Data" / "NetScriptFramework" / "Plugins" / "BetterStealing.dll.mohidden"));
+        assert(RfabCompat::Detail::ReadTextFile(tempRoot / "overlay" / "EngineFixes.toml", text) &&
+               text.find("MemoryManager = false") != std::string::npos);
         fs::remove_all(tempRoot);
     }
 
@@ -421,7 +431,7 @@ int main()
             assert(rfabSvcCpp.find("void RfabAdapterService::RefreshCoopCombatSnapshot() noexcept") != std::string::npos);
             {
                 const auto evalPos = rfabSvcCpp.find("RfabAdapterService::EvaluateCoopAction(");
-                const auto onConnPos = rfabSvcCpp.find("void RfabAdapterService::OnConnected(");
+                const auto onConnPos = rfabSvcCpp.find("void RfabAdapterService::OnSessionBegin(");
                 assert(evalPos != std::string::npos && onConnPos != std::string::npos && evalPos < onConnPos);
                 const std::string evalBody = rfabSvcCpp.substr(evalPos, onConnPos - evalPos);
                 assert(evalBody.find("m_world.view<") == std::string::npos);
@@ -462,11 +472,11 @@ int main()
             const std::string cellH = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.h");
             const std::string cellCpp = readTextFile("Code/client/Games/Skyrim/Forms/TESObjectCELL.cpp");
             const std::string actorCpp = readTextFile("Code/client/Games/Skyrim/Actor.cpp");
-            assert(cellH.find("mutable BSRecursiveLock lock;") != std::string::npos);
+            assert(cellH.find("mutable BSSpinLock lock;") != std::string::npos);
             assert(cellH.find("static_assert(offsetof(TESObjectCELL, lock) == 0x118);") != std::string::npos);
-            assert(cellCpp.find("BSScopedLock<BSRecursiveLock> cellLock(lock);") != std::string::npos);
+            assert(cellCpp.find("BSSpinLockGuard cellLock(lock);") != std::string::npos);
             assert(cellCpp.find("if (!pRef || !pRef->baseForm)") != std::string::npos);
-            assert(actorCpp.find("BSScopedLock<BSRecursiveLock> cellLock(apCell->lock);") != std::string::npos);
+            assert(actorCpp.find("BSSpinLockGuard cellLock(apCell->lock);") != std::string::npos);
 
             // (6) Stage 1 (v1.2.0): Boss & Arena Encounter Sync
             const std::string extraDataH = readTextFile("Code/client/Games/Skyrim/ExtraData/ExtraData.h");
@@ -536,7 +546,7 @@ int main()
             assert(serverQuestCpp.find("dedupHistory.ResetSceneMaster();") != std::string::npos);
             assert(serverPartyCpp.find("m_world.GetQuestService().SyncPartyQuestsForPlayer(aPlayer);") != std::string::npos);
             assert(refrCpp.find("WasObjectDirectlyActivatedRecently(apSelf->formID)") != std::string::npos);
-            assert(refrCpp.find("RecordDirectObjectActivation(apThis->formID);") != std::string::npos);
+            assert(refrCpp.find("RecordDirectObjectActivation(formID);") != std::string::npos);
 
             // Unit tests for Stage 2 quest classification helpers in RfabModpackCompat.h:
             {
@@ -587,11 +597,11 @@ int main()
                 assert(!RfabCompat::IsFriendlyScriptBuffEffectEditorId("RFAB_PoisonDecayCurse"));
             }
 
-            // (5) OverlayClient marshals all CEF UI actions onto World::Get().GetRunner().Queue(...) + PartyService null-guards GetOverlayApp()
+            // (5) OverlayClient marshals all CEF UI actions onto the main thread (QueueMainThreadTask / GetRunner().Queue) + PartyService null-guards GetOverlayApp()
             const std::string overlayCpp = readTextFile("Code/client/Services/Generic/OverlayClient.cpp");
             const std::string partyCpp = readTextFile("Code/client/Services/Generic/PartyService.cpp");
-            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().CreateParty(); });") != std::string::npos);
-            assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetPartyService().LeaveParty(); });") != std::string::npos);
+            assert(overlayCpp.find("World::Get().QueueMainThreadTask([]() { World::Get().GetPartyService().CreateParty(); });") != std::string::npos);
+            assert(overlayCpp.find("World::Get().QueueMainThreadTask([]() { World::Get().GetPartyService().LeaveParty(); });") != std::string::npos);
             assert(overlayCpp.find("World::Get().GetRunner().Queue([]() { World::Get().GetMagicService().StartRevealingOtherPlayers(); });") != std::string::npos);
             assert(partyCpp.find("GetOverlayApp()->ExecuteAsync") == std::string::npos);
 
@@ -621,20 +631,23 @@ int main()
 
                 const std::string coordSaveCpp = readTextFile("Code/client/Services/CoordinatedSaveService.cpp");
                 assert(coordSaveCpp.find("IsLocalPlayerAllyProtectionHost()") != std::string::npos);
-                assert(coordSaveCpp.find("BeginEngineWorldLoad()") != std::string::npos);
-                assert(coordSaveCpp.find("EndEngineWorldLoad()") != std::string::npos);
+                // v4.1.0: the engine-load bracket is fed to Session::Lifecycle, which owns the world-load gate.
+                assert(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadBegin(liveReload)") != std::string::npos);
+                assert(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadEnd(aSucceeded)") != std::string::npos);
             }
 
-            // [Issue #2] StatsMenu CTD & Tab (TweenMenu) lockout: post-SKSE SoulsRE/CustomSkills/RFAB guards + ControlMap self-heal
+            // [Issue #2] StatsMenu CTD & Tab (TweenMenu) lockout: one post-SKSE menu pause policy
+            // (SoulsRE / CustomSkills / RFAB, common/Compat/MenuPausePolicy.h) + ControlMap self-heal
             {
                 const std::string skillsCpp = readTextFile("Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp");
                 const std::string uiCpp = readTextFile("Code/client/Games/Skyrim/Interface/UI.cpp");
                 const std::string playerControlsH = readTextFile("Code/client/Games/Skyrim/AI/Movement/PlayerControls.h");
                 assert(skillsCpp.find("s_skillsMenuInit") == std::string::npos);
-                assert(skillsCpp.find("ApplyFallbackStatsMenuPatchesPostSkse()") != std::string::npos);
+                assert(skillsCpp.find("void ApplyStatsMenuInputPatches() noexcept") != std::string::npos);
                 assert(skillsCpp.find("CustomSkills.dll") != std::string::npos);
-                assert(uiCpp.find("if (IsSkyrimSoulsRuntimeActive())") != std::string::npos);
-                assert(uiCpp.find("ApplyFallbackStatsMenuPatchesPostSkse();") != std::string::npos);
+                assert(uiCpp.find("Compat::DecideMenuPausePolicy(environment)") != std::string::npos);
+                assert(uiCpp.find("if (s_menuPolicy.TogetherUnpauses(menuName))") != std::string::npos);
+                assert(uiCpp.find("ApplyStatsMenuInputPatches();") != std::string::npos);
                 assert(playerControlsH.find("GetEnabledControlsMask()") != std::string::npos);
                 assert(rfabSvcCpp.find("SelfHealFreeRoamMenuControls()") != std::string::npos);
             }
@@ -691,7 +704,7 @@ int main()
             {
                 assert(fs::exists("docs/V1.0.0_RELEASE_BACKUP_MANIFEST.json"));
                 assert(fs::exists("docs/V1.1.0_RELEASE_BACKUP_MANIFEST.json"));
-                assert(std::string(RfabCompat::kRfabOnlineVersion) == "4.0.0");
+                assert(std::string(RfabCompat::kRfabOnlineVersion) == "4.1.0");
                 assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.2.0", "v1.2.1-3-gabcdef0"));
                 assert(RfabCompat::AreBuildVersionsProtocolCompatible("v1.1.0", "v1.2.0"));
                 assert(!RfabCompat::AreBuildVersionsProtocolCompatible("v1.0.0", "v1.2.0"));
@@ -963,7 +976,7 @@ int main()
             assert(clientWeatherCpp.find("CanMutateOutdoorSkyWeather") != std::string::npos);
             assert(clientWeatherCpp.find("BSFixedString(\"StatsMenu\")") != std::string::npos);
             assert(clientWeatherCpp.find("BSFixedString(\"CustomMenu\")") != std::string::npos);
-            assert(clientMapCpp.find("if (!pWorldSpace)") != std::string::npos);
+            assert(clientMapCpp.find("if (!pLocation || (!Cast<TESWorldSpace>(pLocation) && !Cast<TESObjectCELL>(pLocation)))") != std::string::npos);
             assert(coordSaveCpp.find("!pPlayer->IsStillLoading()") != std::string::npos);
         }
 
@@ -1070,11 +1083,13 @@ int main()
 
             assert(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
             assert(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
-            assert(coordSaveCpp2.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+            // v4.1.0: Discovery resets its loaded forms as a lifecycle participant on every world-load begin.
+            assert(discoveryCpp.find("void DiscoveryService::OnWorldLoadBegin(") != std::string::npos);
+            assert(coordSaveCpp2.find("m_world.GetLifecycle().OnWorldLoadBegin(") != std::string::npos);
             assert(coordSaveCpp2.find("pPlayer->parentCell != nullptr") != std::string::npos);
             assert(coordSaveCpp2.find("m_autoReconnectAttemptsLeft") != std::string::npos);
             assert(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);
-            assert(serverCharCpp.find("otherCell.IsInRange(cellIdComponent, false)") != std::string::npos);
+            assert(serverCharCpp.find("ReconcileAllEntitiesForObserver(acMessage.pPlayer)") != std::string::npos);
             assert(patchSubmodulesPy.find("apInfo->m_hConn != m_connection") != std::string::npos);
 
             assert(clientCharCpp.find("pWorldSpace->LoadCell") == std::string::npos);
@@ -1677,7 +1692,16 @@ TEST_CASE("RFAB Modpack Self-Healers, Endpoint Normalization & ESLoader BOM/Over
 
         REQUIRE(discoveryCpp.find("void DiscoveryService::ResetLoadedForms() noexcept") != std::string::npos);
         REQUIRE(discoveryCpp.find("void DiscoveryService::ReconcileMissingWorldEntities() noexcept") != std::string::npos);
-        REQUIRE(coordSaveCpp.find("m_world.GetDiscoveryService().ResetLoadedForms()") != std::string::npos);
+        // v4.1.0: Discovery resets its loaded forms as a lifecycle participant on every world-load begin.
+        {
+            const auto beginPos = discoveryCpp.find("void DiscoveryService::OnWorldLoadBegin(");
+            const auto endPos = discoveryCpp.find("void DiscoveryService::OnWorldLoadEnd(");
+            REQUIRE(beginPos != std::string::npos);
+            REQUIRE(endPos != std::string::npos);
+            REQUIRE(beginPos < endPos);
+            REQUIRE(discoveryCpp.substr(beginPos, endPos - beginPos).find("ResetLoadedForms();") != std::string::npos);
+            REQUIRE(coordSaveCpp.find("m_world.GetLifecycle().OnWorldLoadBegin(") != std::string::npos);
+        }
         REQUIRE(coordSaveCpp.find("pPlayer->parentCell != nullptr") != std::string::npos);
         REQUIRE(coordSaveCpp.find("m_autoReconnectAttemptsLeft") != std::string::npos);
         REQUIRE(clientCharCpp.find("void CharacterService::EnsureLocalPlayerRegistered() noexcept") != std::string::npos);

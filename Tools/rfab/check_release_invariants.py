@@ -93,6 +93,7 @@ for ps1_rel in (
     "Tools/rfab/Build-CloudRelease.ps1",
     "Tools/rfab/Package-Release.ps1",
     "Tools/rfab/Deploy-RfabOnline.ps1",
+    "Tools/rfab/Restore-ModConfigs.ps1",
 ):
     ps1_file = ROOT / ps1_rel
     if ps1_file.is_file():
@@ -196,6 +197,45 @@ if workflow.is_file():
         "release.yml passes -VersionTag to Build-CloudRelease.ps1; the tag must come "
         "from VERSION so the artifact and the release number cannot disagree",
     )
+
+# 6. Co-op config overlay and installer undo share one key list -------------------
+# Code/common/Compat/ConfigOverlay.h lists, per file, every key RFAB Online writes into the co-op
+# copy (kEngineFixesKeys ...); Tools/rfab/Restore-ModConfigs.ps1 restores a mod file from its
+# backup only when it differs in those keys. A key known to one side only would either leave an
+# old edit in place or revert a user's change.
+overlay_h = ROOT / "Code" / "common" / "Compat" / "ConfigOverlay.h"
+restore_ps1 = ROOT / "Tools" / "rfab" / "Restore-ModConfigs.ps1"
+check(overlay_h.is_file(), "Code/common/Compat/ConfigOverlay.h is missing")
+check(restore_ps1.is_file(), "Tools/rfab/Restore-ModConfigs.ps1 is missing")
+if overlay_h.is_file() and restore_ps1.is_file():
+    header = overlay_h.read_text(encoding="utf-8")
+    script = restore_ps1.read_text(encoding="utf-8-sig")
+    for array_name, file_name in (
+        ("kEngineFixesKeys", "EngineFixes.toml"),
+        ("kSkyrimSoulsKeys", "SkyrimSoulsRE.ini"),
+        ("kRfabAutosaveKeys", "[RFAB] Autosave.ini"),
+        ("kPo3TweaksKeys", "po3_Tweaks.ini"),
+    ):
+        cpp_match = re.search(
+            r"inline constexpr std::string_view " + array_name + r"\[\]\s*=\s*\{(.*?)\};", header, re.S
+        )
+        ps_match = re.search(r'"' + re.escape(file_name) + r'"\s*=\s*@\(([^)]*)\)', script)
+        check(cpp_match is not None, f"ConfigOverlay.h no longer declares {array_name}")
+        check(ps_match is not None, f"Restore-ModConfigs.ps1 no longer lists keys for {file_name!r}")
+        if cpp_match and ps_match:
+            cpp_body = re.sub(r"//[^\n]*", "", cpp_match.group(1))
+            cpp_keys = sorted(re.findall(r'"([^"]*)"', cpp_body))
+            ps_keys = sorted(re.findall(r'"([^"]*)"', ps_match.group(1)))
+            check(
+                cpp_keys == ps_keys,
+                f"managed keys for {file_name!r} differ: ConfigOverlay.h {array_name} has "
+                f"{sorted(set(cpp_keys) - set(ps_keys))} only, Restore-ModConfigs.ps1 has "
+                f"{sorted(set(ps_keys) - set(cpp_keys))} only",
+            )
+            check(
+                all(k == k.lower() for k in cpp_keys),
+                f"{array_name} keys must be lower case (compared case-insensitively on both sides)",
+            )
 
 # -----------------------------------------------------------------------------
 for note in notes:

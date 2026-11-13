@@ -1,12 +1,17 @@
 #include "ExtraDataList.h"
 
 #include <Games/Overrides.h>
+#include <Games/Memory.h>
+#include "ExtraCount.h"
+
+#include <cstring>
 
 ExtraDataList* ExtraDataList::New() noexcept
 {
     ExtraDataList* pExtraDataList = Memory::Allocate<ExtraDataList>();
     pExtraDataList->data = nullptr;
-    pExtraDataList->lock.m_counter = pExtraDataList->lock.m_tid = 0;
+    pExtraDataList->lock.uiWriterThread = 0;
+    pExtraDataList->lock.uiLock = 0;
     pExtraDataList->bitfield = Memory::Allocate<ExtraDataList::Bitfield>();
     memset(pExtraDataList->bitfield, 0, 0x18);
     return pExtraDataList;
@@ -38,16 +43,24 @@ bool ExtraDataList::Contains(ExtraDataType aType) const
 
 BSExtraData* ExtraDataList::GetByType(ExtraDataType aType) const
 {
-    BSScopedLock<BSRecursiveLock> _(lock);
+    // Upstream #937: this is the engine's BSReadWriteLock, so it MUST be taken through the engine's
+    // own LockForRead/UnlockRead. ScopedExtraDataOverride marks call sites that already run inside an
+    // engine write section on this list (PlayerCharacter/TESObjectREFR inventory hooks); locking again
+    // there would self-deadlock, which is why the guard (removed in v2.1.0) is back.
+    const bool cLock = !ScopedExtraDataOverride::IsOverriden();
+    if (cLock)
+        lock.LockForRead();
 
-    if (!Contains(aType))
-        return nullptr;
-
-    auto pEntry = data;
-    while (pEntry != nullptr && pEntry->GetType() != aType)
+    BSExtraData* pEntry = nullptr;
+    if (Contains(aType))
     {
-        pEntry = pEntry->next;
+        pEntry = data;
+        while (pEntry != nullptr && pEntry->GetType() != aType)
+            pEntry = pEntry->next;
     }
+
+    if (cLock)
+        lock.UnlockRead();
 
     return pEntry;
 }
@@ -57,7 +70,7 @@ bool ExtraDataList::Add(ExtraDataType aType, BSExtraData* apNewData)
     if (Contains(aType))
         return false;
 
-    BSScopedLock<BSRecursiveLock> _(lock);
+    BSWriteLockGuard _(lock);
 
     BSExtraData* pNext = data;
     data = apNewData;
@@ -119,6 +132,38 @@ void ExtraDataList::SetPoison(AlchemyItem* apItem, uint32_t aCount) noexcept
     TP_THIS_FUNCTION(TSetPoison, void, ExtraDataList, AlchemyItem* apItem, uint32_t aCount);
     POINTER_SKYRIMSE(TSetPoison, setPoison, 11676);
     TiltedPhoques::ThisCall(setPoison, this, apItem, aCount);
+}
+
+void ExtraDataList::SetCount(int16_t aCount) noexcept
+{
+    if (ExtraCount* pExisting = Cast<ExtraCount>(GetByType(ExtraDataType::Count)))
+    {
+        pExisting->count = aCount;
+        return;
+    }
+
+    // ExtraCount has no exported constructor: same layout as CommonLibSSE's ExtraCount(int16) - the
+    // vtable, a null link, the count, zero padding (static_assert(sizeof(ExtraCount) == 0x18)).
+    POINTER_SKYRIMSE(void*, s_extraCountVtbl, 186679);
+    auto* pCount = static_cast<ExtraCount*>(Memory::Allocate(sizeof(ExtraCount)));
+    if (!pCount)
+        return;
+    std::memset(static_cast<void*>(pCount), 0, sizeof(ExtraCount));
+    *reinterpret_cast<void**>(pCount) = s_extraCountVtbl.Get();
+    pCount->count = aCount;
+
+    // The engine's add, not ExtraDataList::Add above: a reference created a moment ago may have no
+    // presence bitfield yet, which the engine allocates and our Add would dereference.
+    TP_THIS_FUNCTION(TAddExtra, BSExtraData*, ExtraDataList, BSExtraData* apExtra);
+    POINTER_SKYRIMSE(TAddExtra, s_addExtra, 12315);
+    TiltedPhoques::ThisCall(s_addExtra, this, pCount);
+}
+
+int32_t ExtraDataList::GetStackCount() const noexcept
+{
+    if (const ExtraCount* pCount = Cast<ExtraCount>(GetByType(ExtraDataType::Count)))
+        return pCount->count > 0 ? pCount->count : 1;
+    return 1;
 }
 
 void ExtraDataList::SetHealth(float aHealth) noexcept

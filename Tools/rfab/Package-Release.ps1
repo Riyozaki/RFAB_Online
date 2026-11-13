@@ -134,6 +134,8 @@ $DirectSrvBat = "@echo off`r`nchcp 65001 >nul`r`ntitle RFAB Online Dedicated Ser
 
 Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Setup-RfabOnline.ps1") `
           -Destination (Join-Path $StageTools "Setup-RfabOnline.ps1") -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Restore-ModConfigs.ps1") `
+          -Destination (Join-Path $StageTools "Restore-ModConfigs.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "INSTALL_RFAB_ONLINE.bat") `
           -Destination (Join-Path $StageRoot "INSTALL_RFAB_ONLINE.bat") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "PROCHTI_MENYA.txt") `
@@ -194,14 +196,27 @@ Add-Type -TypeDefinition $CsCode -OutputAssembly $DummyExe -OutputType ConsoleAp
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\ModOrganizer.exe"), [byte[]](0x4D, 0x5A, 0x00, 0x00))
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\STALE_LEFTOVER_FROM_OLD_TEST.txt"), "must be wiped")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online_MO2\STALE_LEGACY_DIR.txt"), "must be wiped")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"), "[Patches]`r`nMemoryManager = true`r`nRegularQuicksaves = false`r`n[Experimental]`r`nS = a`r`nt = r`r`nSaveGameMaxSize = true`r`n")
+# What releases before v4.1.0 left in other mods' folders, and what v4.1.0 must do with it:
+#  - EngineFixes.toml: patched by the old installer, .rfab_online.bak holds the original -> restored, backup removed
+#  - [RFAB] Autosave.ini: patched, but the user changed an unrelated key afterwards -> kept as is, backup kept
+#  - SkyrimSoulsRE.ini: never touched by us -> must stay byte-identical (no more rewrites)
+#  - BetterStealing.dll.mohidden: hidden by the old installer -> renamed back
+$EfPath = Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"
+$EfOriginal = "[Patches]`r`nMemoryManager = true            # Replaces Skyrim's global allocator`r`nFormCaching = true`r`nRegularQuicksaves = false`r`n[Experimental]`r`nSaveGameMaxSize = false`r`n"
+[System.IO.File]::WriteAllText("$EfPath.rfab_online.bak", $EfOriginal)
+[System.IO.File]::WriteAllText($EfPath, "[Patches]`r`nMemoryManager = false            # Replaces Skyrim's global allocator`r`nFormCaching = false`r`nRegularQuicksaves = true`r`nScaleformAllocator = false`r`nTreeLODReferenceCaching = false`r`nCleanSkseCosaves = true`r`nMaxStdio = 8192`r`n[Experimental]`r`nS = a`r`nSaveGameMaxSize = false`r`n")
 New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\profiles\RFAB\saves") -Force | Out-Null
 $MockTruncEss = New-Object byte[] 512
 [System.Text.Encoding]::ASCII.GetBytes("TESV_SAVEGAME").CopyTo($MockTruncEss, 0)
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.ess"), $MockTruncEss)
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"), "[UNPAUSED_MENUS]`r`nbStatsMenu = true`r`n[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.200000`r`nbEnableSlowMotionInventoryMenu = true`r`n")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"), "[Main]`r`nEnable autosave = 1`r`nSave after combat = 1`r`n")
-[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll"), "stub")
+$SoulsPath = Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"
+$SoulsOriginal = "[UNPAUSED_MENUS]`r`nbStatsMenu = false`r`n[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.500000`r`nbEnableSlowMotion_MessageBoxMenu = true`r`n"
+[System.IO.File]::WriteAllText($SoulsPath, $SoulsOriginal)
+$AutosavePath = Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"
+[System.IO.File]::WriteAllText("$AutosavePath.rfab_online.bak", "[RFAB Autosave]`r`nEnable autosave = 0`r`nSave after combat = 1`r`nMax autosave count = 3`r`n")
+$AutosaveUserEdited = "[RFAB Autosave]`r`nEnable autosave = 0`r`nSave after combat = 0`r`nMax autosave count = 5`r`n"
+[System.IO.File]::WriteAllText($AutosavePath, $AutosaveUserEdited)
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll.mohidden"), "stub")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\ModOrganizer.ini"), "[General]`r`nselected_profile=@ByteArray(RFAB)`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\modlist.txt"), "-RFAB_Online`r`n+Requiem`r`n")
 [System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\profiles\RFAB\plugins.txt"), "*Requiem.esp`r`n*[RFAB] Balance.esp`r`n")
@@ -228,19 +243,24 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "RFAB_Online_Server\Skyrim
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "START_RFAB_SERVER.bat"))) {
     throw "START_RFAB_SERVER.bat missing in <RfabDir>!"
 }
-$patchedEf = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\EngineFixes\SKSE\Plugins\EngineFixes.toml"))
-if ($patchedEf -notmatch 'MemoryManager\s*=\s*false' -or $patchedEf -notmatch 'FormCaching\s*=\s*false' -or $patchedEf -notmatch 'TreeLODReferenceCaching\s*=\s*false' -or $patchedEf -notmatch 'SaveGameMaxSize\s*=\s*false' -or $patchedEf -match '(?m)^\s*S\s*=\s*a') {
-    throw "EngineFixes.toml was not healed to MemoryManager/FormCaching/TreeLODReferenceCaching/SaveGameMaxSize = false (or retained invalid 'S = a'):`n$patchedEf"
+if ([System.IO.File]::ReadAllText($EfPath) -cne $EfOriginal -or (Test-Path -LiteralPath "$EfPath.rfab_online.bak")) {
+    throw "EngineFixes.toml patched by an old release was not restored from its .rfab_online.bak:`n$([System.IO.File]::ReadAllText($EfPath))"
+}
+if ([System.IO.File]::ReadAllText($SoulsPath) -cne $SoulsOriginal) {
+    throw "SkyrimSoulsRE.ini was modified - v4.1.0 must never rewrite other mods' settings!"
+}
+if ([System.IO.File]::ReadAllText($AutosavePath) -cne $AutosaveUserEdited -or -not (Test-Path -LiteralPath "$AutosavePath.rfab_online.bak")) {
+    throw "[RFAB] Autosave.ini changed by the user after the backup must be kept as is (with its backup)!"
+}
+if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll")) -or
+    (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll.mohidden"))) {
+    throw "BetterStealing.dll.mohidden left by an old release was not renamed back!"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\profiles\RFAB\saves\Quarantined_Corrupt_v100\TruncatedScrapHeap.ess"))) {
     throw "TruncatedScrapHeap.ess was not quarantined during Setup-RfabOnline.ps1!"
 }
-$patchedAutosave = [System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\Autosave\SKSE\Plugins\[RFAB] Autosave.ini"))
-if ($patchedAutosave -notmatch 'Save after combat\s*=\s*0') {
-    throw "[RFAB] Autosave.ini was not patched (PowerShell bracket wildcard regression)!"
-}
 Remove-Item -LiteralPath $MockRfab -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host "  [OK] End-to-end clean-wipe installer test passed 100%!" -ForegroundColor Green
+Write-Host "  [OK] End-to-end installer test passed: clean wipe, other mods untouched, old edits undone!" -ForegroundColor Green
 
 Write-Host "==> [6/6] Compressing Release ZIP Archives & SHA256 Checksums..." -ForegroundColor Cyan
 Get-ChildItem -LiteralPath $BuildRel -Filter "*.pdb" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -363,48 +383,13 @@ if (Test-Path -LiteralPath (Join-Path $SrcDir "UI")) {
     Remove-Item -LiteralPath (Join-Path $ClientDst "UI") -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath (Join-Path $SrcDir "UI") -Destination (Join-Path $ClientDst "UI") -Recurse -Force
 }
-Get-ChildItem -LiteralPath $Mo2Base -Filter "EngineFixes.toml" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-    $rawEf = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-    $updEf = [regex]::Replace($rawEf, '(?m)^\s*(?:S\s*=\s*a|t\s*=\s*r|f\s*=\s*a)\s*\r?\n?', '')
-    $updEf = [regex]::Replace($updEf, '(?mi)^\s*\[SaveGameMaxSize\]\s*$', '[Experimental]')
-    foreach ($pair in @(@("MemoryManager","false"),@("ScaleformAllocator","false"),@("FormCaching","false"),@("TreeLODReferenceCaching","false"),@("RegularQuicksaves","true"),@("MaxStdio","8192"),@("SaveGameMaxSize","false"))) {
-        $k = $pair[0]; $v = $pair[1]
-        $updEf = [regex]::Replace($updEf, "(?mi)^(\s*$([regex]::Escape($k))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}$v`${3}")
-    }
-    $nlEf = if ($updEf.Contains("`r`n")) { "`r`n" } else { "`n" }
-    foreach ($reqPatchPair in @(@("FormCaching","false"),@("TreeLODReferenceCaching","false"))) {
-        $rk = $reqPatchPair[0]; $rv = $reqPatchPair[1]
-        if ($updEf -notmatch "(?mi)^\s*$([regex]::Escape($rk))\s*=") {
-            if ($updEf -match '(?mi)^\s*\[Patches\]') {
-                $updEf = [regex]::Replace($updEf, '(?mi)^(\s*\[Patches\][^\r\n]*\r?\n)', "`${1}$rk = $rv$nlEf")
-            } else {
-                $updEf = $updEf.TrimEnd() + "$nlEf[Patches]$nlEf$rk = $rv$nlEf"
-            }
-        }
-    }
-    if ($updEf -notmatch '(?mi)^\s*SaveGameMaxSize\s*=') {
-        if ($updEf -match '(?mi)^\s*\[Experimental\]') {
-            $updEf = [regex]::Replace($updEf, '(?mi)^(\s*\[Experimental\][^\r\n]*\r?\n)', "`${1}SaveGameMaxSize = false$nlEf")
-        } else {
-            $updEf = $updEf.TrimEnd() + "$nlEf[Experimental]$nlEf" + "SaveGameMaxSize = false$nlEf"
-        }
-    }
-    if ($updEf -ne $rawEf) { [System.IO.File]::WriteAllText($_.FullName, $updEf, (New-Object System.Text.UTF8Encoding($false))) }
-}
-Get-ChildItem -LiteralPath $Mo2Base -Filter "SkyrimSoulsRE.ini" -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-    $rawSs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-    $updSs = [regex]::Replace($rawSs, '(?mi)^(\s*fSlowMotionMultiplier\s*=\s*)([^\r\n;#]+)(.*)$', '${1}1.000000${3}')
-    $updSs = [regex]::Replace($updSs, '(?mi)^(\s*bEnableSlowMotion[A-Za-z0-9_]*\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
-    $updSs = [regex]::Replace($updSs, '(?mi)^(\s*bStatsMenu\s*=\s*)([^\r\n;#]+)(.*)$', '${1}false${3}')
-    if ($updSs -ne $rawSs) { [System.IO.File]::WriteAllText($_.FullName, $updSs, (New-Object System.Text.UTF8Encoding($false))) }
-}
-Get-ChildItem -LiteralPath $Mo2Base -Filter "*Autosave.ini" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "[RFAB] Autosave.ini" } | ForEach-Object {
-    $rawAs = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-    $updAs = $rawAs
-    foreach ($ak in @("Enable autosave","Save after combat","Save on location change","Save on sleep/wait")) {
-        $updAs = [regex]::Replace($updAs, "(?mi)^(\s*$([regex]::Escape($ak))\s*=\s*)([^\r\n;#]+)(.*)$", "`${1}0`${3}")
-    }
-    if ($updAs -ne $rawAs) { [System.IO.File]::WriteAllText($_.FullName, $updAs, (New-Object System.Text.UTF8Encoding($false))) }
+# Since v4.1.0 other mods' settings are never rewritten (the launcher serves co-op copies to the
+# co-op process only); undo what earlier versions changed. Same code as the full installer.
+$RestoreScript = Join-Path $SrcDir "Restore-ModConfigs.ps1"
+if (Test-Path -LiteralPath $RestoreScript) {
+    . $RestoreScript
+    $restore = Invoke-RfabOnlineConfigRestore -Roots @((Join-Path $Mo2Base "overwrite"), (Join-Path $Mo2Base "mods"), (Join-Path $GameRoot "Data"))
+    Write-Host "  [OK] Other mods' settings: restored $($restore.Restored), BetterStealing re-enabled $($restore.Unhidden), kept $($restore.Kept)" -ForegroundColor Green
 }
 
 function Test-ValidSkyrimEssQuick([string]$EssPath) {
@@ -487,7 +472,7 @@ foreach ($sDir in ($SaveDirsToScan | Select-Object -Unique)) {
 if ($QuarantinedQuick -gt 0) {
     Write-Host "  [OK] Quarantined $QuarantinedQuick corrupt/truncated .ess save(s) into Quarantined_Corrupt_v100" -ForegroundColor Yellow
 }
-Write-Host "  [OK] Updated Client + ESP + Scripts + EngineFixes + Russian UI -> $ClientDst" -ForegroundColor Green
+Write-Host "  [OK] Updated Client + ESP + Scripts + Russian UI -> $ClientDst" -ForegroundColor Green
 
 $SrvCandidates = @(
     (Join-Path $GameRoot "RFAB_Online_Server"),
@@ -528,6 +513,7 @@ if (Test-Path -LiteralPath $StartBat) {
 Write-Host "`nALL DONE! Launch 'RFAB Online - Play' in Mod Organizer 2 and press Right Ctrl / F2 -> 127.0.0.1" -ForegroundColor Cyan
 '@
 [System.IO.File]::WriteAllText((Join-Path $QuickDir "Update-Quick.ps1"), $QuickUpdatePs1, (New-Object System.Text.UTF8Encoding($true)))
+Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Restore-ModConfigs.ps1") -Destination (Join-Path $QuickDir "Restore-ModConfigs.ps1") -Force
 
 $QuickBat = "@echo off`r`nchcp 65001 >nul`r`ntitle RFAB Online - 1-Click Client + Server Updater`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0Update-Quick.ps1`"`r`npause`r`n"
 [System.IO.File]::WriteAllText((Join-Path $QuickDir "UPDATE_RFAB_ONLINE.bat"), $QuickBat, [System.Text.Encoding]::ASCII)

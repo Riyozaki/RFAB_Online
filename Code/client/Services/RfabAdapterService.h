@@ -4,6 +4,8 @@
 #include <Services/Rfab/RfabFormResolver.h>
 #include <Services/Rfab/RfabHudAndPings.h>
 #include <Services/Rfab/RfabXpAndBookSync.h>
+#include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -11,8 +13,6 @@
 struct World;
 struct TransportService;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct PartyJoinedEvent;
 struct PartyLeftEvent;
 struct NotifyRfabProgressionEvent;
@@ -36,7 +36,7 @@ struct Mod;
  * - RfabCombatRules (ally-hit GMSTs, CoopCombatSnapshot rules, boss detection & arena barriers)
  * - RfabHudAndPings (peer HUD roster, 3D tactical pings, ControlMap self-healing, D3D11 HUD snapshot rendering)
  */
-class RfabAdapterService
+class RfabAdapterService final : public Session::IParticipant
 {
 public:
     RfabAdapterService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
@@ -50,25 +50,25 @@ public:
     [[nodiscard]] TESForm* ResolveFormByEditorIdOrBaseId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) const noexcept;
     [[nodiscard]] TESGlobal* ResolveGlobalByEditorId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) noexcept;
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
-    [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
 
-    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled.load(std::memory_order_relaxed); }
+    RFAB_ANY_THREAD [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled.load(std::memory_order_relaxed); }
     [[nodiscard]] bool IsLocalPlayerAllyProtectionHost() const noexcept;
     void SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification = false) noexcept;
     void ToggleLocalAllyProtection() noexcept;
     void NotifyPartyLeadershipChanged() noexcept;
     void RefreshCoopCombatSnapshot() noexcept;
-    [[nodiscard]] GamePtr<Actor> FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
-    void CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] GamePtr<Actor> FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
+    RFAB_ANY_THREAD void CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept;
     [[nodiscard]] bool IsBossActor(Actor* apActor) const noexcept;
-    void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;
+    RFAB_ANY_THREAD void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;
     void TriggerContextualTacticalPing(bool aForceDanger, const std::string& acCustomLabel = "") noexcept;
     void TriggerExplicitTacticalPing(RfabCompat::TacticalPingKind aKind, const std::string& acCustomLabel = "") noexcept;
     void ClearLocalTacticalPings() noexcept;
     void ExecuteTacticalChatCommand(const RfabCompat::TacticalChatCommand& acCmd) noexcept;
     void SetTacticalHudMode(RfabCompat::TacticalHudMode aMode, bool aShowNotice = true) noexcept;
     [[nodiscard]] RfabCompat::TacticalHudMode GetTacticalHudMode() const noexcept { return m_hudAndPings.GetMode(); }
-    [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
+    RFAB_ANY_THREAD [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
         Actor* apAttacker,
         Actor* apTarget,
         bool aIsBeneficialHealOrBuff) const noexcept;
@@ -81,15 +81,20 @@ public:
     [[nodiscard]] uint64_t GetCurrentWorldEpoch() const noexcept { return m_xpAndBookSync.GetCurrentWorldEpoch(); }
 
     void RefreshRuntimeBindings() noexcept;
-    void NotifySaveLoadReset() noexcept;
+
+    // Session::ParticipantId::kRfabAdapter (stage kModpack: reads the gameplay and world-model layers,
+    // so it begins after them and is torn down before them). Session begin applies the co-op rules
+    // (ally-hit policy, no-death handling, read books); session end reverts them. A world load drops
+    // the runtime watches and holds polling for 2 s while the save state settles.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
 
 private:
     struct CoopCombatSnapshot : RfabCombatSnapshot
     {
     };
 
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPartyJoined(const PartyJoinedEvent& acEvent) noexcept;
     void OnPartyLeft(const PartyLeftEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
@@ -111,6 +116,12 @@ private:
     void SendHostAllyProtectionRequest(bool aEnabled, bool aNotifyPeers) const noexcept;
     void PushAllyProtectionStateToOverlay() const noexcept;
     [[nodiscard]] uint32_t ResolveEffectiveLocalPlayerId() const noexcept;
+    // Feature switches (common/Session/Features.h): the single place where the ally-hit GMSTs are
+    // written while connected, so a disabled kRfabCombatRules can never be overridden by a toggle.
+    void ApplyAllyHitPolicy(bool aProtectAllies) noexcept;
+    void ApplyFeatureSwitchChanges() noexcept;
+    [[nodiscard]] static bool IsTacticalHudFeatureEnabled() noexcept;
+    [[nodiscard]] static bool IsCombatRulesFeatureEnabled() noexcept;
 
     World& m_world;
     entt::dispatcher& m_dispatcher;
@@ -126,6 +137,8 @@ private:
     uint32_t m_localPlayerId{0};
     bool m_hasLocalPlayerId{false};
     bool m_isServerHost{false};
+    bool m_combatRulesFeatureApplied{true};
+    bool m_tacticalHudFeatureApplied{true};
     double m_pollAccumulatorSec{0.0};
     double m_controlMapHealAccumulatorSec{0.0};
 
@@ -135,8 +148,6 @@ private:
     mutable std::mutex m_tacticalHudSnapshotMutex{};
     RfabTacticalHudRenderSnapshot m_tacticalHudSnapshot{};
 
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_partyLeftConnection;
     entt::scoped_connection m_updateConnection;

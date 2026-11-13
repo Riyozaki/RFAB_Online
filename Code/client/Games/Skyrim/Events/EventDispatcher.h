@@ -171,7 +171,11 @@ struct TESQuestStageEvent
 struct TESQuestStartStopEvent
 {
     uint32_t formId;
+    bool started;
+    bool failed; // a start that did not take (e.g. a required alias did not fill); upstream 83d8080f
 };
+
+static_assert(offsetof(TESQuestStartStopEvent, started) == 0x4 && offsetof(TESQuestStartStopEvent, failed) == 0x5);
 
 struct TESQuestStageItemDoneEvent
 {

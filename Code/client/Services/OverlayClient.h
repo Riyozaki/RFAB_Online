@@ -29,6 +29,7 @@ private:
     void ProcessSetTimeCommand(CefRefPtr<CefListValue> aEventArgs);
     void ProcessTeleportMessage(CefRefPtr<CefListValue> aEventArgs);
     void ProcessToggleDebugUI();
+    // Main thread only (post it from CEF callbacks).
     void SetUIVisible(bool aVisible) noexcept;
 
     TransportService& m_transport;

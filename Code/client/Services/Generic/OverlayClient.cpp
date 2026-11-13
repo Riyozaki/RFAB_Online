@@ -146,7 +146,11 @@ void OverlayClient::ProcessDisconnectMessage()
 
 void OverlayClient::ProcessRevealPlayersMessage()
 {
-    SetUIVisible(false);
+    // CEF IPC thread: DInputHook, OverlayService's active flag and the render handler belong to the
+    // main thread. The always-lane runs before the next simulated frame drains the reveal below, so
+    // the order (hide the UI, then reveal) is the one this handler had when it called directly.
+    CefRefPtr<OverlayClient> self(this);
+    World::Get().QueueMainThreadTask([self]() { self->SetUIVisible(false); });
     World::Get().GetRunner().Queue([]() { World::Get().GetMagicService().StartRevealingOtherPlayers(); });
 }
 

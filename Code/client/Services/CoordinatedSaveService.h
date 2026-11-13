@@ -6,12 +6,12 @@
 #include <string>
 #include <unordered_set>
 
+#include <common/Session/Lifecycle.h>
+
 struct World;
 struct TransportService;
 struct BGSSaveLoadManager;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct NotifyPrepareSave;
 struct NotifyCommitSave;
 struct NotifyExecuteLoad;
@@ -32,7 +32,7 @@ struct NotifyExecuteLoad;
  *   `StorageUtil`/`JContainers`, and SkyUI hotkeys. Non-destructive transform/health fallback is kept
  *   strictly as an emergency safety net if a newly joined peer has zero current-session `.ess` on disk.
  */
-class CoordinatedSaveService
+class CoordinatedSaveService final : public Session::IParticipant
 {
 public:
     struct ScopedSaveLoadAllowance
@@ -71,9 +71,13 @@ public:
     [[nodiscard]] uint64_t GetLastCommittedEpoch() const noexcept { return m_lastCommittedEpoch; }
     [[nodiscard]] const std::string& GetLastCommittedSlot() const noexcept { return m_lastCommittedSlot; }
 
+    // Session::ParticipantId::kCoordinatedSaves. This service also DRIVES the world lifecycle: it feeds
+    // WorldLoadBegin when a reload is committed (barrier) and when the engine starts a load (hook),
+    // WorldLoadEnd when the engine finished, WorldLoadCancel when a committed load will not happen.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+
 private:
-    void OnConnected(const ConnectedEvent& acEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
     void OnNotifyPrepareSave(const NotifyPrepareSave& acMessage) noexcept;
     void OnNotifyCommitSave(const NotifyCommitSave& acMessage) noexcept;
@@ -141,8 +145,6 @@ private:
     std::string m_lastWrittenCoopSlot{};
     std::unordered_set<std::string> m_writtenSlotsInSession{};
 
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_prepareSaveConnection;
     entt::scoped_connection m_commitSaveConnection;

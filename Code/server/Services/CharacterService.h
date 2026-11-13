@@ -3,6 +3,7 @@
 #include <Events/PacketEvent.h>
 #include <Structs/ActorData.h>
 #include <CoopWorldView.h>
+#include <common/Session/Resync.h>
 #include <unordered_set>
 
 struct UpdateEvent;
@@ -44,6 +45,10 @@ struct CharacterService
     void ReconcileEntityForAllObservers(entt::entity aEntity) const noexcept;
     void ReconcileAllEntitiesForObserver(Player* apObserver) const noexcept;
     void ForceResyncObserverAfterRollback(Player* apObserver) const noexcept;
+    // Self-healing resends (common/Session/Resync.h). Both only send full-state snapshots the
+    // client applies idempotently, and keep the interest registry consistent with what was sent.
+    [[nodiscard]] Session::Resync::Outcome ResyncEntityForObserver(Player* apObserver, uint32_t aServerId, uint32_t& aOutSnapshots) const noexcept;
+    [[nodiscard]] uint32_t ResyncAllEntitiesForObserver(Player* apObserver) const noexcept;
     void ResetWorldEntitiesForCheckpointReload(
         const std::unordered_set<uint64_t>& acCheckpointPersistentKeys,
         bool aHasCheckpointBaseline) const noexcept;

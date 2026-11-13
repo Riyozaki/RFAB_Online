@@ -1,9 +1,7 @@
 
 #include <Services/TransportService.h>
 
-#include <Events/ConnectedEvent.h>
 #include <Events/ConnectionErrorEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
 
 #include <Games/References.h>
@@ -27,6 +25,7 @@
 #include <Services/DiscordService.h>
 #include <common/CoopPacketSafety.h>
 #include <common/CoopWorldStabilizer.h>
+#include <common/PausedInboundCoalescer.h>
 #include <Utils.h>
 
 // #include <imgui_internal.h>
@@ -41,8 +40,6 @@ TransportService::TransportService(World& aWorld, entt::dispatcher& aDispatcher)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&TransportService::HandleUpdate>(this);
     m_settingsChangeConnection = m_dispatcher.sink<NotifySettingsChange>().connect<&TransportService::HandleNotifySettingsChange>(this);
-    m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&TransportService::HandleConnected>(this);
-    m_disconnectedConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&TransportService::HandleDisconnected>(this);
 
     m_connected = false;
 
@@ -136,14 +133,13 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
             m_messageHandlers[opcode](pMessage);
             return;
 
+        case CoopWorldStabilizer::PausedInboundPacketAction::kCoalesceUntilUnpaused:
+            PausedInbound::MergeMoveRequest(
+                m_pausedMoveRequest, m_hasPausedMoveRequest, static_cast<const ServerReferencesMoveRequest&>(*pMessage));
+            return;
+
         case CoopWorldStabilizer::PausedInboundPacketAction::kQueueUntilUnpaused:
-            if (m_pausedInboundQueue.size() >= CoopWorldStabilizer::kMaxPausedInboundQueueSize)
-            {
-                spdlog::warn(
-                    "[RFAB Transport] Paused inbound queue reached cap ({}); dropping oldest queued packet",
-                    CoopWorldStabilizer::kMaxPausedInboundQueueSize);
-                m_pausedInboundQueue.pop_front();
-            }
+            // Never drop a reliable packet: back-pressure is applied in PollWhileSimulationPaused instead.
             m_pausedInboundQueue.push_back(std::move(pMessage));
             return;
         }
@@ -154,6 +150,8 @@ void TransportService::OnConsume(const void* apData, uint32_t aSize)
 
 void TransportService::OnConnected()
 {
+    m_world.GetLifecycle().OnTransportUp();
+
     AuthenticationRequest request{};
     request.Version = BUILD_COMMIT;
     request.SKSEActive = IsScriptExtenderLoaded();
@@ -232,7 +230,14 @@ void TransportService::OnDisconnected(EDisconnectReason aReason)
 
     spdlog::warn("Disconnected from server {}", aReason);
 
-    m_dispatcher.trigger(DisconnectedEvent());
+    m_localPlayerId = 0;
+    // Ends the session if one had begun. A failed connection attempt or a handshake that never got
+    // accepted ends nothing (no session state was created), but the UI still has to leave "connecting".
+    auto& lifecycle = m_world.GetLifecycle();
+    const bool hadSession = lifecycle.GetMachine().IsOnline();
+    lifecycle.OnTransportDown();
+    if (!hadSession)
+        m_world.GetOverlayService().NotifyConnectionAttemptEnded();
 }
 
 void TransportService::OnUpdate()
@@ -249,6 +254,19 @@ void TransportService::PollWhileSimulationPaused() noexcept
     if (auto* pUtils = SteamNetworkingUtils())
         m_lastPollTime = static_cast<double>(pUtils->GetLocalTimestamp()) / 1000.0;
 
+    if (!CoopWorldStabilizer::ShouldPumpSocketWhilePaused(m_pausedInboundQueue.size()))
+    {
+        // Stop reading instead of dropping: GameNetworkingSockets keeps the remaining messages in
+        // order and the connection alive; they are read as soon as the simulation unpauses.
+        if (!m_pausedBackPressureLogged)
+        {
+            spdlog::warn("[RFAB Transport] {} reliable packets queued while paused; pausing socket reads until unpause",
+                         m_pausedInboundQueue.size());
+            m_pausedBackPressureLogged = true;
+        }
+        return;
+    }
+
     const bool prevPaused = m_pollingWhilePaused;
     m_pollingWhilePaused = true;
     Update();
@@ -257,8 +275,14 @@ void TransportService::PollWhileSimulationPaused() noexcept
 
 void TransportService::FlushPausedInboundPackets() noexcept
 {
+    m_pausedBackPressureLogged = false;
+
     if (m_pausedInboundQueue.empty())
+    {
+        if (IsConnected())
+            FlushPausedMoveRequest();
         return;
+    }
 
     std::deque<UniquePtr<ServerMessage>> pending;
     pending.swap(m_pausedInboundQueue);
@@ -277,11 +301,55 @@ void TransportService::FlushPausedInboundPackets() noexcept
         if (opcode < static_cast<uint32_t>(kServerOpcodeMax) && m_messageHandlers[opcode])
             m_messageHandlers[opcode](pMessage);
     }
+
+    // Movement/animation folded during the pause goes last, so spawns/removals queued during the
+    // pause are applied before the movement that refers to them.
+    if (IsConnected())
+        FlushPausedMoveRequest();
+}
+
+void TransportService::FlushPausedMoveRequest() noexcept
+{
+    if (!m_hasPausedMoveRequest)
+        return;
+
+    m_hasPausedMoveRequest = false;
+    ServerReferencesMoveRequest pending = std::move(m_pausedMoveRequest);
+    m_pausedMoveRequest = ServerReferencesMoveRequest{};
+
+    if (!pending.Updates.empty())
+        m_dispatcher.trigger(pending);
 }
 
 void TransportService::ClearPausedInboundPackets() noexcept
 {
     m_pausedInboundQueue.clear();
+    m_pausedMoveRequest = ServerReferencesMoveRequest{};
+    m_hasPausedMoveRequest = false;
+    m_pausedBackPressureLogged = false;
+}
+
+void TransportService::DiscardPausedWorldPacketsForReload() noexcept
+{
+    // World-scoped packets are rebuilt by the post-reload cell re-entry; session-scoped ones
+    // (string table deltas, player list, party, settings) are never re-sent and must survive.
+    std::deque<UniquePtr<ServerMessage>> kept;
+    size_t discarded = 0;
+    for (auto& pMessage : m_pausedInboundQueue)
+    {
+        if (pMessage && CoopWorldStabilizer::MustSurviveWorldReload(static_cast<uint32_t>(pMessage->GetOpcode())))
+            kept.push_back(std::move(pMessage));
+        else
+            ++discarded;
+    }
+
+    if (!kept.empty() || discarded)
+        spdlog::info("[RFAB Transport] World reload: kept {} session packets, discarded {} world packets", kept.size(), discarded);
+
+    m_pausedInboundQueue.swap(kept);
+    m_pausedMoveRequest = ServerReferencesMoveRequest{};
+    m_hasPausedMoveRequest = false;
+    m_pausedBackPressureLogged = false;
 }
 
 void TransportService::HandleUpdate(const UpdateEvent& acEvent) noexcept
@@ -294,21 +362,14 @@ void TransportService::HandleUpdate(const UpdateEvent& acEvent) noexcept
     Update();
 }
 
-void TransportService::HandleConnected(const ConnectedEvent& acEvent) noexcept
-{
-    m_localPlayerId = acEvent.PlayerId;
-}
-
-void TransportService::HandleDisconnected(const DisconnectedEvent& acEvent) noexcept
-{
-    m_localPlayerId = NULL;
-}
-
 void TransportService::HandleAuthenticationResponse(const AuthenticationResponse& acMessage) noexcept
 {
     using AR = AuthenticationResponse::ResponseType;
     if (acMessage.Type == AR::kAccepted)
     {
+        // Ends a still-live session before anything of the new one is applied (no-op normally).
+        m_world.GetLifecycle().OnAuthenticationReceived();
+
         m_connected = true;
         World::SetConnectedHint(true);
 
@@ -351,7 +412,10 @@ void TransportService::HandleAuthenticationResponse(const AuthenticationResponse
 
         m_dispatcher.trigger(acMessage.UserMods);
         m_dispatcher.trigger(acMessage.Settings);
-        m_dispatcher.trigger(ConnectedEvent(acMessage.PlayerId));
+        // The session begins here, after the mod table and the settings (feature mask) are in place.
+        // Session::Lifecycle delivers it to every participant in the declared order.
+        m_localPlayerId = acMessage.PlayerId;
+        m_world.GetLifecycle().OnAuthenticated(acMessage.PlayerId);
         return; // quit the function here.
     }
 

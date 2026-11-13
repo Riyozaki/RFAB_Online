@@ -47,6 +47,7 @@ LRESULT CALLBACK Hook_WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
 void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData, const BSGraphics::ApplicationWindowProperties* aFBData, BSGraphics::RendererInitReturn* aOut)
 {
+    RFAB_EXPECT_MAIN_THREAD("Hook_Renderer_Init");
     // we feed this a shared icon as the resource directory of our former launcher data is already overwritten with the
     // game.
     aOSData->hIcon = g_SharedWindowIcon;

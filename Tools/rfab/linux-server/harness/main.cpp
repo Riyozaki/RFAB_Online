@@ -29,6 +29,9 @@
 //      checkpoint; the first join cannot overwrite the restored calendar;
 //  14. after an actual process restart, a reused player ID cannot reclaim depleted loot,
 //      including after rollback to either the latest or an older on-disk checkpoint.
+//  15. v4.1.0 self-healing resync: a client that lost state asks, the server resends the
+//      authoritative snapshot and terminates with NotifyResyncComplete - after the snapshots,
+//      to the requester only, within a per-player budget, and never when switched off.
 //
 // The coordinator's own rules run in the fast loop (Code/tests/rfab_save_barrier.cpp). What
 // was never observed is the wiring: who is told, and what the server records when a player
@@ -55,6 +58,8 @@
 #include <Messages/NotifyHealthChangeBroadcast.h>
 #include <Messages/NotifyOwnershipTransfer.h>
 #include <Messages/NotifyRelinquishControl.h>
+#include <Messages/NotifyRemoveCharacter.h>
+#include <Messages/NotifyResyncComplete.h>
 #include <Messages/NotifySpawnData.h>
 #include <Messages/RequestActorValueChanges.h>
 #include <Messages/RequestDeathStateChange.h>
@@ -62,14 +67,23 @@
 #include <Messages/RequestInventoryChanges.h>
 #include <Messages/RequestOwnershipClaim.h>
 #include <Messages/RequestOwnershipTransfer.h>
+#include <Messages/RequestResync.h>
+#include <Messages/NotifyInventoryChanges.h>
+#include <Messages/NotifyWorldItemDespawn.h>
+#include <Messages/NotifyWorldItemSnapshot.h>
+#include <Messages/NotifyWorldItemSpawn.h>
+#include <Messages/RequestWorldItemDrop.h>
+#include <Messages/RequestWorldItemPickup.h>
 #include <Messages/ServerMessageFactory.h>
 
 #include <Services/CharacterService.h>
 #include <Services/PartyService.h>
 #include <Services/SaveSnapshotService.h>
+#include <Services/WorldItemService.h>
 
 #include "TransportSpy.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -82,6 +96,10 @@
 
 #include <sys/wait.h>
 #include <unistd.h>
+
+// v4.1.0: the self-healing switch lives in GameServer.cpp; the harness flips it like an operator would.
+extern Console::Setting<bool> bEnableSelfHealingResync;
+extern Console::Setting<bool> bEnableServerOwnedWorldItems;
 
 namespace
 {
@@ -185,6 +203,26 @@ std::vector<TServerMsg> DecodeOutboxMessagesFor(TiltedPhoques::ConnectionId_t aC
             decoded.push_back(*static_cast<const TServerMsg*>(pMsg.get()));
     }
     return decoded;
+}
+
+// Every server opcode sent to `aConn`, in send order. The reliable ordered channel delivers in this
+// order, so "the terminator comes after the snapshots" is an ordering property of the outbox.
+std::vector<uint32_t> OutboxOpcodesFor(TiltedPhoques::ConnectionId_t aConn)
+{
+    std::vector<uint32_t> opcodes;
+    const ServerMessageFactory factory;
+    for (const auto& pkt : Harness::Outbox())
+    {
+        if ((pkt.Connection != aConn && pkt.Connection != k_HSteamNetConnection_Invalid) || pkt.Bytes.empty())
+            continue;
+        TiltedPhoques::Buffer buf(pkt.Bytes.size() + 16);
+        std::memset(buf.GetWriteData(), 0, pkt.Bytes.size() + 16);
+        std::memcpy(buf.GetWriteData(), pkt.Bytes.data(), pkt.Bytes.size());
+        TiltedPhoques::Buffer::Reader reader(&buf);
+        if (auto pMsg = factory.Extract(reader))
+            opcodes.push_back(static_cast<uint32_t>(pMsg->GetOpcode()));
+    }
+    return opcodes;
 }
 
 template <class TMap>
@@ -314,6 +352,7 @@ int main(int argc, char** argv)
     const GameId restartContainerId{0u, 0x00054321u};
     const GameId depletedItemId{0u, 0x00023456u};
     const GameId remainingItemId{0u, 0x00034567u};
+    const GameId restartWorldItemId{0u, 0x00045678u};
     uint64_t restartEpoch = 0;
     {
     GameServer server{registry};
@@ -719,6 +758,31 @@ int main(int argc, char** argv)
             Check(depletion.size() == 1, "a real withdrawal records the depletion");
         }
 
+        // A dropped item the checkpoint must carry across the restart (TLV kWorldItems).
+        {
+            auto& actorInventory = world.get_or_emplace<InventoryComponent>(actor).Content;
+            Inventory::Entry carried{};
+            carried.BaseId = restartWorldItemId;
+            carried.Count = 4;
+            carried.ExtraHealth = 1.5f;
+            actorInventory.AddOrRemoveEntry(carried);
+
+            // The claim scene above released the actor; a drop is only accepted from the actor's owner.
+            world.get<OwnerComponent>(actor).SetOwner(pOwner, 0);
+            RequestWorldItemDrop drop{};
+            drop.Cookie = 31u;
+            drop.ActorServerId = actorId;
+            drop.Item = carried;
+            drop.CellId = kCell;
+            drop.Position = {11.0f, -22.5f, 33.25f};
+            drop.Rotation = {0.0f, 0.0f, 1.5f};
+            Check(DeliverWire(world, drop, pOwner), "the restart checkpoint's dropped item round-trips");
+            GameId lookup = restartWorldItemId;
+            Check(world.ctx().at<WorldItemService>().GetRegistry().Size() == 1 && actorInventory.GetEntryCountById(lookup) == 0,
+                  "the drop moved the stack from the inventory into the registry");
+            world.get<OwnerComponent>(actor).SetOwner(nullptr, 0);
+        }
+
         Check(saves.TriggerCoordinatedSave(true, nullptr), "a save starts for the restart checkpoint");
         const auto pending = coordinator.GetPendingBarrier();
         Check(pending.has_value(), "the restart checkpoint has a pending barrier");
@@ -829,6 +893,21 @@ int main(int argc, char** argv)
                       depletion[0].ClaimantPlayerId == 0,
                   "the depletion keeps its stable key but its old claimant is unknown");
         }
+        {
+            const auto& worldItems = restored.ctx().at<WorldItemService>().GetRegistry();
+            const auto records = worldItems.Export();
+            Check(records.size() == 1, "the fresh server restores the dropped item");
+            if (records.size() == 1)
+            {
+                const auto& record = records[0];
+                Check(record.Count == 4 && record.Payload.Item.BaseId == restartWorldItemId &&
+                          std::fabs(record.Payload.Item.ExtraHealth - 1.5f) < 0.001f && record.Payload.CellId == GameId{0x0000003Cu, 0u} &&
+                          record.Payload.Position == glm::vec3(11.0f, -22.5f, 33.25f) && std::fabs(record.Payload.Rotation.z - 1.5f) < 1e-6f,
+                      "the restored dropped item keeps its stack, extra data, cell and exact position");
+                Check(record.DropperCookie == 0, "a restored item carries no cookie a new client could adopt");
+                Check(worldItems.GetRevision() != 0, "the restored registry starts at a nonzero revision");
+            }
+        }
         const auto progress = restored.GetRfabProgressionService().GetLedger().CaptureSnapshot();
         Check(progress.GrantedXpBySource.count("restart-test") == 1,
               "the fresh server restores the progression ledger");
@@ -853,7 +932,14 @@ int main(int argc, char** argv)
             hostTime.Day = 2;
             hostTime.Month = 1;
             hostTime.Year = 100;
+            Harness::ClearOutbox();
             restored.GetDispatcher().trigger(PlayerJoinEvent{pHost, {}, {}, DateTime{hostTime}});
+            {
+                const auto snapshots = DecodeOutboxMessagesFor<NotifyWorldItemSnapshot>(3);
+                Check(snapshots.size() == 1 && snapshots[0].Items.size() == 1 && snapshots[0].Items[0].Item.Count == 4 &&
+                          snapshots[0].Items[0].Item.BaseId == restartWorldItemId,
+                      "a player joining the restarted server receives the restored dropped item");
+            }
             Check(restored.GetCalendarService().GetDate() == CalendarService::TDate{12, 4, 205},
                   "the first player does not overwrite the restored date");
             Check(restored.GetCalendarService().GetTime() == CalendarService::TTime{13, 17},
@@ -1144,6 +1230,443 @@ int main(int argc, char** argv)
                   HasApproxValue(g3Corrections[0].Values, 24u, 0.0f) &&
                   g3Corrections[0].HealthRevision == deadWireRev,
               "stale pre-death snapshot is refused and answered on the wire with HP=0 and dead HealthRevision");
+
+        std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
+    }
+
+
+    // =========================================================================
+    // v4.1.0 Self-healing resync: RequestResync -> snapshots -> NotifyResyncComplete
+    // =========================================================================
+    std::printf("v4.1.0 self-healing resync over the wire\n");
+    {
+        using Session::Resync::Outcome;
+        using Session::Resync::Reason;
+        using Session::Resync::Scope;
+
+        GameServer server{registry};
+        World& world = server.GetWorld();
+
+        constexpr TiltedPhoques::ConnectionId_t kOwnerConn = 201;
+        constexpr TiltedPhoques::ConnectionId_t kObserverConn = 202;
+        const GameId kCell{0u, 0x0009ABCDu};
+        const GameId kRefId{1u, 0x000E5F80u};
+        const GameId kBaseId{2u, 0x00023BC0u};
+
+        Player* pOwner = world.GetPlayerManager().Create(kOwnerConn);
+        Player* pObserver = world.GetPlayerManager().Create(kObserverConn);
+        Check(pOwner && pObserver, "two peers connect for the resync scene");
+
+        TimeModel t0{};
+        t0.Time = 12.0f;
+        t0.Day = 5;
+        t0.Month = 3;
+        t0.Year = 201;
+        world.GetDispatcher().trigger(PlayerJoinEvent{pOwner, {}, {}, DateTime{t0}});
+        world.GetDispatcher().trigger(PlayerJoinEvent{pObserver, {}, {}, DateTime{t0}});
+        pOwner->SetCellComponent(CellIdComponent{kCell});
+        pObserver->SetCellComponent(CellIdComponent{kCell});
+
+        Harness::ClearOutbox();
+        AssignCharacterRequest assign{};
+        assign.Cookie = 21u;
+        assign.ReferenceId = kRefId;
+        assign.FormId = kBaseId;
+        assign.CellId = kCell;
+        assign.Position = {10.0f, 20.0f, 0.0f};
+        assign.CurrentActorData.BaseId = kBaseId;
+        assign.CurrentActorData.InitialActorValues.ActorValuesList[24] = 120.0f;
+        assign.CurrentActorData.InitialActorValues.ActorMaxValuesList[24] = 120.0f;
+        Check(DeliverWire(world, assign, pOwner), "owner assigns the NPC the observer will lose");
+        const auto assignResps = DecodeOutboxMessagesFor<AssignCharacterResponse>(kOwnerConn);
+        // The first character of a fresh server is entt entity 0 - exactly the id an "0 means none"
+        // shortcut would refuse. The scene keeps it on purpose.
+        Check(assignResps.size() == 1, "the NPC is assigned a server id");
+        const uint32_t npcServerId = assignResps.empty() ? Session::Resync::kNoServerId : assignResps[0].ServerId;
+
+        const auto requestFrom = [&](Player* apFrom, uint32_t aRequestId, Scope aScope, uint32_t aServerId, Reason aReason) {
+            Harness::ClearOutbox();
+            RequestResync request{};
+            request.RequestId = aRequestId;
+            request.RequestScope = aScope;
+            request.ServerId = aServerId;
+            request.GapReason = aReason;
+            return DeliverWire(world, request, apFrom);
+        };
+        const auto onlyComplete = [](TiltedPhoques::ConnectionId_t aConn) {
+            const auto completes = DecodeOutboxMessagesFor<NotifyResyncComplete>(aConn);
+            return completes.size() == 1 ? completes[0] : NotifyResyncComplete{};
+        };
+        const auto terminatorIsLast = [](TiltedPhoques::ConnectionId_t aConn) {
+            const auto opcodes = OutboxOpcodesFor(aConn);
+            return !opcodes.empty() && opcodes.back() == static_cast<uint32_t>(kNotifyResyncComplete) &&
+                   std::count(opcodes.begin(), opcodes.end(), static_cast<uint32_t>(kNotifyResyncComplete)) == 1;
+        };
+
+        // 1. The observer saw movement for an entity it never spawned (spawn dropped during its load).
+        Check(requestFrom(pObserver, 7u, Scope::kEntity, npcServerId, Reason::kUnknownEntityInMovement),
+              "RequestResync(entity) round-trips over the wire");
+        {
+            const auto spawns = DecodeOutboxMessagesFor<CharacterSpawnRequest>(kObserverConn);
+            const auto complete = onlyComplete(kObserverConn);
+            Check(spawns.size() == 1 && spawns[0].ServerId == npcServerId && spawns[0].BaseId == kBaseId,
+                  "entity resync resends exactly one authoritative CharacterSpawnRequest");
+            Check(complete.RequestId == 7u && complete.RequestScope == Scope::kEntity &&
+                      complete.ServerId == npcServerId && complete.Result == Outcome::kApplied &&
+                      complete.SnapshotsSent == 1u,
+                  "NotifyResyncComplete echoes the request and reports kApplied with one snapshot");
+            Check(terminatorIsLast(kObserverConn), "NotifyResyncComplete is sent once and after every snapshot");
+            Check(DecodeOutboxMessagesFor<CharacterSpawnRequest>(kOwnerConn).empty() &&
+                      DecodeOutboxMessagesFor<NotifyResyncComplete>(kOwnerConn).empty(),
+                  "an entity resync is answered to the requester only");
+        }
+
+        // 2. The owner asking for its own NPC cannot be fixed by a resend: no spawn, explicit outcome.
+        Check(requestFrom(pOwner, 8u, Scope::kEntity, npcServerId, Reason::kUnknownEntityInMovement),
+              "owner RequestResync round-trips over the wire");
+        Check(DecodeOutboxMessagesFor<CharacterSpawnRequest>(kOwnerConn).empty() &&
+                  onlyComplete(kOwnerConn).Result == Outcome::kOwnedByRequester,
+              "a request for an entity the requester owns answers kOwnedByRequester without spawning a duplicate");
+
+        // 3. An id the server no longer knows: the client is told to remove it.
+        constexpr uint32_t kGoneId = 0x00FFFF01u;
+        Check(requestFrom(pObserver, 9u, Scope::kEntity, kGoneId, Reason::kUnknownEntityInMovement),
+              "RequestResync for a vanished entity round-trips");
+        {
+            const auto removals = DecodeOutboxMessagesFor<NotifyRemoveCharacter>(kObserverConn);
+            Check(removals.size() == 1 && removals[0].ServerId == kGoneId &&
+                      onlyComplete(kObserverConn).Result == Outcome::kEntityGone && terminatorIsLast(kObserverConn),
+                  "a vanished entity answers NotifyRemoveCharacter then kEntityGone");
+        }
+
+        // 4. Malformed requests are refused explicitly, never guessed.
+        Check(requestFrom(pObserver, 10u, Scope::kEntity, Session::Resync::kNoServerId, Reason::kManual),
+              "entity RequestResync without an id round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kInvalid && OutboxOpcodesFor(kObserverConn).size() == 1,
+              "entity scope without a server id answers kInvalid and nothing else");
+        Check(requestFrom(pObserver, 11u, static_cast<Scope>(0x7Fu), npcServerId, Reason::kManual),
+              "RequestResync with an unknown scope byte round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kInvalid && OutboxOpcodesFor(kObserverConn).size() == 1,
+              "an unknown scope byte answers kInvalid and nothing else");
+
+        // 5. Whole-session rebuild resends the NPC, and a second one inside the interval is throttled.
+        Check(requestFrom(pObserver, 12u, Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kWorldPacketsDiscarded),
+              "RequestResync(all entities) round-trips");
+        {
+            const auto spawns = DecodeOutboxMessagesFor<CharacterSpawnRequest>(kObserverConn);
+            const auto complete = onlyComplete(kObserverConn);
+            const bool npcResent = std::any_of(spawns.begin(), spawns.end(),
+                                               [&](const CharacterSpawnRequest& s) { return s.ServerId == npcServerId; });
+            Check(npcResent && complete.Result == Outcome::kApplied && complete.SnapshotsSent >= 1u &&
+                      terminatorIsLast(kObserverConn),
+                  "whole-session resync resends the in-range NPC and terminates with kApplied");
+        }
+        Check(requestFrom(pObserver, 13u, Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kWorldPacketsDiscarded),
+              "a second whole-session request round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kThrottled &&
+                  DecodeOutboxMessagesFor<CharacterSpawnRequest>(kObserverConn).empty(),
+              "a whole-session rebuild inside the server interval is throttled and costs nothing");
+
+        // 6. String table.
+        Check(requestFrom(pObserver, 14u, Scope::kStringCache, Session::Resync::kNoServerId, Reason::kStringCacheRejected),
+              "RequestResync(string cache) round-trips");
+        Check(onlyComplete(kObserverConn).Result == Outcome::kApplied && terminatorIsLast(kObserverConn),
+              "string table resync terminates with kApplied");
+
+        // 7. A client looping on single-entity requests is bounded by the burst budget.
+        {
+            uint32_t applied = 0;
+            uint32_t throttled = 0;
+            for (uint32_t i = 0; i < 64; ++i)
+            {
+                requestFrom(pObserver, 100u + i, Scope::kEntity, npcServerId, Reason::kUnknownEntityInMovement);
+                const auto result = onlyComplete(kObserverConn).Result;
+                applied += result == Outcome::kApplied ? 1u : 0u;
+                throttled += result == Outcome::kThrottled ? 1u : 0u;
+            }
+            // One token was spent by scene 1, one by scene 3; refill is 100 ms, the loop takes far less.
+            Check(applied <= Session::Resync::ServerPolicy{}.EntityBurst && throttled >= 64u - Session::Resync::ServerPolicy{}.EntityBurst &&
+                      applied + throttled == 64u,
+                  "a request storm is bounded by the per-player entity budget and every request is still answered");
+        }
+
+        // 8. The operator switch: answered, never served.
+        bEnableSelfHealingResync = false;
+        Check(requestFrom(pOwner, 200u, Scope::kStringCache, Session::Resync::kNoServerId, Reason::kManual), "RequestResync with resync disabled round-trips");
+        Check(onlyComplete(kOwnerConn).Result == Outcome::kDisabled && OutboxOpcodesFor(kOwnerConn).size() == 1,
+              "with Gameplay:bEnableSelfHealingResync off the server answers kDisabled and resends nothing");
+        Check(!Session::IsEnabledIn(GetDisabledCoopFeatureMask(), Session::Feature::kSelfHealingResync),
+              "the disabled switch is folded into the feature mask clients receive");
+        bEnableSelfHealingResync = true;
+
+        // 9. A player who leaves takes their budget with them; a reconnect starts clean.
+        world.GetDispatcher().trigger(PlayerLeaveEvent{pObserver});
+        Check(requestFrom(pOwner, 201u, Scope::kAllEntities, Session::Resync::kNoServerId, Reason::kManual), "whole-session request from the remaining peer");
+        Check(onlyComplete(kOwnerConn).Result == Outcome::kApplied, "another player's budget is independent");
+
+        std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
+    }
+
+    // =========================================================================
+    // Step 4: server-owned dropped items (common/Session/WorldItems.h, WorldItemService)
+    // =========================================================================
+    std::printf("v4.1.0 server-owned dropped items\n");
+    {
+        GameServer server{registry};
+        World& world = server.GetWorld();
+        auto& worldItems = world.ctx().at<WorldItemService>();
+
+        constexpr TiltedPhoques::ConnectionId_t kAConn = 301;
+        constexpr TiltedPhoques::ConnectionId_t kBConn = 302;
+        constexpr TiltedPhoques::ConnectionId_t kCConn = 303;
+        const GameId kCell{0u, 0x0009ABCDu};
+        const GameId kSword{2u, 0x00012EB7u};
+        const GameId kArrows{2u, 0x0001397Du};
+        const GameId kGold{0u, 0x0000000Fu};
+
+        Player* pA = world.GetPlayerManager().Create(kAConn);
+        Player* pB = world.GetPlayerManager().Create(kBConn);
+        Check(pA && pB, "two players connect for the dropped-item scene");
+
+        TimeModel t0{};
+        t0.Time = 12.0f;
+        t0.Day = 5;
+        t0.Month = 3;
+        t0.Year = 201;
+        Harness::ClearOutbox();
+        world.GetDispatcher().trigger(PlayerJoinEvent{pA, {}, {}, DateTime{t0}});
+        world.GetDispatcher().trigger(PlayerJoinEvent{pB, {}, {}, DateTime{t0}});
+        pA->SetCellComponent(CellIdComponent{kCell});
+        pB->SetCellComponent(CellIdComponent{kCell});
+        Check(DecodeOutboxMessagesFor<NotifyWorldItemSnapshot>(kAConn).size() == 1,
+              "a joining player always gets the dropped-item snapshot (empty here)");
+
+        // Each player simulates one actor with an inventory.
+        const auto makeActor = [&](Player* apOwner, uint32_t aFormId) {
+            const entt::entity entity = world.create();
+            world.emplace<FormIdComponent>(entity, aFormId, 0u);
+            world.emplace<CharacterComponent>(entity);
+            world.emplace<OwnerComponent>(entity, apOwner);
+            world.emplace<CellIdComponent>(entity, kCell);
+            world.emplace<InventoryComponent>(entity);
+            return entity;
+        };
+        const entt::entity actorA = makeActor(pA, 0x00011111u);
+        const entt::entity actorB = makeActor(pB, 0x00022222u);
+        const uint32_t actorAId = World::ToInteger(actorA);
+        const uint32_t actorBId = World::ToInteger(actorB);
+
+        const auto countOf = [&](entt::entity aActor, const GameId& acItem) {
+            GameId lookup = acItem;
+            return world.get<InventoryComponent>(aActor).Content.GetEntryCountById(lookup);
+        };
+        const auto give = [&](entt::entity aActor, const GameId& acItem, int32_t aCount) {
+            Inventory::Entry entry{};
+            entry.BaseId = acItem;
+            entry.Count = aCount;
+            world.get<InventoryComponent>(aActor).Content.AddOrRemoveEntry(entry);
+        };
+
+        // A non-owner can pickpocket/loot an owned NPC only from the same loaded cell range.
+        // Even if the engine marks the delta as local-only, observers must receive the mutation.
+        const GameId kPickpocketGold{0u, 0x0000000Fu};
+        const entt::entity ownedNpc = makeActor(pA, 0x00033333u);
+        give(ownedNpc, kPickpocketGold, 3);
+        Inventory::Entry stolenGold{};
+        stolenGold.BaseId = kPickpocketGold;
+        stolenGold.Count = -1;
+        pB->SetCellComponent(CellIdComponent{GameId{0u, 0x0009ABCEu}});
+        Harness::ClearOutbox();
+        Check(!world.GetInventoryService().ApplyInventoryDelta(pB, World::ToInteger(ownedNpc), stolenGold, false, false, false),
+              "out-of-range non-owner inventory interaction on an owned NPC is rejected");
+        Check(countOf(ownedNpc, kPickpocketGold) == 3, "rejected remote NPC interaction leaves authoritative inventory unchanged");
+        pB->SetCellComponent(CellIdComponent{kCell});
+        Harness::ClearOutbox();
+        Check(world.GetInventoryService().ApplyInventoryDelta(pB, World::ToInteger(ownedNpc), stolenGold, false, false, false),
+              "in-range pickpocket delta from a non-owner is accepted");
+        Check(countOf(ownedNpc, kPickpocketGold) == 2, "accepted pickpocket delta updates authoritative inventory");
+        Check(!DecodeOutboxMessagesFor<NotifyInventoryChanges>(kAConn).empty(),
+              "remote NPC inventory delta is broadcast despite UpdateClients=false");
+        pB->SetCellComponent(CellIdComponent{kCell});
+        const auto drop = [&](Player* apFrom, uint32_t aActorId, uint32_t aCookie, const GameId& acItem, int32_t aCount) {
+            Harness::ClearOutbox();
+            RequestWorldItemDrop request{};
+            request.Cookie = aCookie;
+            request.ActorServerId = aActorId;
+            request.Item.BaseId = acItem;
+            request.Item.Count = aCount;
+            request.CellId = kCell;
+            request.Position = {100.0f, 200.0f, 300.0f};
+            return DeliverWire(world, request, apFrom);
+        };
+        const auto pickup = [&](Player* apFrom, uint32_t aActorId, uint32_t aItemId, const GameId& acItem, int32_t aCount, bool aClear = true) {
+            if (aClear)
+                Harness::ClearOutbox();
+            RequestWorldItemPickup request{};
+            request.ItemId = aItemId;
+            request.PickerServerId = aActorId;
+            request.Item.BaseId = acItem;
+            request.Item.Count = aCount;
+            return DeliverWire(world, request, apFrom);
+        };
+        const auto inventoryNotes = [](TiltedPhoques::ConnectionId_t aConn) { return DecodeOutboxMessagesFor<NotifyInventoryChanges>(aConn); };
+
+        // 1. A drop moves the stack out of the inventory into the registry; everybody, the dropper
+        //    included, gets the spawn with the dropper's cookie. Nobody gets a legacy Drop replay.
+        give(actorA, kSword, 5);
+        Check(drop(pA, actorAId, 77u, kSword, 5), "RequestWorldItemDrop round-trips over the wire");
+        uint32_t swordId = WorldItems::kNoItem;
+        {
+            const auto spawnsA = DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kAConn);
+            const auto spawnsB = DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kBConn);
+            Check(spawnsA.size() == 1 && spawnsB.size() == 1, "the spawn goes to every player, the dropper included");
+            if (!spawnsB.empty())
+            {
+                swordId = spawnsB[0].State.Id;
+                Check(swordId != WorldItems::kNoItem && spawnsB[0].State.Item.Count == 5 && spawnsB[0].State.DropperCookie == 77u &&
+                          spawnsB[0].State.DropperPlayerId == pA->GetId() && spawnsB[0].Revision == worldItems.GetRegistry().GetRevision(),
+                      "the spawn carries the id, the stack, the dropper's cookie and the registry revision");
+            }
+            Check(countOf(actorA, kSword) == 0, "the dropped stack left the dropper's inventory on the server");
+            const auto notesB = inventoryNotes(kBConn);
+            Check(std::none_of(notesB.begin(), notesB.end(), [](const NotifyInventoryChanges& n) { return n.Drop; }),
+                  "a registered drop is not also replayed the legacy way");
+        }
+
+        // 2. Two players race for it: the first claim processed wins, the loser is rolled back.
+        Check(pickup(pB, actorBId, swordId, kSword, 5), "B's claim round-trips");
+        Check(pickup(pA, actorAId, swordId, kSword, 5, /*clear*/ false), "A's late claim round-trips");
+        {
+            Check(countOf(actorB, kSword) == 5 && countOf(actorA, kSword) == 0, "only the first claimer gets the item");
+            const auto despawnsB = DecodeOutboxMessagesFor<NotifyWorldItemDespawn>(kBConn);
+            const auto despawnsA = DecodeOutboxMessagesFor<NotifyWorldItemDespawn>(kAConn);
+            const bool bSawPickedUp = std::any_of(despawnsB.begin(), despawnsB.end(), [&](const NotifyWorldItemDespawn& d) {
+                return d.ItemId == swordId && d.Reason == WorldItems::DespawnReason::kPickedUp && d.PickerPlayerId == pB->GetId();
+            });
+            const bool aSawRejected = std::any_of(despawnsA.begin(), despawnsA.end(), [&](const NotifyWorldItemDespawn& d) {
+                return d.ItemId == swordId && d.Reason == WorldItems::DespawnReason::kClaimRejected;
+            });
+            const bool bSawRejected = std::any_of(despawnsB.begin(), despawnsB.end(), [&](const NotifyWorldItemDespawn& d) {
+                return d.Reason == WorldItems::DespawnReason::kClaimRejected;
+            });
+            Check(bSawPickedUp && aSawRejected && !bSawRejected, "everybody sees the pickup; only the loser hears its claim was rejected");
+            const auto notesA = inventoryNotes(kAConn);
+            const bool rolledBack = std::any_of(notesA.begin(), notesA.end(), [&](const NotifyInventoryChanges& n) {
+                return n.ServerId == actorAId && n.Item.BaseId == kSword && n.Item.Count == -5 && !n.Drop;
+            });
+            Check(rolledBack, "the loser's optimistic pickup is taken back from its own actor");
+            Check(worldItems.GetRegistry().Size() == 0, "a whole-stack pickup removes the item");
+        }
+
+        // 3. A partial pickup leaves the remainder, announced as an upsert.
+        give(actorA, kArrows, 10);
+        Check(drop(pA, actorAId, 78u, kArrows, 10), "a stack of ten is dropped");
+        const auto arrowsSpawn = DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kBConn);
+        const uint32_t arrowsId = arrowsSpawn.empty() ? WorldItems::kNoItem : arrowsSpawn[0].State.Id;
+        Check(pickup(pB, actorBId, arrowsId, kArrows, 4), "a partial pickup round-trips");
+        {
+            const auto upserts = DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kAConn);
+            Check(countOf(actorB, kArrows) == 4 && upserts.size() == 1 && upserts[0].State.Id == arrowsId && upserts[0].State.Item.Count == 6,
+                  "the picker gets four and everybody sees the six that remain");
+        }
+
+        // 4. A claim whose item does not match the registry is undone and answered with the truth.
+        Check(pickup(pB, actorBId, arrowsId, kSword, 6), "a claim naming the wrong base form round-trips");
+        {
+            const auto notesB = inventoryNotes(kBConn);
+            const bool undone = std::any_of(notesB.begin(), notesB.end(), [&](const NotifyInventoryChanges& n) {
+                return n.ServerId == actorBId && n.Item.BaseId == kSword && n.Item.Count == -6;
+            });
+            Check(undone && DecodeOutboxMessagesFor<NotifyWorldItemSnapshot>(kBConn).size() == 1 &&
+                      worldItems.GetRegistry().Find(arrowsId) && worldItems.GetRegistry().Find(arrowsId)->Count == 6,
+                  "a mismatched claim takes nothing, is rolled back and gets the snapshot");
+        }
+
+        // 5. Nobody drops for an actor they do not control.
+        give(actorB, kGold, 100);
+        const uint32_t revisionBefore = worldItems.GetRegistry().GetRevision();
+        Check(drop(pA, actorBId, 79u, kGold, 100), "a drop for somebody else's actor round-trips");
+        Check(countOf(actorB, kGold) == 100 && worldItems.GetRegistry().GetRevision() == revisionBefore &&
+                  DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kBConn).empty(),
+              "a drop for an actor the sender does not control changes nothing");
+
+        // 6. A resync answers the whole registry, then the terminator.
+        {
+            Harness::ClearOutbox();
+            RequestResync request{};
+            request.RequestId = 500u;
+            request.RequestScope = Session::Resync::Scope::kWorldItems;
+            request.ServerId = Session::Resync::kNoServerId;
+            request.GapReason = Session::Resync::Reason::kWorldItemRevisionGap;
+            Check(DeliverWire(world, request, pB), "RequestResync(world items) round-trips");
+            const auto snapshots = DecodeOutboxMessagesFor<NotifyWorldItemSnapshot>(kBConn);
+            const auto completes = DecodeOutboxMessagesFor<NotifyResyncComplete>(kBConn);
+            const auto opcodes = OutboxOpcodesFor(kBConn);
+            Check(snapshots.size() == 1 && snapshots[0].Items.size() == 1 && snapshots[0].Revision == worldItems.GetRegistry().GetRevision() &&
+                      completes.size() == 1 && completes[0].Result == Session::Resync::Outcome::kApplied && !opcodes.empty() &&
+                      opcodes.back() == static_cast<uint32_t>(kNotifyResyncComplete),
+                  "a world-item resync sends the snapshot, then kApplied");
+        }
+
+        // 7. Switched off live: new drops take the legacy relay, existing items are still arbitrated.
+        bEnableServerOwnedWorldItems = false;
+        Check(!Session::IsEnabledIn(GetDisabledCoopFeatureMask(), Session::Feature::kServerOwnedWorldItems),
+              "the switch is folded into the feature mask clients receive");
+        give(actorA, kGold, 50);
+        Check(drop(pA, actorAId, 80u, kGold, 50), "a drop with the feature off round-trips");
+        {
+            const auto notesB = inventoryNotes(kBConn);
+            const bool legacy = std::any_of(notesB.begin(), notesB.end(), [&](const NotifyInventoryChanges& n) {
+                return n.ServerId == actorAId && n.Item.BaseId == kGold && n.Item.Count == -50 && n.Drop;
+            });
+            Check(legacy && countOf(actorA, kGold) == 0 && DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kBConn).empty() &&
+                      worldItems.GetRegistry().Size() == 1,
+                  "with the feature off a drop is the legacy replay and is not registered");
+        }
+        Check(pickup(pA, actorAId, arrowsId, kArrows, 6), "a claim on an existing item with the feature off round-trips");
+        Check(countOf(actorA, kArrows) == 6 && worldItems.GetRegistry().Size() == 0, "an item that exists is still arbitrated");
+        bEnableServerOwnedWorldItems = true;
+
+        // 8. Bounds: the per-player drop budget refuses a flood; refused drops fall back to the legacy
+        //    relay instead of losing the item.
+        {
+            give(actorA, kGold, 1000);
+            uint32_t registered = 0;
+            uint32_t legacy = 0;
+            for (uint32_t i = 0; i < 64; ++i)
+            {
+                drop(pA, actorAId, 1000u + i, kGold, 1);
+                registered += DecodeOutboxMessagesFor<NotifyWorldItemSpawn>(kBConn).size() == 1 ? 1u : 0u;
+                const auto notesB = inventoryNotes(kBConn);
+                legacy += std::any_of(notesB.begin(), notesB.end(), [](const NotifyInventoryChanges& n) { return n.Drop; }) ? 1u : 0u;
+            }
+            Check(registered <= worldItems.GetRegistry().GetPolicy().DropBurst && registered + legacy == 64u &&
+                      countOf(actorA, kGold) == 1000 - 64,
+                  "a drop flood is bounded by the per-player budget and every drop still leaves the inventory");
+        }
+
+        // 9. A late joiner sees what is on the ground; a checkpoint restore is broadcast.
+        Player* pC = world.GetPlayerManager().Create(kCConn);
+        Harness::ClearOutbox();
+        world.GetDispatcher().trigger(PlayerJoinEvent{pC, {}, {}, DateTime{t0}});
+        {
+            const auto snapshots = DecodeOutboxMessagesFor<NotifyWorldItemSnapshot>(kCConn);
+            Check(snapshots.size() == 1 && snapshots[0].Items.size() == worldItems.GetRegistry().Size() && !snapshots[0].Items.empty(),
+                  "a late joiner receives every dropped item");
+        }
+        const auto saved = worldItems.CaptureCheckpoint();
+        Harness::ClearOutbox();
+        Check(worldItems.ClearAll() == saved.size() && worldItems.GetRegistry().Size() == 0, "ClearAll empties the registry");
+        Check(DecodeOutboxMessagesFor<NotifyWorldItemSnapshot>(kBConn).size() == 1, "ClearAll tells every player");
+        const uint32_t revisionAfterClear = worldItems.GetRegistry().GetRevision();
+        Check(worldItems.RestoreCheckpoint(saved) == saved.size(), "a checkpoint restores every item");
+        Check(WorldItems::IsNewerRevision(worldItems.GetRegistry().GetRevision(), revisionAfterClear),
+              "a restore moves the revision forward, so no client mistakes it for an old delta");
+
+        // 10. A player who leaves keeps its items in the world.
+        const size_t before = worldItems.GetRegistry().Size();
+        world.GetDispatcher().trigger(PlayerLeaveEvent{pA});
+        Check(worldItems.GetRegistry().Size() == before, "items dropped by a player who left stay in the world");
 
         std::filesystem::remove(std::filesystem::current_path() / "Data" / "rfab_checkpoints.bin", removeEc);
     }

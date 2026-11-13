@@ -73,13 +73,14 @@ TEST_CASE("v3.1.6 Causal FIFO ordering during paused peer reconnect & high-Hz Ma
         case PausedInboundPacketAction::kQueueUntilUnpaused:
             pausedQueue.push_back(op);
             break;
+        case PausedInboundPacketAction::kCoalesceUntilUnpaused:
         case PausedInboundPacketAction::kDropStaleUnreliable:
         case PausedInboundPacketAction::kRejectOutOfRange:
             break;
         }
     }
 
-    // Only independent chat dispatched while paused; unreliable move dropped; causal sequence stays 100% intact!
+    // Only independent chat dispatched while paused; move folded into the coalesced request; causal sequence intact.
     REQUIRE(immediateDispatched.size() == 1);
     CHECK(immediateDispatched[0] == kNotifyChatMessageBroadcast);
 
@@ -90,13 +91,13 @@ TEST_CASE("v3.1.6 Causal FIFO ordering during paused peer reconnect & high-Hz Ma
     CHECK(pausedQueue[3] == kNotifySpawnData);
 
     // Exhaustive check across ALL valid ServerOpcodes: only Chat + 3 Save/Load barrier opcodes bypass the queue,
-    // and only kServerReferencesMoveRequest is dropped as stale unreliable.
+    // and only kServerReferencesMoveRequest is coalesced (never dropped).
     for (uint32_t op = 0; op < static_cast<uint32_t>(kServerOpcodeMax); ++op)
     {
         const auto action = ClassifyPausedInboundPacket(op);
         if (op == static_cast<uint32_t>(kServerReferencesMoveRequest))
         {
-            CHECK(action == PausedInboundPacketAction::kDropStaleUnreliable);
+            CHECK(action == PausedInboundPacketAction::kCoalesceUntilUnpaused);
         }
         else if (op == static_cast<uint32_t>(kNotifyChatMessageBroadcast) ||
                  op == static_cast<uint32_t>(kNotifyPrepareSave) ||

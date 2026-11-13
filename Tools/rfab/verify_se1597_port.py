@@ -38,7 +38,10 @@ MAP_CSV = REPO_ROOT / "docs" / "se-1597-id-map.csv"
 #   75591  = BSGraphics::InitWindows (0x0D71F00)
 #   79949  = UI::Register / MenuManager::RegisterMenuCreator (0x0EBF9C0)
 #   516860 = BGSSaveLoadManager::Singleton (0x2F26740)
+#   12315  = ExtraDataList::Add (0x0131990; CommonLibSSE 56cdaf1932 "1_5_97" offset = REL::ID 12315)
+#   186679 = ExtraCount vtable ??_7ExtraCount@@6B@ (0x152BFE0; SKSE64 2.0.20 s_ExtraCountVtbl, CommonLibSSE)
 EXTRA_VALID_SE_IDS = {
+    12315: 0x0131990,
     14464: 0x01944E0,
     17859: 0x023D000,
     20470: 0x02C53D0,
@@ -56,6 +59,7 @@ EXTRA_VALID_SE_IDS = {
     79949: 0x0EBF9C0,
     98897: 0x1291D40,
     99862: 0x12C56D0,
+    186679: 0x152BFE0,
     514622: 0x2EC58B0,
     516860: 0x2F26740,
     523660: 0x2F6B948,

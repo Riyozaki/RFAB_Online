@@ -1,6 +1,5 @@
 #include <Services/CalendarService.h>
 
-#include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Messages/ServerTimeSettings.h>
 #include <World.h>
@@ -24,7 +23,6 @@ CalendarService::CalendarService(World& aWorld, entt::dispatcher& aDispatcher, T
 {
     m_timeUpdateConnection = aDispatcher.sink<ServerTimeSettings>().connect<&CalendarService::OnTimeUpdate>(this);
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CalendarService::HandleUpdate>(this);
-    m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&CalendarService::OnDisconnected>(this);
 }
 
 void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
@@ -57,7 +55,7 @@ void CalendarService::OnTimeUpdate(const ServerTimeSettings& acMessage) noexcept
     }
 }
 
-void CalendarService::OnDisconnected(const DisconnectedEvent&) noexcept
+void CalendarService::OnSessionEnd(const Session::Transition&) noexcept
 {
     // signal a time transition and clear server tick baseline so reconnecting to a restarted server never stalls
     m_fadeTimer = 0.f;

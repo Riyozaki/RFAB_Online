@@ -62,6 +62,9 @@ enum ClientOpcode : unsigned char
     kReviveActionRequest,
     kCombatEncounterStateReport,
     kSyncRfabProgressionEvent,
+    kRequestResync,
+    kRequestWorldItemDrop,
+    kRequestWorldItemPickup,
     kClientOpcodeMax
 };
 
@@ -131,5 +134,9 @@ enum ServerOpcode : unsigned char
     kNotifyPlayerDownedState,
     kNotifyReviveState,
     kNotifyRfabProgressionEvent,
+    kNotifyResyncComplete,
+    kNotifyWorldItemSpawn,
+    kNotifyWorldItemDespawn,
+    kNotifyWorldItemSnapshot,
     kServerOpcodeMax
 };

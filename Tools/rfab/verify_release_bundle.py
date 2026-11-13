@@ -250,20 +250,28 @@ def main():
         os.path.join(repo_root, r"Tools\rfab\Build-CloudRelease.ps1"),
         os.path.join(repo_root, r"Tools\rfab\Package-Release.ps1"),
         os.path.join(repo_root, r"Tools\rfab\Deploy-RfabOnline.ps1"),
+        os.path.join(repo_root, r"Tools\rfab\Restore-ModConfigs.ps1"),
     ):
         if os.path.isfile(ps1_path):
             assert open(ps1_path, "rb").read(3) == b"\xef\xbb\xbf", (
                 f"FATAL: {ps1_path} is missing UTF-8 BOM (EF BB BF) required by Windows PowerShell 5.1!"
             )
 
-    # Verify Setup-RfabOnline.ps1 enforces FormCaching = false, TreeLODReferenceCaching = false, and SaveGameMaxSize = false
+    # Since v4.1.0 the installer never rewrites other mods' settings (the launcher serves co-op copies
+    # to the co-op process only, Code/common/Compat/ConfigOverlay.h); it only undoes earlier releases'
+    # edits through the shared Restore-ModConfigs.ps1, which must ship next to it.
     setup_ps1_txt = open(os.path.join(stage_dir, r"Tools\rfab\Setup-RfabOnline.ps1"), "r", encoding="utf-8-sig").read()
-    assert '@("SaveGameMaxSize", "false")' in setup_ps1_txt and '@("SaveGameMaxSize", "true")' not in setup_ps1_txt, (
-        "FATAL: Setup-RfabOnline.ps1 must enforce SaveGameMaxSize = false when MemoryManager = false!"
+    restore_ps1 = os.path.join(stage_dir, r"Tools\rfab\Restore-ModConfigs.ps1")
+    assert os.path.isfile(restore_ps1), "FATAL: Restore-ModConfigs.ps1 is missing next to the staged Setup-RfabOnline.ps1!"
+    assert open(restore_ps1, "rb").read(3) == b"\xef\xbb\xbf", "FATAL: Restore-ModConfigs.ps1 is missing its UTF-8 BOM!"
+    assert "Invoke-RfabOnlineConfigRestore" in setup_ps1_txt and "Restore-ModConfigs.ps1" in setup_ps1_txt, (
+        "FATAL: Setup-RfabOnline.ps1 must undo earlier releases' edits via Restore-ModConfigs.ps1!"
     )
-    assert '@("FormCaching", "false")' in setup_ps1_txt and '@("TreeLODReferenceCaching", "false")' in setup_ps1_txt, (
-        "FATAL: Setup-RfabOnline.ps1 must enforce FormCaching = false & TreeLODReferenceCaching = false to prevent EngineFixes.dll+0x411EB __non_rtti_object crash!"
-    )
+    for forbidden in ('-NewName "BetterStealing.dll.mohidden"', "Ensure-SectionKeys", 'Filter "EngineFixes.toml"',
+                      'Filter "SkyrimSoulsRE.ini"', 'Filter "po3_Tweaks.ini"'):
+        assert forbidden not in setup_ps1_txt, (
+            f"FATAL: Setup-RfabOnline.ps1 rewrites other mods' files again ({forbidden!r}); co-op values belong in the launcher overlay!"
+        )
 
     notes_tpl = os.path.join(repo_root, r"Tools\rfab\RELEASE_NOTES_TEMPLATE.md")
     notes_txt = open(notes_tpl, "r", encoding="utf-8").read()

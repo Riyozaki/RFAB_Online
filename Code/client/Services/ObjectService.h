@@ -2,9 +2,9 @@
 
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
+#include <common/Session/Lifecycle.h>
 
 struct ServerTimeSettings;
-struct DisconnectedEvent;
 struct World;
 struct ActivateEvent;
 struct TransportService;
@@ -19,16 +19,19 @@ struct NotifyScriptAnimation;
 /**
  * @brief Handles objects in the environment.
  */
-class ObjectService final : public BSTEventSink<TESActivateEvent>
+class ObjectService final : public BSTEventSink<TESActivateEvent>, public Session::IParticipant
 {
 public:
     ObjectService(World&, entt::dispatcher&, TransportService&);
     [[nodiscard]] static bool IsFactionCrimeContainer(uint32_t aFormId) noexcept;
-    void ResetForWorldReload() noexcept;
     void RefreshCurrentCellObjectsAfterRollback() noexcept;
 
+    // Session::ParticipantId::kObjects: object entities are server assignments for one world.
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+
 private:
-    void OnDisconnected(const DisconnectedEvent&) noexcept;
+    void DestroyObjectEntities() noexcept;
     void OnCellChange(const CellChangeEvent&) noexcept;
     void OnAssignObjectsResponse(const AssignObjectsResponse&) noexcept;
     void OnActivate(const ActivateEvent&) noexcept;
@@ -45,7 +48,6 @@ private:
     World& m_world;
     TransportService& m_transport;
 
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_cellChangeConnection;
     entt::scoped_connection m_onActivateConnection;
     entt::scoped_connection m_activateConnection;

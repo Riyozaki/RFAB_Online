@@ -16,10 +16,15 @@
 #include <Services/DiscoveryService.h>
 #include <Services/ObjectService.h>
 #include <Services/PlayerService.h>
+#include <Services/SessionResyncService.h>
 
 #include <Systems/ModSystem.h>
 
 #include <Structs/ServerSettings.h>
+#include <common/Session/Features.h>
+#include <common/Session/Lifecycle.h>
+#include <common/Session/MainThreadQueue.h>
+#include <ThreadAffinity.h>
 #include <Authority/Health.h>
 #include <atomic>
 #include <functional>
@@ -33,13 +38,22 @@ struct World : entt::registry
 
     void Update() noexcept;
     void UpdatePausedPump() noexcept;
+    // Every main-loop iteration (menus included): records the main thread, runs the always-lane.
     void OnMainThreadUpdate() noexcept;
+    // Any thread: runs on the next main-loop iteration even while a menu pauses the simulation. Not
+    // session-scoped - for UI commands and cleanup whose handlers check the session themselves.
+    // Gameplay work belongs in GetRunner().Queue (simulated frames, dropped when its session ends).
     void QueueMainThreadTask(std::function<void()> aTask) noexcept;
+    [[nodiscard]] const Session::MainThreadQueue& GetMainThreadQueue() const noexcept { return m_mainThreadQueue; }
 
     [[nodiscard]] bool IsPausedPumpActive() const noexcept { return m_isPausedPumpActive; }
 
     RunnerService& GetRunner() noexcept;
     TransportService& GetTransport() noexcept;
+    // Session and world lifecycle (common/Session/Lifecycle.h): the only source of session begin/end
+    // and world load begin/end. Main thread only, except the *AnyThread() queries.
+    Session::Lifecycle& GetLifecycle() noexcept { return m_lifecycle; }
+    const Session::Lifecycle& GetLifecycle() const noexcept { return m_lifecycle; }
     ModSystem& GetModSystem() noexcept;
 
     PartyService& GetPartyService() noexcept { return ctx().at<PartyService>(); }
@@ -66,6 +80,8 @@ struct World : entt::registry
     const DiscoveryService& GetDiscoveryService() const noexcept { return ctx().at<const DiscoveryService>(); }
     ObjectService& GetObjectService() noexcept { return ctx().at<ObjectService>(); }
     const ObjectService& GetObjectService() const noexcept { return ctx().at<const ObjectService>(); }
+    SessionResyncService& GetSessionResyncService() noexcept { return ctx().at<SessionResyncService>(); }
+    const SessionResyncService& GetSessionResyncService() const noexcept { return ctx().at<const SessionResyncService>(); }
     PlayerService& GetPlayerService() noexcept { return ctx().at<PlayerService>(); }
     const PlayerService& GetPlayerService() const noexcept { return ctx().at<const PlayerService>(); }
 
@@ -80,6 +96,10 @@ struct World : entt::registry
         s_enemyHealthMultiplierCached.store(
             Authority::NormalizeEnemyHealthMultiplier(m_serverSettings.HealthMultiplier),
             std::memory_order_release);
+        PublishFeatureMask(Session::ComposeDisabledMask(
+            m_serverSettings.DisabledFeatureMask,
+            m_serverSettings.DownedSystemEnabled,
+            m_serverSettings.CoordinatedSavesEnabled));
     }
 
     [[nodiscard]] uint64_t GetTick() const noexcept;
@@ -95,6 +115,13 @@ struct World : entt::registry
     [[nodiscard]] static bool IsSyncPlayerHomesCached() noexcept { return s_syncPlayerHomesCached.load(std::memory_order_acquire); }
     [[nodiscard]] static bool IsPvpEnabledCached() noexcept { return s_pvpEnabledCached.load(std::memory_order_acquire); }
     [[nodiscard]] static float GetEnemyHealthMultiplierCached() noexcept { return s_enemyHealthMultiplierCached.load(std::memory_order_acquire); }
+    // Server feature switches (common/Session/Features.h). Lock-free: safe from hooks on any thread.
+    // While disconnected every feature reads as enabled - the subsystems gate on IsConnected anyway.
+    [[nodiscard]] static bool IsFeatureEnabled(Session::Feature aFeature) noexcept
+    {
+        return Session::IsEnabledIn(s_disabledFeatureMaskCached.load(std::memory_order_acquire), aFeature);
+    }
+    [[nodiscard]] static uint32_t GetDisabledFeatureMaskCached() noexcept { return s_disabledFeatureMaskCached.load(std::memory_order_acquire); }
     [[nodiscard]] static uint64_t GetTickCached() noexcept { return s_currentTickCached.load(std::memory_order_acquire); }
     static void RecordMainThreadId() noexcept { s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release); }
     static void SetConnectedHint(bool aConnected) noexcept
@@ -105,6 +132,7 @@ struct World : entt::registry
             s_pvpEnabledCached.store(false, std::memory_order_release);
             s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
             s_currentTickCached.store(0, std::memory_order_release);
+            s_disabledFeatureMaskCached.store(0u, std::memory_order_release);
         }
     }
     static void SetContainerMenuOpenHint(bool aOpen) noexcept { s_isContainerMenuOpenCached.store(aOpen, std::memory_order_release); }
@@ -118,8 +146,24 @@ private:
     inline static std::atomic<bool> s_pvpEnabledCached{false};
     inline static std::atomic<float> s_enemyHealthMultiplierCached{1.0f};
     inline static std::atomic<uint64_t> s_currentTickCached{0};
+    inline static std::atomic<uint32_t> s_disabledFeatureMaskCached{0};
+
+    static void PublishFeatureMask(uint32_t aDisabledMask) noexcept;
+    // Publishes the lock-free snapshot the *Cached() accessors read (simulated and paused frames alike).
+    void PublishThreadSnapshot() noexcept;
+    void LogMainThreadQueueStats(const char* apWhen) const noexcept;
+    static void LogLifecycleTransition(void* apWorld, const Session::Transition& acTransition, Session::Phase aPhaseAfter) noexcept;
+    void RegisterLifecycleParticipants() noexcept;
 
     entt::dispatcher m_dispatcher;
+    // Declared before m_transport: members are destroyed in reverse order, so the lifecycle outlives the
+    // transport (whose teardown may still report a closed socket). Participants may be destroyed before
+    // it (m_modSystem, a member declared after it) or after it (the ctx() services, owned by the
+    // registry base): the lifecycle never calls a participant from its destructor.
+    Session::Lifecycle m_lifecycle;
+    // The only off-thread -> main-thread path (architecture step 3). Declared before its users
+    // (m_runner, QueueMainThreadTask) so it outlives them.
+    Session::MainThreadQueue m_mainThreadQueue;
     RunnerService m_runner;
     TransportService m_transport;
     ModSystem m_modSystem;
@@ -130,6 +174,5 @@ private:
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
     std::chrono::high_resolution_clock::time_point m_lastPausedPumpTime;
     bool m_isPausedPumpActive{false};
-    std::mutex m_mainThreadTasksMutex{};
-    std::vector<std::function<void()>> m_mainThreadTasks{};
+    std::atomic<uint32_t> m_alwaysLaneOverflowWarnings{0};
 };

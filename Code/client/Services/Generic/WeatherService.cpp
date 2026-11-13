@@ -1,7 +1,6 @@
 #include <Services/WeatherService.h>
 
 #include <Events/UpdateEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/PartyJoinedEvent.h>
 #include <Events/PartyLeftEvent.h>
 
@@ -97,7 +96,6 @@ WeatherService::WeatherService(World& aWorld, TransportService& aTransport, entt
     , m_transport(aTransport)
 {
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&WeatherService::OnUpdate>(this);
-    m_disconnectConnection = aDispatcher.sink<DisconnectedEvent>().connect<&WeatherService::OnDisconnected>(this);
     m_partyJoinedConnection = aDispatcher.sink<PartyJoinedEvent>().connect<&WeatherService::OnPartyJoinedEvent>(this);
     m_partyLeftConnection = aDispatcher.sink<PartyLeftEvent>().connect<&WeatherService::OnPartyLeftEvent>(this);
     m_playerAddedConnection = m_world.on_destroy<WaitingFor3D>().connect<&WeatherService::OnWaitingFor3DRemoved>(this);
@@ -110,7 +108,7 @@ void WeatherService::OnUpdate(const UpdateEvent& acEvent) noexcept
     RunWeatherUpdates(acEvent.Delta);
 }
 
-void WeatherService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
+void WeatherService::OnSessionEnd(const Session::Transition&) noexcept
 {
     ToggleGameWeatherSystem(true);
 }

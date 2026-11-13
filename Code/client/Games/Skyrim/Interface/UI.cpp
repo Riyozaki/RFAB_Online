@@ -5,12 +5,15 @@
 #include <Games/Skyrim/Interface/UI.h>
 #include <Games/TES.h>
 #include <Misc/BSFixedString.h>
+#include "immersive_launcher/stubs/ConfigOverlayRedirect.h"
 #include "immersive_launcher/stubs/DllBlocklist.h"
+#include <common/Compat/MenuPausePolicy.h>
 
 #include <World.h>
 
 #include <Windows.h>
 #include <cstring>
+#include <string_view>
 #include <utility>
 
 static bool g_RequestUnpauseAll{false};
@@ -92,49 +95,67 @@ constexpr size_t kAllowListCount = sizeof(kAllowList) / sizeof(kAllowList[0]);
 static UI::TCreate* s_realCreators[kAllowListCount]{};
 static bool s_postSkseUiInitDone = false;
 
-bool IsSkyrimSoulsRuntimeActive() noexcept
+// The one place that decides who (un)pauses menus. Decided once on the main thread in the first
+// UI::Register call (after SKSE loaded its plugins), read by the menu creators on the main thread.
+Compat::MenuPausePolicy s_menuPolicy{};
+bool s_menuPolicyDecided = false;
+
+void DecideMenuPolicyPostSkse() noexcept
 {
-    if (stubs::g_IsSoulsREActive)
-        return true;
+    Compat::MenuEnvironment environment{};
+    environment.SkyrimSoulsLoaded = stubs::g_IsSoulsREActive || GetModuleHandleW(L"SkyrimSoulsRE.dll") != nullptr;
+    environment.PerkTreeModsPresent = HasPerkTreeModsPostSkse();
+    s_menuPolicy = Compat::DecideMenuPausePolicy(environment);
+    s_menuPolicyDecided = true;
 
-    static int s_cachedModuleCheck = -1;
-    if (s_cachedModuleCheck < 0)
-        s_cachedModuleCheck = (GetModuleHandleW(L"SkyrimSoulsRE.dll") != nullptr) ? 1 : 0;
+    if (s_menuPolicy.PatchFavoritesInput)
+    {
+        VersionDbPtr<uint8_t> FavoritesCanProcess(50644);
+        TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
+    }
+    if (s_menuPolicy.PatchStatsMenuInput)
+        ApplyStatsMenuInputPatches();
 
-    return s_cachedModuleCheck == 1;
-}
+    spdlog::info("[RFAB Menus] {} (Skyrim Souls RE {}, perk-tree mods {})", s_menuPolicy.Describe(),
+                 environment.SkyrimSoulsLoaded ? "loaded" : "absent", environment.PerkTreeModsPresent ? "present" : "absent");
 
-bool ShouldKeepStatsMenuPaused() noexcept
-{
-    return ShouldKeepStatsMenuPausedRuntime();
+    const std::string& coopConfig = stubs::GetCoopConfigReport();
+    if (!coopConfig.empty())
+        spdlog::info("[RFAB Compat] {}", coopConfig);
 }
 
 template <size_t Index>
 IMenu* WrappedMenuCreator(UIMessage* apMessage)
 {
+    const std::string_view menuName = kAllowList[Index];
+    // Cached after the first successful resolve; retried here (connected or not) in case RFAB.dll
+    // was not mapped yet at the first UI::Register.
+    if (menuName == "StatsMenu")
+        ApplyRfabDllPerkPlacementBoundsFixPostSkse();
+
     IMenu* pMenu = s_realCreators[Index](apMessage);
-    if (!pMenu || !World::IsConnectedCached())
+    if (!pMenu || !World::IsConnectedCached() || !s_menuPolicyDecided)
         return pMenu;
 
-    if constexpr (Index < kAllowListCount)
+    if (menuName == "ContainerMenu")
+        World::SetContainerMenuOpenHint(true);
+
+    // RFAB's plugins can only be seen once the plugin list is loaded; that evidence keeps
+    // StatsMenu paused from then on (CustomSkills skydome / RFAB PerkPlacementMenuOpenCloseManager).
+    // The input patches may already be in place then (they are not reverted; upstream Skyrim Together
+    // applies them unconditionally). With RFAB this path is not taken: CustomSkills.dll / RFAB.dll
+    // are loaded before the first UI::Register, so the policy is final from the start.
+    if (menuName == "StatsMenu" && s_menuPolicy.TogetherUnpauses(menuName) && HasPerkTreePluginsLoaded())
     {
-        if (std::strcmp(kAllowList[Index], "ContainerMenu") == 0)
-            World::SetContainerMenuOpenHint(true);
+        s_menuPolicy.NoteLatePerkTreeEvidence();
+        spdlog::info("[RFAB Menus] RFAB plugins loaded: {}", s_menuPolicy.Describe());
     }
 
-    // CRITICAL FOR RFAB + SKYRIMSOULS RE (SE 1.5.97):
-    // When SkyrimSoulsRE.dll is loaded, SkyrimSoulsRE::CreateMenu wraps our menu creator and checks
-    // `if (menu->PausesGame())` to track MenuFlagEx::kUnpaused & UI::numPausesGame, while deliberately
-    // keeping StatsMenu paused (`bStatsMenu = false` in RFAB's SkyrimSoulsRE.ini) for CustomSkills.dll / RFAB.dll.
-    // Stripping kPausesGame here before SkyrimSoulsRE::CreateMenu sees the menu breaks TweenMenu (`Tab`)
-    // unpause accounting and crashes StatsMenu (`Skills`)!
-    if (IsSkyrimSoulsRuntimeActive())
-        return pMenu;
-
-    if (std::strcmp(kAllowList[Index], "StatsMenu") == 0 && ShouldKeepStatsMenuPaused())
-        return pMenu;
-
-    UnfreezeMenu(pMenu);
+    // With Skyrim Souls RE loaded, Souls' CreateMenu wrapper reads PausesGame() after us to keep
+    // UI::numPausesGame / MenuFlagEx::kUnpaused consistent: stripping kPausesGame here breaks
+    // TweenMenu (Tab) and crashes StatsMenu. The policy then never lets Together unpause.
+    if (s_menuPolicy.TogetherUnpauses(menuName))
+        UnfreezeMenu(pMenu);
     return pMenu;
 }
 
@@ -169,15 +190,10 @@ static void Hook_UI_Register(UI* apSelf, const char* apMenuName, UI::TCreate* ap
                 pIntro->data = reinterpret_cast<uint64_t>("");
         }
 
-        // Hook_UI_Register runs inside Main::Init AFTER StartSKSE() has loaded all SKSE plugins.
-        // Only apply vanilla fallback patches when SkyrimSoulsRE.dll is genuinely absent.
-        if (!IsSkyrimSoulsRuntimeActive())
-        {
-            VersionDbPtr<uint8_t> FavoritesCanProcess(50644);
-            TiltedPhoques::Put<uint16_t>(FavoritesCanProcess.Get() + 0x15, 0x9090);
-        }
-
-        ApplyFallbackStatsMenuPatchesPostSkse();
+        // Hook_UI_Register runs inside Main::Init AFTER StartSKSE() has loaded all SKSE plugins,
+        // so module presence is final here.
+        ApplyRfabDllPerkPlacementBoundsFixPostSkse();
+        DecideMenuPolicyPostSkse();
     }
 
     if (apMenuName && apCreate)

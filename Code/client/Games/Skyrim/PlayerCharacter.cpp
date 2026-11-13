@@ -208,7 +208,16 @@ char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject
         // despawn their matching ground visual inside Actor::DropOrPickUpObject (zero duplication!).
         const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
 
-        World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), isTempDropPickup, true));
+        // GetItemFromExtraData reported the reference's whole stack; a partial pickup takes aCount.
+        const int32_t stackCount = item.Count;
+        const bool wholeStack = aCount <= 0 || aCount >= stackCount;
+        if (!wholeStack)
+            item.Count = aCount;
+
+        InventoryChangeEvent event(apThis->formID, std::move(item), isTempDropPickup, true);
+        event.WorldReferenceFormId = isTempDropPickup ? apObject->formID : 0;
+        event.WholeStack = wholeStack;
+        World::Get().GetRunner().Trigger(std::move(event));
     }
 
     ScopedInventoryOverride _;

@@ -202,6 +202,7 @@ static TSetCurrentPickREFR* RealSetCurrentPickREFR = nullptr;
 
 void TP_MAKE_THISCALL(HookSetCurrentPickREFR, Console, BSPointerHandle<TESObjectREFR>* apRefr)
 {
+    RFAB_EXPECT_MAIN_THREAD("HookSetCurrentPickREFR");
     uint32_t formId = 0;
 
     if (apRefr)

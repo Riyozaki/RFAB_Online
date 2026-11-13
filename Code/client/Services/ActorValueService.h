@@ -3,10 +3,9 @@
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
 #include <Sync/HitImpact.h>
+#include <common/Session/Lifecycle.h>
 struct World;
 
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct ActorRemovedEvent;
 struct UpdateEvent;
 struct HealthChangeEvent;
@@ -23,7 +22,7 @@ struct ActorValuesComponent;
 /**
  * @brief Broadcast and apply actor values and death state.
  */
-struct ActorValueService
+struct ActorValueService final : Session::IParticipant
 {
 public:
     ActorValueService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
@@ -31,7 +30,12 @@ public:
 
     TP_NOCOPYMOVE(ActorValueService);
 
-    void ResetForWorldReload() noexcept;
+    // Session::ParticipantId::kActorValues. Health revisions, hit prediction and ActorValuesComponent
+    // describe actors of one world in one session. Torn down after the character service (which reads
+    // the components while it detaches actors) and set up before it re-processes entities.
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+
     void NoteAuthoritativeHealthRevision(uint32_t aServerId, uint32_t aRevision) const noexcept;
     void ForgetHealthRevision(uint32_t aServerId) const noexcept;
 
@@ -44,7 +48,7 @@ private:
 
     void OnLocalComponentAdded(entt::registry& aRegistry, entt::entity aEntity) noexcept;
     void OnLocalComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept;
-    void OnDisconnected(const DisconnectedEvent&) noexcept;
+    void ResetPerWorldState() noexcept;
     void OnActorRemoved(const ActorRemovedEvent&) noexcept;
     void OnUpdate(const UpdateEvent&) noexcept;
     void OnActorValueChanges(const NotifyActorValueChanges& acMessage) const noexcept;

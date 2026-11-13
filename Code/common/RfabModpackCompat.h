@@ -19,7 +19,7 @@
 
 namespace RfabCompat
 {
-inline constexpr std::string_view kRfabOnlineVersion = "4.0.0";
+inline constexpr std::string_view kRfabOnlineVersion = "4.1.0";
 
 // Skyrim Creation Engine spatial unit ratio: 1 meter = 70.0 game units (64 units = 3 feet = 0.9144m; 70 units = 1.0m).
 inline constexpr float kSkyrimUnitsPerMeter = 70.0f;
@@ -1296,130 +1296,8 @@ inline bool PatchSkyrimSoulsReIniContent(std::string& aIni)
 
 inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni);
 
-inline size_t EnsureEngineFixesPatchedUnderRoot(const std::filesystem::path& acGameOrMo2Root) noexcept
-{
-    size_t patchedFiles = 0;
-    std::error_code ec;
-
-    auto patchToml = [&](const std::filesystem::path& p)
-    {
-        std::string content;
-        if (!Detail::ReadTextFile(p, content))
-            return;
-
-        if (PatchEngineFixesTomlContent(content))
-        {
-            if (Detail::WriteTextFile(p, content))
-                ++patchedFiles;
-        }
-    };
-
-    auto patchSoulsIni = [&](const std::filesystem::path& p)
-    {
-        std::string content;
-        if (!Detail::ReadTextFile(p, content))
-            return;
-
-        if (PatchSkyrimSoulsReIniContent(content))
-        {
-            if (Detail::WriteTextFile(p, content))
-                ++patchedFiles;
-        }
-    };
-
-    auto hideBetterStealing = [&](const std::filesystem::path& rootDir)
-    {
-        for (const auto& rel : {
-                 std::filesystem::path("NetScriptFramework") / "Plugins" / "BetterStealing.dll",
-                 std::filesystem::path("netscriptframework") / "plugins" / "BetterStealing.dll"})
-        {
-            const auto target = rootDir / rel;
-            if (std::filesystem::exists(target, ec))
-            {
-                auto hiddenPath = target;
-                hiddenPath += ".mohidden";
-                std::filesystem::rename(target, hiddenPath, ec);
-            }
-        }
-    };
-
-    auto patchAutosaveIni = [&](const std::filesystem::path& p)
-    {
-        std::string content;
-        if (!Detail::ReadTextFile(p, content))
-            return;
-
-        const std::string updated = SuppressRfabAutosaveIniContent(content);
-        if (updated != content)
-        {
-            if (Detail::WriteTextFile(p, updated))
-                ++patchedFiles;
-        }
-    };
-
-    auto scanPluginTree = [&](const std::filesystem::path& baseDir)
-    {
-        patchToml(baseDir / "SKSE" / "Plugins" / "EngineFixes.toml");
-        patchToml(baseDir / "skse" / "plugins" / "EngineFixes.toml");
-        patchSoulsIni(baseDir / "SKSE" / "Plugins" / "SkyrimSoulsRE.ini");
-        patchSoulsIni(baseDir / "skse" / "plugins" / "SkyrimSoulsRE.ini");
-        patchAutosaveIni(baseDir / "SKSE" / "Plugins" / "[RFAB] Autosave.ini");
-        patchAutosaveIni(baseDir / "skse" / "plugins" / "[RFAB] Autosave.ini");
-        hideBetterStealing(baseDir);
-    };
-
-    // 1. Direct or MO2 USVFS-mapped Data/ directory (resolves straight to winning MO2 override at runtime!)
-    scanPluginTree(acGameOrMo2Root / "Data");
-
-    // 2. Scan MO2 mods/ + overwrite/ across all standard RFAB layouts:
-    //    - <RFAB_Root>/MO2/{mods,overwrite}  (standard drake1ch/RFAB layout, e.g. G:\RFAB Online SkyrimSE\MO2)
-    //    - <MO2_Root>/{mods,overwrite}
-    //    - <Parent>/{mods,overwrite} and <Parent>/MO2/{mods,overwrite}
-    const std::vector<std::filesystem::path> candidateMo2Roots = {
-        acGameOrMo2Root,
-        acGameOrMo2Root / "MO2",
-        acGameOrMo2Root.parent_path(),
-        acGameOrMo2Root.parent_path() / "MO2",
-    };
-
-    for (const auto& mo2Root : candidateMo2Roots)
-    {
-        if (mo2Root.empty())
-            continue;
-
-        const auto overwriteDir = mo2Root / "overwrite";
-        if (std::filesystem::exists(overwriteDir, ec) && std::filesystem::is_directory(overwriteDir, ec))
-            scanPluginTree(overwriteDir);
-
-        const auto profilesDir = mo2Root / "profiles";
-        if (std::filesystem::exists(profilesDir, ec) && std::filesystem::is_directory(profilesDir, ec))
-        {
-            for (const auto& profEntry : std::filesystem::directory_iterator(profilesDir, ec))
-            {
-                if (!ec && profEntry.is_directory(ec))
-                {
-                    Detail::QuarantineCorruptEssFilesInDirectory(profEntry.path() / "saves");
-                }
-            }
-        }
-
-        const auto modsDir = mo2Root / "mods";
-        if (!std::filesystem::exists(modsDir, ec) || !std::filesystem::is_directory(modsDir, ec))
-            continue;
-
-        for (const auto& modEntry : std::filesystem::directory_iterator(modsDir, ec))
-        {
-            if (!modEntry.is_directory(ec))
-                continue;
-            scanPluginTree(modEntry.path());
-        }
-    }
-
-    return patchedFiles;
-}
-
-// Suppresses "[RFAB] Autosave.ini" combat/interval triggers while connected to multiplayer,
-// preserving original file contents in memory so solo settings restore cleanly on disconnect.
+// "[RFAB] Autosave.ini" as the co-op process must read it: every RFAB autosave trigger off (the
+// coordinated co-op save is the only save). Served by the co-op config overlay; never written back.
 inline std::string SuppressRfabAutosaveIniContent(std::string_view aOriginalIni)
 {
     const bool hasCrLf = aOriginalIni.find("\r\n") != std::string_view::npos;

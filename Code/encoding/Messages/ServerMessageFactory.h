@@ -68,6 +68,10 @@
 #include <Messages/NotifyPlayerDownedState.h>
 #include <Messages/NotifyReviveState.h>
 #include <Messages/NotifyRfabProgressionEvent.h>
+#include <Messages/NotifyResyncComplete.h>
+#include <Messages/NotifyWorldItemSpawn.h>
+#include <Messages/NotifyWorldItemDespawn.h>
+#include <Messages/NotifyWorldItemSnapshot.h>
 
 using TiltedPhoques::UniquePtr;
 
@@ -83,7 +87,8 @@ struct ServerMessageFactory
             NotifyProjectileLaunch, NotifyInterruptCast, NotifyAddTarget, NotifyScriptAnimation, NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse, NotifyPlayerRespawn, NotifyDialogue,
             NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyRelinquishControl, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange,
             NotifyWeatherChange, NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifySyncRfabExperience,
-            NotifyPrepareSave, NotifyCommitSave, NotifyExecuteLoad, NotifyPlayerDownedState, NotifyReviveState, NotifyRfabProgressionEvent>;
+            NotifyPrepareSave, NotifyCommitSave, NotifyExecuteLoad, NotifyPlayerDownedState, NotifyReviveState, NotifyRfabProgressionEvent, NotifyResyncComplete,
+            NotifyWorldItemSpawn, NotifyWorldItemDespawn, NotifyWorldItemSnapshot>;
 
         return s_visitor(std::forward<T>(func));
     }

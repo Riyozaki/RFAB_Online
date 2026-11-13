@@ -28,8 +28,6 @@
 
 #include <Structs/GridCellCoords.h>
 
-#include <Events/ConnectedEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/ConnectionErrorEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Events/PartyJoinedEvent.h>
@@ -120,8 +118,6 @@ OverlayService::OverlayService(World& aWorld, TransportService& transport, entt:
     , m_transport(transport)
 {
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&OverlayService::OnUpdate>(this);
-    m_connectedConnection = aDispatcher.sink<ConnectedEvent>().connect<&OverlayService::OnConnectedEvent>(this);
-    m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&OverlayService::OnDisconnectedEvent>(this);
     m_connectionErrorConnection = aDispatcher.sink<ConnectionErrorEvent>().connect<&OverlayService::OnConnectionError>(this);
     m_chatMessageConnection = aDispatcher.sink<NotifyChatMessageBroadcast>().connect<&OverlayService::OnChatMessageReceived>(this);
     m_playerJoinedConnection = aDispatcher.sink<NotifyPlayerJoined>().connect<&OverlayService::OnPlayerJoined>(this);
@@ -330,7 +326,7 @@ void OverlayService::OnUpdate(const UpdateEvent&) noexcept
     RunPlayerHealthUpdates();
 }
 
-void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
+void OverlayService::OnSessionBegin(const Session::Transition& acTransition) noexcept
 {
     if (!m_pOverlay)
         return;
@@ -338,11 +334,16 @@ void OverlayService::OnConnectedEvent(const ConnectedEvent& acEvent) noexcept
     m_pOverlay->ExecuteAsync("connect");
 
     auto pArguments = CefListValue::Create();
-    pArguments->SetInt(0, acEvent.PlayerId);
+    pArguments->SetInt(0, static_cast<int>(acTransition.LocalPlayerId));
     m_pOverlay->ExecuteAsync("setLocalPlayerId", pArguments);
 }
 
-void OverlayService::OnDisconnectedEvent(const DisconnectedEvent&) noexcept
+void OverlayService::OnSessionEnd(const Session::Transition&) noexcept
+{
+    NotifyConnectionAttemptEnded();
+}
+
+void OverlayService::NotifyConnectionAttemptEnded() noexcept
 {
     if (!m_pOverlay)
         return;

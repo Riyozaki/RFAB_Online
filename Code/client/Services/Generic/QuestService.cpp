@@ -1,6 +1,5 @@
 #include <TiltedOnlinePCH.h>
 
-#include <Events/ConnectedEvent.h>
 
 #include <Services/QuestService.h>
 #include <Services/ImguiService.h>
@@ -82,7 +81,6 @@ static TESQuest* FindQuestByNameId(const String& name)
 QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
     : m_world(aWorld)
 {
-    m_joinedConnection = aDispatcher.sink<ConnectedEvent>().connect<&QuestService::OnConnected>(this);
     m_questUpdateConnection = aDispatcher.sink<NotifyQuestUpdate>().connect<&QuestService::OnQuestUpdate>(this);
     m_questSceneUpdateConnection = aDispatcher.sink<NotifyQuestSceneUpdate>().connect<&QuestService::OnQuestSceneUpdate>(this);
     m_playerId = 0;
@@ -100,7 +98,7 @@ QuestService::QuestService(World& aWorld, entt::dispatcher& aDispatcher)
     pEventList->sceneEvent.RegisterSink(this);
 }
 
-void QuestService::OnConnected(const ConnectedEvent& apEvent) noexcept
+void QuestService::OnSessionBegin(const Session::Transition& acTransition) noexcept
 {
     // TODO: this should be followed with whatever the quest leader selected
     /*
@@ -112,13 +110,23 @@ void QuestService::OnConnected(const ConnectedEvent& apEvent) noexcept
             pQuest->SetActive(false);
     }
     */
-    m_playerId = apEvent.PlayerId;
+    m_playerId = acTransition.LocalPlayerId;
+}
+
+void QuestService::OnSessionEnd(const Session::Transition&) noexcept
+{
+    m_playerId = 0;
 }
 
 BSTEventResult QuestService::OnEvent(const TESQuestStartStopEvent* apEvent,
                                      const EventDispatcher<TESQuestStartStopEvent>*)
 {
     if (s_inRemoteQuestUpdate || !apEvent || !World::IsCreated() || !World::IsConnectedCached() || ScopedSaveLoadOverride::IsOverriden())
+        return BSTEventResult::kOk;
+
+    // The quest only failed to start here (e.g. a required alias did not fill): it is not running on this
+    // client, so reporting it would send "stopped" and end it for the rest of the party (upstream 83d8080f).
+    if (apEvent->started && apEvent->failed)
         return BSTEventResult::kOk;
 
     TESQuest* pQuest = Cast<TESQuest>(TESForm::GetById(apEvent->formId));

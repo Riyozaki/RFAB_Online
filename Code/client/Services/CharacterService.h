@@ -8,6 +8,8 @@
 #include <CoopOwnership.h>
 #include <CoopWorldStabilizer.h>
 #include <CoopWorldView.h>
+#include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 
 #include <atomic>
 #include <memory>
@@ -15,8 +17,6 @@
 struct ActorAddedEvent;
 struct ActorRemovedEvent;
 struct UpdateEvent;
-struct ConnectedEvent;
-struct DisconnectedEvent;
 struct EquipmentChangeEvent;
 struct FormIdComponent;
 struct ActionEvent;
@@ -66,7 +66,7 @@ struct TransportService;
 /**
  * @brief Handles actors and players.
  */
-struct CharacterService
+struct CharacterService final : Session::IParticipant
 {
     CharacterService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
     ~CharacterService() noexcept = default;
@@ -81,8 +81,18 @@ struct CharacterService
     void OnActorAdded(const ActorAddedEvent& acEvent) noexcept;
     void OnActorRemoved(const ActorRemovedEvent& acEvent) noexcept;
     void OnUpdate(const UpdateEvent& acUpdateEvent) noexcept;
-    void OnConnected(const ConnectedEvent& acConnectedEvent) noexcept;
-    void OnDisconnected(const DisconnectedEvent& acDisconnectedEvent) noexcept;
+
+    // Session::ParticipantId::kCharacters.
+    //   Session begin    : register the local player, drop network clones left from before, re-process
+    //                      every known actor (actor values are already reset: kActorValues < kCharacters).
+    //   Session end      : purge network actors - unless the engine is replacing the world anyway
+    //                      (DuringWorldLoad), where Disable/Delete would crash it (+0x6EDFC2).
+    //   World load begin : detach every actor entity (no Disable/Delete). Materialization is gated by
+    //                      IsEngineWorldLoading() for the whole load.
+    // Downed (kDowned > kCharacters) is torn down before this runs: it still sees the remote players.
+    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
+    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
     void NotifyRemoteQuestStageApplied() noexcept;
     void OnAssignCharacter(const AssignCharacterResponse& acMessage) noexcept;
     void OnCharacterSpawn(const CharacterSpawnRequest& acMessage) const noexcept;
@@ -113,16 +123,14 @@ struct CharacterService
 
     void ProcessNewEntity(entt::entity aEntity) const noexcept;
     void ApplyAuthoritativeRfabXpDelta(int32_t aDelta) noexcept;
-    void NotifySaveLoadReset() noexcept;
     void NotifyInSessionRollbackApplied() noexcept;
     void PreSavePurgeDynamicActors() noexcept;
     void SchedulePostSaveRemoteRestore() noexcept;
     [[nodiscard]] bool IsSavePurgeActive() const noexcept { return m_savePurgeActive; }
     void RestorePurgedRemoteActorsAfterSave() noexcept;
-    void PurgeAllDynamicActorsForWorldLoad() noexcept;
-    void BeginEngineWorldLoad() noexcept;
-    void EndEngineWorldLoad() noexcept;
-    [[nodiscard]] bool IsEngineWorldLoading() const noexcept { return m_engineWorldLoadInProgress; }
+    // Session::Lifecycle::IsWorldLoadingAnyThread: closed from the moment a load is committed until it
+    // ended or was cancelled - before any participant's teardown runs and after the last one.
+    RFAB_ANY_THREAD [[nodiscard]] bool IsEngineWorldLoading() const noexcept;
     void EnsureLocalPlayerRegistered() noexcept;
 
     [[nodiscard]] entt::entity FindActorEntityByFormId(uint32_t aFormId) const noexcept;
@@ -172,6 +180,8 @@ private:
 
     void DetachAllActorsForEngineLoad() noexcept;
     void PurgeNetworkActorsOnLiveDisconnect() noexcept;
+    // Character-owned caches of one world in one session (XP tracker, leases, cookies, mounts, ...).
+    void ResetWorldScopedCaches() noexcept;
     bool MoveActor(const Actor* apActor, const GameId& acWorldSpaceId, const GameId& acCellId, const Vector3_NetQuantize& acPosition) const noexcept;
     [[nodiscard]] CoopWorldView::ObserverState BuildLocalObserverState() const noexcept;
     [[nodiscard]] TESObjectCELL* ResolveCompatibleTargetCell(const CoopWorldView::WorldOrCell& acTargetLoc, TESWorldSpace*& apOutWorldSpace, bool aAllowDistantWorldSpaceAnchor = false) const noexcept;
@@ -241,7 +251,6 @@ private:
     mutable PendingLocalMountRequest m_pendingLocalMount{};
     bool m_pendingPostSaveRemoteRestore{false};
     bool m_savePurgeActive{false};
-    bool m_engineWorldLoadInProgress{false};
 
     // TODO: revamp this, read the local anim var like vampire lord?
     struct WeaponDrawData
@@ -266,8 +275,6 @@ private:
     entt::scoped_connection m_factionsConnection;
     entt::scoped_connection m_ownershipTransferConnection;
     entt::scoped_connection m_removeCharacterConnection;
-    entt::scoped_connection m_connectedConnection;
-    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_assignCharacterConnection;
     entt::scoped_connection m_characterSpawnConnection;
     entt::scoped_connection m_referenceMovementSnapshotConnection;

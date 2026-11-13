@@ -10,8 +10,8 @@
 #include <Messages/NotifyDrawWeapon.h>
 
 #include <Events/UpdateEvent.h>
-#include <Events/DisconnectedEvent.h>
 #include <Events/InventoryChangeEvent.h>
+#include <Services/WorldItemService.h>
 #include <Events/EquipmentChangeEvent.h>
 
 #include <World.h>
@@ -38,7 +38,6 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     , m_transport(aTransport)
 {
     m_updateConnection = m_dispatcher.sink<UpdateEvent>().connect<&InventoryService::OnUpdate>(this);
-    m_disconnectConnection = m_dispatcher.sink<DisconnectedEvent>().connect<&InventoryService::OnDisconnected>(this);
     m_inventoryConnection = m_dispatcher.sink<InventoryChangeEvent>().connect<&InventoryService::OnInventoryChangeEvent>(this);
     m_equipmentConnection = m_dispatcher.sink<EquipmentChangeEvent>().connect<&InventoryService::OnEquipmentChangeEvent>(this);
     m_inventoryChangeConnection = m_dispatcher.sink<NotifyInventoryChanges>().connect<&InventoryService::OnNotifyInventoryChanges>(this);
@@ -46,12 +45,17 @@ InventoryService::InventoryService(World& aWorld, entt::dispatcher& aDispatcher,
     m_drawWeaponChangeConnection = m_dispatcher.sink<NotifyDrawWeapon>().connect<&InventoryService::OnNotifyDrawWeapon>(this);
 }
 
-void InventoryService::OnDisconnected(const DisconnectedEvent&) noexcept
+void InventoryService::OnSessionEnd(const Session::Transition&) noexcept
 {
-    ResetForWorldReload();
+    DropPendingNpcAmmoDeltas();
 }
 
-void InventoryService::ResetForWorldReload() noexcept
+void InventoryService::OnWorldLoadBegin(const Session::Transition&) noexcept
+{
+    DropPendingNpcAmmoDeltas();
+}
+
+void InventoryService::DropPendingNpcAmmoDeltas() noexcept
 {
     m_pendingNpcAmmoDeltas.clear();
     m_npcAmmoFlushAccumSec = 0.0;
@@ -158,6 +162,18 @@ void InventoryService::OnInventoryChangeEvent(const InventoryChangeEvent& acEven
             __FUNCTION__ ": skipping inventory change for unassigned form id: {:X}, isLeader: {}, item id: {:X}, count: {}", acEvent.FormId,
             isLeader, acEvent.Item.BaseId.LogFormat(), acEvent.Item.Count);
         return;
+    }
+
+    // World references (architecture step 4): with server-owned dropped items a drop registers the item
+    // on the server and a pickup of a synced reference is a claim the server arbitrates. Whatever the
+    // world item service does not take keeps the legacy RequestInventoryChanges(Drop) below.
+    if (acEvent.Drop)
+    {
+        auto& worldItems = m_world.ctx().at<WorldItemService>();
+        const bool handled = acEvent.Item.Count < 0 ? worldItems.HandleLocalDrop(acEvent, serverIdRes.value())
+                                                    : worldItems.HandleLocalPickup(acEvent, serverIdRes.value());
+        if (handled)
+            return;
     }
 
     // Coalesce per-shot arrow/bolt expenditure (`count < 0`, `!Drop`) on live non-player NPC archers

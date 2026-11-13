@@ -1,6 +1,7 @@
 #include <Services/SaveSnapshotService.h>
 
 #include <common/CoopOwnership.h>
+#include <common/CoopPacketSafety.h>
 #include <common/CoopWorldView.h>
 #include <common/RfabModpackCompat.h>
 #include <Components.h>
@@ -52,6 +53,65 @@ Console::Setting uPostCombatAutosaveInterval{
 // the file stopped being a function of the state, and "did anything change?" could not be answered
 // from it. Iterating in key order costs a sort of a handful of entries and makes the writer
 // canonical.
+// TLV chunk kWorldItems, version 1: per snapshot (same order as the main list) a count, then per item
+// id, count, dropper, entry, cell, worldspace, position, rotation. Drop cookies are not stored: they
+// only pair a live echo (WorldItems::Registry::Import clears them anyway).
+constexpr uint32_t kWorldItemsChunkVersion = 1u;
+
+void WriteWorldItemRecords(TiltedPhoques::Buffer::Writer& aWriter, const std::vector<WorldItemRecord>& acRecords)
+{
+    using TiltedPhoques::Serialization;
+    const size_t count = std::min<size_t>(acRecords.size(), WorldItems::kMaxSnapshotItems);
+    Serialization::WriteVarInt(aWriter, count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const auto& record = acRecords[i];
+        Serialization::WriteVarInt(aWriter, record.Id);
+        Serialization::WriteVarInt(aWriter, static_cast<uint32_t>(std::max(record.Count, 0)));
+        Serialization::WriteVarInt(aWriter, record.DropperPlayerId);
+        record.Payload.Item.Serialize(aWriter);
+        record.Payload.CellId.Serialize(aWriter);
+        record.Payload.WorldSpaceId.Serialize(aWriter);
+        Serialization::WriteFloat(aWriter, record.Payload.Position.x);
+        Serialization::WriteFloat(aWriter, record.Payload.Position.y);
+        Serialization::WriteFloat(aWriter, record.Payload.Position.z);
+        Serialization::WriteFloat(aWriter, record.Payload.Rotation.x);
+        Serialization::WriteFloat(aWriter, record.Payload.Rotation.y);
+        Serialization::WriteFloat(aWriter, record.Payload.Rotation.z);
+    }
+}
+
+std::vector<WorldItemRecord> ReadWorldItemRecords(TiltedPhoques::Buffer::Reader& aReader)
+{
+    using TiltedPhoques::Serialization;
+    std::vector<WorldItemRecord> records;
+    const size_t count = CoopPacketSafety::ClampCollectionCount(Serialization::ReadVarInt(aReader), WorldItems::kMaxSnapshotItems);
+    records.reserve(count);
+    constexpr float kMaxAbs = CoopPacketSafety::kWorldCoordinateMaxAbs;
+    const auto readFloat = [&](float aMaxAbs) { return CoopPacketSafety::SanitizeFiniteFloat(Serialization::ReadFloat(aReader), -aMaxAbs, aMaxAbs, 0.0f); };
+    for (size_t i = 0; i < count && !aReader.Eof(); ++i)
+    {
+        WorldItemRecord record{};
+        record.Id = static_cast<WorldItems::ItemId>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFFu);
+        record.Count = static_cast<int32_t>(std::min<uint64_t>(Serialization::ReadVarInt(aReader), 0x7FFFFFFFull));
+        record.DropperPlayerId = static_cast<uint32_t>(Serialization::ReadVarInt(aReader) & 0xFFFFFFFFu);
+        record.Payload.Item.Deserialize(aReader);
+        record.Payload.Item.Count = 0;
+        record.Payload.CellId.Deserialize(aReader);
+        record.Payload.WorldSpaceId.Deserialize(aReader);
+        record.Payload.Position.x = readFloat(kMaxAbs);
+        record.Payload.Position.y = readFloat(kMaxAbs);
+        record.Payload.Position.z = readFloat(kMaxAbs);
+        record.Payload.Rotation.x = readFloat(1000.0f);
+        record.Payload.Rotation.y = readFloat(1000.0f);
+        record.Payload.Rotation.z = readFloat(1000.0f);
+        record.CellKey = WorldItemService::CellKeyOf(record.Payload.CellId);
+        // Import() drops what is invalid (id 0, count out of range, bounds).
+        records.push_back(std::move(record));
+    }
+    return records;
+}
+
 template <class TMap> std::vector<const typename TMap::value_type*> SortedEntries(const TMap& acMap)
 {
     std::vector<const typename TMap::value_type*> entries;
@@ -424,6 +484,18 @@ bool SaveSnapshotService::SaveCheckpointsToDisk(const std::filesystem::path& acP
                 CoopCheckpoint::TlvTag::kV210PersistentActors,
                 tlvChunkBuf.GetWriteData(),
                 chunkWriter.Size());
+
+            // v4.1.0 step 4: dropped items. Older builds skip the unknown tag.
+            TiltedPhoques::Buffer worldItemsBuf(64 * 1024);
+            TiltedPhoques::Buffer::Writer worldItemsWriter(&worldItemsBuf);
+            Serialization::WriteVarInt(worldItemsWriter, m_snapshots.size());
+            for (const auto& snap : m_snapshots)
+                WriteWorldItemRecords(worldItemsWriter, snap.WorldItems);
+            tlvBuilder.AppendChunk(
+                CoopCheckpoint::TlvTag::kWorldItems,
+                worldItemsBuf.GetWriteData(),
+                worldItemsWriter.Size(),
+                kWorldItemsChunkVersion);
             const std::vector<uint8_t> tlvBytes = tlvBuilder.Bytes();
             if (!tlvBytes.empty())
             {
@@ -629,9 +701,11 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
                     const uint64_t extMagic3 = Serialization::ReadVarInt(reader);
                     if (extMagic3 == kV210TlvContainerExtMagic)
                     {
+                        // Same bound the builder enforces per chunk (32 MiB); the dropped items of
+                        // 16 snapshots alone can exceed the former 4 MiB.
                         const uint64_t tlvByteCount = std::min<uint64_t>(
                             Serialization::ReadVarInt(reader),
-                            4ULL * 1024ULL * 1024ULL);
+                            32ULL * 1024ULL * 1024ULL);
                         std::vector<uint8_t> tlvBlob(static_cast<size_t>(tlvByteCount), 0u);
                         for (size_t bIdx = 0; bIdx < tlvBlob.size(); ++bIdx)
                         {
@@ -649,6 +723,20 @@ bool SaveSnapshotService::LoadCheckpointsFromDisk(const std::filesystem::path& a
                         {
                             for (const auto& chunk : tlvChunks)
                             {
+                                if (chunk.Tag == static_cast<uint32_t>(CoopCheckpoint::TlvTag::kWorldItems) && chunk.Data &&
+                                    chunk.ByteLength != 0 && chunk.Version == kWorldItemsChunkVersion)
+                                {
+                                    TiltedPhoques::Buffer itemsBuffer(chunk.ByteLength);
+                                    std::memcpy(itemsBuffer.GetWriteData(), chunk.Data, chunk.ByteLength);
+                                    TiltedPhoques::Buffer::Reader itemsReader(&itemsBuffer);
+                                    const uint64_t itemSnapCount = std::min<uint64_t>(
+                                        Serialization::ReadVarInt(itemsReader),
+                                        loadedSnapshots.size());
+                                    for (uint64_t sIdx = 0; sIdx < itemSnapCount && !itemsReader.Eof(); ++sIdx)
+                                        loadedSnapshots[static_cast<size_t>(sIdx)].WorldItems = ReadWorldItemRecords(itemsReader);
+                                    continue;
+                                }
+
                                 if (chunk.Tag != static_cast<uint32_t>(CoopCheckpoint::TlvTag::kV210PersistentActors) ||
                                     !chunk.Data || chunk.ByteLength == 0)
                                 {
@@ -804,6 +892,10 @@ void SaveSnapshotService::HydratePersistedWorldState() noexcept
 
     if (auto* pInv = m_world.ctx().find<InventoryService>())
         pInv->RestoreLootLedgerSnapshot(latest.LootLedger, latest.LootClaimantsFromDisk);
+
+    // Server start: nobody is connected yet, every joining player gets the list in its join snapshot.
+    if (auto* pWorldItems = m_world.ctx().find<WorldItemService>())
+        (void)pWorldItems->RestoreCheckpoint(latest.WorldItems);
 
     if (auto* pCalendar = m_world.ctx().find<CalendarService>())
     {
@@ -1035,6 +1127,10 @@ SaveSnapshotService::WorldSnapshot SaveSnapshotService::CaptureWorldSnapshot(
 
     // 6. Capture persistent ContainerLootLedger anti-dupe withdrawal history
     snap.LootLedger = m_world.GetInventoryService().CaptureLootLedgerSnapshot();
+
+    // 7. Server-owned dropped items (v4.1.0 step 4)
+    if (const auto* pWorldItems = m_world.ctx().find<WorldItemService>())
+        snap.WorldItems = pWorldItems->CaptureCheckpoint();
 
     return snap;
 }
@@ -1407,6 +1503,15 @@ void SaveSnapshotService::ApplyWorldSnapshot(const WorldSnapshot& acSnapshot, bo
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
     m_world.GetInventoryService().RestoreLootLedgerSnapshot(acSnapshot.LootLedger, acSnapshot.LootClaimantsFromDisk);
 
+    // The dropped items that existed with the inventories being restored. Broadcast now: the snapshot
+    // survives the clients' world reload (CoopWorldStabilizer::MustSurviveWorldReload) and every client
+    // drops its engine references at WorldLoadBegin, so it is applied to the reloaded world.
+    if (auto* pWorldItems = m_world.ctx().find<WorldItemService>())
+    {
+        (void)pWorldItems->RestoreCheckpoint(acSnapshot.WorldItems);
+        pWorldItems->BroadcastSnapshot();
+    }
+
     // 6. Drop snapshots strictly newer than the restored epoch & persist updated store to disk
     while (!m_snapshots.empty() && m_snapshots.back().EpochId > acSnapshot.EpochId)
         m_snapshots.pop_back();
@@ -1627,6 +1732,9 @@ bool SaveSnapshotService::TriggerRollbackToLatest(bool aIsPartyWipe) noexcept
     m_world.GetCharacterService().ResetWorldEntitiesForCheckpointReload({}, false);
     m_world.GetEncounterService().ResetAllStatesAfterRollback();
     m_world.GetInventoryService().ResetLootLedger();
+    // Every player reloads the save from before joining: nothing dropped in this session exists there.
+    if (auto* pWorldItems = m_world.ctx().find<WorldItemService>())
+        (void)pWorldItems->ClearAll();
     {
         auto objectView = m_world.view<ObjectComponent>();
         std::vector<entt::entity> toDestroy(objectView.begin(), objectView.end());

@@ -206,7 +206,7 @@ void TESObjectREFR::SaveAnimationVariables(AnimationVariables& aVariables) const
     if (spManager)
     {
         BSAnimationGraphManager* pManager = spManager.get();
-        BSScopedLock<BSRecursiveLock> _{pManager->lock};
+        BSSpinLockGuard _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
         {
@@ -282,7 +282,7 @@ void TESObjectREFR::LoadAnimationVariables(const AnimationVariables& aVariables)
     if (spManager)
     {
         BSAnimationGraphManager* pManager = spManager.get();
-        BSScopedLock<BSRecursiveLock> _{pManager->lock};
+        BSSpinLockGuard _{pManager->lock};
 
         if (pManager->animationGraphIndex < pManager->animationGraphs.size)
         {
@@ -652,20 +652,16 @@ void TESObjectREFR::GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataLis
     arEntry.IsQuestItem = apExtraDataList->HasQuestObjectAlias();
 }
 
-ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEntry) noexcept
+void TESObjectREFR::ApplyItemExtraData(ExtraDataList* apExtraDataList, const Inventory::Entry& arEntry, bool aIncludeWorn) noexcept
 {
+    if (!apExtraDataList)
+        return;
+
     auto& modSystem = World::Get().GetModSystem();
-
-    ExtraDataList* pExtraDataList = nullptr;
-
-    if (!arEntry.ContainsExtraData())
-        return pExtraDataList;
-
-    pExtraDataList = ExtraDataList::New();
 
     if (arEntry.ExtraCharge > 0.f)
     {
-        pExtraDataList->SetChargeData(arEntry.ExtraCharge);
+        apExtraDataList->SetChargeData(arEntry.ExtraCharge);
     }
 
     if (arEntry.ExtraEnchantId != 0)
@@ -683,7 +679,7 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
         }
 
         if (pEnchantment)
-            pExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
+            apExtraDataList->SetEnchantmentData(pEnchantment, arEntry.ExtraEnchantCharge, arEntry.ExtraEnchantRemoveUnequip);
     }
 
     if (arEntry.ExtraPoisonId != 0 && arEntry.ExtraPoisonId.ModId != 0xFFFFFFFF)
@@ -691,29 +687,41 @@ ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEnt
         uint32_t poisonId = modSystem.GetGameId(arEntry.ExtraPoisonId);
         if (AlchemyItem* pPoison = Cast<AlchemyItem>(TESForm::GetById(poisonId)))
         {
-            pExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
+            apExtraDataList->SetPoison(pPoison, arEntry.ExtraPoisonCount);
         }
     }
 
     if (arEntry.ExtraHealth > 0.f)
     {
-        pExtraDataList->SetHealth(arEntry.ExtraHealth);
+        apExtraDataList->SetHealth(arEntry.ExtraHealth);
     }
 
     if (arEntry.ExtraSoulLevel > 0 && arEntry.ExtraSoulLevel <= 5)
     {
-        pExtraDataList->SetSoulData(static_cast<SOUL_LEVEL>(arEntry.ExtraSoulLevel));
+        apExtraDataList->SetSoulData(static_cast<SOUL_LEVEL>(arEntry.ExtraSoulLevel));
     }
 
-    if (arEntry.ExtraWorn)
+    if (aIncludeWorn && arEntry.ExtraWorn)
     {
-        pExtraDataList->SetWorn(false);
+        apExtraDataList->SetWorn(false);
     }
 
-    if (arEntry.ExtraWornLeft)
+    if (aIncludeWorn && arEntry.ExtraWornLeft)
     {
-        pExtraDataList->SetWorn(true);
+        apExtraDataList->SetWorn(true);
     }
+}
+
+ExtraDataList* TESObjectREFR::GetExtraDataFromItem(const Inventory::Entry& arEntry) noexcept
+{
+    ExtraDataList* pExtraDataList = nullptr;
+
+    if (!arEntry.ContainsExtraData())
+        return pExtraDataList;
+
+    pExtraDataList = ExtraDataList::New();
+
+    ApplyItemExtraData(pExtraDataList, arEntry, /*include worn*/ true);
 
     // TODO: this is causing crashes
     /*

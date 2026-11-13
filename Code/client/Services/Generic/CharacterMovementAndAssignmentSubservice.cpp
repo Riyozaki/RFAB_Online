@@ -204,7 +204,18 @@ void CharacterService::OnReferencesMoveRequest(const ServerReferencesMoveRequest
     for (const auto& [serverId, update] : acMessage.Updates)
     {
         const entt::entity entity = FindEntityByServerId(serverId);
-        if (entity == entt::null || !m_world.all_of<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>(entity))
+        if (entity == entt::null)
+        {
+            // The server streams movement for an entity this client has no record of at all: its
+            // spawn was lost (common/Session/Resync.h confirms persistence before asking).
+            if (m_remoteModels.find(serverId) == m_remoteModels.end() && m_cachedRemoteSpawns.find(serverId) == m_cachedRemoteSpawns.end())
+            {
+                m_world.GetSessionResyncService().NoteGap(
+                    Session::Resync::Scope::kEntity, serverId, Session::Resync::Reason::kUnknownEntityInMovement);
+            }
+            continue;
+        }
+        if (!m_world.all_of<RemoteComponent, InterpolationComponent, RemoteAnimationComponent>(entity))
             continue;
 
         auto& interpolationComponent = m_world.get<InterpolationComponent>(entity);
@@ -489,7 +500,8 @@ bool CharacterService::RequestServerAssignment(const entt::entity aEntity) const
         // Capture exact runtime RGB hair color (both vanilla BGSColorForm and RaceMenu custom HairColorCustom)
         // because TESNPC::Save only serializes the shared BGSColorForm FormID, never its in-memory RGB bytes!
         uint8_t hairR = 0, hairG = 0, hairB = 0;
-        if (FaceGenSystem::TryExtractActorHairColor(pActor, hairR, hairG, hairB))
+        if (World::IsFeatureEnabled(Session::Feature::kHairColorSync) &&
+            FaceGenSystem::TryExtractActorHairColor(pActor, hairR, hairG, hairB))
         {
             message.FaceTints.SetHairColor(hairR, hairG, hairB);
         }
@@ -813,6 +825,8 @@ void CharacterService::ApplyRemotePlayerHairColorForm(
 {
     if (!apNpc || ((apNpc->formID & 0xFF000000u) != 0xFF000000u))
         return;
+    if (!World::IsFeatureEnabled(Session::Feature::kHairColorSync))
+        return;
 
     uint8_t hairR = 0, hairG = 0, hairB = 0;
     if (!acFaceTints.TryGetHairColor(hairR, hairG, hairB))
@@ -877,7 +891,7 @@ void CharacterService::ApplyRemotePlayerHairColorForm(
 
 void CharacterService::PollLocalPlayerAppearanceSync() noexcept
 {
-    if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
+    if (!m_transport.IsOnline() || m_savePurgeActive || IsEngineWorldLoading())
         return;
 
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
@@ -917,7 +931,7 @@ void CharacterService::PollLocalPlayerAppearanceSync() noexcept
 
 void CharacterService::ScheduleMainThreadFaceGenPass() noexcept
 {
-    if (!m_transport.IsOnline() || m_savePurgeActive || m_engineWorldLoadInProgress)
+    if (!m_transport.IsOnline() || m_savePurgeActive || IsEngineWorldLoading())
         return;
 
     if (!m_spFaceGenMainThreadPending || m_spFaceGenMainThreadPending->load(std::memory_order_acquire))

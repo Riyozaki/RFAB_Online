@@ -9,7 +9,7 @@
 
 SortedMap<uint32_t, String> BSAnimationGraphManager::DumpAnimationVariables(bool aPrintVariables)
 {
-    BSScopedLock<BSRecursiveLock> _{lock};
+    BSSpinLockGuard _{lock};
     SortedMap<uint32_t, String> variables;
 
     if (animationGraphIndex < animationGraphs.size)
@@ -59,7 +59,7 @@ SortedMap<uint32_t, String> BSAnimationGraphManager::DumpAnimationVariables(bool
 uint64_t BSAnimationGraphManager::GetDescriptorKey(int aForceIndex)
 {
     using TiltedPhoques::FHash::Crc64;
-    BSScopedLock<BSRecursiveLock> _{lock};
+    BSSpinLockGuard _{lock};
 
     String variableNames{};
     variableNames.reserve(8192);
@@ -114,7 +114,7 @@ uint64_t BSAnimationGraphManager::GetDescriptorKey(int aForceIndex)
 uint64_t BSAnimationGraphManager::GetProjectKey(int aForceIndex)
 {
     using TiltedPhoques::FHash::Crc64;
-    BSScopedLock<BSRecursiveLock> _{lock};
+    BSSpinLockGuard _{lock};
 
     const uint32_t targetIdx = aForceIndex == -1 ? animationGraphIndex : static_cast<uint32_t>(aForceIndex);
     if (targetIdx < animationGraphs.size)

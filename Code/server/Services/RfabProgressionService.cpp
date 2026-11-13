@@ -49,6 +49,18 @@ void RfabProgressionService::OnSyncProgressionEvent(const PacketEvent<SyncRfabPr
     const std::string sourceKey(pkt.SourceKey.c_str(), pkt.SourceKey.size());
     const std::string editorId(pkt.EditorId.c_str(), pkt.EditorId.size());
 
+    // Feature switches (common/Session/Features.h): the server owns these relays, so a client that
+    // ignores the flag still cannot push a disabled feature onto its peers.
+    if ((pkt.Kind == SyncRfabProgressionEvent::EventKind::TacticalPingSync && !IsCoopFeatureEnabled(Session::Feature::kTacticalHud)) ||
+        ((pkt.Kind == SyncRfabProgressionEvent::EventKind::AllyProtectionSync ||
+          pkt.Kind == SyncRfabProgressionEvent::EventKind::BossEncounterSync) &&
+         !IsCoopFeatureEnabled(Session::Feature::kRfabCombatRules)))
+    {
+        spdlog::debug("[RFAB Features] Dropped progression event kind {} from player {}: feature disabled on this server",
+                      static_cast<uint32_t>(pkt.Kind), pSender->GetId());
+        return;
+    }
+
     switch (pkt.Kind)
     {
     case SyncRfabProgressionEvent::EventKind::BookRead:

@@ -4,7 +4,6 @@
 #include <Interface/Menus/SkillsMenu.h>
 #include <Games/TES.h>
 #include <common/RfabModpackCompat.h>
-#include "immersive_launcher/stubs/DllBlocklist.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -187,78 +186,42 @@ bool ApplyRfabDllPerkPlacementBoundsFixPostSkse() noexcept
     return false;
 }
 
-bool ShouldKeepStatsMenuPausedRuntime() noexcept
+bool HasPerkTreeModsPostSkse() noexcept
 {
-    ApplyRfabDllPerkPlacementBoundsFixPostSkse();
-
-    static int s_cachedDecision = -1;
-    if (s_cachedDecision == 1)
+    // CustomSkills v1/v2/v3 or the RFAB SKSE plugin in the process...
+    if (GetModuleHandleW(L"CustomSkills.dll") != nullptr || GetModuleHandleW(L"RFAB.dll") != nullptr)
         return true;
-    if (s_cachedDecision == 0)
+    // ...or their files under Data/ (future renames, Extended UI, RFAB perk configs).
+    return RfabCompat::HasCustomSkillsOrRfabFilesUnderData(std::filesystem::path(L"Data"));
+}
+
+bool HasPerkTreePluginsLoaded() noexcept
+{
+    auto* pModManager = ModManager::Get();
+    if (!pModManager)
         return false;
 
-    // 1. Direct SKSE module handles (CustomSkills v1/v2/v3 or RFAB plugin)
-    if (GetModuleHandleW(L"CustomSkills.dll") != nullptr || GetModuleHandleW(L"RFAB.dll") != nullptr)
-    {
-        s_cachedDecision = 1;
+    if (pModManager->GetByName("RFAB.esp") != nullptr || pModManager->GetByName("Extended UI.esp") != nullptr)
         return true;
-    }
 
-    // 2. Version-agnostic VFS check under Data/ (handles future RFAB / CustomSkills v2/v3 / Extended UI renames)
-    if (RfabCompat::HasCustomSkillsOrRfabFilesUnderData(std::filesystem::path(L"Data")))
+    for (auto* pMod : pModManager->mods)
     {
-        s_cachedDecision = 1;
-        return true;
-    }
-
-    // 3. Loaded ESP/ESM plugins in ModManager (only lock in `false` once ModManager has actually populated mods)
-    if (auto* pModManager = ModManager::Get())
-    {
-        if (pModManager->GetByName("RFAB.esp") != nullptr ||
-            pModManager->GetByName("Extended UI.esp") != nullptr)
-        {
-            s_cachedDecision = 1;
+        if (!pMod || !pMod->IsLoaded())
+            continue;
+        const std::string lowerMod = RfabCompat::Detail::ToLowerAscii(pMod->filename);
+        if (lowerMod.starts_with("[rfab]") || lowerMod.starts_with("rfab"))
             return true;
-        }
-
-        bool hasAnyModsLoaded = false;
-        for (auto* pMod : pModManager->mods)
-        {
-            if (!pMod || !pMod->IsLoaded())
-                continue;
-            hasAnyModsLoaded = true;
-            const std::string lowerMod = RfabCompat::Detail::ToLowerAscii(pMod->filename);
-            if (lowerMod.starts_with("[rfab]") || lowerMod.starts_with("rfab"))
-            {
-                s_cachedDecision = 1;
-                return true;
-            }
-        }
-
-        if (hasAnyModsLoaded)
-            s_cachedDecision = 0;
     }
-
     return false;
 }
 
-void ApplyFallbackStatsMenuPatchesPostSkse() noexcept
+void ApplyStatsMenuInputPatches() noexcept
 {
-    ApplyRfabDllPerkPlacementBoundsFixPostSkse();
-
-    static bool s_checkedPostSkse = false;
-    if (s_checkedPostSkse)
+    static bool s_applied = false;
+    if (s_applied)
         return;
-    s_checkedPostSkse = true;
+    s_applied = true;
 
-    // Must run AFTER StartSKSE() loads SKSE plugins (never inside TiltedPhoques::Initializer at [BOOT 3.1/4]).
-    // When SkyrimSoulsRE, CustomSkills, Extended UI, or RFAB (any version) is active, never patch StatsMenu::ProcessMessage
-    // or StatsMenu::CanProcess: StatsMenu must stay paused so skydome switching and PerkPlacementMenuOpenCloseManager stay safe.
-    const bool hasSoulsRE = stubs::g_IsSoulsREActive || GetModuleHandleW(L"SkyrimSoulsRE.dll") != nullptr;
-    if (hasSoulsRE || ShouldKeepStatsMenuPausedRuntime())
-        return;
-
-    // Vanilla fallback (only when neither SkyrimSoulsRE nor CustomSkills/RFAB is present):
     // StatsMenu::ProcessMessage = SE 51638 (0x8BF360)
     VersionDbPtr<uint8_t> ProcessMessage(51638);
     TiltedPhoques::Nop(ProcessMessage.Get() + 0x929, 6);
