@@ -91,9 +91,10 @@ bool InventoryService::ApplyInventoryDelta(Player* apSender, uint32_t aServerId,
     // Strict player inventory ownership isolation: a peer client's remote puppet scripts must NEVER
     // add or remove items from another player's character inventory!
     const auto* pChar = m_world.try_get<CharacterComponent>(cOrigin);
+    const auto* pOwner = m_world.try_get<OwnerComponent>(cOrigin);
+    bool isRemoteNpcInteraction = false;
     if (pChar && pChar->IsPlayer())
     {
-        const auto* pOwner = m_world.try_get<OwnerComponent>(cOrigin);
         if (!pOwner || pOwner->GetOwner() != apSender)
         {
             spdlog::warn(
@@ -102,6 +103,21 @@ bool InventoryService::ApplyInventoryDelta(Player* apSender, uint32_t aServerId,
                 apSender ? apSender->GetId() : 0);
             return false;
         }
+    }
+    else if (pChar && pOwner && (!apSender || pOwner->GetOwner() != apSender))
+    {
+        // A different peer may interact with an owned NPC (pickpocket or loot it) only while the
+        // entity is in that peer's replicated cell range. Never let a stale/out-of-range server id
+        // authorize an inventory mutation. Broadcast this interaction even when the engine marked
+        // UpdateClients=false; that flag normally suppresses propagation for local-only inventory ops.
+        const auto* pCell = m_world.try_get<CellIdComponent>(cOrigin);
+        if (!apSender || !pCell || !apSender->GetCellComponent().IsInRange(*pCell, pChar->IsDragon()))
+        {
+            spdlog::debug("Rejected out-of-range inventory interaction on owned NPC {:X} from sender {:X}",
+                          aServerId, apSender ? apSender->GetId() : 0);
+            return false;
+        }
+        isRemoteNpcInteraction = true;
     }
 
     Inventory::Entry sanitizedItem = acItem;
@@ -179,13 +195,13 @@ bool InventoryService::ApplyInventoryDelta(Player* apSender, uint32_t aServerId,
             pObjComp->HasAuthoritativeMutation = true;
     }
 
-    if (!aUpdateClients)
+    if (!aUpdateClients && !isRemoteNpcInteraction)
         return true;
 
     NotifyInventoryChanges notify{};
     notify.ServerId = aServerId;
     notify.Item = std::move(sanitizedItem);
-    notify.Drop = aNotifyDrop;
+    notify.Drop = isRemoteNpcInteraction ? false : aNotifyDrop;
 
     if (!GameServer::Get()->SendToPlayersInRange(notify, cOrigin, apSender))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);

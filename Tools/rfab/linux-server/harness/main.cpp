@@ -1455,6 +1455,7 @@ int main(int argc, char** argv)
         const entt::entity actorB = makeActor(pB, 0x00022222u);
         const uint32_t actorAId = World::ToInteger(actorA);
         const uint32_t actorBId = World::ToInteger(actorB);
+
         const auto countOf = [&](entt::entity aActor, const GameId& acItem) {
             GameId lookup = acItem;
             return world.get<InventoryComponent>(aActor).Content.GetEntryCountById(lookup);
@@ -1465,6 +1466,28 @@ int main(int argc, char** argv)
             entry.Count = aCount;
             world.get<InventoryComponent>(aActor).Content.AddOrRemoveEntry(entry);
         };
+
+        // A non-owner can pickpocket/loot an owned NPC only from the same loaded cell range.
+        // Even if the engine marks the delta as local-only, observers must receive the mutation.
+        const GameId kPickpocketGold{0u, 0x0000000Fu};
+        const entt::entity ownedNpc = makeActor(pA, 0x00033333u);
+        give(ownedNpc, kPickpocketGold, 3);
+        Inventory::Entry stolenGold{};
+        stolenGold.BaseId = kPickpocketGold;
+        stolenGold.Count = -1;
+        pB->SetCellComponent(CellIdComponent{GameId{0u, 0x0009ABCEu}});
+        Harness::ClearOutbox();
+        Check(!world.GetInventoryService().ApplyInventoryDelta(pB, World::ToInteger(ownedNpc), stolenGold, false, false, false),
+              "out-of-range non-owner inventory interaction on an owned NPC is rejected");
+        Check(countOf(ownedNpc, kPickpocketGold) == 3, "rejected remote NPC interaction leaves authoritative inventory unchanged");
+        pB->SetCellComponent(CellIdComponent{kCell});
+        Harness::ClearOutbox();
+        Check(world.GetInventoryService().ApplyInventoryDelta(pB, World::ToInteger(ownedNpc), stolenGold, false, false, false),
+              "in-range pickpocket delta from a non-owner is accepted");
+        Check(countOf(ownedNpc, kPickpocketGold) == 2, "accepted pickpocket delta updates authoritative inventory");
+        Check(!DecodeOutboxMessagesFor<NotifyInventoryChanges>(kAConn).empty(),
+              "remote NPC inventory delta is broadcast despite UpdateClients=false");
+        pB->SetCellComponent(CellIdComponent{kCell});
         const auto drop = [&](Player* apFrom, uint32_t aActorId, uint32_t aCookie, const GameId& acItem, int32_t aCount) {
             Harness::ClearOutbox();
             RequestWorldItemDrop request{};
