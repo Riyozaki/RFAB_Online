@@ -60,6 +60,9 @@ struct WorldItemService final : Session::IParticipant
     bool HandleLocalPickup(const InventoryChangeEvent& acEvent, uint32_t aPickerServerId) noexcept;
 
     [[nodiscard]] const Mirror& GetMirror() const noexcept { return m_mirror; }
+    // Does this reference show a server-owned item here? The legacy DroppedItemMatch guess must never
+    // delete one. Main thread.
+    [[nodiscard]] bool IsBoundReference(uint32_t aFormId) const noexcept { return m_mirror.FindByFormId(aFormId) != WorldItems::kNoItem; }
 
     void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
     void OnSessionEnd(const Session::Transition& acTransition) noexcept override;

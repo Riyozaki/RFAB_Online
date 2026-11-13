@@ -33,6 +33,7 @@
 #include <Games/Skyrim/Interface/UI.h>
 #include <World.h>
 #include <Services/PapyrusService.h>
+#include <Services/WorldItemService.h>
 #include <Services/DownedStateService.h>
 #include <Services/RfabAdapterService.h>
 
@@ -2274,6 +2275,9 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
         TESObjectREFR* pBestMatch = nullptr;
         DroppedItemMatch::Candidate best{};
         bool hasBest = false;
+        // A reference showing a server-owned item is removed by its NotifyWorldItemDespawn, never by
+        // this guess (architecture step 4). The mirror is main-thread state.
+        const WorldItemService* pWorldItems = World::IsMainThread() ? &World::Get().ctx().at<WorldItemService>() : nullptr;
 
         auto scanCell = [&](TESObjectCELL* apCell)
         {
@@ -2290,6 +2294,8 @@ void Actor::DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apLoca
                 if (!pRef || !pRef->baseForm || pRef == this || pRef->IsDisabled() || pRef->baseForm != pObject)
                     continue;
                 if ((pRef->formID & 0xFF000000) != 0xFF000000)
+                    continue;
+                if (pWorldItems && pWorldItems->IsBoundReference(pRef->formID))
                     continue;
 
                 const float dx = pRef->position.x - position.x;
