@@ -767,6 +767,8 @@ int main(int argc, char** argv)
             carried.ExtraHealth = 1.5f;
             actorInventory.AddOrRemoveEntry(carried);
 
+            // The claim scene above released the actor; a drop is only accepted from the actor's owner.
+            world.get<OwnerComponent>(actor).SetOwner(pOwner, 0);
             RequestWorldItemDrop drop{};
             drop.Cookie = 31u;
             drop.ActorServerId = actorId;
@@ -778,6 +780,7 @@ int main(int argc, char** argv)
             GameId lookup = restartWorldItemId;
             Check(world.ctx().at<WorldItemService>().GetRegistry().Size() == 1 && actorInventory.GetEntryCountById(lookup) == 0,
                   "the drop moved the stack from the inventory into the registry");
+            world.get<OwnerComponent>(actor).SetOwner(nullptr, 0);
         }
 
         Check(saves.TriggerCoordinatedSave(true, nullptr), "a save starts for the restart checkpoint");
