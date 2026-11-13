@@ -23,6 +23,8 @@
 #include <Structs/ServerSettings.h>
 #include <common/Session/Features.h>
 #include <common/Session/Lifecycle.h>
+#include <common/Session/MainThreadQueue.h>
+#include <ThreadAffinity.h>
 #include <Authority/Health.h>
 #include <atomic>
 #include <functional>
@@ -36,8 +38,13 @@ struct World : entt::registry
 
     void Update() noexcept;
     void UpdatePausedPump() noexcept;
+    // Every main-loop iteration (menus included): records the main thread, runs the always-lane.
     void OnMainThreadUpdate() noexcept;
+    // Any thread: runs on the next main-loop iteration even while a menu pauses the simulation. Not
+    // session-scoped - for UI commands and cleanup whose handlers check the session themselves.
+    // Gameplay work belongs in GetRunner().Queue (simulated frames, dropped when its session ends).
     void QueueMainThreadTask(std::function<void()> aTask) noexcept;
+    [[nodiscard]] const Session::MainThreadQueue& GetMainThreadQueue() const noexcept { return m_mainThreadQueue; }
 
     [[nodiscard]] bool IsPausedPumpActive() const noexcept { return m_isPausedPumpActive; }
 
@@ -142,6 +149,9 @@ private:
     inline static std::atomic<uint32_t> s_disabledFeatureMaskCached{0};
 
     static void PublishFeatureMask(uint32_t aDisabledMask) noexcept;
+    // Publishes the lock-free snapshot the *Cached() accessors read (simulated and paused frames alike).
+    void PublishThreadSnapshot() noexcept;
+    void LogMainThreadQueueStats(const char* apWhen) const noexcept;
     static void LogLifecycleTransition(void* apWorld, const Session::Transition& acTransition, Session::Phase aPhaseAfter) noexcept;
     void RegisterLifecycleParticipants() noexcept;
 
@@ -151,6 +161,9 @@ private:
     // it (m_modSystem, a member declared after it) or after it (the ctx() services, owned by the
     // registry base): the lifecycle never calls a participant from its destructor.
     Session::Lifecycle m_lifecycle;
+    // The only off-thread -> main-thread path (architecture step 3). Declared before its users
+    // (m_runner, QueueMainThreadTask) so it outlives them.
+    Session::MainThreadQueue m_mainThreadQueue;
     RunnerService m_runner;
     TransportService m_transport;
     ModSystem m_modSystem;
@@ -161,6 +174,5 @@ private:
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
     std::chrono::high_resolution_clock::time_point m_lastPausedPumpTime;
     bool m_isPausedPumpActive{false};
-    std::mutex m_mainThreadTasksMutex{};
-    std::vector<std::function<void()>> m_mainThreadTasks{};
+    std::atomic<uint32_t> m_alwaysLaneOverflowWarnings{0};
 };

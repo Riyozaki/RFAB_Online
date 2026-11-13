@@ -369,6 +369,7 @@ void DiscoveryService::OnSessionBegin(const Session::Transition&) noexcept
 
 BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDispatcher<TESLoadGameEvent>*)
 {
+    RFAB_EXPECT_MAIN_THREAD("DiscoveryService::OnEvent(TESLoadGameEvent)");
     spdlog::info("Finished loading, triggering visit cell and fresh actor discovery");
 
     // RFAB Online: RFAB runs hundreds of Requiem/SKSE plugins by design.

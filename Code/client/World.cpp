@@ -30,7 +30,7 @@
 #include <ModCompat/BehaviorVar.h>  
 
 World::World()
-    : m_runner(m_dispatcher)
+    : m_runner(m_dispatcher, m_mainThreadQueue, m_lifecycle)
     , m_transport(*this, m_dispatcher)
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
@@ -108,7 +108,6 @@ void World::RegisterLifecycleParticipants() noexcept
 
 void World::LogLifecycleTransition(void* apWorld, const Session::Transition& acTransition, Session::Phase aPhaseAfter) noexcept
 {
-    (void)apWorld;
     switch (acTransition.Kind)
     {
     case Session::Signal::kSessionBegin:
@@ -119,6 +118,9 @@ void World::LogLifecycleTransition(void* apWorld, const Session::Transition& acT
         spdlog::info("[RFAB Lifecycle] session #{} ends ({}{}) -> {}", acTransition.SessionGeneration,
                      acTransition.Reason == Session::EndReason::kReauthenticated ? "re-authenticated" : "transport lost",
                      acTransition.DuringWorldLoad ? ", during a world load" : "", std::string(Session::ToString(aPhaseAfter)));
+        // Cumulative since game start: a playtest log shows whether hook traffic was lost or stale.
+        if (apWorld)
+            static_cast<const World*>(apWorld)->LogMainThreadQueueStats("session end");
         break;
     case Session::Signal::kWorldLoadBegin:
         spdlog::info("[RFAB Lifecycle] world #{} load begins ({}{}) -> {}", acTransition.WorldGeneration,
@@ -151,10 +153,7 @@ void World::PublishFeatureMask(uint32_t aDisabledMask) noexcept
 
 World::~World()
 {
-    {
-        std::lock_guard<std::mutex> lock(m_mainThreadTasksMutex);
-        m_mainThreadTasks.clear();
-    }
+    m_mainThreadQueue.Clear();
     s_isConnectedCached.store(false, std::memory_order_release);
     s_isContainerMenuOpenCached.store(false, std::memory_order_release);
     s_syncPlayerHomesCached.store(false, std::memory_order_release);
@@ -171,24 +170,7 @@ void World::Update() noexcept
     // on Skyrim's real `WinMain` thread BEFORE `RealMainLoop` dispatches `BSJobs` workers or runs
     // `TES::PurgeExteriorCells`. `s_mainThreadId` is anchored exclusively in `World::World()` and
     // `World::OnMainThreadUpdate()`.
-    const bool isConn = m_transport.IsConnected();
-    s_isConnectedCached.store(isConn, std::memory_order_release);
-    if (isConn)
-    {
-        static const BSFixedString* s_pContainerMenu = new BSFixedString("ContainerMenu");
-        auto* const pUi = UI::Get();
-        const bool containerOpen = pUi && pUi->GetMenuOpen(*s_pContainerMenu);
-        s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
-        s_currentTickCached.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
-    }
-    else
-    {
-        s_isContainerMenuOpenCached.store(false, std::memory_order_release);
-        s_currentTickCached.store(0, std::memory_order_release);
-        // A previous server's switches must not outlive its session (IsFeatureEnabled contract);
-        // the next server publishes its own mask in AuthenticationResponse. No-op when already 0.
-        PublishFeatureMask(0u);
-    }
+    PublishThreadSnapshot();
 
     const auto cNow = std::chrono::high_resolution_clock::now();
     const auto cDelta = cNow - m_lastFrameTime;
@@ -204,7 +186,7 @@ void World::Update() noexcept
 
     m_dispatcher.trigger(PreUpdateEvent(cDeltaSeconds));
 
-    // Force run this before so we get the tasks scheduled to run
+    // Hook-posted work of the frames since the last simulated one runs before the services update.
     m_runner.OnUpdate(UpdateEvent(cDeltaSeconds));
     m_dispatcher.trigger(UpdateEvent(cDeltaSeconds));
 }
@@ -250,22 +232,9 @@ void World::UpdatePausedPump() noexcept
     // Safe WinMain-only paused-menu pump (`StatsMenu` RFAB perks, `MapMenu`, `Journal Menu` ESC, `Console`):
     // keeps GameNetworkingSockets heartbeats/handshakes, party/chat UI packets, and CoordinatedSaveService
     // barriers alive without running world simulation services (`DiscoveryService`, `CharacterService`,
-    // `InterpolationSystem`, `Sky`, `TimeData`, or `m_runner` gameplay hooks).
-    const bool isConn = m_transport.IsConnected();
-    s_isConnectedCached.store(isConn, std::memory_order_release);
-    if (isConn)
-    {
-        static const BSFixedString* s_pContainerMenu = new BSFixedString("ContainerMenu");
-        auto* const pUi = UI::Get();
-        const bool containerOpen = pUi && pUi->GetMenuOpen(*s_pContainerMenu);
-        s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
-        s_currentTickCached.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
-    }
-    else
-    {
-        s_isContainerMenuOpenCached.store(false, std::memory_order_release);
-        s_currentTickCached.store(0, std::memory_order_release);
-    }
+    // `InterpolationSystem`, `Sky`, `TimeData`, or the simulation lane: hook events wait for the next
+    // simulated frame; the always-lane (UI commands, save control) keeps running in OnMainThreadUpdate).
+    PublishThreadSnapshot();
 
     const auto cNow = std::chrono::high_resolution_clock::now();
     const auto cDelta = cNow - m_lastPausedPumpTime;
@@ -283,23 +252,37 @@ void World::UpdatePausedPump() noexcept
     m_isPausedPumpActive = false;
 }
 
+void World::PublishThreadSnapshot() noexcept
+{
+    // The one writer of the state hooks read without locks. Runs at the top of every simulated frame
+    // and every paused pump, so the snapshot is at most one main-loop iteration old in both modes.
+    const bool isConn = m_transport.IsConnected();
+    s_isConnectedCached.store(isConn, std::memory_order_release);
+    if (isConn)
+    {
+        static const BSFixedString* s_pContainerMenu = new BSFixedString("ContainerMenu");
+        auto* const pUi = UI::Get();
+        const bool containerOpen = pUi && pUi->GetMenuOpen(*s_pContainerMenu);
+        s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
+        s_currentTickCached.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
+    }
+    else
+    {
+        s_isContainerMenuOpenCached.store(false, std::memory_order_release);
+        s_currentTickCached.store(0, std::memory_order_release);
+        // A previous server's switches must not outlive its session (IsFeatureEnabled contract), also
+        // when it drops while a menu is open; the next server publishes its own mask in
+        // AuthenticationResponse. No-op when already 0.
+        PublishFeatureMask(0u);
+    }
+}
+
 void World::OnMainThreadUpdate() noexcept
 {
     s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
 
-    std::vector<std::function<void()>> tasksToRun;
-    {
-        std::lock_guard<std::mutex> lock(m_mainThreadTasksMutex);
-        if (m_mainThreadTasks.empty())
-            return;
-        tasksToRun.swap(m_mainThreadTasks);
-    }
-
-    for (auto& task : tasksToRun)
-    {
-        if (task)
-            task();
-    }
+    // Not session-scoped (QueueMainThreadTask posts with an empty token), so no staleness predicate.
+    m_mainThreadQueue.Drain(Session::Lane::kAlways, [](Session::Token) noexcept { return true; });
 }
 
 void World::QueueMainThreadTask(std::function<void()> aTask) noexcept
@@ -307,13 +290,45 @@ void World::QueueMainThreadTask(std::function<void()> aTask) noexcept
     if (!aTask)
         return;
 
-    std::lock_guard<std::mutex> lock(m_mainThreadTasksMutex);
-    if (m_mainThreadTasks.size() < 4096)
-        m_mainThreadTasks.push_back(std::move(aTask));
+    if (m_mainThreadQueue.Post(Session::Lane::kAlways, Session::Token{}, m_lifecycle.IsWorldLoadingAnyThread(), std::move(aTask)))
+        return;
+
+    if (m_alwaysLaneOverflowWarnings.fetch_add(1, std::memory_order_relaxed) < 8)
+    {
+        spdlog::warn("[RFAB MainThread] always-lane full ({} tasks): a UI/main-thread task was dropped",
+                     m_mainThreadQueue.GetCapacity(Session::Lane::kAlways));
+    }
+}
+
+void World::LogMainThreadQueueStats(const char* apWhen) const noexcept
+{
+    for (const auto lane : {Session::Lane::kSimulation, Session::Lane::kAlways})
+    {
+        const Session::LaneStats stats = m_mainThreadQueue.GetStats(lane);
+        if (stats.Posted == 0)
+            continue;
+        const bool anomalous = stats.DroppedOverflow != 0 || stats.Failed != 0;
+        const spdlog::level::level_enum logLevel = anomalous ? spdlog::level::warn : spdlog::level::info;
+        spdlog::log(logLevel,
+                    "[RFAB MainThread] {} lane at {}: posted {}, executed {}, dropped stale {}, dropped overflow {}, failed {}, "
+                    "posted during world load {}, pending {}, high water {}",
+                    std::string(Session::ToString(lane)), apWhen, stats.Posted, stats.Executed, stats.DroppedStale,
+                    stats.DroppedOverflow, stats.Failed, stats.PostedDuringWorldLoad, stats.Pending, stats.HighWater);
+    }
 }
 
 bool World::IsMainThread() noexcept
 {
     const uint32_t mainTid = s_mainThreadId.load(std::memory_order_acquire);
     return mainTid != 0 && GetCurrentThreadId() == mainTid;
+}
+
+void ThreadAffinity::ReportIfNotMainThread(const char* apWhere, std::atomic<bool>& aReported) noexcept
+{
+    if (!World::IsCreated() || World::IsMainThread())
+        return;
+    if (aReported.exchange(true, std::memory_order_relaxed))
+        return;
+    spdlog::error("[RFAB MainThread] {} ran on thread {}, but it is a main-thread gate: please report this log", apWhere ? apWhere : "?",
+                  static_cast<uint32_t>(GetCurrentThreadId()));
 }

@@ -5,6 +5,7 @@
 #include <Services/Rfab/RfabHudAndPings.h>
 #include <Services/Rfab/RfabXpAndBookSync.h>
 #include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -49,25 +50,25 @@ public:
     [[nodiscard]] TESForm* ResolveFormByEditorIdOrBaseId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) const noexcept;
     [[nodiscard]] TESGlobal* ResolveGlobalByEditorId(const std::string& acEditorId, uint32_t aFallbackBaseId = 0) noexcept;
     [[nodiscard]] BGSListForm* ResolveFormListByEditorId(const std::string& acEditorId) noexcept;
-    [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] BGSListForm* GetNoAllyDamageAllowedSpellsList() noexcept;
 
-    [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled.load(std::memory_order_relaxed); }
+    RFAB_ANY_THREAD [[nodiscard]] bool IsAllyProtectionEnabled() const noexcept { return m_allyProtectionEnabled.load(std::memory_order_relaxed); }
     [[nodiscard]] bool IsLocalPlayerAllyProtectionHost() const noexcept;
     void SetLocalAllyProtectionEnabled(bool aEnabled, bool aShowHudNotification = false) noexcept;
     void ToggleLocalAllyProtection() noexcept;
     void NotifyPartyLeadershipChanged() noexcept;
     void RefreshCoopCombatSnapshot() noexcept;
-    [[nodiscard]] GamePtr<Actor> FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
-    void CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] GamePtr<Actor> FindBestStandingPlayerTargetFor(Actor* apAttacker) const noexcept;
+    RFAB_ANY_THREAD void CollectPartyPeerActorFormIds(TiltedPhoques::Vector<uint32_t>& aOutFormIds) const noexcept;
     [[nodiscard]] bool IsBossActor(Actor* apActor) const noexcept;
-    void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;
+    RFAB_ANY_THREAD void BroadcastArenaBarrierUnlock(const GameId& acObjectId) const noexcept;
     void TriggerContextualTacticalPing(bool aForceDanger, const std::string& acCustomLabel = "") noexcept;
     void TriggerExplicitTacticalPing(RfabCompat::TacticalPingKind aKind, const std::string& acCustomLabel = "") noexcept;
     void ClearLocalTacticalPings() noexcept;
     void ExecuteTacticalChatCommand(const RfabCompat::TacticalChatCommand& acCmd) noexcept;
     void SetTacticalHudMode(RfabCompat::TacticalHudMode aMode, bool aShowNotice = true) noexcept;
     [[nodiscard]] RfabCompat::TacticalHudMode GetTacticalHudMode() const noexcept { return m_hudAndPings.GetMode(); }
-    [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
+    RFAB_ANY_THREAD [[nodiscard]] RfabCompat::CoopAllyActionPolicy EvaluateCoopAction(
         Actor* apAttacker,
         Actor* apTarget,
         bool aIsBeneficialHealOrBuff) const noexcept;

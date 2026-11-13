@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 
 #include <shared_mutex>
 
@@ -17,10 +18,10 @@ struct ModSystem final : Session::IParticipant
 
     TP_NOCOPYMOVE(ModSystem);
 
-    bool GetServerModId(uint32_t aGameId, uint32_t& aModId, uint32_t& aBaseId) const noexcept;
-    bool GetServerModId(uint32_t aGameId, GameId& aServerId) const noexcept;
-    uint32_t GetGameId(uint32_t aServerId, uint32_t aFormId) const noexcept;
-    uint32_t GetGameId(const GameId& acGameId) const noexcept;
+    RFAB_ANY_THREAD bool GetServerModId(uint32_t aGameId, uint32_t& aModId, uint32_t& aBaseId) const noexcept;
+    RFAB_ANY_THREAD bool GetServerModId(uint32_t aGameId, GameId& aServerId) const noexcept;
+    RFAB_ANY_THREAD uint32_t GetGameId(uint32_t aServerId, uint32_t aFormId) const noexcept;
+    RFAB_ANY_THREAD uint32_t GetGameId(const GameId& acGameId) const noexcept;
 
 protected:
     void HandleMods(const Mods& acMods) noexcept;

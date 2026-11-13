@@ -16,6 +16,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Hook discipline (engine threads only read snapshots and post)
+        # Source rules for every engine hook, script-event sink and CEF handler: no registry,
+        # dispatcher, transport or non-RFAB_ANY_THREAD service call outside posted work. The
+        # self-test proves each rule still catches the mistake it exists for.
+        run: |
+          python3 Tools/rfab/check_hook_discipline.py --self-test
+          python3 Tools/rfab/check_hook_discipline.py --verbose
       - name: Cache third-party sources
         uses: actions/cache@v4
         with:

@@ -7,6 +7,7 @@
 
 #include <common/Downed/Revive.h>
 #include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 
 struct World;
 struct TransportService;
@@ -49,25 +50,25 @@ public:
 
     TP_NOCOPYMOVE(DownedStateService);
 
-    [[nodiscard]] bool IsSystemActive() const noexcept;
-    [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
-    [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
+    RFAB_ANY_THREAD [[nodiscard]] bool IsSystemActive() const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] bool IsLocalPlayerDowned() const noexcept { return m_isLocalDowned.load(std::memory_order_acquire); }
+    RFAB_ANY_THREAD [[nodiscard]] bool IsLocalPlayerInvulnerable() const noexcept { return m_isGraceActive.load(std::memory_order_acquire); }
     [[nodiscard]] double GetGraceRemainingSec() const noexcept { return m_graceRemainingSec; }
     [[nodiscard]] bool IsChannelingRevive() const noexcept { return m_channel.Active; }
     [[nodiscard]] uint32_t GetChannelTargetPlayerId() const noexcept { return m_channel.TargetPlayerId; }
     [[nodiscard]] float GetReviveChannelProgress() const noexcept;
     [[nodiscard]] bool IsPlayerBeingRevived(uint32_t aPlayerId) const noexcept;
-    [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] bool ShouldBlockPlayerHealthMutation(float aDelta) const noexcept;
     [[nodiscard]] bool IsRemotePlayerDowned(uint32_t aPlayerId) const noexcept;
     [[nodiscard]] bool IsActorDowned(uint32_t aActorFormId) const noexcept;
 
     // Lock-free atomic latch called from HookDamageActor / HookRestoreActorValue / OnUpdate when 0x14 reaches 0.0f HP
     // under native Skyrim SE Essential + NoBleedoutRecovery. Defers all camera/control/aggro/network work to OnUpdate.
-    void LatchNativeBleedoutEntered(Actor* apPlayer) noexcept;
+    RFAB_ANY_THREAD void LatchNativeBleedoutEntered(Actor* apPlayer) noexcept;
 
     // Triggers a server-authoritative ally revive when a standing party member hits a downed ally with a Restoration heal spell.
-    void RequestAllySpellReviveOnActor(uint32_t aTargetFormId, float aHealMagnitude) noexcept;
-    void NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemoteCaster, float aHealMagnitude) noexcept;
+    RFAB_ANY_THREAD void RequestAllySpellReviveOnActor(uint32_t aTargetFormId, float aHealMagnitude) noexcept;
+    RFAB_ANY_THREAD void NotifyAllyHealingSpellReceivedFromRemote(Actor* apRemoteCaster, float aHealMagnitude) noexcept;
 
     // Applies or clears kneeling bleedout posture on a remote player's Actor instance.
     void ApplyRemoteActorDownedPosture(Actor* apRemoteActor, bool aIsDowned) noexcept;

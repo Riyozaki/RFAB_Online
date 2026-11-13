@@ -9,6 +9,7 @@
 #include <CoopWorldStabilizer.h>
 #include <CoopWorldView.h>
 #include <common/Session/Lifecycle.h>
+#include <ThreadAffinity.h>
 
 #include <atomic>
 #include <memory>
@@ -129,7 +130,7 @@ struct CharacterService final : Session::IParticipant
     void RestorePurgedRemoteActorsAfterSave() noexcept;
     // Session::Lifecycle::IsWorldLoadingAnyThread: closed from the moment a load is committed until it
     // ended or was cancelled - before any participant's teardown runs and after the last one.
-    [[nodiscard]] bool IsEngineWorldLoading() const noexcept;
+    RFAB_ANY_THREAD [[nodiscard]] bool IsEngineWorldLoading() const noexcept;
     void EnsureLocalPlayerRegistered() noexcept;
 
     [[nodiscard]] entt::entity FindActorEntityByFormId(uint32_t aFormId) const noexcept;

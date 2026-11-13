@@ -713,12 +713,10 @@ void ObjectService::OnNotifyScriptAnimation(const NotifyScriptAnimation& acMessa
 
 BSTEventResult ObjectService::OnEvent(const TESActivateEvent* acEvent, const EventDispatcher<TESActivateEvent>* aDispatcher)
 {
-#if ENVIRONMENT_DEBUG
-    if (acEvent && acEvent->object && m_world.GetCharacterService().FindAnyEntityByFormId(acEvent->object->formID) == entt::null)
-    {
-        AddObjectComponent(acEvent->object);
-    }
-#endif
-
+    // Activation is replicated by the TESObjectREFR::Activate hook. This sink used to hold an
+    // ENVIRONMENT_DEBUG block that read the registry on the sending thread; the macro is defined
+    // nowhere and the block called a function that does not exist, so it was removed in v4.1.0.
+    (void)acEvent;
+    (void)aDispatcher;
     return BSTEventResult::kOk;
 }
