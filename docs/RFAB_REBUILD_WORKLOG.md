@@ -366,3 +366,19 @@ Windows650/run44159753450/job134310070974 ещё in_progress; полный rewri
 package и Skyrim success не заявляются. VERSION5.0.0-dev.1/readiness=false, без release/tag/
 промежуточного совместного теста. Остаются semantic XP, native life/phase/respawn adapters,
 genuine encounter A AI-task/retreat/targeted-hazard quiescence и optional genuine checkpoint B.
+
+
+### 2026-11-17 — follow-up Windows const boundary and completed V2 CI
+
+Windows650/run44159753450 job134310070974 завершился FAIL на `MagicService.cpp:66`: const
+local caster вызывал non-const `TESObjectREFR::GetNiNode()`. Указатель исправлен на `auto*`,
+без const_cast/изменения ABI; другой найденный const Actor в factions path использует
+действительно const `GetFactions()`. Это исправление компиляции, не game evidence.
+
+Linux95/run44161929632 завершился SUCCESS всеми четырьмя jobs, включая sanitized core,
+production server harness и UI; он уже включает V2 positions/последние lock regressions.
+Локальный core ASan+UBSan также завершён: **76 cases / 276 884 assertions PASS**.
+Локальная следующая server sanitizer compilation прервана на CharacterService, результата
+этого локального server run нет. Windows95/run44161929745 пока in_progress и всё ещё
+содержит MagicService constness. Readiness=false; semantic XP и native lifecycle/reset
+работа продолжаются в едином кандидате, без промежуточного игрового релиза/теста.

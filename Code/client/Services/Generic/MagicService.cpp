@@ -62,7 +62,7 @@ void MagicService::OnSpellCastEvent(const SpellCastEvent& acEvent) const noexcep
     if (!m_transport.IsConnected())
         return;
 
-    const auto* caster = Cast<Actor>(TESForm::GetById(acEvent.CasterId));
+    auto* caster = Cast<Actor>(TESForm::GetById(acEvent.CasterId));
     if (!caster || !caster->GetNiNode())
     {
         spdlog::warn("Spell cast event has no actor or actor is not loaded");
