@@ -3,19 +3,11 @@
 #include <Components.h>
 #include <Setting.h>
 
-#include <charconv>
-#include <fstream>
-#include <sstream>
 
 namespace
 {
 Console::Setting sRfabCampaign{"RFAB:sCampaign", "Stable campaign journal name (letters, digits, dash, underscore)", "rfab-coop"};
-bool Hex(std::string text, uint32_t& out)
-{
-    if (text.starts_with("0x") || text.starts_with("0X")) text.erase(0, 2);
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), out, 16);
-    return !text.empty() && result.ec == std::errc{} && result.ptr == text.data() + text.size();
-}
+
 }
 
 std::optional<Coop::StableForm> CoopService::NameForm(GameId aId) const
@@ -62,46 +54,35 @@ void CoopService::InitializeInventory() noexcept
         m_inventory.reset();
         return;
     }
-    if (read == Coop::DurableFile::ReadResult::Loaded)
-    {
-        auto state = Coop::InventoryLedger::Decode(bytes, [this](const Coop::StableForm& form) -> std::optional<GameId> {
-            auto& mods = m_world.ctx().at<ModsComponent>();
-            const String name(form.Plugin.data(), form.Plugin.size());
-            const auto id = form.Light ? mods.AddLite(name) : mods.AddStandard(name);
-            return GameId(id, form.Local);
-        });
-        if (!state || !m_inventory->Restore(std::move(*state)))
-        {
-            spdlog::error("[RFAB] Campaign journal schema/forms/state invalid; no automatic reset or replay");
-            m_inventory.reset();
-            return;
-        }
-    }
-    // Installed-profile allowlist, generated from VMAD by the local adapter tool. Neither a city
-    // access point nor a client-supplied backing form is accepted as authority on its own.
-    std::ifstream config("config/RFAB_Storage.tsv");
-    std::string line;
-    size_t count{};
-    while (std::getline(config, line))
-    {
-        if (line.empty() || line.front() == '#') continue;
-        if (++count > 1024 || line.size() > 512) { m_storageAccess.clear(); break; }
-        std::istringstream fields(line);
-        std::string accessPlugin, accessId, accessLight, backingPlugin, backingId, backingLight, extra;
-        Coop::StableForm access, backing;
-        if (!(fields >> accessPlugin >> accessId >> accessLight >> backingPlugin >> backingId >> backingLight) ||
-            (fields >> extra) || (accessLight != "0" && accessLight != "1") || (backingLight != "0" && backingLight != "1") ||
-            !Hex(accessId, access.Local) || !Hex(backingId, backing.Local))
-        { m_storageAccess.clear(); spdlog::error("[RFAB] Invalid storage allowlist; shared secure access disabled"); break; }
-        access.Plugin = accessPlugin; access.Light = accessLight == "1";
-        backing.Plugin = backingPlugin; backing.Light = backingLight == "1";
-        const auto a = Coop::StorageKey(m_campaign, access), b = Coop::StorageKey(m_campaign, backing);
-        if (!a || !b || (m_storageAccess.contains(*a) && m_storageAccess.at(*a) != *b))
-        { m_storageAccess.clear(); spdlog::error("[RFAB] Ambiguous storage property; not merging backing containers"); break; }
-        m_storageAccess.emplace(*a, *b);
-    }
+    if (read == Coop::DurableFile::ReadResult::Loaded) m_pendingInventory = std::move(bytes);
+    // Both ends read the same generated TAB-separated installed-profile catalog. A malformed
+    // file disables the WHOLE catalog; spaces in a plugin basename are not extra columns.
+    if (m_storageCatalog.Read("config/RFAB_Storage.tsv"))
+        for (const auto& rule : m_storageCatalog.Rules())
+            m_storageAccess.emplace(*Coop::StorageKey(m_campaign, rule.Access), *Coop::StorageKey(m_campaign, rule.Backing));
 }
-bool CoopService::InventoryReady() const noexcept { return m_inventory && !m_inventory->Faulted(); }
+bool CoopService::InventoryReady() const noexcept
+{
+    return m_inventory && !m_pendingInventory && !m_inventory->Faulted();
+}
+bool CoopService::RestoreInventoryFor(Player* player) noexcept
+{
+    if (!m_pendingInventory) return InventoryReady();
+    auto state = Coop::InventoryLedger::Decode(*m_pendingInventory, [this, player](const Coop::StableForm& form) -> std::optional<GameId> {
+        const String name(form.Plugin.data(), form.Plugin.size());
+        const auto id = m_world.ctx().at<ModsComponent>().Find(name, form.Light);
+        if (!id || !player || !player->HasMod(*id)) return {};
+        return GameId(*id, form.Local);
+    });
+    if (!state)
+    {
+        spdlog::error("[RFAB] Campaign journal cannot resolve against this client's negotiated plugin profile (or schema is invalid). No invented IDs, empty bootstrap or overwrite");
+        return false;
+    }
+    if (!m_inventory || !m_inventory->Restore(std::move(*state))) return false;
+    m_pendingInventory.reset();
+    return InventoryReady();
+}
 bool CoopService::UsesTransactionalInventory(Player* aPlayer) const noexcept
 {
     if (!aPlayer) return false;
@@ -196,7 +177,20 @@ bool CoopService::CanAccessInventory(Player* aPlayer, const Client& aClient, uin
         const auto open = m_openStorage.find(aClient.PlayerId);
         const auto* endpoint = m_inventory ? m_inventory->Find(binding->second) : nullptr;
         if (endpoint && endpoint->Storage)
-            return (aClient.Capabilities & Coop::PersistentStorage) && open != m_openStorage.end() && open->second.contains(binding->second);
+        {
+            if (!(aClient.Capabilities & Coop::PersistentStorage) || open == m_openStorage.end()) return false;
+            const auto lease = open->second.find(binding->second);
+            if (lease == open->second.end() || Now() < lease->second.Seen || Now() - lease->second.Seen > 2000) return false;
+            const auto points = m_world.view<FormIdComponent, CellIdComponent>();
+            for (auto point : points)
+                if (points.get<FormIdComponent>(point).Id == lease->second.Point &&
+                    aPlayer->GetCellComponent().IsInRange(points.get<CellIdComponent>(point), false))
+                {
+                    const auto* object = m_world.try_get<ObjectComponent>(point);
+                    return !object || !object->CurrentLockData.IsLocked;
+                }
+            return false;
+        }
     }
     const auto entity = static_cast<entt::entity>(aEntity);
     const auto* cell = m_world.try_get<CellIdComponent>(entity);
@@ -266,7 +260,6 @@ void CoopService::PublishTransfer(const Coop::InventoryLedger::Record& aRecord, 
                 }
     Broadcast(aGroup, reply);
     for (const auto& [id, client] : m_clients)
-        if (client.Group == aGroup)
         {
             auto* player = m_world.GetPlayerManager().GetById(id);
             // Both absolute states follow the receipt on the reliable stream. The origin verifies
@@ -287,6 +280,14 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::Transfer&
         !CanAccessInventory(aPlayer, aClient, aTransfer.Source, aTransfer.NativeReason) ||
         !CanAccessInventory(aPlayer, aClient, aTransfer.Destination, aTransfer.NativeReason))
     { Send(aPlayer, denied); return; }
+    const auto supports = [aPlayer](GameId form, bool dynamicEnchantment = false) {
+        return !form || (dynamicEnchantment && form.ModId == 0xFFFFFFFFu) || aPlayer->HasMod(form.ModId);
+    };
+    const auto& item = aTransfer.Item;
+    bool forms = supports(item.BaseId) && supports(item.ExtraOwnerId) && supports(item.ExtraUniqueBaseId) &&
+        supports(item.ExtraEnchantId, !item.EnchantData.Effects.empty()) && supports(item.ExtraPoisonId);
+    for (const auto& effect : item.EnchantData.Effects) forms &= supports(effect.EffectId);
+    if (!forms) { denied.Reason = "Item form/plugin kind is absent from this character's negotiated profile"; Send(aPlayer, denied); return; }
     const auto source = InventoryKey(aTransfer.Source), destination = InventoryKey(aTransfer.Destination);
     if (!source || !destination || !BindInventory(aTransfer.Source, *source, false) || !BindInventory(aTransfer.Destination, *destination, false))
     { Send(aPlayer, denied); return; }
@@ -328,6 +329,7 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::StorageOp
     const auto access = accessForm ? Coop::StorageKey(m_campaign, *accessForm) : std::nullopt;
     const auto backing = backingForm ? Coop::StorageKey(m_campaign, *backingForm) : std::nullopt;
     const auto claimed = Coop::NormalizePlugin(aOpen.Plugin);
+    if (!aPlayer->HasMod(aOpen.AccessPoint.ModId) || !aPlayer->HasMod(aOpen.Backing.ModId)) return;
     if (!access || !backing || !claimed || !backingForm || *claimed != *Coop::NormalizePlugin(backingForm->Plugin) ||
         backingForm->Local != aOpen.LocalRef || !m_storageAccess.contains(*access) || m_storageAccess.at(*access) != *backing) return;
     bool nearby{};
@@ -342,7 +344,7 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::StorageOp
         endpoint.Storage = endpoint.NeedsImport = true;
         if (!m_inventory->Register(*backing, std::move(endpoint))) return;
     }
-    if (aOpen.ConfirmImport)
+    if (aOpen.ConfirmImport && m_inventory->Find(*backing)->NeedsImport)
     {
         Inventory imported;
         imported.Entries.assign(aOpen.Import.begin(), aOpen.Import.end());
@@ -362,8 +364,9 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::StorageOp
     const auto* endpoint = m_inventory->Find(*backing);
     auto& inventory = m_world.get<InventoryComponent>(static_cast<entt::entity>(server));
     inventory.Content = endpoint->Items; inventory.Content.Revision = endpoint->Revision;
-    m_openStorage[aClient.PlayerId].insert(*backing);
+    m_openStorage[aClient.PlayerId][*backing] = {aOpen.AccessPoint, Now()};
     Coop::StorageState state;
+    state.Backing = aOpen.Backing;
     state.Key = *backing; state.Entity = server; state.Revision = endpoint->Revision; state.NeedsImport = endpoint->NeedsImport;
     state.Items.assign(endpoint->Items.Entries.begin(), endpoint->Items.Entries.end());
     Send(aPlayer, std::move(state));

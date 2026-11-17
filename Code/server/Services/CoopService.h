@@ -1,6 +1,7 @@
 #pragma once
 #include <Coop/Encounter.h>
 #include <Coop/InventoryLedger.h>
+#include <Coop/StorageCatalog.h>
 #include <Coop/DurableFile.h>
 #include <Coop/DurableLease.h>
 #include <Events/PacketEvent.h>
@@ -69,6 +70,7 @@ private:
     void InitializeInventory() noexcept;
     void TickInventory() noexcept;
     bool InventoryReady() const noexcept;
+    bool RestoreInventoryFor(Player*) noexcept;
     bool BindInventory(uint32_t aEntity, const std::string& aKey, bool aOwnBag) noexcept;
     std::optional<std::string> InventoryKey(uint32_t aEntity) const;
     std::optional<Coop::StableForm> NameForm(GameId) const;
@@ -95,8 +97,11 @@ private:
     std::unique_ptr<Coop::InventoryLedger> m_inventory;
     std::unique_ptr<Coop::DurableFile> m_inventoryFile;
     std::unique_ptr<Coop::DurableLease> m_inventoryLease;
+    std::optional<std::vector<uint8_t>> m_pendingInventory;
+    Coop::StorageCatalog m_storageCatalog;
     std::map<uint32_t, std::string> m_inventoryBindings;
     std::map<std::string, std::string> m_storageAccess; // canonical access ref -> canonical backing ref
-    std::map<uint32_t, std::set<std::string>> m_openStorage;
+    struct StorageAccess { GameId Point{}; uint64_t Seen{}; };
+    std::map<uint32_t, std::map<std::string, StorageAccess>> m_openStorage;
     entt::scoped_connection m_packetConnection, m_updateConnection, m_leaveConnection;
 };

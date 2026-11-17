@@ -33,6 +33,7 @@ struct Player
     void SetUsername(String aUsername) noexcept;
     void SetMods(Vector<String> aMods) noexcept;
     void SetModIds(Vector<uint16_t> aModIds) noexcept;
+    bool HasMod(uint32_t aServerId) const noexcept;
     void SetCharacter(entt::entity aCharacter) noexcept;
     void SetStringCacheId(uint32_t aStringCacheId) noexcept;
     // TODO(cosideci): update on level up

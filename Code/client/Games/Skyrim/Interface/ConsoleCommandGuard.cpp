@@ -2,6 +2,7 @@
 
 #include <World.h>
 #include <Interface/IMenu.h>
+#include <Services/StorageService.h>
 #include <cstdarg>
 
 // Refuses typed console commands while connected to a server with Gameplay:bAllowConsoleCommands off.
@@ -99,6 +100,17 @@ static TExecuteCommand* RealExecuteCommand = nullptr;
 
 static void HookExecuteCommand(const FxDelegateArgs* apArgs)
 {
+    const char* local = GetTypedLine(apArgs);
+    if (local && World::IsCreated() && (EqualsIgnoreCase(local, "rfab_storage_import") || EqualsIgnoreCase(local, "rfab_storage_attach")))
+    {
+        const bool isImport = EqualsIgnoreCase(local, "rfab_storage_import");
+        World::Get().GetRunner().QueueForThisWorld([isImport] {
+            auto& storage = World::Get().ctx().at<StorageService>();
+            if (isImport) storage.ConfirmImport(); else storage.ConfirmAttach();
+        });
+        PrintToConsole("RFAB: explicit storage action queued for the current world only; read the HUD result.");
+        return;
+    }
     if (!AreTypedCommandsBlocked())
     {
         RealExecuteCommand(apArgs);

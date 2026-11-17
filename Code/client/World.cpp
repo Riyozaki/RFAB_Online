@@ -24,6 +24,7 @@
 #include <Services/CoopService.h>
 #include <Services/LootService.h>
 #include <Services/SaveStateService.h>
+#include <Services/StorageService.h>
 
 #include <Events/PreUpdateEvent.h>
 #include <Events/UpdateEvent.h>
@@ -61,6 +62,7 @@ World::World()
     ctx().emplace<SaveStateService>(*this);
     ctx().emplace<CoopService>(*this, m_dispatcher, m_transport);
     ctx().emplace<LootService>(*this, m_dispatcher, m_transport);
+    ctx().emplace<StorageService>(*this, m_dispatcher);
 
     BehaviorVar::Get()->Init();
     EventDispatcherManager::Get()->loadGameEvent.RegisterSink(this);

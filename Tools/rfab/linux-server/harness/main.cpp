@@ -186,6 +186,9 @@ Player* JoinPlayer(World& aWorld, TiltedPhoques::ConnectionId_t aConn, const cha
 
     pPlayer->SetUsername(apName);
     pPlayer->SetLevel(10);
+    const auto skyrim = aWorld.ctx().at<ModsComponent>().AddStandard("Skyrim.esm");
+    pPlayer->SetMods({"Skyrim.esm"});
+    pPlayer->SetModIds({static_cast<uint16_t>(skyrim)});
 
     CellIdComponent cell{};
     cell.Cell = aCellId;

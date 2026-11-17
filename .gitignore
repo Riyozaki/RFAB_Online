@@ -112,8 +112,14 @@ RFAB_ref/
 !dist_ready/**/*.pex
 
 
-# Generated artifacts (see Tools/rfab/parse_rfab_esp.py: regenerate locally from your own RFAB.esp)
+# Generated artifacts and external ABI research are local, never release source or player data.
+.cache/
+# Generated from the user's own installed plugin profile, never from a presumed online build.
 docs/rfab/rfab_records.tsv
+Data/SKSE/Plugins/RFAB_Storage.tsv
+Data/SKSE/Plugins/RFAB_Profile.json
+config/RFAB_Storage.tsv
+config/RFAB_Profile.json
 build_logs_and_report/
 
 # The CEF UI is build output: Code/skyrim_ui -> dist/UI, produced by

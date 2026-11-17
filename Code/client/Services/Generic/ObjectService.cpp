@@ -2,6 +2,7 @@
 
 #include <World.h>
 #include <Services/LootService.h>
+#include <Services/StorageService.h>
 #include <Events/DisconnectedEvent.h>
 #include <Events/UpdateEvent.h>
 #include <Events/CellChangeEvent.h>
@@ -120,17 +121,29 @@ void ObjectService::OnDisconnected(const DisconnectedEvent&) noexcept
 
 bool ObjectService::IsSharedInventoryObject(const TESObjectREFR* object) const noexcept
 {
+    if (object && StorageService::IsBacking(object->formID)) return true;
     if (!object || !object->baseForm || object->baseForm->formType != FormType::Container || object->IsTemporary()) return false;
     if (!m_world.GetServerSettings().SyncPlayerHomes && IsPlayerHome(object->parentCell)) return false;
     return ShouldSyncObject(object, GetPlayerStashContainers());
 }
-bool ObjectService::EnsureInventoryObject(uint32_t aForm) noexcept
+bool ObjectService::EnsureInventoryObject(uint32_t form) noexcept
+{
+    if (!RFAB_EXPECT_MAIN_THREAD()) return false;
+    if (StorageService::IsBacking(form)) return m_world.ctx().at<StorageService>().EnsureBacking(form);
+    return RegisterInventoryObject(form, false);
+}
+bool ObjectService::EnsureStorageAccess(uint32_t form) noexcept
+{
+    if (!RFAB_EXPECT_MAIN_THREAD() || !m_world.ctx().at<StorageService>().IsAccess(form)) return false;
+    return RegisterInventoryObject(form, true);
+}
+bool ObjectService::RegisterInventoryObject(uint32_t aForm, bool verifiedAccess) noexcept
 {
     if (!RFAB_EXPECT_MAIN_THREAD() || !m_transport.IsOnline()) return false;
     const auto view = m_world.view<FormIdComponent, ObjectComponent>();
     for (auto entity : view) if (view.get<FormIdComponent>(entity).Id == aForm) return true;
     auto* object = Cast<TESObjectREFR>(TESForm::GetById(aForm));
-    if (!IsSharedInventoryObject(object) || !object->parentCell) return false;
+    if (!object || !object->baseForm || (!verifiedAccess && !IsSharedInventoryObject(object)) || !object->parentCell) return false;
     const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
     if (const auto old = m_accessRequests.find(aForm); old != m_accessRequests.end() && now - old->second < 500) return true;
@@ -212,6 +225,7 @@ void ObjectService::OnCellChange(const CellChangeEvent& acEvent) noexcept
             objectData.CurrentLockData.LockLevel = pLock->lockLevel;
         }
 
+        if (StorageService::IsBacking(pObject->formID)) continue;
         if (pObject->baseForm->formType == FormType::Container)
             objectData.CurrentInventory = pObject->GetInventory();
 
@@ -233,6 +247,7 @@ void ObjectService::OnAssignObjectsResponse(const AssignObjectsResponse& acMessa
             continue;
         }
 
+        if (StorageService::IsBacking(pObject->formID)) continue; // only the campaign resolver may bind a hidden backing
         CreateObjectEntity(pObject->formID, objectData.ServerId);
         m_accessRequests.erase(pObject->formID);
         if (!m_world.ctx().at<LootService>().AcceptSnapshot(objectData.ServerId, 0, objectData.CurrentInventory)) continue;
@@ -289,6 +304,8 @@ void ObjectService::OnActivate(const ActivateEvent& acEvent) noexcept
     auto* objectToGet = Cast<TESBoundObject>(TESForm::GetById(acEvent.ObjectToGetId));
     if (!object || !activator)
         return;
+    if (m_world.ctx().at<StorageService>().IsAccess(acEvent.ObjectId)) return; // local script redirects; don't open a second client's bank by legacy Activate
+
     if (acEvent.ActivateFlag)
     {
         object->Activate(activator, acEvent.Unk1, objectToGet, acEvent.Count, acEvent.DefaultProcessing);

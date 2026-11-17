@@ -14,7 +14,7 @@
 
 namespace Coop
 {
-inline constexpr uint32_t kProtocol = 2;
+inline constexpr uint32_t kProtocol = 3;
 inline constexpr uint32_t kReviveMs = 5000;
 inline constexpr uint32_t kWipeMs = 5000;
 inline constexpr uint32_t kHeartbeatTimeoutMs = 1500;
@@ -46,7 +46,8 @@ struct Hello
 {
     uint32_t Protocol{kProtocol}, Capabilities{};
     std::string Character, Adapter;
-    RFAB_COOP_FIELDS(Protocol, Capabilities, Character, Adapter)
+    uint64_t StorageSignature{};
+    RFAB_COOP_FIELDS(Protocol, Capabilities, Character, Adapter, StorageSignature)
 };
 struct Welcome
 {
@@ -168,7 +169,8 @@ struct StorageState
     uint64_t Revision{};
     bool NeedsImport{};
     std::vector<Inventory::Entry> Items;
-    RFAB_COOP_FIELDS(Key, Entity, Revision, NeedsImport, Items)
+    GameId Backing{};
+    RFAB_COOP_FIELDS(Key, Entity, Revision, NeedsImport, Items, Backing)
 };
 struct Transfer
 {

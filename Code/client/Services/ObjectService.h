@@ -26,12 +26,14 @@ class ObjectService final : public BSTEventSink<TESActivateEvent>
 public:
     ObjectService(World&, entt::dispatcher&, TransportService&);
     bool EnsureInventoryObject(uint32_t aForm) noexcept;
+    bool EnsureStorageAccess(uint32_t aForm) noexcept;
     bool IsSharedInventoryObject(const TESObjectREFR*) const noexcept;
 
 private:
     void OnDisconnected(const DisconnectedEvent&) noexcept;
     void OnCellChange(const CellChangeEvent&) noexcept;
     void OnAssignObjectsResponse(const AssignObjectsResponse&) noexcept;
+    bool RegisterInventoryObject(uint32_t aForm, bool aVerifiedAccess) noexcept;
     void OnActivate(const ActivateEvent&) noexcept;
     void OnActivateNotify(const NotifyActivate&) noexcept;
     void OnLockChange(const LockChangeEvent&) noexcept;

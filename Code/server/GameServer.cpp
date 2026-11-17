@@ -904,6 +904,12 @@ void GameServer::HandleAuthenticationRequest(const ConnectionId_t aConnectionId,
         for (auto& mod : acRequest->UserMods.ModList)
         {
             const uint32_t id = mod.IsLite ? modsComponent.AddLite(mod.Filename) : modsComponent.AddStandard(mod.Filename);
+            if (id >= 0xFFFEu)
+            {
+                spdlog::warn("Refusing invalid, standard/light-colliding or overflowing plugin dictionary entry");
+                sendKick(RT::kModsMismatch);
+                return;
+            }
 
             Mods::Entry entry;
             entry.Filename = mod.Filename;

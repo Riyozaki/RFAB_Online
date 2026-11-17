@@ -40,6 +40,7 @@ struct SaveStateService
     bool Applied(Coop::EffectId);
     bool Commit(Coop::EffectId);
     bool AbortBeforeNative(Coop::EffectId);
+    bool StampStorage(Coop::SavedStorage);
     void Uncertain(Coop::EffectId);
     void PollFault();
     const Coop::CharacterState& State() const noexcept { return m_timeline.State(); }

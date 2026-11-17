@@ -56,14 +56,32 @@ struct Codec
     }
     void State(CharacterState& state)
     {
-        uint32_t version = 1; Number(version);
-        if (version != 1) { Valid = false; return; }
+        uint32_t version = 2; Number(version);
+        if (version != 1 && version != 2) { Valid = false; return; }
         Character(state.Character); Number(state.Cursor);
         uint32_t count = static_cast<uint32_t>(state.Scales.size()); Number(count);
         if (!Valid || count > 8192) { Valid = false; return; }
         if (Reading) state.Scales.resize(count);
         for (auto& scale : state.Scales)
         { Number(scale.Form); Number(scale.Version); Number(scale.Life); Number(scale.Base); Number(scale.Maximum); }
+        if (version == 2)
+        {
+            uint32_t storages = static_cast<uint32_t>(state.Storages.size()); Number(storages);
+            if (!Valid || storages > 1024) { Valid = false; return; }
+            if (Reading) state.Storages.resize(storages);
+            for (auto& storage : state.Storages)
+            {
+                Number(storage.Form); Number(storage.Revision);
+                uint8_t length = static_cast<uint8_t>(storage.Campaign.size()); Number(length);
+                if (!Valid || !length || length > 48) { Valid = false; return; }
+                if (Reading)
+                {
+                    if (Input.size() < length) { Valid = false; return; }
+                    storage.Campaign.assign(reinterpret_cast<const char*>(Input.data()), length); Input = Input.subspan(length);
+                }
+                else Bytes.insert(Bytes.end(), storage.Campaign.begin(), storage.Campaign.end());
+            }
+        }
     }
     void Receipt(NativeReceipt& receipt)
     {
@@ -76,7 +94,15 @@ struct Codec
 }
 bool CharacterState::Valid() const noexcept
 {
-    if (!CharacterKey(Character) || Scales.size() > 8192) return false;
+    if (!CharacterKey(Character) || Scales.size() > 8192 || Storages.size() > 1024) return false;
+    std::set<uint32_t> storageForms;
+    for (const auto& storage : Storages)
+    {
+        if (!storage.Form || !storage.Revision || !storageForms.insert(storage.Form).second ||
+            storage.Campaign.empty() || storage.Campaign.size() > 48) return false;
+        for (auto c : storage.Campaign)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+    }
     std::set<uint32_t> forms;
     std::set<uint64_t> lives;
     for (const auto& s : Scales)
@@ -101,7 +127,7 @@ std::optional<CharacterState> CharacterState::Decode(std::span<const uint8_t> by
 }
 bool NativeReceipt::Valid() const noexcept
 {
-    return CharacterKey(Character) && Id.Valid() && Kind >= EffectKind::Transfer && Kind <= EffectKind::Scale &&
+    return CharacterKey(Character) && Id.Valid() && Kind >= EffectKind::Transfer && Kind <= EffectKind::Storage &&
         Stage >= EffectStage::Prepared && Stage <= EffectStage::Uncertain && Before < std::numeric_limits<uint64_t>::max() && After == Before + 1;
 }
 std::optional<std::vector<uint8_t>> NativeReceipt::Encode() const
@@ -186,6 +212,21 @@ bool ClientTimeline::StampScale(SavedScale scale)
     bool replaced = false;
     for (auto& old : next.Scales) if (old.Form == scale.Form) { old = scale; replaced = true; break; }
     if (!replaced) next.Scales.push_back(scale);
+    if (!next.Valid()) return false;
+    m_state = std::move(next); return true;
+}
+bool ClientTimeline::StampStorage(SavedStorage storage)
+{
+    if (!Ready() || !m_receipt || m_receipt->Kind != EffectKind::Storage || m_receipt->Stage != EffectStage::Prepared) return false;
+    auto next = m_state;
+    bool replaced{};
+    for (auto& old : next.Storages)
+        if (old.Form == storage.Form)
+        {
+            if (old.Campaign != storage.Campaign || old.Revision > storage.Revision) return false;
+            old = storage; replaced = true; break;
+        }
+    if (!replaced) next.Storages.push_back(std::move(storage));
     if (!next.Valid()) return false;
     m_state = std::move(next); return true;
 }

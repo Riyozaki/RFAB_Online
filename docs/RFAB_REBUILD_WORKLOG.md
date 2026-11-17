@@ -137,3 +137,40 @@ HP handoff races, native AI/animation/teleport и совместимость с 
 campaign authorization, save reconciliation edge cases, semantic XP adapter, save-bound HP×2,
 полное retreat A/AI/task quiescence и optional genuine B. Новый client/bridge требует Windows
 build, package/fault проверки и единственного финального игрового теста. ready_for_playtest=false.
+
+
+## 2026-11-17 — installed-profile storage / first Windows diagnostic
+
+- Запущена Windows diagnostic сборка текущей рабочей ветки, не release/playtest:
+  `44135805841` / commit `3f70c8e`. **FAIL** на зависимости CommonLib → SkyrimEncoding
+  (`Structs/Inventory.h` отсутствовал в include path). Явное xmake dependency исправлено;
+  новый native код этим запуском ещё не подтверждён. Загрузка log-zip недоступна из этой
+  среды (redirect host закрыт); compiler evidence получено из GitHub Checks annotations.
+- Linux CI того же commit: core, sanitized core, sanitized server и UI jobs **success**.
+- Добавлен offline `generate_storage_profile.py`: вход — только установленные активные
+  plugins/masters, VMAD v1/v2 object format, winning overrides и реальные CONT-backed REFR.
+  Нет поиска «текущего RFAB», hardcoded FormIDs или изменения плагинов. Один backing из разных
+  городов — один ключ. Alias/null/non-container/duplicate/truncated/decompression-bomb cases
+  отвергаются. Плагин с пробелом в имени не режется на ложные TSV-поля. 12 synthetic tests pass.
+  Формат сверён с TES5Edit `43652b9932a9e115105fc018a87045bf1fbce083`,
+  `Core/wbDefinitionsTES5.pas` / `wbScriptPropertyObject`.
+- Common StorageCatalog читает TSV all-or-nothing; оба конца согласуют canonical signature
+  (mismatch detector, не security hash). Network build теперь `+coop-wire-3`, Hello v3.
+- Журнал кампании после restart не создаёт фиктивные plugin IDs. Decode отложен до
+  согласованного списка клиента, lookup read-only, light/standard kind проверяется. Неудачный
+  Hello больше не rebind-ит старого downed-участника и не занимает место в группе.
+- Client StorageService wired: resolver access/backing, off-cell persistent binding, явные
+  console `rfab_storage_import` (только незаполненный campaign bank) / `rfab_storage_attach`
+  (только пустой/уже совпадающий local cache), lease refresh только у открытого nearby access.
+  Непустое отличающееся старое личное содержимое не стирается и не сливается автоматически.
+  Cache reconciliation использует собственный namespace в общем native receipt timeline;
+  CharacterState v2 сохраняет campaign/form/revision adoption и читает v1. SKSE ResolveFormId
+  применяется и к этим ref IDs. Известные campaign backings offline read-only.
+- Native storage wiring пока **не проверен Windows/Skyrim**, production-wire storage scenarios
+  ещё дополняются. Второй старый личный stash с отличающимся содержимым требует recovery policy,
+  а не «первый opener победил». Это не отметка закрытия всех требований к storage.
+
+На момент записи: core **65 / 26 817**, server прежние **5 scenarios + crash PASS** (368.4s),
+strict static exit0, Python storage profile **12 PASS**, pwsh локально отсутствует.
+Внешние research .cache-файлы убраны из Git и добавлен ignore; runtime/generated profile data
+тоже не включаются в исходники. Artwork пользователя не менялся. ready_for_playtest=false.

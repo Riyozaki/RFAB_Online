@@ -2,6 +2,7 @@
 #include <Services/LootService.h>
 #include <Services/CoopService.h>
 #include <Services/SaveStateService.h>
+#include <Services/StorageService.h>
 #include <Services/ObjectService.h>
 #include <World.h>
 #include <Events/UpdateEvent.h>
@@ -323,6 +324,7 @@ void LootService::Apply(const Coop::InventoryState& state) noexcept
         if (!Coop::SameInventoryItems(object->GetInventory(), desired)) m_states[state.Entity].Blocked = true;
         return;
     }
+    if (StorageService::IsBacking(object->formID)) return; // StorageService uses a save-bound cache receipt, never this generic snapshot path
     if (!object->ApplyExactInventory(desired))
     {
         m_states[state.Entity].Blocked = true;

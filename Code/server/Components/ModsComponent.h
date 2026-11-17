@@ -1,4 +1,5 @@
 #pragma once
+#include <optional>
 
 #ifndef TP_INTERNAL_COMPONENTS_GUARD
 #error Include Components.h instead
@@ -19,6 +20,9 @@ struct ModsComponent
 
     uint32_t AddStandard(const String& acpFilename) noexcept;
     uint32_t AddLite(const String& acpFilename) noexcept;
+    // Lookup only in the already-negotiated dictionary. Reading a durable campaign must not
+    // invent a mod id for a missing plugin or silently change standard <-> light identity.
+    std::optional<uint32_t> Find(const String& aFilename, bool aLight) const noexcept;
 
     void AddServerMod(const ESLoader::PluginData& acData);
 

@@ -1,6 +1,8 @@
 #include <TiltedOnlinePCH.h>
 #include <Services/InventoryHook.h>
 #include <Services/LootService.h>
+#include <Services/StorageService.h>
+#include <Services/CoopService.h>
 #include <World.h>
 #include <TESObjectREFR.h>
 #include <Games/Overrides.h>
@@ -59,13 +61,17 @@ bool InventoryHook::Installed() noexcept { return s_installed.load(std::memory_o
 bool InventoryHook::Intercept(TESObjectREFR* source, TESBoundObject* item, int32_t count, ITEM_REMOVE_REASON reason,
     ExtraDataList* extras, TESObjectREFR* destination) noexcept
 {
-    if (ScopedInventoryOverride::IsOverriden() || !World::IsOnlineCached() || !source || !destination ||
-        (source->formID != 0x14 && destination->formID != 0x14) || reason == ITEM_REMOVE_REASON::kSelling)
-        return false;
+    if (ScopedInventoryOverride::IsOverriden() || !source || !destination ||
+        (source->formID != 0x14 && destination->formID != 0x14)) return false;
+    const bool bank = StorageService::IsBacking(source->formID) || StorageService::IsBacking(destination->formID);
+    if (!World::IsOnlineCached()) return bank; // an adopted campaign cache is not a free offline duplicate
+    if (reason == ITEM_REMOVE_REASON::kSelling) return bank; // merchant stock remains personal, not a bank bypass
+
     // UI/VM entry can be invoked by another mod from a tasklet. Never enter EnTT there or
     // optimistically move a shared item; the original item remains untouched on rejection.
     if (World::IsMainThread())
     {
+        if (bank && !World::Get().ctx().at<CoopService>().Supports(Coop::PersistentStorage)) return true;
         return World::Get().ctx().at<LootService>().Intercept(source, item, count, reason, extras, destination);
     }
     RFAB_EXPECT_MAIN_THREAD();

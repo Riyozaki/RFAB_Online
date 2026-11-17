@@ -17,11 +17,19 @@ struct SavedScale
     float Base{}, Maximum{};
     bool operator==(const SavedScale&) const = default;
 };
+struct SavedStorage
+{
+    uint32_t Form{};
+    std::string Campaign;
+    uint64_t Revision{};
+    bool operator==(const SavedStorage&) const = default;
+};
 struct CharacterState
 {
     std::string Character; // 128-bit random bearer identity, local save + private server only
     uint64_t Cursor{};
     std::vector<SavedScale> Scales;
+    std::vector<SavedStorage> Storages; // explicitly adopted server caches, never old personal items by inference
     bool operator==(const CharacterState&) const = default;
     bool Valid() const noexcept;
     std::optional<std::vector<uint8_t>> Encode() const;
@@ -33,7 +41,14 @@ struct EffectId
     bool operator==(const EffectId&) const = default;
     bool Valid() const noexcept { return Session && Generation && Operation; }
 };
-enum class EffectKind : uint8_t { Transfer = 1, Reward, Scale };
+enum class EffectKind : uint8_t { Transfer = 1, Reward, Scale, Storage };
+// Each adapter has its own operation namespace inside the one serial native timeline.
+// A bank-cache snapshot with packet sequence17 is not transfer-ledger operation17.
+inline EffectId NativeEffect(EffectKind kind, uint64_t session, uint64_t generation, uint64_t operation) noexcept
+{
+    if (!operation || operation >= (1ull << 60) || kind < EffectKind::Transfer || kind > EffectKind::Storage) return {};
+    return {session, generation, operation | ((uint64_t(kind) - 1) << 60)};
+}
 enum class EffectStage : uint8_t { Prepared = 1, Applied, Committed, Rejected, Uncertain };
 struct NativeReceipt
 {
@@ -67,6 +82,7 @@ public:
     void Uncertain(EffectId) noexcept;
     // Scaling stamps are saved with native HP, not kept in the ActorExtension/session only.
     bool StampScale(SavedScale);
+    bool StampStorage(SavedStorage);
     void Fault() noexcept { m_faulted = true; }
 private:
     bool Publish(NativeReceipt);

@@ -51,6 +51,12 @@ void SaveStateBridge::Load(Coop::SKSE::Serialization* api)
             if (!api->ResolveFormId(scale.Form, &form) || !form) { loaded.Corrupt = true; break; }
             scale.Form = form; // official SKSE old-load-order -> current-load-order resolution
         }
+        for (auto& storage : loaded.State->Storages)
+        {
+            uint32_t form{};
+            if (!api->ResolveFormId(storage.Form, &form) || !form) { loaded.Corrupt = true; break; }
+            storage.Form = form;
+        }
         if (!loaded.State->Valid()) loaded.Corrupt = true;
     }
     loaded.FromSave = found && !loaded.Corrupt;
@@ -157,6 +163,10 @@ bool SaveStateService::Commit(Coop::EffectId id)
 bool SaveStateService::AbortBeforeNative(Coop::EffectId id)
 {
     const bool result = m_timeline.AbortBeforeNative(id); Publish(); return result;
+}
+bool SaveStateService::StampStorage(Coop::SavedStorage storage)
+{
+    const bool result = m_timeline.StampStorage(std::move(storage)); Publish(); return result;
 }
 void SaveStateService::Uncertain(Coop::EffectId id) { m_timeline.Uncertain(id); Publish(); }
 void SaveStateService::PollFault()

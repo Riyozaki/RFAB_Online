@@ -27,6 +27,7 @@ struct CoopService
     bool Supports(uint32_t aCapabilities) const noexcept { return Active() && (m_capabilities & aCapabilities) == aCapabilities; }
     uint64_t Session() const noexcept { return m_session; }
     uint64_t Generation() const noexcept { return m_generation; }
+    const std::string& Campaign() const noexcept { return m_campaign; }
     void SendAction(Coop::Body aBody) noexcept { Send(std::move(aBody)); }
     void HoldInventory(bool aHold) noexcept { m_inventoryHeld = aHold; SetPaused(m_paused); }
     void OnWorldLoaded(const WorldLoadedEvent&) noexcept;
@@ -64,7 +65,7 @@ private:
     Coop::ResetPlan m_pendingReset;
     uint32_t m_capabilities{}, m_target{}, m_hitSerial{};
     bool m_paused{}, m_inventoryHeld{};
-    std::string m_character;
+    std::string m_character, m_campaign;
     Coop::Pose m_safeOrigin;
     std::map<uint32_t, Coop::DownedState> m_downed;
     std::map<uint32_t, uint32_t> m_appliedRevision, m_appliedFormId;

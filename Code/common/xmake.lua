@@ -33,4 +33,7 @@ target("CommonLib")
     add_includedirs(".", "../", "../../build", {public = true})
     add_headerfiles("**.h")
     add_files("**.cpp")
+    -- The durable inventory/catalog contracts use the shipped wire value types. Keep this
+    -- dependency explicit: Linux harness include paths must not hide a missing Windows edge.
+    add_deps("SkyrimEncoding", {public = true})
     add_packages("tiltedcore", "hopscotch-map")

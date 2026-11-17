@@ -80,6 +80,11 @@ void Player::SetCharacter(entt::entity aCharacter) noexcept
     m_character = aCharacter;
 }
 
+bool Player::HasMod(uint32_t id) const noexcept
+{
+    return id < 0xFFFEu && std::find(m_modIds.begin(), m_modIds.end(), static_cast<uint16_t>(id)) != m_modIds.end();
+}
+
 void Player::SetStringCacheId(uint32_t aStringCacheId) noexcept
 {
     m_stringCacheId = aStringCacheId;

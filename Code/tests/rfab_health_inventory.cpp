@@ -562,3 +562,52 @@ TEST_CASE("A campaign journal has at most one live process owner and can be reac
     { Coop::DurableLease again(path); CHECK(again.Acquired()); }
     std::error_code ec; std::filesystem::remove(path, ec);
 }
+
+#include <Coop/StorageCatalog.h>
+TEST_CASE("Installed storage catalog is canonical bounded tab separated and all-or-nothing", "[rfab][storage][profile]")
+{
+    Coop::StorageCatalog catalog;
+    const std::string rules = "# generated from installed VMAD\r\nRFAB.esp\t000801\t0\tStorage Patch.esp\t000800\t1\r\nrfab.esp\t000802\t0\tstorage patch.esp\t000800\t1\r\n";
+    REQUIRE(catalog.Parse(rules)); REQUIRE(catalog.Rules().size() == 2);
+    const auto signature = catalog.Signature(); REQUIRE(signature);
+    REQUIRE(catalog.Backing({"rfab.ESP", 0x801, false}));
+    CHECK(catalog.Backing({"rfab.esp", 0x801, false})->Plugin == "storage patch.esp");
+    CHECK(catalog.IsBacking({"Storage Patch.ESP", 0x800, true}));
+    CHECK_FALSE(catalog.IsBacking({"Storage Patch.ESP", 0x800, false}));
+    Coop::StorageCatalog reordered;
+    REQUIRE(reordered.Parse("rfab.esp\t802\t0\tstorage patch.esp\t800\t1\nrfab.esp\t801\t0\tstorage patch.esp\t800\t1"));
+    CHECK(reordered.Signature() == signature);
+    for (const std::string bad : {"", "rfab.esp 801 0 rfab.esp 800 0", "rfab.esp\t801\t0\trfab.esp\t800\t2",
+            "rfab.esp\t801\t0\trfab.esp\t1800\t1", "../rfab.esp\t801\t0\trfab.esp\t800\t0",
+            "rfab.esp\t801\t0\trfab.esp\t801\t0", "rfab.esp\t801\t0\trfab.esp\t800\t0\textra"})
+    {
+        REQUIRE(catalog.Parse(rules));
+        REQUIRE_FALSE(catalog.Parse(bad));
+        CHECK(catalog.Rules().empty()); CHECK(catalog.Signature() == 0);
+    }
+    CHECK_FALSE(catalog.Parse(rules + rules));
+    CHECK(catalog.Rules().empty());
+}
+TEST_CASE("Shared bank cache adoption is save-bound campaign-specific and cannot erase old personal contents by inference", "[rfab][storage][timeline]")
+{
+    TimelineFixture f;
+    const auto id = Coop::NativeEffect(Coop::EffectKind::Storage, 1, 1, 17);
+    REQUIRE(id.Valid()); CHECK(id != f.Id);
+    CHECK_FALSE(Coop::NativeEffect(Coop::EffectKind::Storage, 1, 1, 1ull << 60).Valid());
+    CHECK_FALSE(f.Timeline.StampStorage({0x123, "campaign", 1}));
+    REQUIRE(f.Timeline.Begin(Coop::EffectKind::Storage, id));
+    REQUIRE(f.Timeline.StampStorage({0x123, "campaign", 1}));
+    CHECK_FALSE(f.Timeline.StampStorage({0x123, "different", 2}));
+    CHECK_FALSE(f.Timeline.StampStorage({0x123, "campaign", 0}));
+    REQUIRE(f.Timeline.Applied(id)); REQUIRE(f.Timeline.Commit(id));
+    const auto bytes = f.Timeline.State().Encode(); REQUIRE(bytes);
+    REQUIRE(Coop::CharacterState::Decode(*bytes));
+    CHECK(*Coop::CharacterState::Decode(*bytes) == f.Timeline.State());
+    for (size_t n = 0; n < bytes->size(); ++n) REQUIRE_FALSE(Coop::CharacterState::Decode(std::span(bytes->data(), n)));
+    Coop::ClientTimeline loaded([](const auto&) { return true; });
+    REQUIRE(loaded.Load(f.Timeline.State(), f.Disk));
+    CHECK(loaded.State().Storages.front().Campaign == "campaign");
+    CHECK_FALSE(loaded.Load(f.Saved, f.Disk));
+    auto invalid = f.Timeline.State(); invalid.Storages.push_back(invalid.Storages.front());
+    CHECK_FALSE(invalid.Encode());
+}

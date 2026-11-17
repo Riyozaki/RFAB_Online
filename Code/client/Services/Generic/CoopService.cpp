@@ -4,6 +4,7 @@
 #include <Services/InventoryHook.h>
 #include <Services/SaveStateService.h>
 #include <Services/InteractionInput.h>
+#include <Services/StorageService.h>
 #include <Events/CoopActionEvent.h>
 #include <World.h>
 #include <Events/UpdateEvent.h>
@@ -218,7 +219,10 @@ void CoopService::OnUpdate(const UpdateEvent&) noexcept
         {
             m_helloAt = now;
             const uint32_t inventory = InventoryHook::Installed() && m_world.ctx().at<SaveStateService>().Ready() ? Coop::TransactionalLoot : 0u;
-            Send(Coop::Hello{Coop::kProtocol, Coop::NativeDowned | Coop::GroundedAnchors | inventory, m_character, "se-1.5.97-native-v2"});
+            const auto& storage = m_world.ctx().at<StorageService>();
+            const uint32_t bank = inventory && storage.Available() ? Coop::PersistentStorage : 0u;
+            Send(Coop::Hello{Coop::kProtocol, Coop::NativeDowned | Coop::GroundedAnchors | inventory | bank,
+                m_character, "se-1.5.97-native-v3", bank ? storage.Signature() : 0});
         }
         return;
     }
@@ -301,12 +305,12 @@ void CoopService::OnPacket(const NotifyCoopAction& aMessage) noexcept
             return;
         if (!packet.Session || !packet.Generation || !(welcome->Capabilities & Coop::NativeDowned))
             return;
-        m_session = packet.Session; m_generation = packet.Generation; m_capabilities = welcome->Capabilities;
+        m_session = packet.Session; m_generation = packet.Generation; m_capabilities = welcome->Capabilities; m_campaign = welcome->Campaign;
         m_serverOperation = packet.Operation;
         m_active = true;
         PlayerCharacter::Get()->SetPlayerRespawnMode(true);
         SetPaused(m_paused);
-        Utils::ShowHudMessage("RFAB co-op: native downed, hold H for 5 seconds to revive. Other systems require negotiated adapters.");
+        Utils::ShowHudMessage("RFAB co-op: native downed, hold your assigned Activate action for 5 seconds to revive. Other systems require negotiated adapters.");
         return;
     }
     if (!Active() || packet.Session != m_session || packet.Generation != m_generation || packet.Operation <= m_serverOperation)

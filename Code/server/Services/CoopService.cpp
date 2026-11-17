@@ -145,6 +145,19 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
             Send(aPlayer, response);
             return;
         }
+    if ((aHello.Capabilities & Coop::TransactionalLoot) && !RestoreInventoryFor(aPlayer))
+    {
+        response.Error = "Durable campaign inventory unavailable or its saved forms are absent from this negotiated profile; no empty bootstrap";
+        Send(aPlayer, response);
+        return;
+    }
+    if ((aHello.Capabilities & Coop::PersistentStorage) &&
+        (m_storageAccess.empty() || !aHello.StorageSignature || aHello.StorageSignature != m_storageCatalog.Signature()))
+    {
+        response.Error = "Client/server secure-storage catalogs differ or are missing. Deploy the same installed-profile output to both ends";
+        Send(aPlayer, response);
+        return;
+    }
     const uint32_t actor = World::ToInteger(*aPlayer->GetCharacter());
     const auto currentParty = aPlayer->GetParty().JoinedPartyId;
     uint32_t group = currentParty ? *currentParty : aPlayer->GetId() | 0x80000000u;
@@ -158,15 +171,8 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
     if (old != m_characters.end() && m_groups.contains(old->second.first))
     {
         group = old->second.first;
-        m_groups.at(group).Encounter.Rebind(old->second.second, actor);
     }
     auto& runtime = m_groups[group].Encounter;
-    if (!runtime.Join(actor))
-    {
-        response.Error = "RFAB cohorts are limited to two characters";
-        Send(aPlayer, response);
-        return;
-    }
     Client client;
     client.PlayerId = aPlayer->GetId(); client.Actor = actor; client.Group = group;
     client.Character = aHello.Character;
@@ -180,12 +186,21 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
         {
             response.Error = "Inventory receipt mismatch or unresolved transfer: no automatic replay/import of this character's bag";
             Send(aPlayer, response);
-            runtime.Disconnect(actor);
             return;
         }
         client.Capabilities |= Coop::TransactionalLoot;
         if (!m_storageAccess.empty() && (aHello.Capabilities & Coop::PersistentStorage))
             client.Capabilities |= Coop::PersistentStorage;
+    }
+    // Do not rebind/remove a recovering cohort member before its character and durable bag
+    // passed validation. Failed handshakes must not consume a slot or move the old downed latch.
+    if (old != m_characters.end() && old->second.first == group)
+        runtime.Rebind(old->second.second, actor);
+    if (!runtime.Join(actor))
+    {
+        response.Error = "RFAB cohorts are limited to two characters";
+        Send(aPlayer, response);
+        return;
     }
     m_clients.emplace(client.PlayerId, client);
     m_characters[aHello.Character] = {group, actor};
