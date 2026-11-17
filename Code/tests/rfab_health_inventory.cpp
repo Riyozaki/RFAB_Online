@@ -636,3 +636,186 @@ TEST_CASE("Same-revision bank snapshots never clone back a native paired withdra
     CHECK(f.Timeline.State().Storages.front() == saved);
     CHECK_FALSE(f.Timeline.StampStorage({0x123, "campaign", 10}));
 }
+
+#include <Coop/SaveMailbox.h>
+#include <barrier>
+#include <thread>
+namespace
+{
+struct MailboxFixture
+{
+    Coop::SaveMailbox Mail;
+    const Coop::CharacterState State{"00112233445566778899aabbccddeeff", 0, {}};
+    const std::shared_ptr<const std::vector<uint8_t>> Bytes = std::make_shared<const std::vector<uint8_t>>(*State.Encode());
+    uint64_t Epoch{};
+    MailboxFixture()
+    {
+        Epoch = Mail.BeginLoad(); REQUIRE(Epoch);
+        Mail.SubmitRecord(Epoch, {State, true, false, true});
+        Mail.CompleteLoad(Epoch, true);
+        REQUIRE(Mail.TakeCompleted());
+        REQUIRE(Mail.Publish(Epoch, Bytes, true));
+        REQUIRE(Mail.SaveAllowed());
+    }
+};
+}
+TEST_CASE("A preload cannot be reopened by a stale main-thread snapshot publication", "[rfab][timeline][mailbox][race]")
+{
+    MailboxFixture f;
+    const auto loading = f.Mail.BeginLoad(); REQUIRE(loading != f.Epoch);
+    CHECK_FALSE(f.Mail.SaveAllowed());
+    CHECK_FALSE(f.Mail.ReadyForEpoch(f.Epoch));
+    CHECK_FALSE(f.Mail.BeginSave()); CHECK_FALSE(f.Mail.BeginNative(f.Epoch));
+    CHECK_FALSE(f.Mail.Publish(f.Epoch, f.Bytes, true));
+    CHECK_FALSE(f.Mail.Publish(loading, f.Bytes, true)); // main thread has not adopted this load
+    CHECK(f.Mail.BeginLoad() == 0); // no overlapping outer request
+    CHECK(f.Mail.NativePreLoad() == loading); // PreLoad/Revert join, not a different generation
+    f.Mail.SubmitRecord(f.Epoch, {f.State, true, false, true}); // slow old decoder is ignored
+    f.Mail.CompleteLoad(f.Epoch, true);
+    CHECK_FALSE(f.Mail.TakeCompleted());
+    f.Mail.SubmitRecord(loading, {f.State, true, false, true});
+    f.Mail.CompleteLoad(loading, true);
+    const auto completed = f.Mail.TakeCompleted(); REQUIRE(completed);
+    REQUIRE(completed->State); CHECK(completed->Epoch == loading); CHECK(completed->FromSave);
+    CHECK_FALSE(f.Mail.SaveAllowed()); // taking a callback is NOT receipt adoption
+    REQUIRE(f.Mail.Publish(loading, f.Bytes, true));
+    CHECK(f.Mail.ReadyForEpoch(loading));
+    CHECK(f.Mail.SaveAllowed());
+    f.Mail.CompleteLoad(loading, true); // late/duplicate callback cannot create a fresh character
+    CHECK_FALSE(f.Mail.TakeCompleted());
+}
+TEST_CASE("An outer load rejection without SKSE completion stays quarantined and can be retried", "[rfab][timeline][mailbox]")
+{
+    MailboxFixture f;
+    const auto failed = f.Mail.BeginLoad(); REQUIRE(failed);
+    f.Mail.RejectLoad(failed);
+    const auto completed = f.Mail.TakeCompleted(); REQUIRE(completed);
+    CHECK_FALSE(completed->Success); CHECK_FALSE(completed->State); CHECK_FALSE(completed->FromSave);
+    CHECK(completed->Epoch == failed);
+    CHECK(f.Mail.ConsumeFault()); CHECK_FALSE(f.Mail.ConsumeFault());
+    REQUIRE(f.Mail.Publish(failed, f.Bytes, true));
+    CHECK_FALSE(f.Mail.SaveAllowed()); CHECK_FALSE(f.Mail.ReadyForEpoch(failed));
+    const auto retry = f.Mail.BeginLoad(); REQUIRE(retry); REQUIRE(retry != failed);
+    f.Mail.CompleteLoad(failed, true); f.Mail.RejectLoad(failed);
+    CHECK_FALSE(f.Mail.TakeCompleted());
+    f.Mail.SubmitRecord(retry, {f.State, true, false, true});
+    f.Mail.CompleteLoad(retry, true); REQUIRE(f.Mail.TakeCompleted());
+    REQUIRE(f.Mail.Publish(retry, f.Bytes, true)); CHECK(f.Mail.SaveAllowed());
+}
+TEST_CASE("Missing co-save and new game differ from corrupt duplicate or contradictory records", "[rfab][timeline][mailbox]")
+{
+    for (int mode = 0; mode < 6; ++mode)
+    {
+        MailboxFixture f;
+        const auto epoch = f.Mail.BeginLoad(); REQUIRE(epoch);
+        if (mode == 1) f.Mail.SubmitRecord(epoch, {std::nullopt, true, true, false});
+        if (mode == 2) f.Mail.SubmitRecord(epoch, {std::nullopt, true, false, true});
+        if (mode == 3)
+        {
+            f.Mail.SubmitRecord(epoch, {f.State, true, false, true});
+            f.Mail.SubmitRecord(epoch, {f.State, true, false, true});
+        }
+        if (mode == 4)
+        {
+            auto invalid = f.State; invalid.Character = "not-a-character";
+            f.Mail.SubmitRecord(epoch, {invalid, true, false, true});
+        }
+        if (mode == 5) f.Mail.SubmitRecord(epoch, {f.State, true, false, true});
+        f.Mail.CompleteLoad(epoch, true);
+        if (mode == 5) f.Mail.RejectLoad(epoch); // outer false overrides inner success before adoption
+        const auto loaded = f.Mail.TakeCompleted(); REQUIRE(loaded);
+        CHECK(loaded->Success == (mode != 5));
+        CHECK(loaded->Corrupt == (mode >= 1 && mode <= 4));
+        CHECK_FALSE(loaded->FromSave);
+        REQUIRE(f.Mail.Publish(epoch, f.Bytes, true));
+        CHECK(f.Mail.SaveAllowed() == (mode == 0)); // offline bootstrap allowed; no co-op readiness claimed
+    }
+    MailboxFixture f;
+    f.Mail.CompleteLoad(0, true, true); // real SKSE NewGame, even without an outer load request
+    const auto fresh = f.Mail.TakeCompleted(); REQUIRE(fresh);
+    CHECK(fresh->Success); CHECK_FALSE(fresh->FromSave); CHECK_FALSE(fresh->State);
+    CHECK(fresh->Epoch != f.Epoch);
+    CHECK_FALSE(f.Mail.Publish(f.Epoch, f.Bytes, true));
+}
+TEST_CASE("Native effect reservation and game-save snapshot pin are mutually exclusive", "[rfab][timeline][mailbox][race]")
+{
+    for (int round = 0; round < 128; ++round)
+    {
+        MailboxFixture f;
+        std::barrier start(3);
+        std::optional<uint64_t> native, save;
+        std::thread effect([&] { start.arrive_and_wait(); native = f.Mail.BeginNative(f.Epoch); });
+        std::thread writer([&] { start.arrive_and_wait(); save = f.Mail.BeginSave(); });
+        start.arrive_and_wait(); effect.join(); writer.join();
+        REQUIRE(bool(native) != bool(save));
+        if (native)
+        {
+            CHECK(f.Mail.OwnsNative(f.Epoch, *native));
+            CHECK_FALSE(f.Mail.BeginNative(f.Epoch)); CHECK_FALSE(f.Mail.BeginSave());
+            REQUIRE(f.Mail.Publish(f.Epoch, f.Bytes, false)); // journal Prepared
+            f.Mail.EndNative(f.Epoch + 1, *native); // another generation cannot release this pin
+            CHECK(f.Mail.OwnsNative(f.Epoch, *native));
+            REQUIRE(f.Mail.Publish(f.Epoch, f.Bytes, true)); // final cursor published before release
+            CHECK_FALSE(f.Mail.SaveAllowed());
+            f.Mail.EndNative(f.Epoch, *native);
+        }
+        else
+        {
+            CHECK_FALSE(f.Mail.BeginNative(f.Epoch)); CHECK_FALSE(f.Mail.Publish(f.Epoch, f.Bytes, false));
+            CHECK(f.Mail.BeginLoad() == 0);
+            REQUIRE(f.Mail.BeginSerialization());
+            const auto pinned = f.Mail.SaveSnapshot(); REQUIRE(pinned.Bytes);
+            CHECK(pinned.Bytes == f.Bytes);
+            f.Mail.EndSerialization(pinned, true);
+            CHECK_FALSE(f.Mail.SaveAllowed()); // engine is still in the OUTER save call
+            f.Mail.EndSave(*save, true);
+        }
+        CHECK(f.Mail.SaveAllowed());
+    }
+}
+TEST_CASE("Queued serialization pins the request cursor after the outer bool return", "[rfab][timeline][mailbox][race]")
+{
+    MailboxFixture f;
+    const auto ticket = f.Mail.BeginSave(); REQUIRE(ticket);
+    f.Mail.EndSave(*ticket, true);
+    CHECK_FALSE(f.Mail.SaveAllowed()); CHECK_FALSE(f.Mail.BeginNative(f.Epoch)); CHECK(f.Mail.BeginLoad() == 0);
+    const auto other = std::make_shared<const std::vector<uint8_t>>(std::vector<uint8_t>{9,8,7});
+    CHECK_FALSE(f.Mail.Publish(f.Epoch, other, true));
+    REQUIRE(f.Mail.BeginSerialization());
+    const auto before = f.Mail.SaveSnapshot(); REQUIRE(before.Bytes); CHECK(before.Bytes == f.Bytes);
+    f.Mail.EndSerialization(before, true);
+    CHECK(f.Mail.SaveAllowed());
+    REQUIRE(f.Mail.Publish(f.Epoch, other, true));
+    const auto next = f.Mail.BeginSave(); REQUIRE(next); REQUIRE(*next != *ticket);
+    REQUIRE(f.Mail.BeginSerialization());
+    const auto after = f.Mail.SaveSnapshot(); REQUIRE(after.Bytes); CHECK(after.Bytes == other);
+    f.Mail.EndSave(*ticket, false); f.Mail.EndSerialization(before, false); // old completions cannot fault/release new save
+    CHECK_FALSE(f.Mail.ConsumeFault()); CHECK_FALSE(f.Mail.SaveAllowed());
+    f.Mail.EndSerialization(after, true); CHECK_FALSE(f.Mail.SaveAllowed());
+    f.Mail.EndSave(*next, true); CHECK(f.Mail.SaveAllowed());
+}
+TEST_CASE("Serialization errors bypassed save paths and native overlapping loads are not certified", "[rfab][timeline][mailbox]")
+{
+    MailboxFixture f;
+    const auto refused = f.Mail.BeginSave(); REQUIRE(refused);
+    f.Mail.EndSave(*refused, false); // rejected before serialization, old snapshot is unchanged
+    CHECK(f.Mail.SaveAllowed());
+    const auto save = f.Mail.BeginSave(); REQUIRE(save); REQUIRE(f.Mail.BeginSerialization());
+    const auto bytes = f.Mail.SaveSnapshot(); REQUIRE(bytes.Bytes);
+    f.Mail.EndSerialization(bytes, false); f.Mail.EndSave(*save, true);
+    CHECK(f.Mail.ConsumeFault()); CHECK_FALSE(f.Mail.SaveAllowed());
+    REQUIRE(f.Mail.Publish(f.Epoch, f.Bytes, true)); CHECK_FALSE(f.Mail.SaveAllowed());
+    CHECK_FALSE(f.Mail.BeginNative(f.Epoch));
+    MailboxFixture bypass;
+    CHECK_FALSE(bypass.Mail.BeginSerialization()); CHECK(bypass.Mail.ConsumeFault());
+    CHECK_FALSE(bypass.Mail.SaveAllowed());
+    MailboxFixture overlap;
+    const auto pinned = overlap.Mail.BeginSave(); REQUIRE(pinned); REQUIRE(overlap.Mail.BeginSerialization());
+    const auto old = overlap.Mail.SaveSnapshot(); REQUIRE(old.Bytes);
+    const auto epoch = overlap.Mail.NativePreLoad(); REQUIRE(epoch != overlap.Epoch);
+    overlap.Mail.SubmitRecord(epoch, {overlap.State, true, false, true});
+    overlap.Mail.CompleteLoad(epoch, true);
+    const auto loaded = overlap.Mail.TakeCompleted(); REQUIRE(loaded); CHECK(loaded->Corrupt);
+    overlap.Mail.EndSerialization(old, true); overlap.Mail.EndSave(*pinned, true);
+    REQUIRE(overlap.Mail.Publish(epoch, overlap.Bytes, true)); CHECK_FALSE(overlap.Mail.SaveAllowed());
+}

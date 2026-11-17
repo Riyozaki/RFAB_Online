@@ -224,8 +224,8 @@ Windows8701c61/run44140814679 завершился **FAIL**: CommonLib не им
 cstdint/functional/Buffer/Stl includes; Linux common TUs теперь тоже собираются **без** PCH.
 Новый first-include test отдельно разбирает все17 co-op/wire boundary headers — локально PASS.
 Исправлен lazy REPO_ROOT Makefile: included .d не должен менять значение корня в поздних recipes.
-Windowsa183409/run44144088071 остановился ещё в новой PowerShell preflight до native build;
-в текущем запуске причина не попала в Checks annotation (сырой log redirect недоступен). Preflight
+Windowsa183409/run44144088071 завершился FAIL; точный шаг/причина не доказаны:
+Checks annotation общая, сырой log redirect недоступен. Для следующего запуска preflight
 перенесён в существующий Invoke-LoggedCmd, чтобы следующий запуск показал конкретную ошибку.
 Никаких выводов о native/installer success из portable pass не делается.
 
@@ -239,3 +239,37 @@ leases во время stage+hash-copy, закрывает их перед renam
 проверяет закрытые game/server/MO2 и отдельно сериализует установщики lock-файлом вне дерева.
 Старое дерево не удаляется. Нельзя запускать игру/сервер во время установки; это не обещание
 online-update или отсутствия гонки с произвольным сторонним процессом. Native rerun pending.
+
+
+### Save lifecycle: generation mailbox, native/save reservation and failed-load quarantine
+
+- Убрана гонка отдельных snapshot/SaveAllowed atomics: portable `SaveMailbox` одним mutex
+  связывает поколение загрузки, опубликованное состояние и reservation native effect/save.
+  Старый `Publish` не может заново разрешить save после начавшегося PreLoad; callback с прошлым
+  epoch не подменяет нового персонажа. Receipt/main-thread adoption предшествует readiness.
+- Native effect резервирует timeline **до** durable Prepared и публикации, save не может
+  успеть запинить старый cursor в этом промежутке. Pin снимается после публикации terminal
+  receipt; pending/uncertain не открывают сохранения. После начала загрузки старый ticket не
+  освобождает reservation нового персонажа. Старыми `Uncertain` нельзя fault-ить другую receipt.
+- Save pin сохраняет immutable request snapshot до serialization callback **и** выхода outer
+  save. Если bool вернулся раньше callback, native work остаётся закрытой. Неизвестный save path
+  в обход outer gate/ошибка WriteRecord — quarantine, не выдуманная успешная ESS+SKSE пара.
+  Без companion обычные offline saves не ждут несуществующего callback; кооп-эффекты недоступны.
+- Outer Load/LoadMostRecent false теперь явно завершает запрос даже без SKSE PostLoad. Failed или
+  corrupt load не создаёт пустую identity и не возобновляет старые actor jobs/network bindings;
+  остаётся UI/движок для повторной загрузки. Поздний TESLoadGame event не создаёт второй
+  WorldLoaded после уже принятого companion completion. Успешность native ABI/порядка callback
+  в установленной игре всё ещё не доказана; post-save publication не выдается за файловую
+  atomicity или готовый checkpoint B.
+
+Результаты текущего дерева: plain core **72 cases / 28 683 assertions** (6 новых mailbox cases,
+128 двухпоточных save/effect гонок), common без PCH и18 standalone headers; strict static PASS,
+local pwsh skipped. Полный предыдущий core/header restart завершился **66 / 26 823 PASS**.
+Replacement server ASan compilation дошла до линковки, GNU ld убит OOM — **не test PASS**.
+Добавлены LDFLAGS/low-memory linker и no-PCH common в server harness; последовательный sanitizer
+rerun выполняется. Linux CI a183409/ad1c49f/5f37bd8 завершены success, mailbox в них ещё нет.
+Windows5f37bd8/run44145825537 всё ещё выполняется. Helper5f37bd8 действительно изменён: малый
+text diff summary объясняется существующим `.gitattributes` binary для PS1, а не потерей edits.
+
+XP adapter, save-bound HP×2 и настоящий retreat A/AI/hazard quiescence остаются следующими
+реализациями. Кандидат/релиз/тег и игровой тест не выпускались; ready_for_playtest=false.

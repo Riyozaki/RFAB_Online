@@ -34,7 +34,7 @@ struct World : WorldParts::DispatcherOwner, entt::registry, BSTEventSink<TESLoad
     void Update() noexcept;
     void PrepareForWorldLoad() noexcept;
     static RFAB_ANY_THREAD void SignalWorldLoad() noexcept;
-    bool IsLoadingWorld() const noexcept { return m_loadingWorld.load(std::memory_order_acquire); }
+    bool IsLoadingWorld() const noexcept { return m_loadingWorld.load(std::memory_order_acquire) || m_failedLoad.load(std::memory_order_acquire); }
     BSTEventResult OnEvent(const TESLoadGameEvent*, const EventDispatcher<TESLoadGameEvent>*) override;
     static bool IsMainThread() noexcept { return ThreadAffinity::IsMainThread(); }
     static bool IsOnlineCached() noexcept
@@ -89,6 +89,7 @@ private:
     std::atomic<uint32_t> m_nativeFlags{0};
     std::atomic<uint64_t> m_tick{0};
     std::atomic_bool m_loadPending{false}, m_loadingWorld{false}, m_preloadPending{false};
+    std::atomic_bool m_bridgeCompleted{false}, m_failedLoad{false};
     RunnerService m_runner;
     TransportService m_transport;
     ModSystem m_modSystem;

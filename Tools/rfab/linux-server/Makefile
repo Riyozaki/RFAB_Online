@@ -23,7 +23,9 @@
 # Scope: Code/server + components + base + encoding + common + TiltedCore + lua.
 # The Skyrim client (hooks, D3D11, CEF) is not part of this target and stays on xmake.
 
-REPO_ROOT ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../..)
+# Dependency .d files extend MAKEFILE_LIST: never let them change late recipe paths.
+REPO_ROOT ?= $(abspath $(dir $(firstword $(MAKEFILE_LIST)))/../../..)
+REPO_ROOT := $(REPO_ROOT)
 DEPS_DIR  ?= $(REPO_ROOT)/build/deps
 
 # SANITIZE=1 builds the same server and harness with AddressSanitizer + UndefinedBehaviorSanitizer
@@ -61,6 +63,9 @@ ZLIB          := $(DEPS_DIR)/zlib
 CXX  ?= g++
 CC   ?= gcc
 OPT  ?= -O0
+# Sanitized server objects are large. Permit a lower-memory linker without changing the
+# compiler/object ABI; the default GNU linker also need not cache every input in RAM.
+LDFLAGS ?= -Wl,--no-keep-memory
 
 INCLUDES := \
   -I$(REPO_ROOT)/Code \
@@ -153,7 +158,7 @@ run: $(BIN)
 $(BIN): $(ALL_OBJS)
 	@mkdir -p $(dir $@)
 	@echo "  LD    $(notdir $@)"
-	@$(CXX) $(SAN_FLAGS) $(ALL_OBJS) -o $@ -lpthread -ldl
+	@$(CXX) $(SAN_FLAGS) $(LDFLAGS) $(ALL_OBJS) -o $@ -lpthread -ldl
 
 define c_compile_rule
 $(call obj_of,$(1),$(2)).o: $(2) $(FLAGS_STAMP)
@@ -190,7 +195,9 @@ $(foreach s,$(SERVER_SRCS),$(eval $(call compile_rule,server,$(s),$(SERVER_PCH))
 $(foreach s,$(COMPONENT_SRCS),$(eval $(call compile_rule,components,$(s),$(COMPONENT_PCH))))
 $(foreach s,$(BASE_SRCS),$(eval $(call compile_rule,base,$(s),)))
 $(foreach s,$(ENCODING_SRCS),$(eval $(call compile_rule,encoding,$(s),$(ENCODING_PCH))))
-$(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),$(ENCODING_PCH))))
+# CommonLib's Windows target has no PCH. Match it instead of masking missing prerequisites.
+$(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),)))
+$(COMMON_OBJS): $(REPO_ROOT)/Tools/rfab/linux-server/Makefile
 $(foreach s,$(CORE_SRCS),$(eval $(call compile_rule,core,$(s),$(VENDOR_SAN))))
 $(foreach s,$(LUA_SRCS),$(eval $(call c_compile_rule,lua,$(s))))
 $(foreach s,$(ZLIB_SRCS),$(eval $(call c_compile_rule,zlib,$(s))))
