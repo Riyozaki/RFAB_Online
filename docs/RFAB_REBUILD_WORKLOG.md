@@ -228,3 +228,14 @@ Windowsa183409/run44144088071 остановился ещё в новой PowerS
 в текущем запуске причина не попала в Checks annotation (сырой log redirect недоступен). Preflight
 перенесён в существующий Invoke-LoggedCmd, чтобы следующий запуск показал конкретную ошибку.
 Никаких выводов о native/installer success из portable pass не делается.
+
+
+### Runtime install native diagnostic, not a guessed success
+
+Windowsad1c49f/run44145263093: source parsing **PASS** (8 scripts, PowerShell5.1.20348.5773),
+runtime-preservation self-test **FAIL**. Реальный NTFS отказал rename дерева с открытым child
+lock handle даже при FileShare.Delete. Helper теперь удерживает exclusive campaign/character
+leases во время stage+hash-copy, закрывает их перед rename (требование Windows), повторно
+проверяет закрытые game/server/MO2 и отдельно сериализует установщики lock-файлом вне дерева.
+Старое дерево не удаляется. Нельзя запускать игру/сервер во время установки; это не обещание
+online-update или отсутствия гонки с произвольным сторонним процессом. Native rerun pending.

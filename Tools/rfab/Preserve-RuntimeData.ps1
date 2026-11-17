@@ -51,19 +51,21 @@ function Install-RfabCleanTree {
         if (Test-Path -LiteralPath (Join-Path $sourcePath $rel)) { throw "Release contains live/generated runtime data '$rel'; refusing to distribute somebody else's campaign/profile" }
     }
     $archive = $null
+    $installLease = $null
     $staging = Join-Path ([IO.Path]::GetDirectoryName($destPath)) ('.rfab-install-' + [Guid]::NewGuid().ToString('N'))
     $leases = New-Object 'System.Collections.Generic.List[System.IO.FileStream]'
     $lockPaths = New-Object 'System.Collections.Generic.List[string]'
     try {
+        [void][IO.Directory]::CreateDirectory($backupPath)
+        $installLease = [IO.File]::Open((Join-Path $backupPath '.installation.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         if (Test-Path -LiteralPath $destPath) {
             if ((Get-Item -LiteralPath $destPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Reparse-point install destination refused" }
             foreach ($rel in $KeepPaths) {
                 $old = Join-Path $destPath $rel
                 if (Test-Path -LiteralPath $old -PathType Container) {
                     foreach ($file in @(Get-ChildItem -LiteralPath $old -Filter '*.lock' -File -Recurse -Force -ErrorAction Stop)) {
-                        # Delete sharing permits directory rename on Windows; read/write sharing
-                        # stays disabled, so the native DurableLease (share=0) cannot be acquired.
-                        $leases.Add([IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Delete))
+                        # Refuse a live native DurableLease before copying any mutable runtime data.
+                        $leases.Add([IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
                         $lockPaths.Add($file.FullName.Substring($destPath.Length).TrimStart('\', '/'))
                     }
                 }
@@ -84,13 +86,21 @@ function Install-RfabCleanTree {
                 if ((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash) { throw "Runtime file hash mismatch: $rel" }
             }
         }
-        # Fresh lease placeholders, not copies of owned lock files. Keep both generations held
-        # across the rename so publishing new binaries cannot expose an unlocked copied journal.
+        # Fresh lease placeholders, never copies of an owned lock's content. Windows refuses
+        # renaming a directory with these child handles open, even with delete sharing. Release
+        # after copying and require the game/server/MO2 to STAY CLOSED until installation ends.
+        # The separate install lease continues to serialize cooperating installers.
         foreach ($rel in $lockPaths) {
             $file = Join-Path $staging $rel
             [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($file))
-            $leases.Add([IO.File]::Open($file, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Delete))
+            $placeholder = [IO.File]::Open($file, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $placeholder.Dispose()
         }
+        if ($env:OS -eq 'Windows_NT' -and @(Get-Process -Name @('SkyrimSE', 'SkyrimTogether', 'TPProcess', 'SkyrimTogetherServer', 'ModOrganizer') -ErrorAction SilentlyContinue).Count -gt 0) {
+            throw 'A game/server/MO2 process started during staging. Close it normally; no install directory was moved.'
+        }
+        foreach ($lease in $leases) { $lease.Dispose() }
+        $leases.Clear()
         if (Test-Path -LiteralPath $destPath) {
             [void][IO.Directory]::CreateDirectory($backupPath)
             $archive = Join-Path $backupPath (([DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')) + '-' + [Guid]::NewGuid().ToString('N'))
@@ -105,6 +115,7 @@ function Install-RfabCleanTree {
         throw "RFAB install refused/incomplete. No backup or user save was deleted. Previous data retained at '$archive' (or untouched '$destPath'); staging '$staging': $($_.Exception.Message)"
     } finally {
         foreach ($lease in $leases) { $lease.Dispose() }
+        if ($installLease) { $installLease.Dispose() }
     }
 }
 
