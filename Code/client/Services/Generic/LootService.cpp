@@ -266,6 +266,21 @@ void LootService::Apply(const Coop::TransferReply& reply) noexcept
     {
         if (pending.State != Stage::Applied || pending.NativeOperation != reply.Operation)
         { Finish(true, "RFAB: server has a committed receipt absent from this native timeline. No replay was attempted."); return; }
+        if (reply.Source != pending.Request.Source || reply.Destination != pending.Request.Destination ||
+            reply.SourceEpoch != pending.Request.SourceEpoch || reply.DestinationEpoch != pending.Request.DestinationEpoch ||
+            reply.SourceRevision != pending.Request.SourceRevision + 1 || reply.DestinationRevision != pending.Request.DestinationRevision + 1 ||
+            reply.Item != pending.Request.Item)
+        { WriteReceipt(pending, 4); Finish(true, "RFAB: committed transfer receipt identity/revisions changed. No cache rollback or replay."); return; }
+        auto sourceAfter = pending.BeforeSource, destinationAfter = pending.BeforeDestination;
+        auto removal = pending.Request.Item; removal.Count = -removal.Count;
+        auto& storage = m_world.ctx().at<StorageService>();
+        if (!sourceAfter.AddOrRemoveEntry(removal) || !destinationAfter.AddOrRemoveEntry(pending.Request.Item) ||
+            !storage.TransferCommitted(pending.SourceForm, reply.SourceRevision, sourceAfter) ||
+            !storage.TransferCommitted(pending.DestinationForm, reply.DestinationRevision, destinationAfter))
+        { WriteReceipt(pending, 4); Finish(true, "RFAB: bank's native result/stamp changed before commit. Automatic side effects locked."); return; }
+        sourceAfter.Revision = reply.SourceRevision; destinationAfter.Revision = reply.DestinationRevision;
+        AcceptSnapshot(reply.Source, reply.SourceEpoch, sourceAfter);
+        AcceptSnapshot(reply.Destination, reply.DestinationEpoch, destinationAfter);
         m_participant.Committed(reply.Operation);
         if (!WriteReceipt(pending, 2)) { Finish(true, "RFAB: final native receipt could not be persisted."); return; }
         Finish(false, nullptr);

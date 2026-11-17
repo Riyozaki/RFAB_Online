@@ -130,6 +130,18 @@ def main():
 
     resolve_all_imports(client_bin, dll_index, "CLIENT")
     resolve_all_imports(server_bin, dll_index, "SERVER")
+    bridge_dir = os.path.join(stage_dir, "RFAB_Online_MO2", "SKSE", "Plugins")
+    bridge = os.path.join(bridge_dir, "RFAB_CoopState.dll")
+    if not os.path.isfile(bridge):
+        raise RuntimeError("Required matching SKSE co-save bridge is missing from the release")
+    resolve_all_imports(bridge_dir, dll_index, "CO-SAVE")
+    for relative in ("Data/rfab_campaign", "config/RFAB_Storage.tsv", "config/RFAB_Profile.json"):
+        if os.path.exists(os.path.join(server_bin, relative)):
+            raise RuntimeError(f"Live campaign/generated profile cannot be packaged: {relative}")
+    for relative in ("RFAB_Online", "RFAB_Storage.tsv", "RFAB_Profile.json"):
+        if os.path.exists(os.path.join(bridge_dir, relative)):
+            raise RuntimeError(f"Live character/generated profile cannot be packaged: {relative}")
+
 
     # Verify zero Git LFS pointers anywhere in stage_dir
     total_files = 0

@@ -144,6 +144,12 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Setup-RfabOnline.ps1") `
           -Destination (Join-Path $StageTools "Setup-RfabOnline.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Restore-ModConfigs.ps1") `
           -Destination (Join-Path $StageTools "Restore-ModConfigs.ps1") -Force
+foreach ($tool in @("Preserve-RuntimeData.ps1", "generate_storage_profile.py")) {
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\$tool") -Destination (Join-Path $StageTools $tool) -Force
+}
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $StageTools "Preserve-RuntimeData.ps1") -SelfTest
+if ($LASTEXITCODE -ne 0) { throw "Runtime-preservation self-test failed under Windows PowerShell" }
+
 Copy-Item -LiteralPath (Join-Path $RepoRoot "INSTALL_RFAB_ONLINE.bat") `
           -Destination (Join-Path $StageRoot "INSTALL_RFAB_ONLINE.bat") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "PROCHTI_MENYA.txt") `
@@ -223,6 +229,14 @@ New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\profiles\RFAB\saves
 $MockTruncEss = New-Object byte[] 512
 [System.Text.Encoding]::ASCII.GetBytes("TESV_SAVEGAME").CopyTo($MockTruncEss, 0)
 [System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.ess"), $MockTruncEss)
+$MockCoSave = [byte[]](0x53, 0x4B, 0x53, 0x45, 0x00, 0x80)
+[System.IO.File]::WriteAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.skse"), $MockCoSave)
+New-Item -ItemType Directory -Path (Join-Path $MockRfab "MO2\mods\RFAB_Online\SKSE\Plugins\RFAB_Online\characters"), (Join-Path $MockRfab "RFAB_Online_Server\Data\rfab_campaign") -Force | Out-Null
+$MockCharacterReceipt = "character cursor and native receipt must survive"
+$MockCampaign = "durable bank and paired operation receipts must survive"
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\SKSE\Plugins\RFAB_Online\characters\test.receipt"), $MockCharacterReceipt)
+[System.IO.File]::WriteAllText((Join-Path $MockRfab "RFAB_Online_Server\Data\rfab_campaign\test.inventory"), $MockCampaign)
+
 $SoulsPath = Join-Path $MockRfab "MO2\mods\Souls\SKSE\Plugins\SkyrimSoulsRE.ini"
 $SoulsOriginal = "[UNPAUSED_MENUS]`r`nbStatsMenu = false`r`n[SLOWMOTION]`r`nfSlowMotionMultiplier = 0.500000`r`nbEnableSlowMotion_MessageBoxMenu = true`r`n"
 [System.IO.File]::WriteAllText($SoulsPath, $SoulsOriginal)
@@ -270,8 +284,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\mods\NSF\NetScriptFra
     (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\mods\NSF\NetScriptFramework\Plugins\BetterStealing.dll.mohidden"))) {
     throw "BetterStealing.dll.mohidden left by an old release was not renamed back!"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $MockRfab "MO2\profiles\RFAB\saves\Quarantined_Corrupt_v100\TruncatedScrapHeap.ess"))) {
-    throw "TruncatedScrapHeap.ess was not quarantined during Setup-RfabOnline.ps1!"
+if (([Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.ess"))) -cne [Convert]::ToBase64String($MockTruncEss)) -or
+    ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $MockRfab "MO2\profiles\RFAB\saves\TruncatedScrapHeap.skse"))) -cne [Convert]::ToBase64String($MockCoSave))) {
+    throw "The installer must not alter or relocate even an unfamiliar/failed ESS + SKSE save pair"
+}
+if ([System.IO.File]::ReadAllText((Join-Path $MockRfab "MO2\mods\RFAB_Online\SKSE\Plugins\RFAB_Online\characters\test.receipt")) -cne $MockCharacterReceipt -or
+    [System.IO.File]::ReadAllText((Join-Path $MockRfab "RFAB_Online_Server\Data\rfab_campaign\test.inventory")) -cne $MockCampaign) {
+    throw "A clean binary update lost/changed a character receipt or campaign journal"
 }
 # The report collector has to work on the day of the playtest, so it is run here, on the RFAB
 # folder the installer has just filled, by the same Windows PowerShell the players have.
@@ -458,21 +477,11 @@ if ([string]::IsNullOrWhiteSpace($GameRoot) -or -not (Test-Path -LiteralPath $Ga
 
 Write-Host "==> RFAB root: $GameRoot" -ForegroundColor Cyan
 
-# Stop running old server / orphaned TPProcess so DLLs & EXEs can be overwritten cleanly
-$runningSrv = @(Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue)
-if ($runningSrv.Count -gt 0) {
-    $runningSrv | Stop-Process -Force -ErrorAction SilentlyContinue
-    $runningSrv | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+# Updating a live campaign is refused, not implemented by killing its server mid-operation.
+if (@(Get-Process -Name @("SkyrimSE", "SkyrimTogether", "TPProcess", "SkyrimTogetherServer", "ModOrganizer") -ErrorAction SilentlyContinue).Count -gt 0) {
+    throw "Close Skyrim, the co-op server and MO2 normally before applying this update. Nothing was force-killed."
 }
-if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
-    -not (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue)) {
-    $orphanTp = @(Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)
-    if ($orphanTp.Count -gt 0) {
-        $orphanTp | Stop-Process -Force -ErrorAction SilentlyContinue
-        $orphanTp | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
-    }
-}
-Start-Sleep -Milliseconds 400
+if (-not (Test-Path -LiteralPath (Join-Path $SrcDir "RFAB_CoopState.dll"))) { throw "Matching RFAB_CoopState.dll is missing; no partial client update was started." }
 
 $Mo2Base = if (Test-Path -LiteralPath (Join-Path $GameRoot "MO2\mods\RFAB_Online")) { Join-Path $GameRoot "MO2" } elseif (Test-Path -LiteralPath (Join-Path $GameRoot "mods\RFAB_Online")) { $GameRoot } else { Join-Path $GameRoot "MO2" }
 $ModRoot = Join-Path $Mo2Base "mods\RFAB_Online"
@@ -526,86 +535,7 @@ if (Test-Path -LiteralPath $RestoreScript) {
     Write-Host "  [OK] Other mods' settings: restored $($restore.Restored), BetterStealing re-enabled $($restore.Unhidden), kept $($restore.Kept)" -ForegroundColor Green
 }
 
-function Test-ValidSkyrimEssQuick([string]$EssPath) {
-    try {
-        $fi = New-Object System.IO.FileInfo($EssPath)
-        if (-not $fi.Exists -or $fi.Length -lt 256) { return $false }
-        $fs = [System.IO.File]::Open($EssPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        try {
-            $br = New-Object System.IO.BinaryReader($fs)
-            if ([System.Text.Encoding]::ASCII.GetString($br.ReadBytes(13)) -cne "TESV_SAVEGAME") { return $false }
-            $hdrSize = [uint32]$br.ReadUInt32()
-            if ($hdrSize -lt 36 -or $hdrSize -gt 65536 -or ([int64]17 + [int64]$hdrSize) -ge $fi.Length) { return $false }
-            $hdr = $br.ReadBytes([int]$hdrSize)
-            if ($hdr.Length -ne [int]$hdrSize) { return $false }
-            $ver = [System.BitConverter]::ToUInt32($hdr, 0)
-            if ($ver -lt 7 -or $ver -gt 15) { return $false }
-            $pos = 8
-            for ($s = 0; $s -lt 4; $s++) {
-                if ($pos + 2 -gt $hdr.Length) { return $false }
-                $pos += 2 + [int][System.BitConverter]::ToUInt16($hdr, $pos)
-                if ($pos -gt $hdr.Length) { return $false }
-                if ($s -eq 0) { $pos += 4; if ($pos -gt $hdr.Length) { return $false } }
-            }
-            $pos += 18
-            if ($pos + 8 -gt $hdr.Length) { return $false }
-            $ssW = [int64][System.BitConverter]::ToUInt32($hdr, $pos)
-            $ssH = [int64][System.BitConverter]::ToUInt32($hdr, $pos + 4)
-            $pos += 8
-            if ($ssW -gt 16384 -or $ssH -gt 16384) { return $false }
-            $compType = [uint16]0
-            if ($ver -ge 12) {
-                if ($pos + 2 -gt $hdr.Length) { return $false }
-                $compType = [System.BitConverter]::ToUInt16($hdr, $pos); $pos += 2
-                if ($compType -gt 2) { return $false }
-            }
-            if ($pos -ne $hdr.Length) { return $false }
-            $bpp = if ($ver -ge 12) { [int64]4 } else { [int64]3 }
-            $bodyOff = [int64]17 + [int64]$hdrSize + ($bpp * $ssW * $ssH)
-            if ($fi.Length -le ($bodyOff + 16)) { return $false }
-            if ($ver -ge 12 -and $compType -ne 0) {
-                [void]$fs.Seek($bodyOff, [System.IO.SeekOrigin]::Begin)
-                $uncompLen = [int64]$br.ReadUInt32(); $compLen = [int64]$br.ReadUInt32()
-                if ($uncompLen -lt 64 -or $compLen -lt 16 -or ($bodyOff + 8 + $compLen) -gt $fi.Length) { return $false }
-            } elseif ($fi.Length -lt ($bodyOff + 64)) { return $false }
-            return $true
-        } finally { $fs.Dispose() }
-    } catch { return $false }
-}
-
-$DocsSaves = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\Saves"
-$SaveDirsToScan = New-Object System.Collections.Generic.List[string]
-if (Test-Path -LiteralPath $DocsSaves) {
-    $SaveDirsToScan.Add($DocsSaves)
-    Get-ChildItem -LiteralPath $DocsSaves -Directory -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -ine "Quarantined_Corrupt_v100" -and $_.Name -ine "_RFAB_CorruptQuarantine"
-    } | ForEach-Object { $SaveDirsToScan.Add($_.FullName) }
-}
-if (Test-Path -LiteralPath (Join-Path $Mo2Base "profiles")) {
-    Get-ChildItem -LiteralPath (Join-Path $Mo2Base "profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-        $ps = Join-Path $_.FullName "saves"
-        if (Test-Path -LiteralPath $ps) { $SaveDirsToScan.Add($ps) }
-    }
-}
-$QuarantinedQuick = 0
-foreach ($sDir in ($SaveDirsToScan | Select-Object -Unique)) {
-    $qDir = Join-Path $sDir "Quarantined_Corrupt_v100"
-    Get-ChildItem -LiteralPath $sDir -File -ErrorAction SilentlyContinue | ForEach-Object {
-        if (($_.Name.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase) -or $_.Name.EndsWith(".ess.tmp", [System.StringComparison]::OrdinalIgnoreCase)) -and
-            (-not (Test-ValidSkyrimEssQuick $_.FullName))) {
-            New-Item -ItemType Directory -Path $qDir -Force | Out-Null
-            Move-Item -LiteralPath $_.FullName -Destination (Join-Path $qDir $_.Name) -Force -ErrorAction SilentlyContinue
-            $QuarantinedQuick++
-            if ($_.Name.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase)) {
-                $sk = [System.IO.Path]::ChangeExtension($_.FullName, ".skse")
-                if (Test-Path -LiteralPath $sk) { Move-Item -LiteralPath $sk -Destination (Join-Path $qDir ([System.IO.Path]::GetFileName($sk))) -Force -ErrorAction SilentlyContinue }
-            }
-        }
-    }
-}
-if ($QuarantinedQuick -gt 0) {
-    Write-Host "  [OK] Quarantined $QuarantinedQuick corrupt/truncated .ess save(s) into Quarantined_Corrupt_v100" -ForegroundColor Yellow
-}
+# User ESS/SKSE pairs and per-character/campaign receipts are never moved or rewritten by an update.
 Write-Host "  [OK] Updated Client + ESP + Scripts + Russian UI -> $ClientDst" -ForegroundColor Green
 
 $SrvCandidates = @(
@@ -651,6 +581,9 @@ Write-Host "`nALL DONE! Launch 'RFAB Online - Play' in Mod Organizer 2 and press
 '@
 [System.IO.File]::WriteAllText((Join-Path $QuickDir "Update-Quick.ps1"), $QuickUpdatePs1, (New-Object System.Text.UTF8Encoding($true)))
 Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Restore-ModConfigs.ps1") -Destination (Join-Path $QuickDir "Restore-ModConfigs.ps1") -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\Preserve-RuntimeData.ps1") -Destination (Join-Path $QuickDir "Preserve-RuntimeData.ps1") -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "Tools\rfab\generate_storage_profile.py") -Destination (Join-Path $QuickDir "generate_storage_profile.py") -Force
+
 
 $QuickBat = "@echo off`r`nchcp 65001 >nul`r`ntitle RFAB Online - 1-Click Client + Server Updater`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0Update-Quick.ps1`"`r`npause`r`n"
 [System.IO.File]::WriteAllText((Join-Path $QuickDir "UPDATE_RFAB_ONLINE.bat"), $QuickBat, [System.Text.Encoding]::ASCII)

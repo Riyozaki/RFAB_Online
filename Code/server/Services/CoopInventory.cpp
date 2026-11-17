@@ -22,6 +22,20 @@ std::optional<Coop::StableForm> CoopService::NameForm(GameId aId) const
             return Coop::StableForm{std::string(name.data(), name.size()), aId.BaseId, true};
     return {};
 }
+bool CoopService::ItemAvailable(Player* player, const Inventory::Entry& item) const noexcept
+{
+    if (!player || !Coop::Transferable(item)) return false;
+    const auto supports = [this, player](GameId id, bool dynamicEnchantment = false) {
+        if (!id) return true;
+        if (dynamicEnchantment && id.ModId == 0xFFFFFFFFu) return true;
+        const auto form = NameForm(id);
+        return form && player->HasMod(id.ModId) && Coop::StorageKey("validate", *form).has_value();
+    };
+    bool valid = supports(item.BaseId) && supports(item.ExtraOwnerId) && supports(item.ExtraUniqueBaseId) &&
+        supports(item.ExtraEnchantId, !item.EnchantData.Effects.empty()) && supports(item.ExtraPoisonId);
+    for (const auto& effect : item.EnchantData.Effects) valid &= supports(effect.EffectId);
+    return valid;
+}
 void CoopService::InitializeInventory() noexcept
 {
     m_campaign = sRfabCampaign.value();
@@ -170,6 +184,7 @@ bool CoopService::ObserveInventory(uint32_t aEntity, Inventory& aContent, uint32
 }
 bool CoopService::CanAccessInventory(Player* aPlayer, const Client& aClient, uint32_t aEntity, uint8_t aReason) const noexcept
 {
+    if (!aPlayer) return false;
     if (aEntity == aClient.Actor) return true;
     const auto binding = m_inventoryBindings.find(aEntity);
     if (binding != m_inventoryBindings.end())
@@ -184,7 +199,8 @@ bool CoopService::CanAccessInventory(Player* aPlayer, const Client& aClient, uin
             const auto points = m_world.view<FormIdComponent, CellIdComponent>();
             for (auto point : points)
                 if (points.get<FormIdComponent>(point).Id == lease->second.Point &&
-                    aPlayer->GetCellComponent().IsInRange(points.get<CellIdComponent>(point), false))
+                    aPlayer->GetCellComponent().Cell == points.get<CellIdComponent>(point).Cell &&
+                    aPlayer->GetCellComponent().WorldSpaceId == points.get<CellIdComponent>(point).WorldSpaceId)
                 {
                     const auto* object = m_world.try_get<ObjectComponent>(point);
                     return !object || !object->CurrentLockData.IsLocked;
@@ -236,7 +252,14 @@ Coop::TransferReply CoopService::TransferReply(const Coop::InventoryLedger::Reco
         if (key == aRecord.Action.Source) reply.Source = entity;
         if (key == aRecord.Action.Destination) reply.Destination = entity;
     }
-    if (m_inventory)
+    if (aRecord.State == Coop::InventoryLedger::Status::Committed)
+    {
+        // An operation receipt is immutable even after later consumption/deposits. The separate
+        // InventoryState messages carry the newest snapshots, not a rewritten historical receipt.
+        reply.SourceRevision = aRecord.Action.SourceRevision + 1;
+        reply.DestinationRevision = aRecord.Action.DestinationRevision + 1;
+    }
+    else if (m_inventory)
     {
         if (const auto* e = m_inventory->Find(aRecord.Action.Source)) reply.SourceRevision = e->Revision;
         if (const auto* e = m_inventory->Find(aRecord.Action.Destination)) reply.DestinationRevision = e->Revision;
@@ -280,14 +303,8 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::Transfer&
         !CanAccessInventory(aPlayer, aClient, aTransfer.Source, aTransfer.NativeReason) ||
         !CanAccessInventory(aPlayer, aClient, aTransfer.Destination, aTransfer.NativeReason))
     { Send(aPlayer, denied); return; }
-    const auto supports = [aPlayer](GameId form, bool dynamicEnchantment = false) {
-        return !form || (dynamicEnchantment && form.ModId == 0xFFFFFFFFu) || aPlayer->HasMod(form.ModId);
-    };
-    const auto& item = aTransfer.Item;
-    bool forms = supports(item.BaseId) && supports(item.ExtraOwnerId) && supports(item.ExtraUniqueBaseId) &&
-        supports(item.ExtraEnchantId, !item.EnchantData.Effects.empty()) && supports(item.ExtraPoisonId);
-    for (const auto& effect : item.EnchantData.Effects) forms &= supports(effect.EffectId);
-    if (!forms) { denied.Reason = "Item form/plugin kind is absent from this character's negotiated profile"; Send(aPlayer, denied); return; }
+    if (!ItemAvailable(aPlayer, aTransfer.Item))
+    { denied.Reason = "Unsupported item or form/plugin kind absent from this character's negotiated profile"; Send(aPlayer, denied); return; }
     const auto source = InventoryKey(aTransfer.Source), destination = InventoryKey(aTransfer.Destination);
     if (!source || !destination || !BindInventory(aTransfer.Source, *source, false) || !BindInventory(aTransfer.Destination, *destination, false))
     { Send(aPlayer, denied); return; }
@@ -324,7 +341,7 @@ void CoopService::TickInventory() noexcept
 }
 void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::StorageOpen& aOpen) noexcept
 {
-    if (!(aClient.Capabilities & Coop::PersistentStorage) || !InventoryReady()) return;
+    if (!aPlayer || aClient.Downed || !(aClient.Capabilities & Coop::PersistentStorage) || !InventoryReady()) return;
     const auto accessForm = NameForm(aOpen.AccessPoint), backingForm = NameForm(aOpen.Backing);
     const auto access = accessForm ? Coop::StorageKey(m_campaign, *accessForm) : std::nullopt;
     const auto backing = backingForm ? Coop::StorageKey(m_campaign, *backingForm) : std::nullopt;
@@ -333,11 +350,17 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::StorageOp
     if (!access || !backing || !claimed || !backingForm || *claimed != *Coop::NormalizePlugin(backingForm->Plugin) ||
         backingForm->Local != aOpen.LocalRef || !m_storageAccess.contains(*access) || m_storageAccess.at(*access) != *backing) return;
     bool nearby{};
-    const auto refs = m_world.view<FormIdComponent, CellIdComponent>();
+    const auto refs = m_world.view<FormIdComponent, CellIdComponent, ObjectComponent>();
     for (auto entity : refs)
         if (refs.get<FormIdComponent>(entity).Id == aOpen.AccessPoint &&
-            aPlayer->GetCellComponent().IsInRange(refs.get<CellIdComponent>(entity), false)) nearby = true;
+            !refs.get<ObjectComponent>(entity).CurrentLockData.IsLocked &&
+            aPlayer->GetCellComponent().Cell == refs.get<CellIdComponent>(entity).Cell &&
+            aPlayer->GetCellComponent().WorldSpaceId == refs.get<CellIdComponent>(entity).WorldSpaceId) nearby = true;
     if (!nearby) return;
+    // Validate BEFORE registering/writing any bank. A forged foreign form must not turn a
+    // harmless rejected import into a failed durable journal write that faults the campaign.
+    if (aOpen.ConfirmImport)
+        for (const auto& item : aOpen.Import) if (!ItemAvailable(aPlayer, item)) return;
     if (!m_inventory->Find(*backing))
     {
         Coop::InventoryLedger::Endpoint endpoint;

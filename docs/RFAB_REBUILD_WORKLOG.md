@@ -181,3 +181,37 @@ strict static exit0, Python storage profile **12 PASS**, pwsh локально �
 winsock.h (`S_un_b/s_b2`). Переменная переименована, target RFABCoopState добавлен отдельной
 ранней группой в Build-CloudRelease, чтобы эта маленькая проверка не ждала сборки CEF.
 Windows run для `8218a8a` отменён как заведомо содержащий тот же макрос; Linux CI не отменялся.
+
+
+## 2026-11-17 — hidden-bank production-wire regression / native cache race / safe update
+
+- Шестой production-wire сценарий: два города/две группы → один hidden backing, explicit и
+  idempotent import, concurrent take, paired deposit, cross-cohort cache update **без** snapshot
+  чужой personal bag, expiry/поддельный access/lock/foreign-extra-plugin refusal, restart сначала
+  с отсутствующим plugin (отказ без выдуманных ID), затем с правильным profile (точное восстановление).
+  Hello проверяет каждый catalog access/backing plugin и standard/light kind. Это не полная
+  защита от злонамеренного клиента: координаты самого access пока не подтверждены серверным
+  installed-profile position catalog; native ≤256 отдельно проверяет клиент.
+- Найдена и закрыта duplication-гонка: native paired move уже Applied, а bank snapshot всё ещё
+  старой revision. Same-revision + different contents теперь **ожидает новую revision**, а не
+  клонирует предмет назад. Storage stamp разрешено продвинуть только из Applied transfer receipt
+  до его Commit; immutable committed receipt содержит исходные post-transfer revisions, даже
+  если последующие операции изменили bank. Добавлен чистый core regression и wire retry после deposit.
+- Полный installer больше не удаляет кампанию вместе с binary directory: stage + SHA256 verify,
+  exclusive runtime lease checks, перенос предыдущего дерева в RFAB_Online_Backups, byte-exact
+  сохранение character receipts, campaign journals и generated profile. Ни full, ни quick update
+  не force-kill-ят сервер. ESS/SKSE save pairs больше не классифицируются/перемещаются автоматическим
+  header-эвристическим «ремонтом». Companion обязателен в full/install/deploy и PE import gate.
+  Новый PowerShell self-test wired до Windows C++ build и в Linux static gate, но локального
+  pwsh нет: **native PowerShell pass пока не заявляется**.
+
+Результаты на рабочем дереве (не game validation): core plain **66 / 26 823**, core
+ASan+UBSan **66 / 274 595** (128 fuzz / 512 soak); server plain **6 scenarios + crash-record
+PASS**. Full static PASS, pwsh явно skipped. Новый server sanitizer build выполняется; первый
+параллельный запуск остановлен после OOM compiler (6 simultaneous sanitized compilers > RAM),
+это инфраструктурный fail, не успешный прогон. Linux CI8701c61/run44140814737 **success**.
+Windows44140814679 пока in_progress; он не включает последние правки этого раздела.
+
+Никакого release/tag/второго игрового теста: VERSION5.0.0-dev.1, readiness=false. Всё ещё нужны
+semantic XP, save-bound enemy HP×2, genuine retreat A/AI-task/hazard quiescence, save/load edge
+failures, полный Windows package и один финальный gameplay test; optional B не выдаётся за A.

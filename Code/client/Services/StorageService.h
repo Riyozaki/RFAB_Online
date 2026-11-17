@@ -25,6 +25,7 @@ struct StorageService
     // Explicit local console actions, never remote commands or an inferred "first opener wins".
     void ConfirmImport() noexcept;
     void ConfirmAttach() noexcept;
+    bool TransferCommitted(uint32_t aForm, uint64_t aRevision, const Inventory& aAfter) noexcept;
 private:
     struct Open
     {

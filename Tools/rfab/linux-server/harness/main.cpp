@@ -72,6 +72,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <vector>
@@ -696,6 +697,7 @@ void RunTransactionalInventoryScenario(Console::ConsoleRegistry& console)
         Disconnect(server, 5202);
     }
 }
+#include "storage_scenario.inc"
 } // namespace
 
 int main()
@@ -713,6 +715,7 @@ int main()
     RunOverlayChatSafetyScenario(console);
     RunNegotiatedCoopScenario(console);
     RunTransactionalInventoryScenario(console);
+    RunPersistentStorageScenario(console);
 
     if (g_failures != 0)
     {

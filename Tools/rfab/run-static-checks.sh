@@ -56,6 +56,7 @@ run "SE 1.5.97 port audit"        python3 Tools/rfab/verify_se1597_port.py
 if command -v pwsh >/dev/null 2>&1; then
     run "powershell syntax"           pwsh -NoProfile -NonInteractive -File Tools/rfab/Test-PowerShellSyntax.ps1
     run "report collector self-test"  pwsh -NoProfile -NonInteractive -File Tools/rfab/Collect-RfabReport.ps1 -SelfTest
+    run "runtime install self-test"   pwsh -NoProfile -NonInteractive -File Tools/rfab/Preserve-RuntimeData.ps1 -SelfTest
 else
     echo "==> powershell checks skipped: pwsh is not installed on this machine"
 fi

@@ -611,3 +611,28 @@ TEST_CASE("Shared bank cache adoption is save-bound campaign-specific and cannot
     auto invalid = f.Timeline.State(); invalid.Storages.push_back(invalid.Storages.front());
     CHECK_FALSE(invalid.Encode());
 }
+
+#include <Coop/StorageCache.h>
+TEST_CASE("Same-revision bank snapshots never clone back a native paired withdrawal", "[rfab][storage][timeline][race]")
+{
+    using D = Coop::StorageCacheDecision;
+    const Coop::SavedStorage saved{0x123, "campaign", 9};
+    CHECK(Coop::StorageCachePolicy(&saved, "campaign", 9, false, false, true, false) == D::Current);
+    CHECK(Coop::StorageCachePolicy(&saved, "campaign", 9, false, true, false, true) == D::AwaitNewRevision);
+    CHECK(Coop::StorageCachePolicy(&saved, "campaign", 8, false, true, false, true) == D::Blocked);
+    CHECK(Coop::StorageCachePolicy(&saved, "other", 10, false, true, false, true) == D::Blocked);
+    CHECK(Coop::StorageCachePolicy(&saved, "campaign", 10, false, false, false, false) == D::Reconcile);
+    CHECK(Coop::StorageCachePolicy(nullptr, "campaign", 1, true, false, false, true) == D::AwaitImport);
+    CHECK(Coop::StorageCachePolicy(nullptr, "campaign", 2, false, false, false, true) == D::Blocked);
+    CHECK(Coop::StorageCachePolicy(nullptr, "campaign", 2, false, true, false, false) == D::Blocked);
+    CHECK(Coop::StorageCachePolicy(nullptr, "campaign", 2, false, true, false, true) == D::Adopt);
+    TimelineFixture f;
+    REQUIRE(f.Timeline.Begin(Coop::EffectKind::Transfer, f.Id));
+    CHECK_FALSE(f.Timeline.StampStorage(saved));
+    REQUIRE(f.Timeline.Applied(f.Id));
+    REQUIRE(f.Timeline.StampStorage(saved));
+    CHECK_FALSE(f.Timeline.CanSave());
+    REQUIRE(f.Timeline.Commit(f.Id));
+    CHECK(f.Timeline.State().Storages.front() == saved);
+    CHECK_FALSE(f.Timeline.StampStorage({0x123, "campaign", 10}));
+}

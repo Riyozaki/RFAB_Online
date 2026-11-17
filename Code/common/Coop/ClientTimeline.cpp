@@ -217,7 +217,8 @@ bool ClientTimeline::StampScale(SavedScale scale)
 }
 bool ClientTimeline::StampStorage(SavedStorage storage)
 {
-    if (!Ready() || !m_receipt || m_receipt->Kind != EffectKind::Storage || m_receipt->Stage != EffectStage::Prepared) return false;
+    if (!Ready() || !m_receipt || !((m_receipt->Kind == EffectKind::Storage && m_receipt->Stage == EffectStage::Prepared) ||
+        (m_receipt->Kind == EffectKind::Transfer && m_receipt->Stage == EffectStage::Applied))) return false;
     auto next = m_state;
     bool replaced{};
     for (auto& old : next.Storages)

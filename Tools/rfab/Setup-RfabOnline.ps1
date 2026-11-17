@@ -182,6 +182,7 @@ if ($HasValidSe -and $HasValidSt) {
 $RequiredModFiles = @(
     "SkyrimTogether.esp",
     "SKSE\Plugins\RFAB_Online_Bindings.json",
+    "SKSE\Plugins\RFAB_CoopState.dll",
     "SkyrimTogetherReborn\SkyrimSE.exe",
     "SkyrimTogetherReborn\SkyrimTogether.exe",
     "SkyrimTogetherReborn\TPProcess.exe",
@@ -201,27 +202,19 @@ foreach ($rel in $RequiredModFiles) {
 }
 Write-Ok "Дистрибутив проверен: все бинарники, плагины, CEF и UI целые."
 
-# 3. Автоматическое закрытие старого сервера и осиротевших CEF-процессов + проверка закрытия игры и MO2
-$runningSrv = @(Get-Process -Name "SkyrimTogetherServer" -ErrorAction SilentlyContinue)
-if ($runningSrv.Count -gt 0) {
-    $runningSrv | Stop-Process -Force -ErrorAction SilentlyContinue
-    $runningSrv | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+# A live campaign is not a disposable old binary. Never force-kill its server during update.
+$InstallProcesses = @("SkyrimSE", "SkyrimTogether", "TPProcess", "SkyrimTogetherServer", "ModOrganizer")
+if ($NonInteractive -and @(Get-Process -Name $InstallProcesses -ErrorAction SilentlyContinue).Count -gt 0) {
+    throw "Close Skyrim, the co-op server and MO2 normally before updating. No running campaign was killed."
 }
-if (-not (Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -and
-    -not (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue)) {
-    $orphanTp = @(Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)
-    if ($orphanTp.Count -gt 0) {
-        $orphanTp | Stop-Process -Force -ErrorAction SilentlyContinue
-        $orphanTp | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
-    }
-}
+$RuntimeScript = Join-Path $PSScriptRoot "Preserve-RuntimeData.ps1"
+if (-not (Test-Path -LiteralPath $RuntimeScript)) { throw "Required runtime-preservation helper is missing: $RuntimeScript" }
+. $RuntimeScript
 if (-not $NonInteractive) {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
-    while ((Get-Process -Name "SkyrimSE" -ErrorAction SilentlyContinue) -or
-           (Get-Process -Name "SkyrimTogether" -ErrorAction SilentlyContinue) -or
-           (Get-Process -Name "TPProcess" -ErrorAction SilentlyContinue)) {
+    while (@(Get-Process -Name @("SkyrimSE", "SkyrimTogether", "TPProcess", "SkyrimTogetherServer") -ErrorAction SilentlyContinue).Count -gt 0) {
         $ansGame = [System.Windows.Forms.MessageBox]::Show(
-            "Обнаружена запущенная игра Skyrim!`n`nПожалуйста, закройте игру прямо сейчас, чтобы установщик мог начисто удалить старые файлы и записать новые, затем нажмите ОК.",
+            "Обнаружена запущенная игра или сервер!`n`nЗавершите игру и сервер обычным способом, затем нажмите ОК. Кампания и квитанции будут сохранены.",
             "RFAB Online - Закройте Skyrim",
             [System.Windows.Forms.MessageBoxButtons]::OKCancel,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -633,21 +626,16 @@ $LegacyModDir = Join-Path $ModsDir "RFAB_Online_MO2"
 $FullModSrc = [System.IO.Path]::GetFullPath($ModSourceDir)
 $FullTargetMod = [System.IO.Path]::GetFullPath($TargetModDir)
 
+$RuntimeBackupRoot = Join-Path $RfabDir "RFAB_Online_Backups"
 if ((Test-Path -LiteralPath $LegacyModDir) -and ([System.IO.Path]::GetFullPath($LegacyModDir) -ne $FullModSrc)) {
-    Remove-DirectoryClean $LegacyModDir
-    Write-Ok "Полностью удалена устаревшая папка мода: $LegacyModDir"
+    New-Item -ItemType Directory -Path $RuntimeBackupRoot -Force | Out-Null
+    $LegacyArchive = Join-Path $RuntimeBackupRoot ("legacy-mod-" + [Guid]::NewGuid().ToString('N'))
+    Move-Item -LiteralPath $LegacyModDir -Destination $LegacyArchive -ErrorAction Stop
+    Write-Ok "Предыдущая папка мода сохранена, не удалена: $LegacyArchive"
 }
-
 if ($FullModSrc -ne $FullTargetMod) {
-    if (Test-Path -LiteralPath $TargetModDir) {
-        Remove-DirectoryClean $TargetModDir
-        Write-Ok "Полностью очищена предыдущая установка мода: $TargetModDir"
-    }
-    New-Item -ItemType Directory -Path $TargetModDir -Force | Out-Null
-    & robocopy ($ModSourceDir.TrimEnd('\')) ($TargetModDir.TrimEnd('\')) /MIR /NFL /NDL /NJH /NJS /NP /R:2 /W:1 | Out-Null
-    if ($LASTEXITCODE -ge 8) {
-        throw "Ошибка копирования файлов мода (robocopy код $LASTEXITCODE)."
-    }
+    Install-RfabCleanTree -Source $ModSourceDir -Destination $TargetModDir -BackupRoot $RuntimeBackupRoot `
+        -KeepPaths @("SKSE\Plugins\RFAB_Online", "SKSE\Plugins\RFAB_Storage.tsv", "SKSE\Plugins\RFAB_Profile.json") | Out-Null
 }
 # Очистка MO2\overwrite от возможных остатков старых версий, чтобы новая версия мода никогда не перекрывалась!
 $Mo2OverwriteDir = Join-Path $Mo2BaseDir "overwrite"
@@ -829,116 +817,8 @@ if (Test-Path -LiteralPath $RestoreScript) {
     Write-Warn "Restore-ModConfigs.ps1 не найден рядом с установщиком - откат правок прежних версий пропущен"
 }
 
-function Test-ValidSkyrimEssFile([string]$EssPath) {
-    try {
-        $fi = New-Object System.IO.FileInfo($EssPath)
-        if (-not $fi.Exists -or $fi.Length -lt 256) { return $false }
-        $fs = [System.IO.File]::Open($EssPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        try {
-            $br = New-Object System.IO.BinaryReader($fs)
-            $magic = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(13))
-            if ($magic -cne "TESV_SAVEGAME") { return $false }
-            $hdrSize = [uint32]$br.ReadUInt32()
-            if ($hdrSize -lt 36 -or $hdrSize -gt 65536 -or ([int64]17 + [int64]$hdrSize) -ge $fi.Length) { return $false }
-            $hdr = $br.ReadBytes([int]$hdrSize)
-            if ($hdr.Length -ne [int]$hdrSize) { return $false }
-            $pos = 0
-            $ver = [System.BitConverter]::ToUInt32($hdr, 0)
-            if ($ver -lt 7 -or $ver -gt 15) { return $false }
-            $pos = 8
-            for ($s = 0; $s -lt 4; $s++) {
-                if ($pos + 2 -gt $hdr.Length) { return $false }
-                $sLen = [int][System.BitConverter]::ToUInt16($hdr, $pos)
-                $pos += 2 + $sLen
-                if ($pos -gt $hdr.Length) { return $false }
-                if ($s -eq 0) {
-                    $pos += 4
-                    if ($pos -gt $hdr.Length) { return $false }
-                }
-            }
-            $pos += 18
-            if ($pos + 8 -gt $hdr.Length) { return $false }
-            $ssW = [int64][System.BitConverter]::ToUInt32($hdr, $pos)
-            $ssH = [int64][System.BitConverter]::ToUInt32($hdr, $pos + 4)
-            $pos += 8
-            if ($ssW -gt 16384 -or $ssH -gt 16384) { return $false }
-            $compType = [uint16]0
-            if ($ver -ge 12) {
-                if ($pos + 2 -gt $hdr.Length) { return $false }
-                $compType = [System.BitConverter]::ToUInt16($hdr, $pos)
-                $pos += 2
-                if ($compType -gt 2) { return $false }
-            }
-            if ($pos -ne $hdr.Length) { return $false }
-            $bpp = if ($ver -ge 12) { [int64]4 } else { [int64]3 }
-            $bodyOff = [int64]17 + [int64]$hdrSize + ($bpp * $ssW * $ssH)
-            if ($fi.Length -le ($bodyOff + 16)) { return $false }
-            if ($ver -ge 12 -and $compType -ne 0) {
-                [void]$fs.Seek($bodyOff, [System.IO.SeekOrigin]::Begin)
-                $uncompLen = [int64]$br.ReadUInt32()
-                $compLen = [int64]$br.ReadUInt32()
-                if ($uncompLen -lt 64 -or $compLen -lt 16) { return $false }
-                if (($bodyOff + 8 + $compLen) -gt $fi.Length) { return $false }
-            } elseif ($fi.Length -lt ($bodyOff + 64)) {
-                return $false
-            }
-            return $true
-        } finally {
-            $fs.Dispose()
-        }
-    } catch {
-        return $false
-    }
-}
-
-function Quarantine-CorruptSavesInDir([string]$SavesDir) {
-    if ([string]::IsNullOrWhiteSpace($SavesDir) -or -not (Test-Path -LiteralPath $SavesDir)) { return 0 }
-    $moved = 0
-    $qDir = Join-Path $SavesDir "Quarantined_Corrupt_v100"
-    Get-ChildItem -LiteralPath $SavesDir -File -ErrorAction SilentlyContinue | ForEach-Object {
-        $n = $_.Name
-        $isBad = $false
-        if ($n.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase) -or
-            $n.EndsWith(".ess.tmp", [System.StringComparison]::OrdinalIgnoreCase)) {
-            if (-not (Test-ValidSkyrimEssFile $_.FullName)) { $isBad = $true }
-        }
-        if ($isBad) {
-            New-Item -ItemType Directory -Path $qDir -Force | Out-Null
-            $dst = Join-Path $qDir $n
-            Move-Item -LiteralPath $_.FullName -Destination $dst -Force -ErrorAction SilentlyContinue
-            $moved++
-            if ($n.EndsWith(".ess", [System.StringComparison]::OrdinalIgnoreCase)) {
-                $sksePath = [System.IO.Path]::ChangeExtension($_.FullName, ".skse")
-                if (Test-Path -LiteralPath $sksePath) {
-                    Move-Item -LiteralPath $sksePath -Destination (Join-Path $qDir ([System.IO.Path]::GetFileName($sksePath))) -Force -ErrorAction SilentlyContinue
-                }
-            }
-        }
-    }
-    return $moved
-}
-
-$TotalQuarantinedSaves = 0
-$DocsSavesRoot = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "My Games\Skyrim Special Edition\Saves"
-$CandidateSaveDirs = New-Object System.Collections.Generic.List[string]
-if (Test-Path -LiteralPath $DocsSavesRoot) {
-    $CandidateSaveDirs.Add($DocsSavesRoot)
-    Get-ChildItem -LiteralPath $DocsSavesRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -ine "Quarantined_Corrupt_v100" -and $_.Name -ine "_RFAB_CorruptQuarantine"
-    } | ForEach-Object { $CandidateSaveDirs.Add($_.FullName) }
-}
-if (Test-Path -LiteralPath (Join-Path $Mo2Dir "profiles")) {
-    Get-ChildItem -LiteralPath (Join-Path $Mo2Dir "profiles") -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-        $profSaves = Join-Path $_.FullName "saves"
-        if (Test-Path -LiteralPath $profSaves) { $CandidateSaveDirs.Add($profSaves) }
-    }
-}
-foreach ($sd in ($CandidateSaveDirs | Select-Object -Unique)) {
-    $TotalQuarantinedSaves += (Quarantine-CorruptSavesInDir $sd)
-}
-if ($TotalQuarantinedSaves -gt 0) {
-    Write-Ok "Перемещено повреждённых/обрезанных .ess сохранений в карантин Quarantined_Corrupt_v100: $TotalQuarantinedSaves"
-}
+# ESS and SKSE co-saves (including unfamiliar/failed saves) are user data. The installer
+# does not classify, move, delete or "repair" them; recovery is explicit and save-pair aware.
 
 try {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -1065,15 +945,8 @@ if (-not [string]::IsNullOrWhiteSpace($ServerSourceDir) -and (Test-Path -Literal
     }
 
     if ([System.IO.Path]::GetFullPath($ServerSourceDir) -ne [System.IO.Path]::GetFullPath($InstalledServerDir)) {
-        if (Test-Path -LiteralPath $InstalledServerDir) {
-            Remove-DirectoryClean $InstalledServerDir
-            Write-Ok "Полностью очищена старая папка сервера: $InstalledServerDir"
-        }
-        New-Item -ItemType Directory -Path $InstalledServerDir -Force | Out-Null
-        & robocopy ($ServerSourceDir.TrimEnd('\')) ($InstalledServerDir.TrimEnd('\')) /MIR /NFL /NDL /NJH /NJS /NP /R:2 /W:1 | Out-Null
-        if ($LASTEXITCODE -ge 8) {
-            throw "Ошибка копирования файлов сервера (robocopy код $LASTEXITCODE)."
-        }
+        Install-RfabCleanTree -Source $ServerSourceDir -Destination $InstalledServerDir -BackupRoot $RuntimeBackupRoot `
+            -KeepPaths @("Data\rfab_campaign", "config\RFAB_Storage.tsv", "config\RFAB_Profile.json") | Out-Null
     }
 
     $SrvDataDir = Join-Path $InstalledServerDir "Data"

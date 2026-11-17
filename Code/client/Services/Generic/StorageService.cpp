@@ -5,6 +5,7 @@
 #include <Services/ObjectService.h>
 #include <Services/LootService.h>
 #include <Coop/ScopedValue.h>
+#include <Coop/StorageCache.h>
 #include <World.h>
 #include <Events/ActivateEvent.h>
 #include <Events/CoopActionEvent.h>
@@ -163,18 +164,19 @@ void StorageService::Reconcile(uint32_t backing, Open open) noexcept
     const Coop::SavedStorage* stamp{};
     for (const auto& saved : saves.State().Storages) if (saved.Form == backing) { stamp = &saved; break; }
     const bool same = Coop::SameInventoryItems(before, desired);
-    if ((stamp && (stamp->Campaign != coop.Campaign() || stamp->Revision > open.Desired.Revision)) ||
-        (!stamp && (!open.Attach || (!before.Entries.empty() && !same))))
+    const auto decision = Coop::StorageCachePolicy(stamp, coop.Campaign(), open.Desired.Revision,
+        open.Desired.NeedsImport, before.Entries.empty(), same, open.Attach);
+    if (decision == Coop::StorageCacheDecision::Blocked)
     {
         if (!open.Notified)
         {
             m_open.at(backing).Notified = true;
-            Utils::ShowHudMessage("RFAB: campaign bank not attached. Local items are untouched. For an empty/matching local cache type rfab_storage_attach; different private contents need explicit recovery.");
+            Utils::ShowHudMessage("RFAB: campaign bank not attached. Local items are untouched. For an empty/matching cache type rfab_storage_attach; different private contents need explicit recovery.");
         }
         return;
     }
-    // No repeated native writes and no cursor growth for unchanged polls.
-    if (!stamp || stamp->Revision != open.Desired.Revision || !same)
+    if (decision == Coop::StorageCacheDecision::AwaitImport || decision == Coop::StorageCacheDecision::AwaitNewRevision) return;
+    if (decision != Coop::StorageCacheDecision::Current)
     {
         Coop::ScopedValue executing(m_executing, true);
         const auto effect = Coop::NativeEffect(Coop::EffectKind::Storage, coop.Session(), coop.Generation(), open.Operation);
@@ -201,6 +203,20 @@ void StorageService::Reconcile(uint32_t backing, Open open) noexcept
         m_world.emplace<ObjectComponent>(entity, open.Desired.Entity);
     }
     m_world.ctx().at<LootService>().AcceptSnapshot(open.Desired.Entity, 0, desired);
+}
+bool StorageService::TransferCommitted(uint32_t form, uint64_t revision, const Inventory& after) noexcept
+{
+    if (!IsBacking(form)) return true;
+    auto& saves = m_world.ctx().at<SaveStateService>();
+    auto& coop = m_world.ctx().at<CoopService>();
+    auto* storage = Cast<TESObjectREFR>(TESForm::GetById(form));
+    if (!storage || !Coop::SameInventoryItems(storage->GetInventory(), after) || !saves.StampStorage({form, coop.Campaign(), revision})) return false;
+    if (auto it = m_open.find(form); it != m_open.end() && revision >= it->second.Desired.Revision)
+    {
+        it->second.Desired.Revision = revision;
+        it->second.Desired.Items.assign(after.Entries.begin(), after.Entries.end());
+    }
+    return true;
 }
 void StorageService::OnUpdate(const UpdateEvent&) noexcept
 {

@@ -97,7 +97,7 @@ if (Test-Path -LiteralPath $PkgBin) {
 function Find-NewestBuiltArtifact([string]$FileName) {
     $searchDirs = @(
         (Join-Path $RepoRoot "build\windows\x64"),
-        $PkgBin
+        $InstallDir
     ) | Where-Object { Test-Path -LiteralPath $_ }
     $hits = foreach ($sd in $searchDirs) {
         Get-ChildItem -LiteralPath $sd -Filter $FileName -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 200 }
@@ -136,6 +136,11 @@ foreach ($pdbName in @("SkyrimSE.pdb", "SkyrimTogether.pdb", "EarlyLoad.pdb", "T
 }
 
 # Гарантируем свежие Data\SKSE\Plugins\RFAB_Online_Bindings.json и собранный UI
+$Bridge = Find-NewestBuiltArtifact "RFAB_CoopState.dll"
+if (-not $Bridge) { throw "Required freshly built RFAB_CoopState.dll is missing; an old companion was not silently reused." }
+New-Item -ItemType Directory -Path (Join-Path $DistMo2 "SKSE\Plugins") -Force | Out-Null
+Copy-Item -LiteralPath $Bridge.FullName -Destination (Join-Path $DistMo2 "SKSE\Plugins\RFAB_CoopState.dll") -Force
+
 Copy-Item -LiteralPath (Join-Path $RepoRoot "Data\SKSE\Plugins\RFAB_Online_Bindings.json") -Destination (Join-Path $DistMo2 "SKSE\Plugins\RFAB_Online_Bindings.json") -Force
 if (Test-Path -LiteralPath (Join-Path $RepoRoot "Code\skyrim_ui\dist\UI\index.html")) {
     & robocopy (Join-Path $RepoRoot "Code\skyrim_ui\dist\UI") (Join-Path $DistStr "UI") /MIR /NFL /NDL /NJH /NJS /NP /R:2 /W:1 | Out-Null

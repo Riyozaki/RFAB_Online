@@ -82,6 +82,8 @@ public:
     void Uncertain(EffectId) noexcept;
     // Scaling stamps are saved with native HP, not kept in the ActorExtension/session only.
     bool StampScale(SavedScale);
+    // A bank cache reconciliation stamps at Prepared; a paired native transfer advances its
+    // already adopted cache revision at Applied, before its final Committed publication.
     bool StampStorage(SavedStorage);
     void Fault() noexcept { m_faulted = true; }
 private:

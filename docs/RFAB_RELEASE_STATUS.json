@@ -23,24 +23,25 @@
     "encounter_reset_interior_and_exterior": "server model and staged client receipts implemented; native grounding/save boundary unverified",
     "semantic_rfab_xp": "pending",
     "enemy_health_scaling": "pending",
-    "shared_persistent_secure_chests": "installed VMAD generator/catalog, hidden-backing native service and explicit import/empty-cache adoption wired; storage wire/failure coverage in progress, Windows/game unverified",
+    "shared_persistent_secure_chests": "installed VMAD generator/catalog, hidden-backing service, explicit import/adoption and same-revision cache-race fence wired; six production-wire scenarios pass including cross-cohort access/privacy/restart; Windows/game unverified",
     "quickloot_and_autoloot": "native TESObjectREFR/Actor/Player RemoveItem gates wired; real mod/game path unverified",
     "checkpoint_reload": "pending",
-    "adaptive_bindings_and_capability_negotiation": "protocol2; inventory advertised only with installed hooks and loaded matching SKSE co-save; RFAB-specific adapters still pending",
+    "adaptive_bindings_and_capability_negotiation": "protocol3; catalog signatures and all backing/access plugins checked; inventory advertised only with installed hooks and a loaded matching SKSE co-save; RFAB XP/HP adapters still pending",
     "candidate_build_and_fault_injection": "pending"
   },
   "game_tested": false,
   "note": "Progress declarations are not test evidence. Keep ready_for_playtest false until all production paths are wired, the full automated matrix and Windows build pass, and candidate packaging is verified. In-game validation happens after that single candidate.",
   "automated_evidence": {
-    "core_plain": "65 cases / 26817 assertions; 2026-11-17, before latest storage wire fields",
-    "server_plain": "5 production-wire scenarios + portable crash-record self-test; 2026-11-17",
+    "core_plain": "66 cases / 26823 assertions; storage same-revision/native timeline regression; 2026-11-17",
+    "server_plain": "6 production-wire scenarios + portable crash-record self-test; includes import/race/deposit/lease/lock/privacy/missing-plugin restart refusal; 2026-11-17",
     "strict_hook_audit": "0 findings; hook self-test44 / actor-lifetime self-test21; source checks are not engine threading proof",
     "powershell": "not run locally: pwsh unavailable",
-    "windows_client": "first diagnostic run44135805841 failed on missing CommonLib→SkyrimEncoding dependency; xmake edge fixed, rerun pending",
-    "sanitizers": "portable core passed; full server/native sanitizer validation pending",
-    "core_sanitized": "63 cases / 274427 assertions; ASan+UBSan, 128 fuzz / 512 soak seeds; 2026-11-17",
+    "windows_client": "44135805841 failed (encoding include dependency, Winsock macro); both fixed; 44140814679 on8701c61 still building at last check; newest storage/native/installer changes not included",
+    "sanitizers": "latest storage core passed; refreshed server sanitizer build running (an earlier parallel build hit sandbox memory limit, not a test pass)",
+    "core_sanitized": "66 cases / 274595 assertions; ASan+UBSan, 128 fuzz / 512 soak seeds; 2026-11-17",
     "strict_static": "passed; wire0new/0stale/8known; SE3086sites/3081unique/0AE; pwsh skipped",
-    "linux_ci": "commit3f70c8e: core/plain, core/ASan+UBSan, server/ASan+UBSan, UI jobs passed",
-    "storage_profile": "12 synthetic installed-plugin/VMAD parser tests passed"
+    "linux_ci": "8701c61/run44140814737 success; earlier3f70c8e plain/sanitized core, sanitized server, UI all passed; newest uncommitted changes not included",
+    "storage_profile": "12 synthetic installed-plugin/VMAD parser tests passed",
+    "installer": "new retained-backup/runtime-preservation and live-lease refusal self-tests wired to Linux pwsh/Windows; no local pwsh, native result pending"
   }
 }

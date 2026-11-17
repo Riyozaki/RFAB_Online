@@ -95,6 +95,11 @@ $IsPrereleaseTag = ($VersionTag.Contains("-")) -or $script:RfabOptInPrerelease -
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:RfabScriptRoot "Test-PowerShellSyntax.ps1")
+if ($LASTEXITCODE -ne 0) { throw "PowerShell 5.1 source parsing failed" }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:RfabScriptRoot "Preserve-RuntimeData.ps1") -SelfTest
+if ($LASTEXITCODE -ne 0) { throw "Runtime-preservation self-test failed" }
+
 
 $script:PackagesReady = $false
 $script:V202BackupReady = $false

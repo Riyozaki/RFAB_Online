@@ -151,8 +151,16 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
         Send(aPlayer, response);
         return;
     }
+    bool storageProfile = !m_storageAccess.empty();
+    if (aHello.Capabilities & Coop::PersistentStorage)
+        for (const auto& rule : m_storageCatalog.Rules())
+            for (const auto& form : {rule.Access, rule.Backing})
+            {
+                const auto id = m_world.ctx().at<ModsComponent>().Find(String(form.Plugin.data(), form.Plugin.size()), form.Light);
+                storageProfile &= id && aPlayer->HasMod(*id);
+            }
     if ((aHello.Capabilities & Coop::PersistentStorage) &&
-        (m_storageAccess.empty() || !aHello.StorageSignature || aHello.StorageSignature != m_storageCatalog.Signature()))
+        (!storageProfile || !aHello.StorageSignature || aHello.StorageSignature != m_storageCatalog.Signature()))
     {
         response.Error = "Client/server secure-storage catalogs differ or are missing. Deploy the same installed-profile output to both ends";
         Send(aPlayer, response);
