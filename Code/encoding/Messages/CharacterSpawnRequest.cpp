@@ -6,7 +6,6 @@ void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
     FormId.Serialize(aWriter);
     BaseId.Serialize(aWriter);
     CellId.Serialize(aWriter);
-    WorldSpaceId.Serialize(aWriter);
     Position.Serialize(aWriter);
     Rotation.Serialize(aWriter);
     aWriter.WriteBits(ChangeFlags, 32);
@@ -17,12 +16,12 @@ void CharacterSpawnRequest::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter)
     FaceTints.Serialize(aWriter);
     InitialActorValues.Serialize(aWriter);
     Serialization::WriteVarInt(aWriter, PlayerId);
+    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
     Serialization::WriteBool(aWriter, IsDead);
     Serialization::WriteBool(aWriter, IsPlayer);
     Serialization::WriteBool(aWriter, IsWeaponDrawn);
     Serialization::WriteBool(aWriter, IsPlayerSummon);
-    Serialization::WriteBool(aWriter, IsDragon);
-    Serialization::WriteVarInt(aWriter, HealthRevision);
+    LeveledNpcPickId.Serialize(aWriter);
 }
 
 void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -33,7 +32,6 @@ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
     FormId.Deserialize(aReader);
     BaseId.Deserialize(aReader);
     CellId.Deserialize(aReader);
-    WorldSpaceId.Deserialize(aReader);
     Position.Deserialize(aReader);
     Rotation.Deserialize(aReader);
 
@@ -53,12 +51,13 @@ void CharacterSpawnRequest::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReade
 
     FaceTints.Deserialize(aReader);
     InitialActorValues.Deserialize(aReader);
+    if (!InitialActorValues.IsValid()) return;
     PlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
     IsDead = Serialization::ReadBool(aReader);
     IsPlayer = Serialization::ReadBool(aReader);
     IsWeaponDrawn = Serialization::ReadBool(aReader);
     IsPlayerSummon = Serialization::ReadBool(aReader);
-    IsDragon = Serialization::ReadBool(aReader);
-    HealthRevision = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    LeveledNpcPickId.Deserialize(aReader);
 }

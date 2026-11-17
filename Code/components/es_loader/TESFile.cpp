@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <common/Compat/SafeFs.h>
 
 namespace ESLoader
 {
@@ -24,7 +25,16 @@ void TESFile::Setup(uint16_t aLiteId)
 
 bool TESFile::LoadFile(const std::filesystem::path& acPath) noexcept
 {
-    m_filename = acPath.filename().string();
+    // The ANSI form as before; when the code page cannot hold the name, UTF-8 instead of an
+    // exception that would leave this noexcept function (M14). The name is only used in messages.
+    try
+    {
+        m_filename = acPath.filename().string(); // fs-throws-ok: caught right here
+    }
+    catch (...)
+    {
+        m_filename = Compat::SafeFs::FileNameUtf8Lossy(acPath).c_str();
+    }
 
     std::error_code ec;
     const uintmax_t fileSize = std::filesystem::file_size(acPath, ec);

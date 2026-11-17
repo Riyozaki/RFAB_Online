@@ -14,35 +14,35 @@
 #include <Messages/NotifyPlayerHealthUpdate.h>
 
 #include "Game/Player.h"
-#include <common/CoopPacketSafety.h>
 
-#include <algorithm>
-#include <cmath>
+#include <cctype>
 
 namespace
 {
-constexpr size_t kMaxSanitizedChatLength = 1024;
-
-String StripHtmlTagsNoThrow(const String& acInput) noexcept
+String StripHtmlTagsLinear(const String& acInput) noexcept
 {
     String out;
-    const size_t maxBytes = std::min(acInput.size(), kMaxSanitizedChatLength);
-    out.reserve(maxBytes);
+    out.reserve(acInput.size());
 
     size_t i = 0;
-    while (i < maxBytes)
+    const size_t n = acInput.size();
+    while (i < n)
     {
         if (acInput[i] == '<')
         {
-            const size_t closePos = acInput.find('>', i + 1);
-            if (closePos != String::npos && closePos < maxBytes)
+            const size_t close = acInput.find('>', i + 1);
+            if (close != String::npos && close > i + 1)
             {
-                i = closePos + 1;
+                size_t next = close + 1;
+                size_t wsEnd = next;
+                while (wsEnd < n && std::isspace(static_cast<unsigned char>(acInput[wsEnd])))
+                    ++wsEnd;
+                if (wsEnd > next && wsEnd < n && acInput[wsEnd] == '<')
+                    i = wsEnd;
+                else
+                    i = next;
                 continue;
             }
-            // Unclosed '<': skip literal '<' to prevent HTML injection without regex backtracking.
-            ++i;
-            continue;
         }
         out.push_back(acInput[i]);
         ++i;
@@ -68,9 +68,10 @@ void sendPlayerMessage(const ChatMessageType acType, const String acContent, Pla
         return;
 
     NotifyChatMessageBroadcast notifyMessage{};
+
     notifyMessage.MessageType = acType;
-    notifyMessage.PlayerName = StripHtmlTagsNoThrow(aSendingPlayer->GetUsername());
-    notifyMessage.ChatMessage = StripHtmlTagsNoThrow(acContent);
+    notifyMessage.PlayerName = StripHtmlTagsLinear(aSendingPlayer->GetUsername());
+    notifyMessage.ChatMessage = StripHtmlTagsLinear(acContent);
 
     auto character = aSendingPlayer->GetCharacter();
 
@@ -112,48 +113,38 @@ void OverlayService::HandleChatMessage(const PacketEvent<SendChatMessageRequest>
 
 void OverlayService::OnPlayerDialogue(const PacketEvent<PlayerDialogueRequest>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer)
-        return;
-
     sendPlayerMessage(kPlayerDialogue, acMessage.Packet.Text, acMessage.pPlayer);
 }
 
 void OverlayService::OnTeleport(const PacketEvent<TeleportRequest>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer)
-        return;
-
     Player* pTargetPlayer = m_world.GetPlayerManager().GetById(acMessage.Packet.PlayerId);
     if (!pTargetPlayer)
         return;
 
-    auto character = pTargetPlayer->GetCharacter();
-    if (!character || !m_world.valid(*character))
-        return;
-
-    const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
-    const auto& cellComponent = pTargetPlayer->GetCellComponent();
-    if (!pMovementComponent ||
-        !CoopPacketSafety::IsFiniteVec3(pMovementComponent->Position) ||
-        (!cellComponent.Cell && !cellComponent.WorldSpaceId))
-        return;
-
     NotifyTeleport response{};
-    response.CellId = cellComponent.Cell;
-    response.Position = pMovementComponent->Position;
-    response.WorldSpaceId = cellComponent.WorldSpaceId;
+
+    auto character = pTargetPlayer->GetCharacter();
+    if (character)
+    {
+        const auto* pMovementComponent = m_world.try_get<MovementComponent>(*character);
+        if (pMovementComponent)
+        {
+            const auto& cellComponent = pTargetPlayer->GetCellComponent();
+            response.CellId = cellComponent.Cell;
+            response.Position = pMovementComponent->Position;
+            response.WorldSpaceId = cellComponent.WorldSpaceId;
+        }
+    }
 
     acMessage.pPlayer->Send(response);
 }
 
 void OverlayService::OnPlayerHealthUpdate(const PacketEvent<RequestPlayerHealthUpdate>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer || !std::isfinite(acMessage.Packet.Percentage))
-        return;
-
     NotifyPlayerHealthUpdate notify{};
     notify.PlayerId = acMessage.pPlayer->GetId();
-    notify.Percentage = std::clamp(acMessage.Packet.Percentage, 0.0f, 100.0f);
+    notify.Percentage = acMessage.Packet.Percentage;
 
     GameServer::Get()->SendToParty(notify, acMessage.pPlayer->GetParty(), acMessage.GetSender());
 }

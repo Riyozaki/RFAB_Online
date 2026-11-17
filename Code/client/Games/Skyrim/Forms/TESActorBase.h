@@ -27,13 +27,7 @@ struct TESActorBase : TESBoundAnimObject
     BGSKeywordForm keywordForm;
     BGSAttackDataForm attackDataForm;
     BGSPerkRankArray perkRanks;
-
-    bool IsGhostBase() const noexcept { return actorData.IsGhostBase(); }
-    bool IsInvulnerableBase() const noexcept { return actorData.IsInvulnerableBase(); }
 };
 
-#ifdef _MSC_VER
 static_assert(offsetof(TESActorBase, spellList) == 0xA0);
-#else
-static_assert(offsetof(TESActorBase, spellList) == 0x98);
-#endif
+static_assert(sizeof(TESActorBase) == 0x150);

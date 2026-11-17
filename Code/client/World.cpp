@@ -13,7 +13,6 @@
 #include <Services/QuestService.h>
 #include <Services/ActorValueService.h>
 #include <Services/InventoryService.h>
-#include <Services/WorldItemService.h>
 #include <Services/MagicService.h>
 #include <Services/CommandService.h>
 #include <Services/CalendarService.h>
@@ -22,28 +21,23 @@
 #include <Services/CombatService.h>
 #include <Services/WeatherService.h>
 #include <Services/MapService.h>
+#include <Services/CoopService.h>
+#include <Services/LootService.h>
+#include <Services/SaveStateService.h>
 
 #include <Events/PreUpdateEvent.h>
 #include <Events/UpdateEvent.h>
+#include <Events/WorldLoadedEvent.h>
 
-#include <Games/Skyrim/Interface/UI.h>
-#include <Misc/BSFixedString.h>
-#include <ModCompat/BehaviorVar.h>  
+#include <ModCompat/BehaviorVar.h>
 
 World::World()
-    : m_runner(m_dispatcher, m_mainThreadQueue, m_lifecycle)
+    : m_runner(m_dispatcher)
     , m_transport(*this, m_dispatcher)
     , m_modSystem(m_dispatcher)
     , m_lastFrameTime{std::chrono::high_resolution_clock::now()}
-    , m_lastPausedPumpTime{m_lastFrameTime}
 {
-    s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
     ctx().emplace<ImguiService>();
-    // Before every service that reports gaps to it (CharacterService, StringCacheService, ...).
-    ctx().emplace<SessionResyncService>(*this, m_dispatcher, m_transport);
-    m_pRfabAdapterService = &ctx().emplace<RfabAdapterService>(*this, m_dispatcher, m_transport);
-    m_pDownedStateService = &ctx().emplace<DownedStateService>(*this, m_dispatcher, m_transport);
-    ctx().emplace<CoordinatedSaveService>(*this, m_dispatcher, m_transport);
     ctx().emplace<DiscoveryService>(*this, m_dispatcher);
     ctx().emplace<OverlayService>(*this, m_transport, m_dispatcher);
     ctx().emplace<InputService>(ctx().at<OverlayService>());
@@ -57,7 +51,6 @@ World::World()
     ctx().emplace<PartyService>(*this, m_dispatcher, m_transport);
     ctx().emplace<ActorValueService>(*this, m_dispatcher, m_transport);
     ctx().emplace<InventoryService>(*this, m_dispatcher, m_transport);
-    ctx().emplace<WorldItemService>(*this, m_dispatcher, m_transport);
     ctx().emplace<MagicService>(*this, m_dispatcher, m_transport);
     ctx().emplace<CommandService>(*this, m_transport, m_dispatcher);
     ctx().emplace<PlayerService>(*this, m_dispatcher, m_transport);
@@ -65,131 +58,92 @@ World::World()
     ctx().emplace<CombatService>(*this, m_transport, m_dispatcher);
     ctx().emplace<WeatherService>(*this, m_transport, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher, m_transport);
-
-    RegisterLifecycleParticipants();
+    ctx().emplace<SaveStateService>(*this);
+    ctx().emplace<CoopService>(*this, m_dispatcher, m_transport);
+    ctx().emplace<LootService>(*this, m_dispatcher, m_transport);
 
     BehaviorVar::Get()->Init();
-}
-
-// The one list of subsystems with session- or world-scoped state. Registration order does not matter:
-// dispatch order is the Session::ParticipantId order (common/Session/Lifecycle.h), pinned by
-// Code/tests/rfab_v410_session_lifecycle.cpp together with the reason for every dependency.
-void World::RegisterLifecycleParticipants() noexcept
-{
-    using Session::ParticipantId;
-    const auto add = [this](ParticipantId aId, Session::IParticipant& aParticipant) {
-        if (!m_lifecycle.Register(aId, aParticipant))
-            spdlog::error("[RFAB Lifecycle] participant {} registered twice", std::string(Session::NameOf(aId)));
-    };
-
-    add(ParticipantId::kModTable, m_modSystem);
-    add(ParticipantId::kStringTable, ctx().at<StringCacheService>());
-    add(ParticipantId::kDiscovery, GetDiscoveryService());
-    add(ParticipantId::kActorValues, GetActorValueService());
-    add(ParticipantId::kCharacters, GetCharacterService());
-    add(ParticipantId::kObjects, GetObjectService());
-    add(ParticipantId::kInventory, GetInventoryService());
-    add(ParticipantId::kWorldItems, ctx().at<WorldItemService>());
-    add(ParticipantId::kMagic, GetMagicService());
-    add(ParticipantId::kDowned, GetDownedStateService());
-    add(ParticipantId::kCoordinatedSaves, GetCoordinatedSaveService());
-    add(ParticipantId::kParty, GetPartyService());
-    add(ParticipantId::kPlayer, GetPlayerService());
-    add(ParticipantId::kCalendar, ctx().at<CalendarService>());
-    add(ParticipantId::kWeather, ctx().at<WeatherService>());
-    add(ParticipantId::kQuests, ctx().at<QuestService>());
-    add(ParticipantId::kRfabAdapter, GetRfabAdapterService());
-    add(ParticipantId::kOverlay, GetOverlayService());
-    add(ParticipantId::kResync, GetSessionResyncService());
-
-    for (const ParticipantId missing : m_lifecycle.MissingParticipants())
-        spdlog::error("[RFAB Lifecycle] participant {} is not registered: its session state will never be reset",
-                      std::string(Session::NameOf(missing)));
-
-    m_lifecycle.SetObserver(&World::LogLifecycleTransition, this);
-}
-
-void World::LogLifecycleTransition(void* apWorld, const Session::Transition& acTransition, Session::Phase aPhaseAfter) noexcept
-{
-    switch (acTransition.Kind)
-    {
-    case Session::Signal::kSessionBegin:
-        spdlog::info("[RFAB Lifecycle] session #{} begins (player id {}) -> {}", acTransition.SessionGeneration,
-                     acTransition.LocalPlayerId, std::string(Session::ToString(aPhaseAfter)));
-        break;
-    case Session::Signal::kSessionEnd:
-        spdlog::info("[RFAB Lifecycle] session #{} ends ({}{}) -> {}", acTransition.SessionGeneration,
-                     acTransition.Reason == Session::EndReason::kReauthenticated ? "re-authenticated" : "transport lost",
-                     acTransition.DuringWorldLoad ? ", during a world load" : "", std::string(Session::ToString(aPhaseAfter)));
-        // Cumulative since game start: a playtest log shows whether hook traffic was lost or stale.
-        if (apWorld)
-            static_cast<const World*>(apWorld)->LogMainThreadQueueStats("session end");
-        break;
-    case Session::Signal::kWorldLoadBegin:
-        spdlog::info("[RFAB Lifecycle] world #{} load begins ({}{}) -> {}", acTransition.WorldGeneration,
-                     acTransition.LiveReload ? "coordinated live reload" : (acTransition.Online ? "uncoordinated, session will close" : "offline"),
-                     acTransition.Repeated ? ", engine started the committed load" : "", std::string(Session::ToString(aPhaseAfter)));
-        break;
-    case Session::Signal::kWorldLoadEnd:
-        spdlog::info("[RFAB Lifecycle] world #{} load {} -> {}", acTransition.WorldGeneration,
-                     acTransition.Succeeded ? "finished" : (acTransition.Cancelled ? "cancelled before the engine started it" : "FAILED"),
-                     std::string(Session::ToString(aPhaseAfter)));
-        break;
-    }
-}
-
-void World::PublishFeatureMask(uint32_t aDisabledMask) noexcept
-{
-    const uint32_t previous = s_disabledFeatureMaskCached.exchange(aDisabledMask, std::memory_order_acq_rel);
-    if (previous == aDisabledMask)
-        return;
-
-    // One line per change so a playtest log always shows which switches were active.
-    for (const auto& info : Session::kFeatureTable)
-    {
-        const bool wasEnabled = Session::IsEnabledIn(previous, info.Bit);
-        const bool isEnabled = Session::IsEnabledIn(aDisabledMask, info.Bit);
-        if (wasEnabled != isEnabled)
-            spdlog::info("[RFAB Features] {} is now {} (server setting)", std::string(info.Name), isEnabled ? "enabled" : "DISABLED");
-    }
+    EventDispatcherManager::Get()->loadGameEvent.RegisterSink(this);
 }
 
 World::~World()
 {
-    m_mainThreadQueue.Clear();
-    s_isConnectedCached.store(false, std::memory_order_release);
-    s_isContainerMenuOpenCached.store(false, std::memory_order_release);
-    s_syncPlayerHomesCached.store(false, std::memory_order_release);
-    s_pvpEnabledCached.store(false, std::memory_order_release);
-    s_enemyHealthMultiplierCached.store(1.0f, std::memory_order_release);
-    s_currentTickCached.store(0, std::memory_order_release);
-    s_disabledFeatureMaskCached.store(0u, std::memory_order_release);
-    s_worldCreated.store(false, std::memory_order_release);
+    s_published.store(nullptr, std::memory_order_release);
+    EventDispatcherManager::Get()->loadGameEvent.UnRegisterSink(this);
+    m_runner.Invalidate();
+}
+
+void World::SignalWorldLoad() noexcept
+{
+    auto* world = s_published.load(std::memory_order_acquire);
+    if (!world) return;
+    world->m_loadingWorld.store(true, std::memory_order_release);
+    world->m_nativeFlags.fetch_and(~1u, std::memory_order_release);
+    world->m_runner.Invalidate();
+    world->m_preloadPending.store(true, std::memory_order_release);
+}
+
+void World::PrepareForWorldLoad() noexcept
+{
+    if (!RFAB_EXPECT_MAIN_THREAD()) return;
+    SignalWorldLoad();
+    m_preloadPending.store(false, std::memory_order_release);
+    m_transport.Close();
+    // Disconnect observers drop network bindings but NEVER queue Delete/Disable/Enable tasks
+    // against actors that the engine is about to replace. The engine unloads those references.
+}
+
+BSTEventResult World::OnEvent(const TESLoadGameEvent*, const EventDispatcher<TESLoadGameEvent>*)
+{
+    // The engine can report this from its load/VM path. Never enter the transport, dispatcher
+    // or registry here. Invalidate immediately; finish teardown BEFORE the next discovery pass.
+    m_loadingWorld.store(true, std::memory_order_release);
+    m_nativeFlags.fetch_and(~1u, std::memory_order_release);
+    m_runner.Invalidate();
+    m_loadPending.store(true, std::memory_order_release);
+    return BSTEventResult::kOk;
 }
 
 void World::Update() noexcept
 {
-    // Architectural invariant: `World::Update()` is driven strictly from `HookMainLoop` (`SE 35565`)
-    // on Skyrim's real `WinMain` thread BEFORE `RealMainLoop` dispatches `BSJobs` workers or runs
-    // `TES::PurgeExteriorCells`. `s_mainThreadId` is anchored exclusively in `World::World()` and
-    // `World::OnMainThreadUpdate()`.
-    PublishThreadSnapshot();
-
+    if (!RFAB_EXPECT_MAIN_THREAD())
+        return;
+    if (m_preloadPending.exchange(false, std::memory_order_acq_rel)) m_transport.Close();
+    bool bridgeComplete = false;
+    if (auto loaded = SaveStateBridge::TakeCompleted())
+    {
+        bridgeComplete = true;
+        ctx().at<SaveStateService>().Adopt(std::move(*loaded));
+        m_loadPending.store(true, std::memory_order_release);
+    }
+    // No discovery, packet consumers or posted engine work may run during native load. A failed
+    // load is also completed by SKSE; it disconnects and faults persistence, never resumes a party.
+    if (m_loadingWorld.load(std::memory_order_acquire) && SaveStateBridge::Installed() && !bridgeComplete) return;
+    if (m_loadPending.exchange(false, std::memory_order_acq_rel))
+    {
+        m_runner.Invalidate();
+        m_transport.Close();
+        if (!SaveStateBridge::Installed()) ctx().at<SaveStateService>().AdoptWithoutBridge();
+        m_dispatcher.trigger(WorldLoadedEvent{});
+        m_loadingWorld.store(false, std::memory_order_release);
+    }
+    ctx().at<SaveStateService>().PollFault();
+    m_tick.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
     const auto cNow = std::chrono::high_resolution_clock::now();
     const auto cDelta = cNow - m_lastFrameTime;
     m_lastFrameTime = cNow;
 
-    const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
-    const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
+    const auto cDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
 
-    if (m_lifecycle.SetPaused(false))
-        spdlog::debug("[RFAB Lifecycle] simulation resumed -> {}", std::string(Session::ToString(m_lifecycle.GetPhase())));
-
-    m_transport.FlushPausedInboundPackets();
-
+    if (m_runner.ConsumeOverflow())
+    {
+        spdlog::error("[RFAB] main-thread queue overflow: disconnecting rather than losing authoritative operations silently");
+        m_runner.Invalidate();
+        m_transport.Close();
+    }
     m_dispatcher.trigger(PreUpdateEvent(cDeltaSeconds));
 
-    // Hook-posted work of the frames since the last simulated one runs before the services update.
+    // Force run this before so we get the tasks scheduled to run
     m_runner.OnUpdate(UpdateEvent(cDeltaSeconds));
     m_dispatcher.trigger(UpdateEvent(cDeltaSeconds));
 }
@@ -211,127 +165,20 @@ ModSystem& World::GetModSystem() noexcept
 
 uint64_t World::GetTick() const noexcept
 {
-    if (IsMainThread())
-        return m_transport.GetClock().GetCurrentTick();
-    return s_currentTickCached.load(std::memory_order_acquire);
+    return m_tick.load(std::memory_order_acquire);
 }
 
 void World::Create() noexcept
 {
+    ThreadAffinity::BindMainThread();
     if (!entt::locator<World>::has_value())
     {
         entt::locator<World>::emplace();
+        s_published.store(&entt::locator<World>::value(), std::memory_order_release);
     }
-    s_worldCreated.store(true, std::memory_order_release);
 }
 
 World& World::Get() noexcept
 {
-    return entt::locator<World>::value();
-}
-
-void World::UpdatePausedPump() noexcept
-{
-    // Safe WinMain-only paused-menu pump (`StatsMenu` RFAB perks, `MapMenu`, `Journal Menu` ESC, `Console`):
-    // keeps GameNetworkingSockets heartbeats/handshakes, party/chat UI packets, and CoordinatedSaveService
-    // barriers alive without running world simulation services (`DiscoveryService`, `CharacterService`,
-    // `InterpolationSystem`, `Sky`, `TimeData`, or the simulation lane: hook events wait for the next
-    // simulated frame; the always-lane (UI commands, save control) keeps running in OnMainThreadUpdate).
-    PublishThreadSnapshot();
-
-    const auto cNow = std::chrono::high_resolution_clock::now();
-    const auto cDelta = cNow - m_lastPausedPumpTime;
-    m_lastPausedPumpTime = cNow;
-
-    const double rawDeltaSeconds = std::chrono::duration_cast<std::chrono::duration<double>>(cDelta).count();
-    const double cDeltaSeconds = std::clamp(rawDeltaSeconds, 0.0, 0.25);
-
-    if (m_lifecycle.SetPaused(true))
-        spdlog::debug("[RFAB Lifecycle] simulation paused (menu) -> {}", std::string(Session::ToString(m_lifecycle.GetPhase())));
-
-    m_isPausedPumpActive = true;
-    m_transport.PollWhileSimulationPaused();
-    GetCoordinatedSaveService().TickWhilePaused(cDeltaSeconds);
-    m_isPausedPumpActive = false;
-}
-
-void World::PublishThreadSnapshot() noexcept
-{
-    // The one writer of the state hooks read without locks. Runs at the top of every simulated frame
-    // and every paused pump, so the snapshot is at most one main-loop iteration old in both modes.
-    const bool isConn = m_transport.IsConnected();
-    s_isConnectedCached.store(isConn, std::memory_order_release);
-    if (isConn)
-    {
-        static const BSFixedString* s_pContainerMenu = new BSFixedString("ContainerMenu");
-        auto* const pUi = UI::Get();
-        const bool containerOpen = pUi && pUi->GetMenuOpen(*s_pContainerMenu);
-        s_isContainerMenuOpenCached.store(containerOpen, std::memory_order_release);
-        s_currentTickCached.store(m_transport.GetClock().GetCurrentTick(), std::memory_order_release);
-    }
-    else
-    {
-        s_isContainerMenuOpenCached.store(false, std::memory_order_release);
-        s_currentTickCached.store(0, std::memory_order_release);
-        // A previous server's switches must not outlive its session (IsFeatureEnabled contract), also
-        // when it drops while a menu is open; the next server publishes its own mask in
-        // AuthenticationResponse. No-op when already 0.
-        PublishFeatureMask(0u);
-    }
-}
-
-void World::OnMainThreadUpdate() noexcept
-{
-    s_mainThreadId.store(GetCurrentThreadId(), std::memory_order_release);
-
-    // Not session-scoped (QueueMainThreadTask posts with an empty token), so no staleness predicate.
-    m_mainThreadQueue.Drain(Session::Lane::kAlways, [](Session::Token) noexcept { return true; });
-}
-
-void World::QueueMainThreadTask(std::function<void()> aTask) noexcept
-{
-    if (!aTask)
-        return;
-
-    if (m_mainThreadQueue.Post(Session::Lane::kAlways, Session::Token{}, m_lifecycle.IsWorldLoadingAnyThread(), std::move(aTask)))
-        return;
-
-    if (m_alwaysLaneOverflowWarnings.fetch_add(1, std::memory_order_relaxed) < 8)
-    {
-        spdlog::warn("[RFAB MainThread] always-lane full ({} tasks): a UI/main-thread task was dropped",
-                     m_mainThreadQueue.GetCapacity(Session::Lane::kAlways));
-    }
-}
-
-void World::LogMainThreadQueueStats(const char* apWhen) const noexcept
-{
-    for (const auto lane : {Session::Lane::kSimulation, Session::Lane::kAlways})
-    {
-        const Session::LaneStats stats = m_mainThreadQueue.GetStats(lane);
-        if (stats.Posted == 0)
-            continue;
-        const bool anomalous = stats.DroppedOverflow != 0 || stats.Failed != 0;
-        const spdlog::level::level_enum logLevel = anomalous ? spdlog::level::warn : spdlog::level::info;
-        spdlog::log(logLevel,
-                    "[RFAB MainThread] {} lane at {}: posted {}, executed {}, dropped stale {}, dropped overflow {}, failed {}, "
-                    "posted during world load {}, pending {}, high water {}",
-                    std::string(Session::ToString(lane)), apWhen, stats.Posted, stats.Executed, stats.DroppedStale,
-                    stats.DroppedOverflow, stats.Failed, stats.PostedDuringWorldLoad, stats.Pending, stats.HighWater);
-    }
-}
-
-bool World::IsMainThread() noexcept
-{
-    const uint32_t mainTid = s_mainThreadId.load(std::memory_order_acquire);
-    return mainTid != 0 && GetCurrentThreadId() == mainTid;
-}
-
-void ThreadAffinity::ReportIfNotMainThread(const char* apWhere, std::atomic<bool>& aReported) noexcept
-{
-    if (!World::IsCreated() || World::IsMainThread())
-        return;
-    if (aReported.exchange(true, std::memory_order_relaxed))
-        return;
-    spdlog::error("[RFAB MainThread] {} ran on thread {}, but it is a main-thread gate: please report this log", apWhere ? apWhere : "?",
-                  static_cast<uint32_t>(GetCurrentThreadId()));
+    return *s_published.load(std::memory_order_acquire);
 }

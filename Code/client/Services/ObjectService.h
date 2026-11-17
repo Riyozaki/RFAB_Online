@@ -2,9 +2,11 @@
 
 #include <Events/EventDispatcher.h>
 #include <Games/Events.h>
-#include <common/Session/Lifecycle.h>
+#include <map>
+struct TESObjectREFR;
 
 struct ServerTimeSettings;
+struct DisconnectedEvent;
 struct World;
 struct ActivateEvent;
 struct TransportService;
@@ -19,19 +21,15 @@ struct NotifyScriptAnimation;
 /**
  * @brief Handles objects in the environment.
  */
-class ObjectService final : public BSTEventSink<TESActivateEvent>, public Session::IParticipant
+class ObjectService final : public BSTEventSink<TESActivateEvent>
 {
 public:
     ObjectService(World&, entt::dispatcher&, TransportService&);
-    [[nodiscard]] static bool IsFactionCrimeContainer(uint32_t aFormId) noexcept;
-    void RefreshCurrentCellObjectsAfterRollback() noexcept;
-
-    // Session::ParticipantId::kObjects: object entities are server assignments for one world.
-    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
-    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
+    bool EnsureInventoryObject(uint32_t aForm) noexcept;
+    bool IsSharedInventoryObject(const TESObjectREFR*) const noexcept;
 
 private:
-    void DestroyObjectEntities() noexcept;
+    void OnDisconnected(const DisconnectedEvent&) noexcept;
     void OnCellChange(const CellChangeEvent&) noexcept;
     void OnAssignObjectsResponse(const AssignObjectsResponse&) noexcept;
     void OnActivate(const ActivateEvent&) noexcept;
@@ -48,6 +46,8 @@ private:
     World& m_world;
     TransportService& m_transport;
 
+    std::map<uint32_t, uint64_t> m_accessRequests;
+    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_cellChangeConnection;
     entt::scoped_connection m_onActivateConnection;
     entt::scoped_connection m_activateConnection;

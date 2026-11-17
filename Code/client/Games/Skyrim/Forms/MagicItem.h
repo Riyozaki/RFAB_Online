@@ -15,8 +15,6 @@ struct MagicItem : TESBoundObject
     bool IsBuffSpell() const noexcept;
     bool IsBoundWeaponSpell() noexcept;
     bool HasSummonEffect() const noexcept;
-    bool IsConcentrationEffectSpell() const noexcept;
-    bool IsConstantEffectSpell() const noexcept;
 
     EffectItem* GetEffect(const uint32_t aEffectId) noexcept;
 
@@ -29,8 +27,4 @@ struct MagicItem : TESBoundObject
     void* pPreloadItem;
 };
 
-#ifdef _MSC_VER
 static_assert(sizeof(MagicItem) == 0x90);
-#else
-static_assert(sizeof(MagicItem) == 0x88);
-#endif

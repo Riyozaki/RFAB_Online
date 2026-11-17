@@ -4,7 +4,6 @@
 
 struct TESObjectREFR;
 struct TESForm;
-struct BGSEncounterZone;
 
 enum class ExtraDataType : uint32_t
 {
@@ -13,6 +12,7 @@ enum class ExtraDataType : uint32_t
     Worn = 0x16,
     WornLeft = 0x17,
     ReferenceHandle = 0x1C,
+    Ownership = 0x21,
     Count = 0x24,
     Health = 0x25,
     Charge = 0x28,
@@ -21,13 +21,13 @@ enum class ExtraDataType : uint32_t
     CannotWear = 0x3D,
     Poison = 0x3E,
     Faction = 0x5B,
-    EncounterZone = 0x70,
-    Ghost = 0x7A,
     AliasInstanceArray = 0x88,
     OutfitItem = 0x8E,
+    SceneData = 0x92,
     TextDisplayData = 0x99,
     Enchantment = 0x9B,
     Soul = 0x9C,
+    UniqueID = 0x9F,
 };
 
 struct BSExtraData
@@ -39,20 +39,3 @@ struct BSExtraData
 
     BSExtraData* next{};
 };
-
-struct ExtraEncounterZone : BSExtraData
-{
-    BGSEncounterZone* zone;
-};
-
-static_assert(sizeof(ExtraEncounterZone) == 0x18);
-
-struct ExtraGhost : BSExtraData
-{
-    inline static constexpr auto eExtraData = ExtraDataType::Ghost;
-
-    bool ghost{false};
-    uint8_t pad11[7]{};
-};
-
-static_assert(sizeof(ExtraGhost) == 0x18);

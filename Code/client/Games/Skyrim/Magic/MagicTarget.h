@@ -65,11 +65,7 @@ struct MagicTarget
 
     Actor* GetTargetAsActor();
 
-    bool AddTarget(
-        AddTargetData& arData,
-        bool aHealPerkBonus,
-        bool aApplyStaminaPerkBonus,
-        bool aHasPreAdjustedPerks = false) noexcept;
+    bool AddTarget(AddTargetData& arData, bool aHealPerkBonus, bool aApplyStaminaPerkBonus) noexcept;
     // this function actually adds the effect
     bool CheckAddEffect(AddTargetData& arData) noexcept;
     void DispelAllSpells(bool aNow) noexcept;

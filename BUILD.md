@@ -34,7 +34,7 @@
    ```
    результат из `dist\` копируется рядом с бинарями клиента
    (`build\windows\x64\releasedbg`) — см. `Build.bat`.
-5. Первый запуск — по чек-листу из `docs/phase-1-report.md`
+5. Первый запуск — по чек-листу из `docs/archive/phase-1-report.md`
    (краш-лог NetScriptFramework держать под рукой: RFAB его пишет по адресу
    `Documents\My Games\Skyrim Special Edition\NetScriptFramework\Crash\`).
 
@@ -53,7 +53,7 @@ xmake -y
 
 > Примечание среды разработки агента: в песочнице сеть ограничена, поэтому
 > полная Linux-сборка зависимостей xmake там не завершена (детали — в
-> `docs/phase-1-report.md`). На обычной машине и в GitHub Actions
+> `docs/archive/phase-1-report.md`). На обычной машине и в GitHub Actions
 > (`linux.yml`, `windows.yml`) сеть доступна полностью.
 
 ## Проверка базы адресов (оффлайн, без игры)
@@ -70,4 +70,4 @@ python3 tools/address_db_check.py "<SkyrimSE>\Data\SKSE\Plugins\version-1-5-97-0
 python3 tools/dump_patch_sites.py "<SkyrimSE>\SkyrimSE.exe" > patch-sites.txt
 ```
 
-Подробности: `docs/phase-1-midfunction-audit.md`.
+Подробности: `docs/archive/phase-1-midfunction-audit.md`.

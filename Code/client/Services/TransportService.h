@@ -1,9 +1,10 @@
 #pragma once
 
+#include "Events/ConnectedEvent.h"
+#include "Events/DisconnectedEvent.h"
+
 #include <atomic>
-#include <deque>
 #include <Client.hpp>
-#include <Messages/ServerReferencesMoveRequest.h>
 
 struct ImguiService;
 struct UpdateEvent;
@@ -33,73 +34,39 @@ struct TransportService : Client
     void OnUpdate() override;
 
     [[nodiscard]] bool IsOnline() const noexcept { return m_connected; }
-    void SetServerPassword(const std::string& acPassword) noexcept
-    {
-        m_serverPassword = acPassword;
-        m_lastServerPassword = acPassword;
-    }
-    bool Connect(const std::string& acEndpoint) noexcept
-    {
-        if (!acEndpoint.empty())
-            m_lastServerEndpoint = acEndpoint;
-        return Client::Connect(acEndpoint);
-    }
-    bool ConnectToServer(const std::string& acEndpoint, const std::string& acPassword = "") noexcept
-    {
-        m_lastServerEndpoint = acEndpoint;
-        m_lastServerPassword = acPassword;
-        m_serverPassword = acPassword;
-        return Client::Connect(acEndpoint);
-    }
-    [[nodiscard]] bool HasLastServerEndpoint() const noexcept { return !m_lastServerEndpoint.empty(); }
-    bool ReconnectToLastServer() noexcept
-    {
-        if (m_lastServerEndpoint.empty())
-            return false;
-        m_serverPassword = m_lastServerPassword;
-        return Client::Connect(m_lastServerEndpoint);
-    }
+    void SetServerPassword(const std::string& acPassword) noexcept { m_serverPassword = acPassword; }
     const uint32_t& GetLocalPlayerId() const noexcept { return m_localPlayerId; }
 
-    [[nodiscard]] double GetMessageReceiveTime() const noexcept;
-    [[nodiscard]] double GetLastPollTime() const noexcept { return m_lastPollTime; }
+    // Times below are in ms on the networking library's local clock, which keeps running while the game thread is stalled
 
-    void PollWhileSimulationPaused() noexcept;
-    void FlushPausedInboundPackets() noexcept;
-    // Disconnect / full reset: drops everything that was received while paused.
-    void ClearPausedInboundPackets() noexcept;
-    // In-session world reload: drops world-scoped packets but keeps session-scoped ones in order
-    // (CoopWorldStabilizer::MustSurviveWorldReload).
-    void DiscardPausedWorldPacketsForReload() noexcept;
-    [[nodiscard]] size_t GetPausedInboundQueueSize() const noexcept { return m_pausedInboundQueue.size(); }
+    // When the message being handled arrived from the network, it may have waited out a long frame since.
+    // Only meaningful while a received message is being handled.
+    [[nodiscard]] double GetMessageReceiveTime() const noexcept;
+    // When received messages were last picked up, everything that arrived before then has been handled
+    [[nodiscard]] double GetLastPollTime() const noexcept { return m_lastPollTime; }
 
 protected:
     // Event handlers
     void HandleUpdate(const UpdateEvent& acEvent) noexcept;
+    void HandleConnected(const ConnectedEvent& acEvent) noexcept;
+    void HandleDisconnected(const DisconnectedEvent& acEvent) noexcept;
 
     // Packet handlers
     void HandleAuthenticationResponse(const AuthenticationResponse& acMessage) noexcept;
     void HandleNotifySettingsChange(const NotifySettingsChange& acMessage) noexcept;
-
-    void FlushPausedMoveRequest() noexcept;
 
 private:
     World& m_world;
     entt::dispatcher& m_dispatcher;
     bool m_connected;
     String m_serverPassword{};
-    std::string m_lastServerEndpoint{};
-    std::string m_lastServerPassword{};
-    uint32_t m_localPlayerId{0};
+    uint32_t m_localPlayerId;
     double m_lastPollTime{};
 
     entt::scoped_connection m_updateConnection;
     entt::scoped_connection m_sendServerMessageConnection;
     entt::scoped_connection m_settingsChangeConnection;
-    bool m_pollingWhilePaused{false};
-    std::deque<UniquePtr<ServerMessage>> m_pausedInboundQueue{};
-    ServerReferencesMoveRequest m_pausedMoveRequest{};
-    bool m_hasPausedMoveRequest{false};
-    bool m_pausedBackPressureLogged{false};
+    entt::scoped_connection m_connectedConnection;
+    entt::scoped_connection m_disconnectedConnection;
     std::function<void(UniquePtr<ServerMessage>&)> m_messageHandlers[kServerOpcodeMax];
 };

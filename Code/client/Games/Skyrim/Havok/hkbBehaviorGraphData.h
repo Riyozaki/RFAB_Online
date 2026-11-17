@@ -9,7 +9,7 @@ struct hkbVariableInfo
         kInt16 = 2,
         kInt32 = 3,
         kReal = 4,
-        // Word value of the following types is an index into another array, not a scalar value
+        // The value set word of the following types is an index into another array, not the value itself
         kPointer = 5,
         kVector3 = 6,
         kVector4 = 7,

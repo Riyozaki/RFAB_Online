@@ -72,16 +72,22 @@ GS_EXPORT bool CheckBuildTag(const char* apBuildTag)
     return std::strcmp(apBuildTag, kBuildTag) == 0;
 }
 
-GS_EXPORT UniquePtr<IGameServerInstance> CreateGameServer(Console::ConsoleRegistry& aConReg, const std::function<void()>& aCallback)
+// A deliberate fault inside this library, called only by `--rfab-crash-self-test fault`
+// during release packaging so the symbolizer + STServer_Crash.log chain is verified end-to-end.
+GS_EXPORT void RfabServerCrashSelfTestFault()
 {
-    BASE_ASSERT(aCallback, "CreateGameServer(): Callback was not provided");
+    volatile int* volatile pNowhere = nullptr;
+    *pNowhere = 0x52464142;
+}
 
-    // register static variables before they become available to the server
+// Registers the server's static settings, must be called before loading any settings
+GS_EXPORT void RegisterServerSettings(Console::ConsoleRegistry& aConReg)
+{
     aConReg.BindStaticItems();
+}
 
-    // this is a special callback to notify the runner once all settings become available
-    aCallback();
-
+GS_EXPORT UniquePtr<IGameServerInstance> CreateGameServer(Console::ConsoleRegistry& aConReg)
+{
     return TiltedPhoques::CastUnique<IGameServerInstance>(TiltedPhoques::MakeUnique<GameServerInstance>(aConReg));
 }
 
@@ -93,9 +99,9 @@ GS_EXPORT UniquePtr<IGameServerInstance> CreateGameServer(Console::ConsoleRegist
 
 GS_EXPORT void SetDefaultLogger(std::shared_ptr<spdlog::logger> aLogger)
 {
-    // #ifdef _WIN32
+    if (aLogger)
+        aLogger->flush_on(spdlog::level::info);
     spdlog::set_default_logger(std::move(aLogger));
-    // #endif
 }
 
 GS_EXPORT void RegisterLogger(std::shared_ptr<spdlog::logger> aLogger)

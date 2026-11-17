@@ -17,18 +17,13 @@ WeatherService::WeatherService(World& aWorld, entt::dispatcher& aDispatcher) noe
 
 void WeatherService::OnWeatherChange(const PacketEvent<RequestWeatherChange>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer || !acMessage.Packet.Id || acMessage.Packet.Id.ModId == 0xFFFFFFFFu)
-        return;
-
-    if (!m_world.GetPartyService().IsPlayerLeader(acMessage.pPlayer))
-        return;
+    NotifyWeatherChange notify{};
+    notify.Id = acMessage.Packet.Id;
 
     auto* pParty = m_world.GetPartyService().GetPlayerParty(acMessage.pPlayer);
     if (!pParty)
         return;
 
-    NotifyWeatherChange notify{};
-    notify.Id = acMessage.Packet.Id;
     pParty->CachedWeather = notify.Id;
 
     if (!acMessage.pPlayer->GetCharacter())
@@ -41,11 +36,8 @@ void WeatherService::OnWeatherChange(const PacketEvent<RequestWeatherChange>& ac
 
 void WeatherService::OnRequestCurrentWeather(const PacketEvent<RequestCurrentWeather>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer)
-        return;
-
     auto* pParty = m_world.GetPartyService().GetPlayerParty(acMessage.pPlayer);
-    if (!pParty || !pParty->CachedWeather)
+    if (!pParty)
         return;
 
     NotifyWeatherChange notify{};

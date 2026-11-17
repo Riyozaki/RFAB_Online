@@ -5,12 +5,16 @@
 #include <TiltedCore/Filesystem.hpp>
 #include <Windows.h>
 
+extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
+
 namespace loader
 {
 void InstallPathRouting(const std::filesystem::path& gamePath)
 {
-    // will install improper path routing here...
-    auto appPath = TiltedPhoques::GetPath();
+    // Resolve the real physical client directory (bypassing MO2 USVFS GetModuleFileNameW virtualization)
+    // so ntdll!LdrAddDllDirectory receives an existing NTFS directory.
+    const wchar_t* pClientDir = GetTiltedClientDirW();
+    auto appPath = (pClientDir && *pClientDir) ? std::filesystem::path(pClientDir) : TiltedPhoques::GetPath();
 
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS);
     AddDllDirectory(appPath.c_str());

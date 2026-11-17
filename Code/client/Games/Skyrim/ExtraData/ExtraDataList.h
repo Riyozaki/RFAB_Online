@@ -11,7 +11,6 @@ struct EnchantmentItem;
 struct ExtraDataList
 {
     static ExtraDataList* New() noexcept;
-    static void Delete(ExtraDataList* apList) noexcept;
 
     bool Contains(ExtraDataType aType) const;
     void Set(ExtraDataType aType, bool aSet);
@@ -29,10 +28,6 @@ struct ExtraDataList
     void SetWorn(bool aWornLeft) noexcept;
     void SetPoison(AlchemyItem* apItem, uint32_t aCount) noexcept;
     void SetHealth(float aHealth) noexcept;
-    // Stack size of the reference that owns this list (ExtraCount; no ExtraCount reads as 1). Engine
-    // add (ExtraDataList::Add, takes the list lock and allocates the presence bitfield), main thread.
-    void SetCount(int16_t aCount) noexcept;
-    [[nodiscard]] int32_t GetStackCount() const noexcept;
     void SetEnchantmentData(EnchantmentItem* apItem, uint16_t aCharge, bool aRemoveOnUnequip) noexcept;
 
     [[nodiscard]] bool HasQuestObjectAlias() noexcept;

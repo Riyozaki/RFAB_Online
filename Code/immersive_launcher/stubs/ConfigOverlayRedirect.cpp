@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 
+extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
+
 namespace stubs
 {
 namespace
@@ -219,7 +221,9 @@ void InitCoopConfigOverlay(const std::filesystem::path& acGamePath) noexcept
     try
     {
         const std::filesystem::path dataRoot = acGamePath / L"Data";
-        std::filesystem::path overlayDir = TiltedPhoques::GetPath() / L"rfab_coop_config";
+        const wchar_t* pClientDir = GetTiltedClientDirW();
+        std::filesystem::path overlayDir =
+            ((pClientDir && *pClientDir) ? std::filesystem::path(pClientDir) : TiltedPhoques::GetPath()) / L"rfab_coop_config";
         std::vector<Compat::OverlayOutcome> outcomes = Compat::PrepareOverlays(dataRoot, overlayDir);
         if (AnyFailed(outcomes))
         {

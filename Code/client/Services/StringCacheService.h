@@ -1,7 +1,7 @@
 #pragma once
 
-#include <common/Session/Lifecycle.h>
-
+struct ConnectedEvent;
+struct DisconnectedEvent;
 struct StringCacheUpdate;
 
 /**
@@ -9,19 +9,20 @@ struct StringCacheUpdate;
  *
  * This service is currently not in use.
  */
-struct StringCacheService final : Session::IParticipant
+struct StringCacheService
 {
     StringCacheService(entt::dispatcher& aDispatcher) noexcept;
     ~StringCacheService() noexcept = default;
 
     TP_NOCOPYMOVE(StringCacheService);
 
-    // Session::ParticipantId::kStringTable: the table belongs to one server session.
-    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
-    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
+    void HandleConnected(const ConnectedEvent&) noexcept;
+    void HandleDisconnected(const DisconnectedEvent&) noexcept;
 
     void HandleStringCacheUpdate(const StringCacheUpdate&) noexcept;
 
 private:
+    entt::scoped_connection m_connectedConnection;
+    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_stringCacheUpdateConnection;
 };

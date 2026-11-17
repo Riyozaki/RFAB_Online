@@ -12,7 +12,7 @@ struct OverlayService;
 struct RenderSystemD3D11
 {
     RenderSystemD3D11(OverlayService& aOverlay, ImguiService& aImguiService);
-    ~RenderSystemD3D11() = default;
+    ~RenderSystemD3D11();
 
     TP_NOCOPYMOVE(RenderSystemD3D11);
 

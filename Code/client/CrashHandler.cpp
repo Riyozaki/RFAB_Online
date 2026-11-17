@@ -1,5 +1,6 @@
 #include <TiltedOnlinePCH.h>
 #include "CrashHandler.h"
+#include <common/Compat/SafeFs.h>
 
 #include <DbgHelp.h>
 #include <Windows.h>
@@ -160,14 +161,13 @@ CrashHandler::~CrashHandler()
 
 void CrashHandler::RemovePreviousDump(std::filesystem::path path)
 {
-    std::error_code ec;
-    for (auto& entry : std::filesystem::directory_iterator(path, ec))
-    {
-        const auto ext = entry.path().extension().wstring();
-        const auto stem = entry.path().filename().wstring();
+    // SafeFs: the walk cannot throw (this runs at start-up, before anything could report it).
+    Compat::SafeFs::ForEachEntry(path, [](const std::filesystem::directory_entry& acEntry) {
+        const auto ext = acEntry.path().extension().wstring();
+        const auto stem = acEntry.path().filename().wstring();
         if (stem.find(L"crash_") != std::wstring::npos && _wcsicmp(ext.c_str(), L".dmp") == 0)
         {
-            DeleteFileW(entry.path().c_str());
+            DeleteFileW(acEntry.path().c_str());
         }
-    }
+    });
 }

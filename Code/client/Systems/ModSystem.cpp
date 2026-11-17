@@ -2,31 +2,33 @@
 
 #include <Systems/ModSystem.h>
 
+#include <Events/DisconnectedEvent.h>
 #include <Structs/Mods.h>
 #include <Structs/GameId.h>
-#include <common/CoopPacketSafety.h>
 
 #include <Games/TES.h>
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 
 ModSystem::ModSystem(entt::dispatcher& aDispatcher) noexcept
 {
-    std::fill_n(m_standardToServer, 0x100, CoopPacketSafety::kUnmappedServerModId);
-    // Deal with temporary ids
-    m_standardToServer[0xFF] = CoopPacketSafety::kRuntimeDynamicModId;
+    std::fill_n(m_standardToServer, 0x100, kUnmappedServerModId);
+    // Deal with temporary/runtime dynamic ids (0xFF......)
+    m_standardToServer[0xFF] = kRuntimeDynamicModId;
 
     m_modsConnection = aDispatcher.sink<Mods>().connect<&ModSystem::HandleMods>(this);
+    m_disconnectedConnection = aDispatcher.sink<DisconnectedEvent>().connect<&ModSystem::HandleDisconnected>(this);
 }
 
-void ModSystem::OnSessionEnd(const Session::Transition&) noexcept
+void ModSystem::HandleDisconnected(const DisconnectedEvent&) noexcept
 {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     m_liteToServer.clear();
     m_serverToGame.clear();
-    std::fill_n(m_standardToServer, 0x100, CoopPacketSafety::kUnmappedServerModId);
-    m_standardToServer[0xFF] = CoopPacketSafety::kRuntimeDynamicModId;
+    std::fill_n(m_standardToServer, 0x100, kUnmappedServerModId);
+    m_standardToServer[0xFF] = kRuntimeDynamicModId;
 }
 
 bool ModSystem::GetServerModId(const uint32_t aGameId, uint32_t& aModId, uint32_t& aBaseId) const noexcept
@@ -40,7 +42,7 @@ bool ModSystem::GetServerModId(const uint32_t aGameId, uint32_t& aModId, uint32_
         return true;
     }
 
-    uint32_t hiByte = aGameId >> 24;
+    const uint32_t hiByte = aGameId >> 24;
 
     // If it's a lite mod
     if (hiByte == 0xFE)
@@ -60,8 +62,18 @@ bool ModSystem::GetServerModId(const uint32_t aGameId, uint32_t& aModId, uint32_
         return false;
     }
 
-    // Here we have a standard or 0xFF runtime mod
-    return CoopPacketSafety::TranslateStandardFormToServerModId(aGameId, m_standardToServer, aModId, aBaseId);
+    // Standard or 0xFF runtime mod: never silently map an unmapped standard mod to Skyrim.esm (0)!
+    const uint32_t mapped = m_standardToServer[hiByte & 0xFF];
+    if (mapped == kUnmappedServerModId)
+    {
+        aModId = 0u;
+        aBaseId = 0u;
+        return false;
+    }
+
+    aModId = mapped;
+    aBaseId = aGameId & 0x00FFFFFFu;
+    return true;
 }
 
 bool ModSystem::GetServerModId(uint32_t aGameId, GameId& aServerId) const noexcept
@@ -107,8 +119,8 @@ void ModSystem::HandleMods(const Mods& acMods) noexcept
     Map<uint16_t, uint32_t> newLiteToServer;
     Map<uint32_t, GameMod> newServerToGame;
     uint32_t newStandardToServer[0x100];
-    std::fill_n(newStandardToServer, 0x100, CoopPacketSafety::kUnmappedServerModId);
-    newStandardToServer[0xFF] = CoopPacketSafety::kRuntimeDynamicModId;
+    std::fill_n(newStandardToServer, 0x100, kUnmappedServerModId);
+    newStandardToServer[0xFF] = kRuntimeDynamicModId;
 
     const auto pModManager = ModManager::Get();
     if (pModManager)

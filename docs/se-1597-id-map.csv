@@ -3090,3 +3090,18 @@ ae_id,se_1_5_97_id,se_rva_hex,kind,ref_count,first_reference,source,symbol
 68239,66982,0xC07590,pointer,1,Code/client/Games/Skyrim/BSCore/BSAtomic.cpp:64,clibng:relocation+skse64-2.0.20,BSReadWriteLock::UnlockRead
 68234,66977,0xC07350,pointer,1,Code/client/Games/Skyrim/BSCore/BSAtomic.cpp:71,clibng:relocation+skse64-2.0.20,BSReadWriteLock::LockForWrite
 68240,66983,0xC075A0,pointer,1,Code/client/Games/Skyrim/BSCore/BSAtomic.cpp:78,clibng:relocation+skse64-2.0.20,BSReadWriteLock::UnlockWrite
+20231,19826,0x2A77A0,pointer,1,Code/client/Games/Skyrim/TESObjectREFR.cpp:178,clibng:relocation+rfab-v1597bin,TESObjectREFR::SetLeveledCreature
+32884,32192,0x4F2620,pointer,1,Code/client/Games/IAnimationGraphManagerHolder.cpp:10,clibng:relocation+rfab-v1597bin,IAnimationGraphManagerHolder::GetVariableNiPoint3
+38009,36984,0x60D300,pointer,1,Code/client/Games/Skyrim/Actor.cpp:1330,clibng:relocation+rfab-v1597bin,Actor::ProcessTracking
+39887,38850,0x67D120,pointer,1,Code/client/Games/Skyrim/AI/AIProcess.cpp:13,clibng:relocation+rfab-v1597bin,AIProcess::SetHeadTrackTarget
+42338,41288,0x706AF0,pointer,1,Code/client/Games/Skyrim/AI/Movement/PlayerControls.cpp:66,clibng:relocation+rfab-v1597bin,PlayerControls::ProcessInputEvent
+51084,50157,0x85A760,pointer,1,Code/client/Games/Skyrim/Interface/ConsoleCommandGuard.cpp:102,clibng:relocation+rfab-v1597bin,Console::ExecuteCommand
+51109,50180,0x85C2C0,pointer,1,Code/client/Games/Skyrim/Interface/ConsoleCommandGuard.cpp:65,clibng:relocation+rfab-v1597bin,ConsoleLog::VPrint (SE va_list wrapper for AE Print 51109)
+389089,512261,0x1E083A8,pointer,1,Code/client/Games/Skyrim/Havok/bhkCharacterController.cpp:6,clibng:relocation+rfab-v1597bin,g_physicsDeltaTime
+400329,514180,0x1EBEB30,pointer,1,Code/client/Games/Skyrim/Misc/GarbageCollector.cpp:7,clibng:relocation+rfab-v1597bin,GarbageCollector::GetSingleton
+401203,515064,0x2F000F0,pointer,1,Code/client/Games/Skyrim/Interface/ConsoleCommandGuard.cpp:66,clibng:relocation+rfab-v1597bin,ConsoleLog::GetSingleton
+186673,229534,0x152BF80,vtable,1,Code/client/Games/Skyrim/TESObjectREFR.cpp,CommonLibSSE-NG-b93280e+addrbin-f8ad64b,ExtraOwnership primary vtable
+186855,229625,0x152CAE0,vtable,1,Code/client/Games/Skyrim/TESObjectREFR.cpp,CommonLibSSE-NG-b93280e+addrbin-f8ad64b,ExtraTextDisplayData primary vtable
+186867,229631,0x152CBA0,vtable,1,Code/client/Games/Skyrim/TESObjectREFR.cpp,CommonLibSSE-NG-b93280e+addrbin-f8ad64b,ExtraUniqueID primary vtable
+207511,260538,0x1655640,vtable,1,Code/client/Games/Skyrim/InventoryHooks.cpp,CommonLibSSE-NG-b93280e+addrbin-f8ad64b,Actor primary vtable RemoveItem slot 0x56
+208040,261916,0x16635E0,vtable,1,Code/client/Games/Skyrim/InventoryHooks.cpp,CommonLibSSE-NG-b93280e+addrbin-f8ad64b,PlayerCharacter primary vtable RemoveItem slot 0x56

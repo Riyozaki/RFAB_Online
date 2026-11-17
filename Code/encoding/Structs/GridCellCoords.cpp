@@ -1,9 +1,6 @@
 #include <Structs/GridCellCoords.h>
 #include <TiltedCore/Serialization.hpp>
 
-#include <cmath>
-#include <cstdlib>
-
 using TiltedPhoques::Serialization;
 
 GridCellCoords::GridCellCoords()

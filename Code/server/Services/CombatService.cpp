@@ -1,13 +1,10 @@
 #include <Services/CombatService.h>
-#include <Services/ActorValueService.h>
 #include <Components.h>
 #include <GameServer.h>
 #include <World.h>
 
 #include <Messages/ProjectileLaunchRequest.h>
 #include <Messages/NotifyProjectileLaunch.h>
-#include <common/RfabModpackCompat.h>
-#include <Authority/Hits.h>
 
 CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
@@ -18,39 +15,6 @@ CombatService::CombatService(World& aWorld, entt::dispatcher& aDispatcher) noexc
 void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunchRequest>& acMessage) const noexcept
 {
     auto& packet = acMessage.Packet;
-    const auto cShooterEntity = static_cast<entt::entity>(packet.ShooterID);
-    if (!m_world.valid(cShooterEntity))
-        return;
-
-    if (const auto* pOwner = m_world.try_get<OwnerComponent>(cShooterEntity))
-    {
-        if (pOwner->GetOwner() != acMessage.pPlayer)
-        {
-            spdlog::debug("Ignored non-owner ProjectileLaunchRequest for {:X}", packet.ShooterID);
-            return;
-        }
-    }
-
-    if (!RfabCompat::AreProjectileLaunchParamsSafe(
-            packet.OriginX,
-            packet.OriginY,
-            packet.OriginZ,
-            packet.XAngle,
-            packet.YAngle,
-            packet.ZAngle,
-            packet.Power,
-            packet.Scale))
-    {
-        return;
-    }
-
-    if (acMessage.pPlayer)
-    {
-        m_world.GetActorValueService().RecordCombatClaim(
-            acMessage.pPlayer->GetId(),
-            0u,
-            Authority::HitKind::kProjectileLaunch);
-    }
 
     NotifyProjectileLaunch notify{};
 
@@ -86,6 +50,7 @@ void CombatService::OnProjectileLaunchRequest(const PacketEvent<ProjectileLaunch
     notify.UnkBool1 = packet.UnkBool1;
     notify.UnkBool2 = packet.UnkBool2;
 
+    const auto cShooterEntity = static_cast<entt::entity>(packet.ShooterID);
     if (!GameServer::Get()->SendToPlayersInRange(notify, cShooterEntity, acMessage.GetSender()))
         spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 }

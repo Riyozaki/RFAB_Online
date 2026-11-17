@@ -15,5 +15,4 @@ struct AddTargetEvent
     bool IsDualCasting{false};
     bool ApplyHealPerkBonus{false};
     bool ApplyStaminaPerkBonus{false};
-    bool HasPreAdjustedPerks{false};
 };

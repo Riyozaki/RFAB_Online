@@ -20,11 +20,10 @@
 #include <Games/References.h>
 #include <Forms/TESWorldSpace.h>
 
-#include <Forms/TESFaction.h>
 #include <Forms/TESObjectCELL.h>
+#include <Games/Skyrim/CellRespawnOverrides.h>
 
 #include <ModCompat/BehaviorVar.h>
-#include <common/RfabModpackCompat.h>
 
 int32_t PlayerCharacter::LastUsedCombatSkill = -1;
 
@@ -32,7 +31,7 @@ TP_THIS_FUNCTION(TPickUpObject, char, PlayerCharacter, TESObjectREFR* apObject, 
 TP_THIS_FUNCTION(TSetBeastForm, void, void, void* apUnk1, void* apUnk2, bool aEntering);
 TP_THIS_FUNCTION(TAddSkillExperience, void, PlayerCharacter, int32_t aSkill, float aExperience);
 TP_THIS_FUNCTION(TCalculateExperience, bool, int32_t, float* aFactor, float* aBonus, float* aUnk1, float* aUnk2);
-TP_THIS_FUNCTION(TSetWaypoint, void, PlayerCharacter, NiPoint3* apPosition, TESForm* apWorldSpaceOrCell);
+TP_THIS_FUNCTION(TSetWaypoint, void, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace);
 TP_THIS_FUNCTION(TRemoveWaypoint, void, PlayerCharacter);
 
 static TPickUpObject* RealPickUpObject = nullptr;
@@ -75,9 +74,6 @@ void PlayerCharacter::SetDifficulty(const int32_t aDifficulty, bool aForceUpdate
 void PlayerCharacter::AddSkillExperience(int32_t aSkill, float aExperience) noexcept
 {
     Skills::Skill skill = Skills::GetSkillFromActorValue(aSkill);
-    if (!pSkills || !pSkills->data || skill >= Skills::Skill::kTotal || static_cast<int32_t>(skill) < 0)
-        return;
-
     float oldExperience = GetSkillExperience(skill);
 
     ScopedExperienceOverride _;
@@ -107,25 +103,28 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
     {
         // TP to Whiterun temple when killed in world space
         TES* pTes = TES::Get();
-        ModManager* pModMgr = ModManager::Get();
-        if (pTes && pModMgr)
-            pCell = pModMgr->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
+        pCell = ModManager::Get()->GetCellFromCoordinates(pTes->centerGridX, pTes->centerGridY, GetWorldSpace(), false);
     }
     else
     {
         // TP to start of cell when killed in an interior
-        pCell = GetParentCell();
-    }
-
-    if (!pCell)
-    {
-        SetNoBleedoutRecovery(true);
-        return position;
+        pCell = GetSaveParentCell();
     }
 
     NiPoint3 pos{};
     NiPoint3 rot{};
-    pCell->GetCOCPlacementInfo(&pos, &rot, true);
+
+    if (!pCell)
+    {
+        SetNoBleedoutRecovery(true);
+        return pos;
+    }
+
+    // If we find an override position for this respawn cell, we will use that instead of COC.
+    if (!CellRespawnOverrides::GetRespawnPos(pCell, pos))
+    {
+        pCell->GetCOCPlacementInfo(&pos, &rot, true);
+    }
 
     MoveTo(pCell, pos);
 
@@ -137,36 +136,25 @@ NiPoint3 PlayerCharacter::RespawnPlayer() noexcept
 
 void PlayerCharacter::PayCrimeGoldToAllFactions() noexcept
 {
-    // Dynamically iterate all loaded crime-tracking factions in ModManager (kTrackCrime == 1 << 6)
-    // so DLC / Requiem / RFAB load-order differences never dereference wrong FormID prefixes or miss crime factions.
-    constexpr uint32_t kFactionFlagTrackCrime = (1u << 6);
-    if (auto* pModManager = ModManager::Get(); pModManager && pModManager->factions.length > 0)
+    // Yes, yes, this isn't great, but there's no "pay fines everywhere" function
+    const uint32_t crimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816e, 0x2816C, 0x2816B, 0x267EA, 0x2816F, 0x4018279};
+
+    for (uint32_t crimeFactionId : crimeFactionIds)
     {
-        for (uint32_t i = 0; i < pModManager->factions.length; ++i)
+        TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId));
+        if (!pCrimeFaction)
         {
-            TESFaction* pFaction = pModManager->factions[i];
-            if (!pFaction || (pFaction->factionFlags & kFactionFlagTrackCrime) == 0)
-                continue;
-
-            PayFine(pFaction, false, false);
+            spdlog::error("This isn't a crime faction! {:X}", crimeFactionId);
+            continue;
         }
-        return;
-    }
 
-    const uint32_t vanillaCrimeFactionIds[]{0x28170, 0x267E3, 0x29DB0, 0x2816D, 0x2816E, 0x2816C, 0x2816B, 0x267EA, 0x2816F};
-    for (uint32_t crimeFactionId : vanillaCrimeFactionIds)
-    {
-        if (TESFaction* pCrimeFaction = Cast<TESFaction>(TESForm::GetById(crimeFactionId)))
-            PayFine(pCrimeFaction, false, false);
+        PayFine(pCrimeFaction, false, false);
     }
 }
 
-void PlayerCharacter::SetWaypoint(NiPoint3* apPosition, TESForm* apWorldSpaceOrCell) noexcept
+void PlayerCharacter::SetWaypoint(NiPoint3* apPosition, TESWorldSpace* apWorldSpace) noexcept
 {
-    if (!apPosition || !apWorldSpaceOrCell)
-        return;
-
-    return TiltedPhoques::ThisCall(RealSetWaypoint, this, apPosition, apWorldSpaceOrCell);
+    return TiltedPhoques::ThisCall(RealSetWaypoint, this, apPosition, apWorldSpace);
 }
 
 void PlayerCharacter::RemoveWaypoint() noexcept
@@ -176,49 +164,26 @@ void PlayerCharacter::RemoveWaypoint() noexcept
 
 char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject, int32_t aCount, bool aUnk1, bool aUnk2)
 {
-    if (World::IsCreated() &&
-        World::IsConnectedCached() &&
-        !ScopedInventoryOverride::IsOverriden() &&
-        apThis &&
-        apObject &&
-        apObject->baseForm)
+    if (!World::IsCreated())
+        return TiltedPhoques::ThisCall(RealPickUpObject, apThis, apObject, aCount, aUnk1, aUnk2);
+
+    auto& modSystem = World::Get().GetModSystem();
+
+    Inventory::Entry item{};
+    modSystem.GetServerModId(apObject->baseForm->formID, item.BaseId);
+    item.Count = aCount;
+
+    if (apObject->GetExtraDataList() && !ScopedExtraDataOverride::IsOverriden())
     {
-        auto& modSystem = World::Get().GetModSystem();
-
-        Inventory::Entry item{};
-        modSystem.GetServerModId(apObject->baseForm->formID, item.BaseId);
-        item.Count = aCount;
-
-        if (apObject->GetExtraDataList() && !ScopedExtraDataOverride::IsOverriden())
-        {
-            ScopedExtraDataOverride _;
-            apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
-        }
-
-        if (!item.IsQuestItem && item.Count > 0)
-        {
-            const char* pEditorId = apObject->baseForm->GetFormEditorID();
-            const std::string_view editorIdView = pEditorId ? std::string_view(pEditorId) : std::string_view{};
-            const bool syncHomes = World::IsSyncPlayerHomesCached();
-            if (RfabCompat::IsSharedCoopKeyOrClaw(editorIdView, static_cast<uint8_t>(apObject->baseForm->formType), apObject->baseForm->formID, syncHomes))
-                item.IsQuestItem = true;
-        }
-
-        // When picking up a temporary dropped 0xFFxxxxxx world item, set Drop = true so peer clients
-        // despawn their matching ground visual inside Actor::DropOrPickUpObject (zero duplication!).
-        const bool isTempDropPickup = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
-
-        // GetItemFromExtraData reported the reference's whole stack; a partial pickup takes aCount.
-        const int32_t stackCount = item.Count;
-        const bool wholeStack = aCount <= 0 || aCount >= stackCount;
-        if (!wholeStack)
-            item.Count = aCount;
-
-        InventoryChangeEvent event(apThis->formID, std::move(item), isTempDropPickup, true);
-        event.WorldReferenceFormId = isTempDropPickup ? apObject->formID : 0;
-        event.WholeStack = wholeStack;
-        World::Get().GetRunner().Trigger(std::move(event));
+        ScopedExtraDataOverride _;
+        apThis->GetItemFromExtraData(item, apObject->GetExtraDataList());
     }
+
+    // This is here so that objects that are picked up on both clients, aka non temps, are synced through activation sync.
+    // The inventory change event should always be sent to the server, otherwise the server inventory won't be updated.
+    bool shouldUpdateClients = apObject->IsTemporary() && !ScopedActivateOverride::IsOverriden();
+
+    World::Get().GetRunner().Trigger(InventoryChangeEvent(apThis->formID, std::move(item), false, shouldUpdateClients));
 
     ScopedInventoryOverride _;
 
@@ -227,15 +192,13 @@ char TP_MAKE_THISCALL(HookPickUpObject, PlayerCharacter, TESObjectREFR* apObject
 
 void TP_MAKE_THISCALL(HookSetBeastForm, void, void* apUnk1, void* apUnk2, bool aEntering)
 {
+    if (!World::IsCreated())
+        return TiltedPhoques::ThisCall(RealSetBeastForm, apThis, apUnk1, apUnk2, aEntering);
+
     if (!aEntering)
     {
-        if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        {
-            if (auto* pExt = pPlayer->GetExtension())
-                pExt->GraphDescriptorHash = BehaviorVar::GetHumanoidHash();
-        }
-        if (World::IsCreated() && World::IsConnectedCached())
-            World::Get().GetRunner().Trigger(BeastFormChangeEvent());
+        PlayerCharacter::Get()->GetExtension()->GraphDescriptorHash = BehaviorVar::GetHumanoidHash();
+        World::Get().GetRunner().Trigger(BeastFormChangeEvent());
     }
 
     TiltedPhoques::ThisCall(RealSetBeastForm, apThis, apUnk1, apUnk2, aEntering);
@@ -243,8 +206,8 @@ void TP_MAKE_THISCALL(HookSetBeastForm, void, void* apUnk1, void* apUnk2, bool a
 
 void TP_MAKE_THISCALL(HookAddSkillExperience, PlayerCharacter, int32_t aSkill, float aExperience)
 {
-    if (!apThis)
-        return;
+    if (!World::IsCreated())
+        return TiltedPhoques::ThisCall(RealAddSkillExperience, apThis, aSkill, aExperience);
 
     // TODO: armor skills? sneak?
     static const Set<int32_t> combatSkills{ActorValueInfo::kAlteration, ActorValueInfo::kConjuration, ActorValueInfo::kDestruction, ActorValueInfo::kIllusion, ActorValueInfo::kRestoration, ActorValueInfo::kOneHanded, ActorValueInfo::kTwoHanded, ActorValueInfo::kMarksman, ActorValueInfo::kBlock};
@@ -264,8 +227,7 @@ void TP_MAKE_THISCALL(HookAddSkillExperience, PlayerCharacter, int32_t aSkill, f
         spdlog::debug("Set new last used combat skill to {}.", aSkill);
         PlayerCharacter::LastUsedCombatSkill = aSkill;
 
-        if (World::IsCreated() && World::IsConnectedCached())
-            World::Get().GetRunner().Trigger(AddExperienceEvent(deltaExperience));
+        World::Get().GetRunner().Trigger(AddExperienceEvent(deltaExperience));
     }
 }
 
@@ -282,25 +244,30 @@ bool TP_MAKE_THISCALL(HookCalculateExperience, int32_t, float* aFactor, float* a
     return result;
 }
 
-void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TESForm* apWorldSpaceOrCell)
+void TP_MAKE_THISCALL(HookSetWaypoint, PlayerCharacter, NiPoint3* apPosition, TESWorldSpace* apWorldSpace)
 {
-    if (World::IsCreated() && World::IsConnectedCached() && apPosition && apWorldSpaceOrCell)
-    {
-        Vector3_NetQuantize position{};
-        position.x = apPosition->x;
-        position.y = apPosition->y;
-        position.z = apPosition->z;
+    if (!World::IsCreated())
+        return TiltedPhoques::ThisCall(RealSetWaypoint, apThis, apPosition, apWorldSpace);
 
-        World::Get().GetRunner().Trigger(SetWaypointEvent(position, apWorldSpaceOrCell->formID));
-    }
+    Vector3_NetQuantize position{};
+    position.x = apPosition->x;
+    position.y = apPosition->y;
+    position.z = apPosition->z;
 
-    return TiltedPhoques::ThisCall(RealSetWaypoint, apThis, apPosition, apWorldSpaceOrCell);
+    // apWorldSpace is the map's worldspace, or its cell on an interior map. A waypoint without one can't be placed
+    // by the other players.
+    if (apWorldSpace)
+        World::Get().GetRunner().Trigger(SetWaypointEvent(position, apWorldSpace->formID));
+
+    return TiltedPhoques::ThisCall(RealSetWaypoint, apThis, apPosition, apWorldSpace);
 }
 
 void TP_MAKE_THISCALL(HookRemoveWaypoint, PlayerCharacter)
 {
-    if (World::IsCreated() && World::IsConnectedCached())
-        World::Get().GetRunner().Trigger(RemoveWaypointEvent());
+    if (!World::IsCreated())
+        return TiltedPhoques::ThisCall(RealRemoveWaypoint, apThis);
+
+    World::Get().GetRunner().Trigger(RemoveWaypointEvent());
 
     return TiltedPhoques::ThisCall(RealRemoveWaypoint, apThis);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Messages/ServerMessageFactory.h>
+#include <Messages/WireValidity.h>
 
 static std::function<UniquePtr<ServerMessage>(TiltedPhoques::Buffer::Reader& aReader)> s_serverMessageExtractor[kServerOpcodeMax];
 
@@ -18,6 +19,7 @@ static struct ServerMessageFactoryInit
             {
                 auto ptr = TiltedPhoques::MakeUnique<T>();
                 ptr->DeserializeRaw(aReader);
+                if (!WirePayloadValid(*ptr)) return UniquePtr<ServerMessage>{nullptr};
                 return TiltedPhoques::CastUnique<ServerMessage>(std::move(ptr));
             };
 
@@ -31,8 +33,8 @@ static struct ServerMessageFactoryInit
 
 UniquePtr<ServerMessage> ServerMessageFactory::Extract(TiltedPhoques::Buffer::Reader& aReader) const noexcept
 {
-    uint64_t data;
-    aReader.ReadBits(data, sizeof(ServerOpcode) * 8);
+    uint64_t data{};
+    if (!aReader.ReadBits(data, sizeof(ServerOpcode) * 8)) return {nullptr};
 
     if (data >= kServerOpcodeMax) [[unlikely]]
         return {nullptr};

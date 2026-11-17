@@ -19,6 +19,9 @@ $RfabOnlineManagedKeys = [ordered]@{
     "SkyrimSoulsRE.ini"   = @("fslowmotionmultiplier", "bstatsmenu", "benableslowmotion*")
     "[RFAB] Autosave.ini" = @("enabled", "enable autosave", "save in combat", "save after combat", "save on location change", "save on sleep/wait")
     "po3_Tweaks.ini"      = @("load editorids")
+    "RFAB.ini"            = @("balwaysactive")
+    "SSEDisplayTweaks.ini"        = @("fullscreen", "borderless")
+    "SSEDisplayTweaks_Custom.ini" = @("fullscreen", "borderless")
 }
 
 # "section|key" (lower case) -> value, comments stripped, last assignment wins.

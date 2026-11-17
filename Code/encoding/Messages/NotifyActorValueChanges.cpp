@@ -1,19 +1,14 @@
 #include <Messages/NotifyActorValueChanges.h>
 #include <common/CoopPacketSafety.h>
-#include <algorithm>
 
 void NotifyActorValueChanges::SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     Serialization::WriteVarInt(aWriter, Id);
-    Serialization::WriteVarInt(aWriter, HealthRevision);
+    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
 
-    const size_t count = std::min(Values.size(), CoopPacketSafety::kMaxActorValues);
-    Serialization::WriteVarInt(aWriter, count);
-    size_t written = 0;
+    Serialization::WriteVarInt(aWriter, Values.size());
     for (auto& value : Values)
     {
-        if (written++ >= count)
-            break;
         Serialization::WriteVarInt(aWriter, value.first);
         Serialization::WriteFloat(aWriter, value.second);
     }
@@ -24,7 +19,7 @@ void NotifyActorValueChanges::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
     ServerMessage::DeserializeRaw(aReader);
 
     Id = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-    HealthRevision = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
 
     const size_t count = CoopPacketSafety::ClampCollectionCount(
         Serialization::ReadVarInt(aReader),

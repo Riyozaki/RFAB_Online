@@ -10,6 +10,8 @@
 #
 #   ./Tools/rfab/linux-server/run-server-tests.sh             # fetch (once), build, run
 #   ./Tools/rfab/linux-server/run-server-tests.sh --objects   # compile the server only
+#   ./Tools/rfab/linux-server/run-server-tests.sh --asan      # under ASan + UBSan (own object tree)
+#   ./Tools/rfab/linux-server/run-server-tests.sh --plain     # without sanitizers
 #   ./Tools/rfab/linux-server/run-server-tests.sh --clean     # rebuild from scratch
 #   JOBS=4 ./Tools/rfab/linux-server/run-server-tests.sh      # more parallel jobs
 #
@@ -24,14 +26,37 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DEPS_DIR="${REPO_ROOT}/build/deps"
 JOBS="${JOBS:-$( (command -v nproc >/dev/null && nproc) || echo 2 )}"
 
+# The CI job runs this script without arguments (the workflow file cannot be changed by the
+# development app), so the default depends on where it runs: sanitized in CI, where the extra
+# minutes cost nothing and a use after free must not pass; plain on a developer machine, where the
+# loop has to stay short. --asan / --plain override either way.
+SANITIZE="0"
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    SANITIZE="1"
+fi
+
 MODE="run"
+CLEAN="0"
 for arg in "$@"; do
     case "${arg}" in
-        --clean)   rm -rf "${REPO_ROOT}/build/linux-server" ;;
+        --clean)   CLEAN="1" ;;
         --objects) MODE="objects" ;;
+        --asan)    SANITIZE="1" ;;
+        --plain)   SANITIZE="0" ;;
         *) echo "unknown argument: ${arg}" >&2; exit 2 ;;
     esac
 done
+
+if [[ "${SANITIZE}" == "1" ]]; then
+    BUILD_DIR="${REPO_ROOT}/build/linux-server-asan"
+    VARIANT="ASan + UBSan"
+else
+    BUILD_DIR="${REPO_ROOT}/build/linux-server"
+    VARIANT="plain"
+fi
+if [[ "${CLEAN}" == "1" ]]; then
+    rm -rf "${BUILD_DIR}"
+fi
 
 fetch() {
     local name="$1" url="$2" expect="$3"
@@ -70,13 +95,27 @@ ln -sfn ../TiltedCore-0.2.9/Code/core/include "${DEPS_DIR}/tcinc/TiltedCore"
 OPT="${OPT:--O0}"
 
 if [[ "${MODE}" == "objects" ]]; then
-    echo "==> compiling the server (${JOBS} jobs)"
-    make -C "${REPO_ROOT}/Tools/rfab/linux-server" OPT="${OPT}" -j"${JOBS}" objects
+    echo "==> compiling the server (${VARIANT}, ${JOBS} jobs)"
+    make -C "${REPO_ROOT}/Tools/rfab/linux-server" OPT="${OPT}" SANITIZE="${SANITIZE}" -j"${JOBS}" objects
     exit 0
 fi
 
-echo "==> building the in-process server harness (${JOBS} jobs)"
-make -C "${REPO_ROOT}/Tools/rfab/linux-server" OPT="${OPT}" -j"${JOBS}" all
+echo "==> building the in-process server harness (${VARIANT}, ${JOBS} jobs)"
+make -C "${REPO_ROOT}/Tools/rfab/linux-server" OPT="${OPT}" SANITIZE="${SANITIZE}" -j"${JOBS}" all
 
-echo "==> running the server harness"
-"${REPO_ROOT}/build/linux-server/servertests"
+echo "==> running the server harness (${VARIANT})"
+if [[ "${SANITIZE}" == "1" ]]; then
+    # halt_on_error keeps the first report as the failure. Leak detection is off: the server keeps
+    # its world until the process exits, and mimalloc's own pages would drown any real report.
+    export ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=0:${ASAN_OPTIONS:-}"
+    export UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:${UBSAN_OPTIONS:-}"
+fi
+"${BUILD_DIR}/servertests"
+if [[ "${SANITIZE}" == "1" ]]; then
+    echo "[RFAB_RESULT] sanitizers: AddressSanitizer + UndefinedBehaviorSanitizer reported nothing (mimalloc blocks tracked)"
+fi
+
+# The server executable's crash record (Code/server_runner) is not part of the harness binary; its
+# portable half is checked here, with a program of its own.
+echo "==> the server's crash record"
+"${REPO_ROOT}/Tools/rfab/linux-server/crash-record-self-test.sh"

@@ -6,6 +6,7 @@
 
 #include <base/Check.h>
 #include <base/simpleini/SimpleIni.h>
+#include <common/Compat/SafeFs.h>
 #include <regex>
 
 namespace Resources
@@ -112,7 +113,7 @@ bool ResourceCollection::LoadManifestData(const std::filesystem::path& aPath)
         auto buf = TiltedPhoques::LoadFile(aPath);
         if (ini.LoadData(buf.c_str()) != SI_Error::SI_OK)
         {
-            spdlog::error("Failed to load manifest file {}", aPath.string());
+            spdlog::error("Failed to load manifest file {}", Compat::SafeFs::ToUtf8Lossy(aPath));
             return false;
         }
     }
@@ -126,12 +127,12 @@ bool ResourceCollection::LoadManifestData(const std::filesystem::path& aPath)
         const char* pValue = ini.GetValue("Resource", apName, nullptr);
         if (pValue == nullptr)
         {
-            spdlog::error("Missing key \"{}\" in {}", apName, aPath.string());
+            spdlog::error("Missing key \"{}\" in {}", apName, Compat::SafeFs::ToUtf8Lossy(aPath));
             return "";
         }
         if (!IsValidSemanticVersion(pValue))
         {
-            spdlog::error("Invalid semantic version for key \"{}\" in {}", apName, aPath.string());
+            spdlog::error("Invalid semantic version for key \"{}\" in {}", apName, Compat::SafeFs::ToUtf8Lossy(aPath));
             return {0, 0, 0};
         }
         return SemanticVersion(pValue);
@@ -146,7 +147,7 @@ bool ResourceCollection::LoadManifestData(const std::filesystem::path& aPath)
 
     if (manifest->ApiSet > Resources::kApiSet)
     {
-        spdlog::error("Resource {} requires a newer API set than the current one", aPath.string());
+        spdlog::error("Resource {} requires a newer API set than the current one", Compat::SafeFs::ToUtf8Lossy(aPath));
         return false;
     }
 
@@ -155,7 +156,7 @@ bool ResourceCollection::LoadManifestData(const std::filesystem::path& aPath)
         const char* pValue = ini.GetValue("Resource", apName, nullptr);
         if (pValue == nullptr)
         {
-            spdlog::error("Missing key \"{}\" in {}", apName, aPath.string());
+            spdlog::error("Missing key \"{}\" in {}", apName, Compat::SafeFs::ToUtf8Lossy(aPath));
             return "";
         }
         return UnescapeAndStrip(pValue);
@@ -238,29 +239,26 @@ void ResourceCollection::ResolveDependencies()
 
 void ResourceCollection::CollectResources()
 {
-    m_resourcePath = std::filesystem::current_path() / kResourceFolderName;
-    if (!std::filesystem::exists(m_resourcePath))
-    {
-        std::filesystem::create_directory(m_resourcePath);
-    }
+    // SafeFs: this runs while the server starts; a folder that cannot be read must cost its own
+    // resources, not the server (M14).
+    m_resourcePath = Compat::SafeFs::CurrentPathOr(std::filesystem::path(".")) / kResourceFolderName;
+    Compat::SafeFs::CreateDirectories(m_resourcePath);
 
     TiltedPhoques::Vector<std::filesystem::path> manifestCanidates;
-    for (const auto& packageFolder : std::filesystem::directory_iterator(m_resourcePath))
-    {
-        if (!packageFolder.is_directory())
-            continue;
+    Compat::SafeFs::ForEachEntry(m_resourcePath, [&manifestCanidates](const std::filesystem::directory_entry& acPackageFolder) {
+        if (!Compat::SafeFs::IsDirectory(acPackageFolder))
+            return;
 
-        for (const auto& packageContent : std::filesystem::directory_iterator(packageFolder))
-        {
-            if (packageContent.is_directory())
-                continue;
+        Compat::SafeFs::ForEachEntry(acPackageFolder.path(), [&manifestCanidates](const std::filesystem::directory_entry& acPackageContent) {
+            if (Compat::SafeFs::IsDirectory(acPackageContent))
+                return;
 
-            if (packageContent.path().extension() == kResourceManifestExt)
+            if (acPackageContent.path().extension() == kResourceManifestExt)
             {
-                manifestCanidates.push_back(packageContent.path());
+                manifestCanidates.push_back(acPackageContent.path());
             }
-        }
-    }
+        });
+    });
 
     uint32_t failedCount = 0;
     for (const auto& path : manifestCanidates)

@@ -2,6 +2,7 @@
 
 #include <TiltedCore/Stl.hpp>
 #include <Messages/Message.h>
+#include <Messages/NotifyCoopAction.h>
 #include <MetaMessage.h>
 
 #include <Messages/AuthenticationResponse.h>
@@ -13,7 +14,6 @@
 #include <Messages/NotifyFactionsChanges.h>
 #include <Messages/NotifyRemoveCharacter.h>
 #include <Messages/NotifyQuestUpdate.h>
-#include <Messages/NotifyQuestSceneUpdate.h>
 #include <Messages/NotifyPlayerList.h>
 #include <Messages/NotifyPartyInfo.h>
 #include <Messages/NotifyPartyInvite.h>
@@ -22,7 +22,6 @@
 #include <Messages/NotifyActorValueChanges.h>
 #include <Messages/NotifyActorMaxValueChanges.h>
 #include <Messages/NotifyHealthChangeBroadcast.h>
-#include <Messages/NotifySpawnData.h>
 #include <Messages/NotifyActivate.h>
 #include <Messages/NotifyLockChange.h>
 #include <Messages/AssignObjectsResponse.h>
@@ -41,6 +40,7 @@
 #include <Messages/NotifyRespawn.h>
 #include <Messages/NotifySyncExperience.h>
 #include <Messages/NotifyEquipmentChanges.h>
+#include <Messages/NotifyInventorySnapshot.h>
 #include <Messages/NotifyChatMessageBroadcast.h>
 #include <Messages/TeleportCommandResponse.h>
 #include <Messages/StringCacheUpdate.h>
@@ -49,7 +49,6 @@
 #include <Messages/NotifySubtitle.h>
 #include <Messages/NotifyPlayerDialogue.h>
 #include <Messages/NotifyActorTeleport.h>
-#include <Messages/NotifyRelinquishControl.h>
 #include <Messages/NotifyPlayerLeft.h>
 #include <Messages/NotifyPlayerJoined.h>
 #include <Messages/NotifyPlayerLevel.h>
@@ -61,17 +60,7 @@
 #include <Messages/NotifySetWaypoint.h>
 #include <Messages/NotifyRemoveWaypoint.h>
 #include <Messages/NotifySetTimeResult.h>
-#include <Messages/NotifySyncRfabExperience.h>
-#include <Messages/NotifyPrepareSave.h>
-#include <Messages/NotifyCommitSave.h>
-#include <Messages/NotifyExecuteLoad.h>
-#include <Messages/NotifyPlayerDownedState.h>
-#include <Messages/NotifyReviveState.h>
-#include <Messages/NotifyRfabProgressionEvent.h>
-#include <Messages/NotifyResyncComplete.h>
-#include <Messages/NotifyWorldItemSpawn.h>
-#include <Messages/NotifyWorldItemDespawn.h>
-#include <Messages/NotifyWorldItemSnapshot.h>
+#include <Messages/NotifyActionEvents.h>
 
 using TiltedPhoques::UniquePtr;
 
@@ -81,14 +70,12 @@ struct ServerMessageFactory
 
     template <class T> static auto Visit(T&& func)
     {
-        auto s_visitor = CreateMessageVisitor<
-            AuthenticationResponse, AssignCharacterResponse, ServerReferencesMoveRequest, ServerTimeSettings, CharacterSpawnRequest, NotifyInventoryChanges, StringCacheUpdate, NotifyFactionsChanges, NotifyRemoveCharacter, NotifyQuestUpdate, NotifyQuestSceneUpdate, NotifyPlayerList, NotifyPartyInfo, NotifyPartyInvite,
-            NotifyActorValueChanges, NotifyPartyJoined, NotifyPartyLeft, NotifyActorMaxValueChanges, NotifyHealthChangeBroadcast, NotifySpawnData, NotifyActivate, NotifyLockChange, AssignObjectsResponse, NotifyDeathStateChange, NotifyOwnershipTransfer, NotifyObjectInventoryChanges, NotifySpellCast,
+        auto s_visitor = CreateMessageVisitor<NotifyCoopAction,
+            AuthenticationResponse, AssignCharacterResponse, ServerReferencesMoveRequest, ServerTimeSettings, CharacterSpawnRequest, NotifyInventoryChanges, NotifyInventorySnapshot, StringCacheUpdate, NotifyFactionsChanges, NotifyRemoveCharacter, NotifyQuestUpdate, NotifyPlayerList, NotifyPartyInfo, NotifyPartyInvite,
+            NotifyActorValueChanges, NotifyPartyJoined, NotifyPartyLeft, NotifyActorMaxValueChanges, NotifyHealthChangeBroadcast, NotifyActivate, NotifyLockChange, AssignObjectsResponse, NotifyDeathStateChange, NotifyOwnershipTransfer, NotifyObjectInventoryChanges, NotifySpellCast,
             NotifyProjectileLaunch, NotifyInterruptCast, NotifyAddTarget, NotifyScriptAnimation, NotifyDrawWeapon, NotifyMount, NotifyNewPackage, NotifyRespawn, NotifySyncExperience, NotifyEquipmentChanges, NotifyChatMessageBroadcast, TeleportCommandResponse, NotifyPlayerRespawn, NotifyDialogue,
-            NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyRelinquishControl, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange,
-            NotifyWeatherChange, NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifySyncRfabExperience,
-            NotifyPrepareSave, NotifyCommitSave, NotifyExecuteLoad, NotifyPlayerDownedState, NotifyReviveState, NotifyRfabProgressionEvent, NotifyResyncComplete,
-            NotifyWorldItemSpawn, NotifyWorldItemDespawn, NotifyWorldItemSnapshot>;
+            NotifySubtitle, NotifyPlayerDialogue, NotifyActorTeleport, NotifyPlayerLeft, NotifyPlayerJoined, NotifyDialogue, NotifySubtitle, NotifyPlayerDialogue, NotifyPlayerLevel, NotifyPlayerCellChanged, NotifyTeleport, NotifyPlayerHealthUpdate, NotifySettingsChange,
+            NotifyWeatherChange, NotifySetWaypoint, NotifyRemoveWaypoint, NotifySetTimeResult, NotifyRemoveSpell, NotifyActionEvents>;
 
         return s_visitor(std::forward<T>(func));
     }

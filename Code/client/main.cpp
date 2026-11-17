@@ -1,9 +1,11 @@
 
 #include <TiltedOnlineApp.h>
 #include <TiltedOnlinePCH.h>
+#include <CrashBreadcrumbs.h>
 
 #include <Commctrl.h>
 #include <Windows.h>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -405,6 +407,41 @@ void LogUnhandledCrashToBootFile(PEXCEPTION_POINTERS apInfo) noexcept
     WriteBootTraceRaw(clientPath / L"RFAB_Online_Crash.log", crashBuf, false);
     if (!s_pendingGamePath.empty() && s_pendingGamePath != clientPath)
         WriteBootTraceRaw(s_pendingGamePath / L"RFAB_Online_Crash.log", crashBuf, false);
+
+    // Breadcrumbs (common/Diag/Breadcrumbs.h): the last packets, lifecycle events and hooks before
+    // the fault, as continuation lines of the record above. Written second and into a static buffer:
+    // whatever happens here, the record itself is already on disk, and after a stack overflow there
+    // is no stack to spare. Tools/rfab/symbolize_crash.py reads these lines.
+    static char s_crumbText[9216];
+    static std::atomic<bool> s_crumbTextBusy{false};
+    // Two threads can fault at the same moment; the second one keeps its record and skips the crumbs.
+    if (!s_crumbTextBusy.exchange(true))
+    {
+        const uint64_t crumbNowMs = GetTickCount64();
+        size_t crumbLength = static_cast<size_t>(std::snprintf(s_crumbText, sizeof(s_crumbText),
+                                                               "    [crumbs] events=%llu packets=%llu hooks=%llu dropped=%llu (newest last; a/b: see the RFAB_*_CRUMB call sites)",
+                                                               static_cast<unsigned long long>(Diag::g_eventCrumbs.Total()),
+                                                               static_cast<unsigned long long>(Diag::g_packetCrumbs.Total()),
+                                                               static_cast<unsigned long long>(Diag::g_hookCrumbs.Total()),
+                                                               static_cast<unsigned long long>(Diag::g_eventCrumbs.Dropped() + Diag::g_packetCrumbs.Dropped() +
+                                                                                               Diag::g_hookCrumbs.Dropped())));
+        if (crumbLength < sizeof(s_crumbText))
+        {
+            // Each ring gets its own share of the buffer, so a full one cannot crowd out the next.
+            const auto share = [&crumbLength](size_t aWanted) noexcept {
+                const size_t left = sizeof(s_crumbText) - crumbLength;
+                return aWanted < left ? aWanted : left;
+            };
+            crumbLength += Diag::g_eventCrumbs.Format(s_crumbText + crumbLength, share(3584), "event", crumbNowMs, 40);
+            crumbLength += Diag::g_packetCrumbs.Format(s_crumbText + crumbLength, share(2560), "packet", crumbNowMs, 28);
+            crumbLength += Diag::g_hookCrumbs.Format(s_crumbText + crumbLength, share(sizeof(s_crumbText)), "hook", crumbNowMs, 28);
+            WriteBootTraceRaw(clientPath / L"RFAB_Online_Crash.log", s_crumbText, false);
+            if (!s_pendingGamePath.empty() && s_pendingGamePath != clientPath)
+                WriteBootTraceRaw(s_pendingGamePath / L"RFAB_Online_Crash.log", s_crumbText, false);
+            WriteBootTrace(s_crumbText, false);
+        }
+        s_crumbTextBusy.store(false);
+    }
 
     s_inCrashLogger = false;
 }

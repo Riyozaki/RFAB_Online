@@ -2,6 +2,7 @@
 #include <ScriptExtender.h>
 #include <TiltedOnlinePCH.h>
 #include <VersionDb.h>
+#include <common/Compat/SafeFs.h>
 
 extern void WriteBootTrace(const char* apMsg, bool aReset);
 
@@ -84,21 +85,21 @@ void LoadScriptExender()
     }
 
     std::list<std::filesystem::path> dllMatches;
-    for (const auto& dirEntry : std::filesystem::directory_iterator(gameDir, ec))
-    {
-        const auto& path = dirEntry.path();
+    // SafeFs: the walk of the game folder cannot throw midway (M14).
+    Compat::SafeFs::ForEachEntry(gameDir, [&dllMatches](const std::filesystem::directory_entry& acDirEntry) {
+        const auto& path = acDirEntry.path();
         if (_wcsicmp(path.extension().c_str(), L".dll") != 0)
-            continue;
+            return;
 
         auto fileName = path.filename().wstring();
         if (fileName.length() <= kScriptExtenderNameLength)
-            continue;
+            return;
 
         if (_wcsnicmp(fileName.c_str(), kScriptExtenderName, kScriptExtenderNameLength) == 0)
         {
             dllMatches.push_back(path);
         }
-    }
+    });
 
     // Match entirely in wide UTF-16 so non-ASCII / Cyrillic filenames in gameDir NEVER throw 0xE06D7363 on .string()!
     std::filesystem::path* needle = nullptr;

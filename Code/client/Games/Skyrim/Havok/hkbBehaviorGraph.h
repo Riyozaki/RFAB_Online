@@ -37,10 +37,6 @@ struct hkbBehaviorGraph
 
     bool IsWordVariable(uint32_t aIndex) const noexcept;
 
-    // Reverse engineering do not use
-    void ReSendEvent(hkEventContext& aContext, hkEventType& aType);
-    void ReHandleEvent(hkEventContext& aContext, hkEventType& aType);
-
     struct Struct98
     {
         SomeData* data;

@@ -15,6 +15,10 @@ local function build_launcher()
         "/LAST:.zdata",
         "/SUBSYSTEM:WINDOWS",
         "/ENTRY:mainCRTStartup", { force = true })
+    -- A linker map next to the executable: the text symbol table Tools/rfab/symbolize_crash.py
+    -- uses to turn the addresses of a crash record into function names. Package-Release.ps1 ships
+    -- it with the build, so a crash report can be read without the PDB and without Windows.
+    add_ldflags("/MAP", { force = true })
     add_includedirs(
         ".",
         "../",

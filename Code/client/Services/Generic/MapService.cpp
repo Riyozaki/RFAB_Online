@@ -28,7 +28,7 @@ MapService::MapService(World& aWorld, entt::dispatcher& aDispatcher, TransportSe
 
 void MapService::OnSetWaypoint(const SetWaypointEvent& acMessage) noexcept
 {
-    if (!m_transport.IsConnected() || acMessage.WorldSpaceFormID == 0)
+    if (!m_transport.IsConnected())
         return;
 
     RequestSetWaypoint request{};
@@ -36,10 +36,7 @@ void MapService::OnSetWaypoint(const SetWaypointEvent& acMessage) noexcept
 
     ModSystem& modSystem = m_world.Get().GetModSystem();
     if (!modSystem.GetServerModId(acMessage.WorldSpaceFormID, request.WorldSpaceFormID))
-    {
-        spdlog::warn("Skipping SetWaypoint sync: unmapped location form {:X}", acMessage.WorldSpaceFormID);
         return;
-    }
 
     m_transport.Send(request);
 }
@@ -55,37 +52,27 @@ void MapService::OnRemoveWaypoint(const RemoveWaypointEvent& acMessage) noexcept
 
 void MapService::OnNotifySetWaypoint(const NotifySetWaypoint& acMessage) noexcept
 {
-    PlayerCharacter* pPlayer = PlayerCharacter::Get();
-    if (!pPlayer)
-        return;
-
-    if (!std::isfinite(acMessage.Position.x) ||
-        !std::isfinite(acMessage.Position.y) ||
-        !std::isfinite(acMessage.Position.z))
-    {
-        return;
-    }
-
-    ModSystem& modSystem = m_world.Get().GetModSystem();
-    const uint32_t cLocationID = modSystem.GetGameId(acMessage.WorldSpaceFormID);
-    if (cLocationID == 0)
-        return;
-
-    TESForm* pLocation = TESForm::GetById(cLocationID);
-    if (!pLocation || (!Cast<TESWorldSpace>(pLocation) && !Cast<TESObjectCELL>(pLocation)))
-        return;
-
     NiPoint3 pos{};
     pos.x = acMessage.Position.x;
     pos.y = acMessage.Position.y;
     pos.z = acMessage.Position.z;
 
-    pPlayer->SetWaypoint(&pos, pLocation);
+    ModSystem& modSystem = m_world.Get().GetModSystem();
+    const uint32_t cWorldSpaceID = modSystem.GetGameId(acMessage.WorldSpaceFormID);
+
+    // The game takes the map's worldspace, or its cell on an interior map, and reads its form type without a null
+    // check, so a waypoint whose location this client doesn't have must be skipped.
+    TESForm* pLocation = TESForm::GetById(cWorldSpaceID);
+    if (!Cast<TESWorldSpace>(pLocation) && !Cast<TESObjectCELL>(pLocation))
+    {
+        spdlog::warn("{}: no worldspace or cell {:X} for the waypoint, skipping it", __FUNCTION__, cWorldSpaceID);
+        return;
+    }
+
+    PlayerCharacter::Get()->SetWaypoint(&pos, reinterpret_cast<TESWorldSpace*>(pLocation));
 }
 
 void MapService::OnNotifyRemoveWaypoint(const NotifyRemoveWaypoint& acMessage) noexcept
 {
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
-        pPlayer->RemoveWaypoint();
+    PlayerCharacter::Get()->RemoveWaypoint();
 }
-

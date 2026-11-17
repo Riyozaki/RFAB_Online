@@ -16,6 +16,7 @@
 struct AnimationVariables;
 struct TESWorldSpace;
 struct TESBoundObject;
+struct TESActorBase;
 struct TESContainer;
 struct BGSScene;
 
@@ -58,20 +59,11 @@ struct TESObjectREFR : TESForm
         kClosing,
     };
 
-    static GamePtr<TESObjectREFR> LookupByHandle(uint32_t aHandle) noexcept;
-    template <class T>
-    static GamePtr<TESObjectREFR> LookupByHandle(const BSPointerHandle<T>& acHandle) noexcept
-    {
-        return LookupByHandle(acHandle.handle.iBits);
-    }
     static TESObjectREFR* GetByHandle(uint32_t aHandle) noexcept;
     static uint32_t* GetNullHandle() noexcept;
 
     static void GetItemFromExtraData(Inventory::Entry& arEntry, ExtraDataList* apExtraDataList) noexcept;
     static ExtraDataList* GetExtraDataFromItem(const Inventory::Entry& arEntry) noexcept;
-    // Writes the item's extra data (charge, enchantment, poison, health, soul, optionally worn) into an
-    // existing list - a new inventory list or the list of a reference that shows the item in the world.
-    static void ApplyItemExtraData(ExtraDataList* apExtraDataList, const Inventory::Entry& arEntry, bool aIncludeWorn) noexcept;
 
     virtual void sub_3B();
     virtual void sub_3C();
@@ -88,7 +80,7 @@ struct TESObjectREFR : TESForm
     virtual void sub_47();
     virtual void sub_48();
     virtual void sub_49();
-    virtual BGSScene* GetCurrentScene();
+    virtual BGSScene* GetCurrentScene() const; // ExtraDataType::SceneData; actors only while Actor::HAS_SCENE_DATA is set
     virtual void sub_4B();
     virtual void sub_4C();
     virtual void sub_4D();
@@ -105,7 +97,7 @@ struct TESObjectREFR : TESForm
     virtual void sub_58();
     virtual void sub_59();
     virtual void AddObjectToContainer(TESBoundObject* apObj, ExtraDataList* aspExtra, int32_t aicount, TESObjectREFR* apOldContainer);
-    virtual void sub_5B();
+    virtual NiPoint3 GetLookingAtLocation() const;
     virtual MagicCaster* GetMagicCaster(MagicSystem::CastingSource aeSource);
     virtual MagicTarget* GetMagicTarget();
     virtual void sub_5E();
@@ -125,7 +117,7 @@ struct TESObjectREFR : TESForm
     virtual void sub_6C();
     virtual void sub_6D();
     virtual void sub_6E();
-    virtual NiNode* GetNiNode3rdPerson(bool aFirstPerson = false);
+    virtual void sub_6F();
     virtual NiNode* GetNiNode();
     virtual void sub_71();
     virtual void sub_72();
@@ -146,7 +138,7 @@ struct TESObjectREFR : TESForm
     virtual void sub_81();
     virtual void sub_82();
     virtual void sub_83();
-    virtual void SetBaseForm(TESForm* apForm);
+    virtual void SetObjectReference(TESBoundObject* apObject);
     virtual void sub_85();
     virtual void sub_86();
     virtual void sub_87();
@@ -165,13 +157,16 @@ struct TESObjectREFR : TESForm
     virtual void sub_94();
     virtual void sub_95();
     virtual void sub_96();
-    virtual struct TESObjectCELL* GetParentCell() const;
+    // The actual parent cell is the field below at offset 0x60; use GetParentCellEx() when the
+    // effective cell is needed.
+    virtual struct TESObjectCELL* GetSaveParentCell() const;
     virtual void SetParentCell(struct TESObjectCELL* apParentCell);
     virtual bool VirtIsDead(bool abNotEssential); // TODO: Use this or papyrus IsDead?
     virtual void sub_9A();
     virtual void sub_9B();
 
     void SetRotation(float aX, float aY, float aZ) noexcept;
+    void SetLeveledCreature(TESActorBase* apOriginalBase, TESActorBase* apTemplateA) noexcept;
 
     BSPointerHandle<TESObjectREFR> GetHandle() const noexcept;
     uint32_t GetCellId() const noexcept;
@@ -193,8 +188,6 @@ struct TESObjectREFR : TESForm
     void Disable() const noexcept;
     void Enable() const noexcept;
     void MoveTo(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept;
-    void MoveToCellSeamless(TESObjectCELL* apCell, const NiPoint3& acPosition) const noexcept;
-    void MoveToWorldOrCell(TESObjectCELL* apCell, TESWorldSpace* apWorldSpace, const NiPoint3& acPosition, const NiPoint3& acRotation) const noexcept;
     void PayGold(int32_t aAmount) noexcept;
     void PayGoldToContainer(TESObjectREFR* pContainer, int32_t aAmount) noexcept;
     bool SendAnimationEvent(BSFixedString* apEventName) noexcept;
@@ -222,6 +215,8 @@ struct TESObjectREFR : TESForm
     void SetInventoryRetainingQuestItems(Inventory& aCurrentInventory, const Inventory& acSourceInventory) noexcept;
     void AddOrRemoveItem(const Inventory::Entry& arEntry, bool aIsSettingInventory = false) noexcept;
     void UpdateItemList(TESForm* pUnkForm) noexcept;
+    bool FindExactInventoryInstance(const Inventory::Entry&, ExtraDataList*& aExtras) const noexcept;
+    bool ApplyExactInventory(const Inventory&) noexcept;
 
     BSHandleRefObject handleRefObject;
     uintptr_t unk1C;
@@ -234,8 +229,7 @@ struct TESObjectREFR : TESForm
     ExtraDataList extraData;
     uint64_t unk88;
     uint16_t scale;
-    uint8_t unk92;
-    uint8_t unk93;
+    uint16_t referenceFlags;
 };
 
 // 0x98 on Skyrim SE 1.5.97 (pre-1.6.629 ExtraDataList without vtable).
@@ -245,5 +239,4 @@ static_assert(offsetof(TESObjectREFR, loadedState) == 0x68);
 static_assert(offsetof(TESObjectREFR, extraData) == 0x70);
 static_assert(offsetof(TESObjectREFR, unk88) == 0x88);
 static_assert(offsetof(TESObjectREFR, scale) == 0x90);
-static_assert(offsetof(TESObjectREFR, unk92) == 0x92);
-static_assert(offsetof(TESObjectREFR, unk93) == 0x93);
+static_assert(offsetof(TESObjectREFR, referenceFlags) == 0x92);

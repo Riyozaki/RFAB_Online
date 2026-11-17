@@ -19,10 +19,13 @@ struct Movement
     void Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept;
     void Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept;
 
+    uint32_t OwnershipEpoch{};
     GameId CellId{};
     GameId WorldSpaceId{};
     Vector3_NetQuantize Position{};
     Rotator2_NetQuantize Rotation{};
     AnimationVariables Variables{};
     float Direction{};
+    bool HasLookAt{};
+    Vector3_NetQuantize LookOffset{}; // From the head to the look-at target
 };

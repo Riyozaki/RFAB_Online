@@ -14,23 +14,13 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
 
-    bool operator==(const NotifyHealthChangeBroadcast& acRhs) const noexcept
-    {
-        return Id == acRhs.Id &&
-               DeltaHealth == acRhs.DeltaHealth &&
-               SourceServerId == acRhs.SourceServerId &&
-               StaggerMagnitude == acRhs.StaggerMagnitude &&
-               StaggerDirection == acRhs.StaggerDirection &&
-               HealthRevision == acRhs.HealthRevision &&
-               GetOpcode() == acRhs.GetOpcode();
-    }
+    bool operator==(const NotifyHealthChangeBroadcast& acRhs) const noexcept { return Id == acRhs.Id && OwnershipEpoch == acRhs.OwnershipEpoch && Sequence == acRhs.Sequence && DeltaHealth == acRhs.DeltaHealth && Health == acRhs.Health && Revision == acRhs.Revision && SourcePlayerId == acRhs.SourcePlayerId && GetOpcode() == acRhs.GetOpcode(); }
 
     uint32_t Id{};
+    uint32_t OwnershipEpoch{};
+    uint64_t Sequence{};
     float DeltaHealth{};
-    uint32_t SourceServerId{};
-    float StaggerMagnitude{};
-    float StaggerDirection{};
-
-    // The actor's health version after this hit was applied.
-    uint32_t HealthRevision{};
+    float Health{};
+    uint64_t Revision{};
+    uint32_t SourcePlayerId{};
 };

@@ -40,12 +40,7 @@ void CachedString::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
         }
         else
         {
-            // The peer referenced a table entry we do not have (late join, dropped/reordered
-            // StringCacheUpdate or a hostile packet). Asserting killed debug builds and release
-            // builds silently kept the *previous* value of this field, which then travelled on as
-            // a valid-looking animation/tint name. Fail closed with a deterministic empty value.
             clear();
-            StringCache::Get().NotifyUnknownId(static_cast<uint32_t>(cId));
         }
     }
     else

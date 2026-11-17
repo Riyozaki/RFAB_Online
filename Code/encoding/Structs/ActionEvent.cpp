@@ -19,7 +19,7 @@ enum DifferentialFlags
 
 bool ActionEvent::operator==(const ActionEvent& acRhs) const noexcept
 {
-    return Tick == acRhs.Tick &&
+    return Tick == acRhs.Tick && OwnershipEpoch == acRhs.OwnershipEpoch &&
            // ActorId == acRhs.ActorId && // ActorId is a local field as it is filled up latter by the game client
            ActionId == acRhs.ActionId && State1 == acRhs.State1 && State2 == acRhs.State2 && Type == acRhs.Type && TargetId == acRhs.TargetId && IdleId == acRhs.IdleId && EventName == acRhs.EventName && TargetEventName == acRhs.TargetEventName && Variables == acRhs.Variables;
 }
@@ -57,7 +57,7 @@ void ActionEvent::GenerateDifferential(const ActionEvent& aPrevious, TiltedPhoqu
     if (Variables != aPrevious.Variables)
         flags |= kVariables;
 
-    // Missing variables
+    aWriter.WriteBits(OwnershipEpoch, 32);
     aWriter.WriteBits(flags, 8);
 
     {
@@ -109,8 +109,9 @@ void ActionEvent::GenerateDifferential(const ActionEvent& aPrevious, TiltedPhoqu
 
 void ActionEvent::ApplyDifferential(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    uint64_t flags = 0;
-
+    uint64_t flags = 0, epoch = 0;
+    aReader.ReadBits(epoch, 32);
+    OwnershipEpoch = static_cast<uint32_t>(epoch);
     aReader.ReadBits(flags, 8);
 
     {

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "import_date_utc": "2026-11-17",
+  "source_repository": "ovococjsjs-gif/RFABTogether",
+  "source_commit": "64e432ee7e397e79c3ff63a684667eced8bad331",
+  "upstream_repository": "tiltedphoques/TiltedEvolution",
+  "upstream_commit": "13ff0b5a934bf3016c8c898d9a019aa04e5c1fb0",
+  "previous_local_base": "adf3573b37e8d9b682b0d6ae2376ee1ef7229536",
+  "source_archive_sha256": "af4b15bd51bf1ae3b46ec94ebc5b3c5e7779243f4f3ff99689701dd1d60e7978",
+  "imported_scopes": [
+    "Code/",
+    "Tools/",
+    "docs/se-1597-id-map.csv",
+    "docs/phase-0-evidence/address-id-audit.txt",
+    "BUILD.md",
+    "COLLECT_RFAB_REPORT.bat"
+  ],
+  "unchanged": [
+    ".gitmodules and submodule pins",
+    "GameFiles/",
+    "current branch and release tags"
+  ],
+  "notes": "A content import, not a git reset/rebase. Subsequent fixes are ordinary changes on the current Arena branch. No foreign release opt-in, workflows, binary uploads, or generated output were imported."
+}

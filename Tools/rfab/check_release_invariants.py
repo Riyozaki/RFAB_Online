@@ -19,6 +19,13 @@ this project actually hit:
   4. Release backup manifests parse and describe assets with sizes and digests.
   5. The release workflow does not hardcode a version tag, so VERSION stays the
      single source of truth.
+  6. The co-op config overlay and the installer undo share one key list.
+  7. The four Tilted* libraries are submodule links pinned to the revisions
+     patch_submodules.py was written against. An import once dropped the links;
+     nothing failed on Linux and the client could not be built at all.
+  8. No line disabled on purpose is left behind. A fix is proven by breaking it and
+     watching its test fail; the broken line carries a marker, and a marker that
+     survives into a commit ships the breakage.
 
 Behaviour of the game itself is covered by the test suites in Code/tests, which
 execute code instead of reading it.
@@ -184,7 +191,11 @@ for manifest_path in manifests:
 
 # 5. The workflow does not pin a version --------------------------------------
 workflow = ROOT / ".github" / "workflows" / "release.yml"
-check(workflow.is_file(), ".github/workflows/release.yml is missing")
+if not workflow.is_file():
+    alt_workflow = ROOT / ".github" / "workflows-ready" / "release.yml"
+    if alt_workflow.is_file():
+        workflow = alt_workflow
+check(workflow.is_file(), ".github/workflows/release.yml (or .github/workflows-ready/release.yml) is missing")
 if workflow.is_file():
     # Only the command matters; the word may legitimately appear in a comment.
     commands = [
@@ -215,6 +226,9 @@ if overlay_h.is_file() and restore_ps1.is_file():
         ("kSkyrimSoulsKeys", "SkyrimSoulsRE.ini"),
         ("kRfabAutosaveKeys", "[RFAB] Autosave.ini"),
         ("kPo3TweaksKeys", "po3_Tweaks.ini"),
+        ("kRfabPluginIniKeys", "RFAB.ini"),
+        ("kSseDisplayTweaksKeys", "SSEDisplayTweaks.ini"),
+        ("kSseDisplayTweaksKeys", "SSEDisplayTweaks_Custom.ini"),
     ):
         cpp_match = re.search(
             r"inline constexpr std::string_view " + array_name + r"\[\]\s*=\s*\{(.*?)\};", header, re.S
@@ -237,6 +251,75 @@ if overlay_h.is_file() and restore_ps1.is_file():
                 f"{array_name} keys must be lower case (compared case-insensitively on both sides)",
             )
 
+# 7. Submodules are pinned ------------------------------------------------------
+# Build-CloudRelease.ps1 step [1/8] runs `git submodule update --init` and then
+# patch_submodules.py, which replaces exact source fragments of these libraries.
+SUBMODULE_PINS = {
+    "Libraries/TiltedConnect": "e6f5759364a64462e717db1153781a7eae26a13e",
+    "Libraries/TiltedHooks": "d7c175b86975679eb05883c097d7eb1c2165226a",
+    "Libraries/TiltedReverse": "55ee3f29c62fea247148e57b94ec4941055139ed",
+    "Libraries/TiltedUI": "0bec46b174d730832cbe0a10e8162bf6b0d3d66b",
+}
+gitmodules = ROOT / ".gitmodules"
+check(gitmodules.is_file(), ".gitmodules is missing")
+if gitmodules.is_file():
+    declared = set(re.findall(r"^\s*path\s*=\s*(\S+)\s*$", gitmodules.read_text(encoding="utf-8"), re.M))
+    check(
+        declared == set(SUBMODULE_PINS),
+        f".gitmodules declares {sorted(declared)}, the pinned set is {sorted(SUBMODULE_PINS)}; "
+        "update SUBMODULE_PINS in this script together with .gitmodules",
+    )
+
+staged = git("ls-files", "-s", "--", *SUBMODULE_PINS)
+if staged is None:
+    notes.append("git index unavailable, skipped the submodule pin check")
+else:
+    index_entries: dict[str, tuple[str, str]] = {}
+    for line in staged.splitlines():
+        meta, _, path = line.partition("\t")
+        fields = meta.split()
+        if len(fields) >= 2:
+            index_entries[path] = (fields[0], fields[1])
+    for path, pin in SUBMODULE_PINS.items():
+        mode, sha = index_entries.get(path, ("", ""))
+        check(
+            mode == "160000",
+            f"{path} is not a submodule link in the git index, so the Windows build has no sources "
+            f"for it; restore with: git update-index --add --cacheinfo 160000,{pin},{path}",
+        )
+        if mode == "160000":
+            check(
+                sha == pin,
+                f"{path} points at {sha}, expected {pin}; patch_submodules.py is written against "
+                "the pinned revision - move the pin and the patches together",
+            )
+
+# 8. No deliberate breakage left behind -------------------------------------------
+# The marker is spelled in two halves so that this file does not contain it.
+BREAKAGE_MARKER = "MUTATION" + "-TEST"
+SOURCE_SUFFIXES = {".cpp", ".h", ".hpp", ".inl", ".c", ".py", ".sh", ".ps1", ".bat", ".lua", ".ini", ".json"}
+tracked = git("ls-files", "--cached", "--others", "--exclude-standard", "--", "Code", "Tools", "dist_ready")
+if tracked is None:
+    notes.append("git index unavailable, skipped the deliberate-breakage marker check")
+else:
+    for relative in tracked.splitlines():
+        candidate = ROOT / relative
+        if candidate.suffix.lower() not in SOURCE_SUFFIXES and candidate.name != "Makefile":
+            continue
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if BREAKAGE_MARKER not in text:
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            if BREAKAGE_MARKER in line:
+                check(
+                    False,
+                    f"{relative}:{number} carries the {BREAKAGE_MARKER} marker: a line was disabled to "
+                    "prove that a test can fail and was not restored",
+                )
+
 # -----------------------------------------------------------------------------
 for note in notes:
     print(f"[release-invariants] note: {note}")
@@ -249,5 +332,6 @@ if failures:
 
 print(
     f"[release-invariants] OK: version {version}, "
-    f"{len(manifests)} backup manifest(s), no build output tracked in git."
+    f"{len(manifests)} backup manifest(s), {len(SUBMODULE_PINS)} submodule pin(s), "
+    "no build output tracked in git."
 )

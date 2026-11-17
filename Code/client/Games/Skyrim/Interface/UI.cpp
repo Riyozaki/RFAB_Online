@@ -16,8 +16,6 @@
 #include <string_view>
 #include <utility>
 
-static bool g_RequestUnpauseAll{false};
-
 UI* UI::Get()
 {
     POINTER_SKYRIMSE(UI*, s_instance, 514178);
@@ -95,8 +93,8 @@ constexpr size_t kAllowListCount = sizeof(kAllowList) / sizeof(kAllowList[0]);
 static UI::TCreate* s_realCreators[kAllowListCount]{};
 static bool s_postSkseUiInitDone = false;
 
-// The one place that decides who (un)pauses menus. Decided once on the main thread in the first
-// UI::Register call (after SKSE loaded its plugins), read by the menu creators on the main thread.
+// Decided once on the main thread in the first UI::Register call (after SKSE loaded its plugins),
+// read by menu creators and PlayerControls input filtering on the main thread.
 Compat::MenuPausePolicy s_menuPolicy{};
 bool s_menuPolicyDecided = false;
 
@@ -134,26 +132,15 @@ IMenu* WrappedMenuCreator(UIMessage* apMessage)
         ApplyRfabDllPerkPlacementBoundsFixPostSkse();
 
     IMenu* pMenu = s_realCreators[Index](apMessage);
-    if (!pMenu || !World::IsConnectedCached() || !s_menuPolicyDecided)
+    if (!pMenu || !World::Get().GetTransport().IsConnected() || !s_menuPolicyDecided)
         return pMenu;
 
-    if (menuName == "ContainerMenu")
-        World::SetContainerMenuOpenHint(true);
-
-    // RFAB's plugins can only be seen once the plugin list is loaded; that evidence keeps
-    // StatsMenu paused from then on (CustomSkills skydome / RFAB PerkPlacementMenuOpenCloseManager).
-    // The input patches may already be in place then (they are not reverted; upstream Skyrim Together
-    // applies them unconditionally). With RFAB this path is not taken: CustomSkills.dll / RFAB.dll
-    // are loaded before the first UI::Register, so the policy is final from the start.
     if (menuName == "StatsMenu" && s_menuPolicy.TogetherUnpauses(menuName) && HasPerkTreePluginsLoaded())
     {
         s_menuPolicy.NoteLatePerkTreeEvidence();
         spdlog::info("[RFAB Menus] RFAB plugins loaded: {}", s_menuPolicy.Describe());
     }
 
-    // With Skyrim Souls RE loaded, Souls' CreateMenu wrapper reads PausesGame() after us to keep
-    // UI::numPausesGame / MenuFlagEx::kUnpaused consistent: stripping kPausesGame here breaks
-    // TweenMenu (Tab) and crashes StatsMenu. The policy then never lets Together unpause.
     if (s_menuPolicy.TogetherUnpauses(menuName))
         UnfreezeMenu(pMenu);
     return pMenu;
@@ -204,6 +191,34 @@ static void Hook_UI_Register(UI* apSelf, const char* apMenuName, UI::TCreate* ap
     Real_UI_Register(apSelf, apMenuName, apCreate);
 }
 } // namespace
+
+bool UI::ShouldUnpauseMenus()
+{
+    return World::Get().GetTransport().IsConnected() && s_menuPolicyDecided &&
+           s_menuPolicy.Owner == Compat::MenuPauseOwner::kTogether;
+}
+
+bool UI::IsUnpausedMenuOpen() const
+{
+    if (!s_menuPolicyDecided)
+        return false;
+
+    static const BSFixedString* s_menuNames = []()
+    {
+        auto* pNames = new BSFixedString[kAllowListCount];
+        for (size_t i = 0; i < kAllowListCount; ++i)
+            pNames[i].Set(kAllowList[i]);
+        return pNames;
+    }();
+
+    for (size_t i = 0; i < kAllowListCount; ++i)
+    {
+        if (s_menuPolicy.TogetherUnpauses(kAllowList[i]) && GetMenuOpen(s_menuNames[i]))
+            return true;
+    }
+
+    return false;
+}
 
 static TiltedPhoques::Initializer s_s(
     []()

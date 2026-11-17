@@ -6,37 +6,38 @@
 #include <AI/AIProcess.h>
 #include <Misc/MiddleProcess.h>
 
-#include <Games/ActorExtension.h>
 #include <Games/References.h>
-#include <Games/TES.h>
-#include <Forms/TESObjectCELL.h>
-#include <Forms/TESWorldSpace.h>
-#include <PlayerCharacter.h>
-#include <Structs/AnimationGraphDescriptorManager.h>
-#include <Structs/GridCellCoords.h>
-#include <CoopAnimationState.h>
-#include <World/CellMotion.h>
-#include <CoopWorldStabilizer.h>
 #include <World.h>
 
-void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const uint64_t aTick, const RemoteAnimationComponent* apAnimComponent) noexcept
+namespace
 {
+// Past the newest snapshot the actor keeps moving for at most this long, then holds still until data arrives
+constexpr double cMaxExtrapolation = 150.0;
+// Consecutive snapshots further apart than this are a teleport, not movement to interpolate across
+constexpr float cTeleportDistance = 1024.f;
+// Larger corrections snap instead of sliding the actor into place
+constexpr float cMaxPositionCorrection = 256.f;
+// Time constant of the correction fading out, ~95% of it is gone after three times this
+constexpr double cPositionCorrectionTime = 50.0;
+constexpr size_t cMaxTimePoints = 64;
+} // namespace
+
+void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterpolationComponent, const double aNow) noexcept
+{
+    auto& clock = aInterpolationComponent.Clock;
+    const double cDeltaTime = clock.Advance(aNow);
+
     auto& movements = aInterpolationComponent.TimePoints;
 
     if (movements.size() < 2)
-    {
-        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
         return;
-    }
 
-    const double renderTick = aInterpolationComponent.Clock.IsRunning()
-        ? aInterpolationComponent.Clock.GetRenderTick()
-        : static_cast<double>(aTick);
+    const double cRenderTick = clock.GetRenderTick();
 
     while (movements.size() > 2)
     {
-        const auto second = *(++movements.begin());
-        if (renderTick > static_cast<double>(second.Tick))
+        const auto& second = *(++movements.begin());
+        if (cRenderTick >= static_cast<double>(second.Tick))
             movements.pop_front();
         else
             break;
@@ -45,207 +46,62 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     const auto& first = *(movements.begin());
     const auto& second = *(++movements.begin());
 
-    // Calculate delta movement since last update
-    auto delta = 0.0001f;
-    const auto tickDelta = static_cast<float>(second.Tick > first.Tick ? (second.Tick - first.Tick) : 0u);
-    if (tickDelta > 0.f)
+    const auto tickDelta = static_cast<double>(second.Tick - first.Tick);
+    const bool cIsTeleport = glm::distance(first.Position, second.Position) > cTeleportDistance;
+
+    glm::vec3 position{};
+    auto delta = 1.f;
+    bool isExtrapolating = false;
+
+    if (cRenderTick <= static_cast<double>(second.Tick))
     {
-        delta = static_cast<float>((renderTick - static_cast<double>(first.Tick)) / static_cast<double>(tickDelta));
-    }
+        if (tickDelta > 0.0)
+            delta = static_cast<float>(std::clamp((cRenderTick - static_cast<double>(first.Tick)) / tickDelta, 0.0, 1.0));
 
-    delta = std::clamp(delta, 0.0f, 1.0f);
+        // Stay at the old position until the teleport happens
+        if (cIsTeleport && delta < 1.f)
+            delta = 0.f;
 
-    const float stepDx = second.Position.x - first.Position.x;
-    const float stepDy = second.Position.y - first.Position.y;
-    const float stepDz = second.Position.z - first.Position.z;
-    const float stepDistSq = stepDx * stepDx + stepDy * stepDy + stepDz * stepDz;
-    constexpr float kTeleportSnapThresholdSq = 2048.0f * 2048.0f;
-
-    if (tickDelta > 0.f && stepDistSq <= kTeleportSnapThresholdSq)
-    {
-        const float horizDist = std::sqrt(stepDx * stepDx + stepDy * stepDy);
-        aInterpolationComponent.LastHorizontalSpeed = horizDist * (1000.0f / tickDelta);
+        position = TiltedPhoques::Lerp(first.Position, second.Position, delta);
     }
     else
     {
-        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
+        // The next snapshot is late, keep going the way the actor was moving rather than freezing it
+        position = second.Position;
+
+        if (!cIsTeleport && tickDelta > 0.0)
+        {
+            const double cExtrapolationTime = std::min(cRenderTick - static_cast<double>(second.Tick), cMaxExtrapolation);
+            position = TiltedPhoques::Lerp(first.Position, second.Position, static_cast<float>(1.0 + cExtrapolationTime / tickDelta));
+            isExtrapolating = true;
+        }
     }
 
-    const NiPoint3 position = (stepDistSq > kTeleportSnapThresholdSq)
-        ? second.Position
-        : NiPoint3{TiltedPhoques::Lerp(first.Position, second.Position, delta)};
+    auto& positionError = aInterpolationComponent.PositionError;
 
-    aInterpolationComponent.Position = position;
+    // The late snapshot arrived, so the actor is no longer where extrapolation put it
+    if (aInterpolationComponent.HasNewTimePoint && aInterpolationComponent.IsExtrapolating)
+        positionError = aInterpolationComponent.Position - position;
+
+    if (cIsTeleport || glm::length(positionError) > cMaxPositionCorrection)
+        positionError = {};
+    else
+        positionError *= static_cast<float>(std::exp(-cDeltaTime / cPositionCorrectionTime));
+
+    aInterpolationComponent.HasNewTimePoint = false;
+    aInterpolationComponent.IsExtrapolating = isExtrapolating;
+    aInterpolationComponent.Position = position + positionError;
 
     // Don't try to move a null actor
     if (!apActor)
         return;
 
-    // Freeze continuous ForcePosition / SetRotation / LoadAnimationVariables on dead ragdoll corpses:
-    // moving TESObjectREFR every frame after death pulls its loot-interaction bounding box away from
-    // the visible Havok ragdoll skeleton (causing corpse pixel-hunting) and mutates BShkbAnimationGraph
-    // variables during ragdoll teardown.
-    if (CoopWorldStabilizer::ShouldFreezeCorpseInterpolation(apActor->IsDead()))
-    {
-        aInterpolationComponent.LastHorizontalSpeed = 0.0f;
-        while (movements.size() > 2)
-            movements.pop_front();
-        return;
-    }
-
-    bool movedViaCellTransfer = false;
-    if (apActor->formID != 0x14)
-    {
-        PlayerCharacter* pLocalPlayer = PlayerCharacter::Get();
-        TESWorldSpace* pLocalWs = pLocalPlayer ? pLocalPlayer->GetWorldSpace() : nullptr;
-        const TES* pTes = TES::Get();
-        ModManager* pModMgr = ModManager::Get();
-        if (pLocalWs && pTes && pModMgr && apActor->GetWorldSpace() == pLocalWs)
-        {
-            const GridCellCoords destGrid = GridCellCoords::CalculateGridCellCoords(position.x, position.y);
-            const GridCellCoords centerGrid(pTes->centerGridX, pTes->centerGridY);
-            if (GridCellCoords::IsCellInGridCell(destGrid, centerGrid, false))
-            {
-                TESObjectCELL* pDestCell = pModMgr->GetCellFromCoordinates(destGrid.X, destGrid.Y, pLocalWs, false);
-                const bool isDynamicActor = (apActor->formID & 0xFF000000u) == 0xFF000000u;
-                (void)isDynamicActor;
-
-                TESObjectCELL* pParentCell = apActor->parentCell;
-                const bool hasAttachedParentCell =
-                    pParentCell && pParentCell->IsAttachedAndLoaded() && pParentCell->worldspace == pLocalWs;
-                const bool hasLoadedDestCell =
-                    pDestCell && pDestCell->IsAttachedAndLoaded();
-
-                if (hasAttachedParentCell &&
-                    (!aInterpolationComponent.HasTrackedParentGrid || aInterpolationComponent.TrackedParentCell != pParentCell))
-                {
-                    aInterpolationComponent.TrackedParentCell = pParentCell;
-                    if (pParentCell == pDestCell)
-                    {
-                        aInterpolationComponent.TrackedParentGridX = destGrid.X;
-                        aInterpolationComponent.TrackedParentGridY = destGrid.Y;
-                        aInterpolationComponent.HasTrackedParentGrid = true;
-                    }
-                    else
-                    {
-                        bool foundInActiveGrid = false;
-                        for (int32_t dy = -2; dy <= 2 && !foundInActiveGrid; ++dy)
-                        {
-                            for (int32_t dx = -2; dx <= 2; ++dx)
-                            {
-                                const int32_t gx = centerGrid.X + dx;
-                                const int32_t gy = centerGrid.Y + dy;
-                                if (pModMgr->GetCellFromCoordinates(gx, gy, pLocalWs, false) == pParentCell)
-                                {
-                                    aInterpolationComponent.TrackedParentGridX = gx;
-                                    aInterpolationComponent.TrackedParentGridY = gy;
-                                    aInterpolationComponent.HasTrackedParentGrid = true;
-                                    foundInActiveGrid = true;
-                                    break;
-                                }
-                            }
-                        }
-
-                        if (!foundInActiveGrid)
-                        {
-                            // `parentCell` is already outside the active 5x5 grid: mark ring distance >= 3 to re-home now.
-                            aInterpolationComponent.TrackedParentGridX = centerGrid.X + 3;
-                            aInterpolationComponent.TrackedParentGridY = centerGrid.Y + 3;
-                            aInterpolationComponent.HasTrackedParentGrid = true;
-                        }
-                    }
-                }
-
-                const auto motionMode = WorldMotion::EvaluateExteriorCellMotion(
-                    stepDistSq > kTeleportSnapThresholdSq,
-                    hasAttachedParentCell,
-                    hasLoadedDestCell,
-                    pParentCell == pDestCell,
-                    aInterpolationComponent.TrackedParentGridX,
-                    aInterpolationComponent.TrackedParentGridY,
-                    centerGrid.X,
-                    centerGrid.Y,
-                    position.x,
-                    position.y,
-                    aTick,
-                    aInterpolationComponent.LastSeamlessRehomeTick);
-
-                if (motionMode == WorldMotion::ExteriorCellMotionMode::kTeleportMoveTo)
-                {
-                    apActor->MoveTo(pDestCell, position);
-                    aInterpolationComponent.TrackedParentCell = pDestCell;
-                    aInterpolationComponent.TrackedParentGridX = destGrid.X;
-                    aInterpolationComponent.TrackedParentGridY = destGrid.Y;
-                    aInterpolationComponent.HasTrackedParentGrid = true;
-                    aInterpolationComponent.LastSeamlessRehomeTick = aTick;
-                    movedViaCellTransfer = true;
-                }
-                else if (motionMode == WorldMotion::ExteriorCellMotionMode::kSeamlessCellRehome)
-                {
-                    apActor->MoveToCellSeamless(pDestCell, position);
-                    aInterpolationComponent.TrackedParentCell = pDestCell;
-                    aInterpolationComponent.TrackedParentGridX = destGrid.X;
-                    aInterpolationComponent.TrackedParentGridY = destGrid.Y;
-                    aInterpolationComponent.HasTrackedParentGrid = true;
-                    aInterpolationComponent.LastSeamlessRehomeTick = aTick;
-                    movedViaCellTransfer = true;
-                }
-            }
-        }
-    }
-
-    if (!movedViaCellTransfer)
-        apActor->ForcePosition(position);
-
-    // Causal + behavior-aware animation variable blending (v3.0 Phase 4C):
-    // - Discrete Booleans, Integers (`SCAR_AttackVariants`, `iStep`, `DodgeID`), and Step Floats
-    //   (`weaponSpeedMult`, `weapAdj`, `TUDM` weapon flags & i-frame windows, `playbackSpeed`) come from
-    //   `LastRanAction` when an `ActionEvent` ran after `first.Tick`, otherwise from causal `first.Variables`.
-    // - Circular [0, 360) angles (`Direction`) blend along shortest arc (`358 -> 2` goes through `0`, never `180`).
-    // - Continuous locomotion/aiming floats (`SpeedSampled`, `TurnDelta`, `Pitch`, `TDM_Velocity*`) blend linearly.
-    const bool useActionDiscreteVars =
-        apAnimComponent &&
-        CoopAnimationState::ShouldPreferActionDiscreteVariables(
-            apAnimComponent->LastRanAction.Tick,
-            first.Tick,
-            apAnimComponent->LastRanAction.Variables.Booleans.size(),
-            apAnimComponent->LastRanAction.Variables.Integers.size(),
-            apAnimComponent->LastRanAction.Variables.Floats.size());
-
-    const AnimationGraphDescriptor* pDescriptor = nullptr;
-    if (const auto* pExt = apActor->GetExtension(); pExt && pExt->GraphDescriptorHash != 0)
-        pDescriptor = AnimationGraphDescriptorManager::Get().GetDescriptor(pExt->GraphDescriptorHash);
-
-    AnimationVariables blendedVars = useActionDiscreteVars ? apAnimComponent->LastRanAction.Variables : first.Variables;
-    if (first.Variables.Floats.size() == second.Variables.Floats.size() && !first.Variables.Floats.empty())
-    {
-        blendedVars.Floats.resize(first.Variables.Floats.size());
-        for (size_t i = 0; i < first.Variables.Floats.size(); ++i)
-        {
-            const float a = first.Variables.Floats[i];
-            const float b = second.Variables.Floats[i];
-            const bool hasActionFloat =
-                useActionDiscreteVars && i < apAnimComponent->LastRanAction.Variables.Floats.size();
-            const float actionFloat =
-                hasActionFloat ? apAnimComponent->LastRanAction.Variables.Floats[i] : a;
-            const auto blendKind = pDescriptor
-                ? static_cast<CoopAnimationState::BehaviorFloatBlendKind>(pDescriptor->GetFloatBlendMode(i))
-                : CoopAnimationState::BehaviorFloatBlendKind::kContinuousLinear;
-
-            blendedVars.Floats[i] = CoopAnimationState::BlendAnimationFloatValue(
-                a,
-                b,
-                actionFloat,
-                hasActionFloat,
-                delta,
-                blendKind);
-        }
-    }
-    apActor->LoadAnimationVariables(blendedVars);
+    apActor->ForcePosition(aInterpolationComponent.Position);
+    apActor->LoadAnimationVariables(second.Variables);
 
     if (apActor->currentProcess && apActor->currentProcess->middleProcess)
     {
-        apActor->currentProcess->middleProcess->direction = first.Direction + TiltedPhoques::DeltaAngle(first.Direction, second.Direction, false) * delta;
+        apActor->currentProcess->middleProcess->direction = second.Direction;
     }
 
     auto rotA = first.Rotation;
@@ -263,26 +119,50 @@ void InterpolationSystem::Update(Actor* apActor, InterpolationComponent& aInterp
     const auto finalZ = TiltedPhoques::Mod(rotA.z + deltaZ, float(TiltedPhoques::Pi * 2));
 
     apActor->SetRotation(finalX, finalY, finalZ);
+
+    auto* pProcess = apActor->currentProcess;
+    if (!pProcess || !pProcess->middleProcess)
+        return;
+
+    pProcess->middleProcess->pitch = -finalX;
+
+    if (apActor->GetExtension()->IsRemotePlayer())
+    {
+        if (second.HasLookAt)
+        {
+            const NiPoint3 cTarget = apActor->GetLookingAtLocation() + second.LookOffset;
+            pProcess->SetHeadTrackTarget(apActor, cTarget);
+        }
+        else
+        {
+            pProcess->middleProcess->lookAt = false;
+        }
+    }
 }
 
-void InterpolationSystem::AddPoint(InterpolationComponent& aInterpolationComponent, const InterpolationComponent::TimePoint& acPoint) noexcept
+void InterpolationSystem::AddPoint(InterpolationComponent& aInterpolationComponent, InterpolationComponent::TimePoint aPoint, const double aArrivalTime) noexcept
 {
-    auto itor = std::begin(aInterpolationComponent.TimePoints);
-    const auto end = std::cend(aInterpolationComponent.TimePoints);
+    if (!aInterpolationComponent.Clock.AddSample(aArrivalTime, aPoint.Tick))
+        return;
 
-    while (itor != end)
-    {
-        if (itor->Tick > acPoint.Tick)
-        {
-            aInterpolationComponent.TimePoints.insert(itor, acPoint);
+    auto& timePoints = aInterpolationComponent.TimePoints;
 
-            return;
-        }
-
+    // Snapshots are unreliable and can arrive out of order
+    auto itor = std::begin(timePoints);
+    while (itor != std::end(timePoints) && itor->Tick < aPoint.Tick)
         ++itor;
-    }
 
-    aInterpolationComponent.TimePoints.push_back(acPoint);
+    timePoints.insert(itor, std::move(aPoint));
+    aInterpolationComponent.HasNewTimePoint = true;
+
+    while (timePoints.size() > cMaxTimePoints)
+        timePoints.pop_front();
+}
+
+uint64_t InterpolationSystem::GetPlaybackTick(const InterpolationComponent& acInterpolationComponent) noexcept
+{
+    // The render tick stays at 0 until the first snapshot arrives
+    return static_cast<uint64_t>(std::max(acInterpolationComponent.Clock.GetRenderTick(), 0.0));
 }
 
 InterpolationComponent& InterpolationSystem::Setup(World& aWorld, const entt::entity aEntity) noexcept

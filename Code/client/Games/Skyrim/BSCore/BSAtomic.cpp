@@ -1,11 +1,5 @@
 #include "BSAtomic.h"
 
-// RFAB Online (Skyrim SE 1.5.97): backport of upstream TiltedEvolution #937 (25a0049a).
-// Address Library IDs are the SE 1.5.97 ones (AE 68233/68239/68234/68240 -> SE 66976/66982/66977/66983,
-// cross-checked against CommonLibSSE RELOCATION_ID and SKSE64 2.0.20 GameTypes.h RVAs
-// 0xC072D0 / 0xC07590 / 0xC07350 / 0xC075A0). Never re-implement this lock in-house: a
-// different algorithm on the engine's memory leaks a reader and freezes the next writer forever.
-
 void BSSpinLock::Lock() noexcept
 {
     const uint32_t cThreadId = GetCurrentThreadId();

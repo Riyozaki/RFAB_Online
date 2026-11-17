@@ -22,7 +22,6 @@ struct ActorExtension;
 struct AIProcess;
 struct CombatController;
 struct TESIdleForm;
-struct BGSOutfit;
 
 struct Actor : TESObjectREFR
 {
@@ -32,20 +31,7 @@ struct Actor : TESObjectREFR
     static GamePtr<Actor> New() noexcept;
     // Places a brand new actor in the world
     static GamePtr<Actor> Create(TESNPC* apBaseForm) noexcept;
-    // Places a brand new actor directly into an already-validated loaded target cell & coordinates
-    static GamePtr<Actor> CreateInCell(
-        TESNPC* apBaseForm,
-        TESObjectCELL* apCell,
-        TESWorldSpace* apWorldSpace,
-        const NiPoint3& acPosition,
-        const NiPoint3& acRotation) noexcept;
     static GamePtr<Actor> Spawn(uint32_t aBaseFormId) noexcept;
-    static GamePtr<Actor> LookupByHandle(uint32_t aHandle) noexcept;
-    template <class T>
-    static GamePtr<Actor> LookupByHandle(const BSPointerHandle<T>& acHandle) noexcept
-    {
-        return LookupByHandle(acHandle.handle.iBits);
-    }
 
     virtual void sub_9C();
     virtual void sub_9D();
@@ -60,7 +46,7 @@ struct Actor : TESObjectREFR
     virtual void SetWeaponDrawn(bool aDraw);
     virtual void sub_A7();
     virtual void sub_A8();
-    virtual void SetPosition(const NiPoint3& acPoint, bool aUpdateCharController = true);
+    virtual void SetPosition(const NiPoint3& acPoint, bool aUpdateCharController);
     virtual void sub_AA();
     virtual void Resurrect(bool aResetInventory);
     virtual void sub_AC();
@@ -195,18 +181,14 @@ struct Actor : TESObjectREFR
 
     // Casting
     ActorExtension* GetExtension() noexcept;
-    const ActorExtension* GetExtension() const noexcept;
     ExActor* AsExActor() noexcept;
     ExPlayerCharacter* AsExPlayerCharacter() noexcept;
 
     // Getters
-    TESNPC* GetLeveledTemplateBase() const noexcept;
     float GetSpeed() noexcept;
     TESForm* GetEquippedWeapon(uint32_t aSlotId) const noexcept;
     TESForm* GetEquippedAmmo() const noexcept;
     Actor* GetCommandingActor() const noexcept;
-    TESObjectREFR* GetOccupiedFurniture() const noexcept;
-    [[nodiscard]] bool HasValidNearbyFurniture(float aMaxDistance = 256.0f) const noexcept;
     // in reality this is a BGSLocation
     TESForm* GetCurrentLocation();
     float GetActorValue(uint32_t aId) const noexcept;
@@ -215,27 +197,20 @@ struct Actor : TESObjectREFR
     MagicEquipment GetMagicEquipment() const noexcept;
     Inventory GetEquipment() const noexcept;
     int32_t GetGoldAmount() const noexcept;
+    // Returns the engine-recorded static leveled pick, or nullptr if unavailable.
+    // Changing baseForm directly does not update this record.
+    TESNPC* GetLeveledPick() const noexcept;
     uint16_t GetLevel() const noexcept;
     Factions GetFactions() const noexcept;
     ActorValues GetEssentialActorValues() const noexcept;
     [[nodiscard]] bool IsDead() const noexcept;
     [[nodiscard]] bool IsDragon() const noexcept;
-    [[nodiscard]] bool IsGhost() const noexcept;
     [[nodiscard]] bool IsPlayerSummon() const noexcept;
     [[nodiscard]] bool IsInCombat() const noexcept;
-    void SetGhost(bool aIsGhost) noexcept;
     [[nodiscard]] Actor* GetCombatTarget() const noexcept;
     [[nodiscard]] bool HasPerk(uint32_t aPerkFormId) const noexcept;
     [[nodiscard]] uint8_t GetPerkRank(uint32_t aPerkFormId) const noexcept;
-    [[nodiscard]] bool IsWearingBodyPiece() const noexcept;
-    [[nodiscard]] bool ShouldWearBodyPiece() const noexcept;
     [[nodiscard]] bool IsVampireLord() const noexcept;
-    [[nodiscard]] bool IsTalking() noexcept;
-    [[nodiscard]] bool IsInScene() noexcept;
-    [[nodiscard]] bool IsInDialogueWithPlayer() noexcept;
-    [[nodiscard]] float GetVoiceRecoveryTime() noexcept;
-    [[nodiscard]] bool IsSpeakingInScene();
-
 
     // Setters
     void SetSpeed(float aSpeed) noexcept;
@@ -247,7 +222,6 @@ struct Actor : TESObjectREFR
     void SetFactions(const Factions& acFactions) noexcept;
     void SetFactionRank(const TESFaction* apFaction, int8_t aRank) noexcept;
     void ForcePosition(const NiPoint3& acPosition) noexcept;
-    void ResetTeleportPhysics(float aNewZ) noexcept;
     void SetWeaponDrawnEx(bool aDraw) noexcept;
     void SetPackage(TESPackage* apPackage) noexcept;
     void SetActorInventory(const Inventory& aInventory) noexcept;
@@ -255,7 +229,6 @@ struct Actor : TESObjectREFR
     void SetEssentialEx(bool aSet) noexcept;
     void SetNoBleedoutRecovery(bool aSet) noexcept;
     void SetPlayerRespawnMode(bool aSet = true) noexcept;
-    void TriggerNativeBleedout() noexcept;
     void SetPlayerTeammate(bool aSet) noexcept;
 
     // Actions
@@ -265,44 +238,32 @@ struct Actor : TESObjectREFR
     bool InitiateMountPackage(Actor* apMount) noexcept;
     void GenerateMagicCasters() noexcept;
     void DispelAllSpells(bool aNow = false) noexcept;
-    void DispelHostileEffects() noexcept;
     void Reset() noexcept;
-    void Kill(Actor* apKiller = nullptr) noexcept;
+    void Kill() noexcept;
     void Respawn() noexcept;
-    void ResurrectInPlace() noexcept;
-    static void ArmLocalPlayerScriptDamageWindow(uint32_t aTargetFormId, uint64_t aDurationMs) noexcept;
-    [[nodiscard]] static bool HasLocalPlayerScriptDamageWindow(uint32_t aTargetFormId) noexcept;
-    [[nodiscard]] static bool TryAcceptRemoteHitReactionAction(Actor* apActor, const char* acActionKeyword) noexcept;
     void PickUpObject(TESObjectREFR* apObject, int32_t aCount, bool aUnk1, float aUnk2) noexcept;
     void DropObject(TESBoundObject* apObject, ExtraDataList* apExtraData, int32_t aCount, NiPoint3* apLocation, NiPoint3* apRotation) noexcept;
     void DropOrPickUpObject(const Inventory::Entry& arEntry, NiPoint3* apPoint, NiPoint3* apRotate) noexcept;
-    float SpeakSound(const char* pFile);
+    void SpeakSound(const char* pFile);
     void StartCombatEx(Actor* apTarget) noexcept;
     void SetCombatTargetEx(Actor* apTarget) noexcept;
     void StartCombat(Actor* apTarget) noexcept;
     void StopCombat() noexcept;
-    [[nodiscard]] bool IsHostileToActor(Actor* apTarget) const noexcept;
-    void EvaluatePackage() noexcept;
     bool PlayIdle(TESIdleForm* apIdle) noexcept;
     void FixVampireLordModel() noexcept;
     bool RemoveSpell(MagicItem* apSpell) noexcept;
-    void SetOutfit(BGSOutfit* apOutfit, bool aIsSleepOutfit = false);
-    void EquipOutfit(bool aIsSleepOutfit = false) noexcept;
-
-    enum ActorBoolBits : uint32_t
-    {
-        kNone = 0,
-        kHasSceneExtra = 1 << 3,
-        kPlayerTeammate = 1 << 26,
-    };
-
-    [[nodiscard]] bool IsPlayerTeammate() const noexcept { return (flags1 & ActorBoolBits::kPlayerTeammate) != 0; }
 
     enum ActorFlags
     {
         IS_A_MOUNT = 1 << 1,
         IS_COMMANDED_ACTOR = 1 << 16,
         IS_ESSENTIAL = 1 << 18,
+    };
+
+    // flags1
+    enum ActorFlags1
+    {
+        HAS_SCENE_DATA = 1 << 3,
     };
 
     bool IsMount() const noexcept { return flags2 & ActorFlags::IS_A_MOUNT; }
@@ -411,10 +372,8 @@ public:
     // void Save_Reversed(uint32_t aChangeFlags, Buffer::Writer& aWriter);
 };
 
-// Skyrim SE 1.5.97 (pre-1.6.629) offsets: 8 bytes lower than the 629+
-// layout because TESObjectREFR's ExtraDataList has no vtable yet. Matches
-// CommonLibSSE-NG's versioned accessors for < SSE 1.6.629
-// (actorValueOwner 0xB0, actorState 0xB8, Actor runtime data 0xE0).
+// Skyrim SE 1.5.97 (pre-1.6.629) offsets: 8 bytes lower than 1.6.629+
+// because TESObjectREFR's ExtraDataList has no vtable yet.
 static_assert(offsetof(Actor, magicTarget) == 0x98);
 static_assert(offsetof(Actor, addedSpells) == 0x188);
 static_assert(offsetof(Actor, currentProcess) == 0xF0);

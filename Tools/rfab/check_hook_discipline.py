@@ -27,6 +27,16 @@ Posted work is excluded: the arguments of GetRunner().Queue/Trigger and QueueMai
 body of `if (World::IsMainThread() && ...) {...}`, and the rest of a function after
 `if (!World::IsMainThread()) { <post>; return; }`.
 
+Two more rules came with work plan 4.3:
+
+  * world before creation: hooks are installed before the World singleton exists, and the engine
+    may call them at once. A hook, Papyrus native or event sink that uses World::Get() must first
+    test World::IsCreated(), World::IsMainThread() or a published World::Is...Cached() snapshot
+    (all false until a World exists).
+  * flag reset: a `thread_local bool` flag set around an engine call must get its PREVIOUS value
+    back (ScopedTlsValue in Games/Overrides.h, or a guard that saves it). `flag = false;` clears
+    the flag under an outer call when the engine comes back into the same wrapper.
+
 The bodies of RFAB_ANY_THREAD functions are held to the same rules, so annotating a method is a
 claim this checker verifies (one level deep: the functions they call are trusted).
 
@@ -55,33 +65,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # (file relative to Code/client, entry name) -> why it is known to run on the main thread.
 MAIN_THREAD_ENTRIES: dict[tuple[str, str], str] = {
-    ("Games/Skyrim/SaveLoad.cpp", "HookLoadEntry"):
-        "BGSSaveLoadManager runs its load path from ProcessEvents in the main loop",
-    ("Games/Skyrim/SaveLoad.cpp", "HookLoadCallSite"):
-        "the engine's load call inside BGSSaveLoadManager::ProcessEvents (main loop)",
-    ("Games/Skyrim/SaveLoad.cpp", "HookSaveImpl"):
-        "BGSSaveLoadManager::ProcessEvents (main loop) and SkyrimSoulsRE's SaveHandler on the main thread",
-    ("Games/Skyrim/SaveLoad.cpp", "HookSaveGame2"):
-        "autosave path of BGSSaveLoadManager::ProcessEvents (main loop)",
     ("Games/Skyrim/SaveLoad.cpp", "HookLoadImpl"):
-        "BGSSaveLoadManager::ProcessEvents (main loop)",
+        "BGSSaveLoadManager::Load_Impl outer request, game-thread engine entry; refuses off-thread calls before any ECS access",
     ("Games/Skyrim/SaveLoad.cpp", "HookLoadMostRecent"):
-        "menus and the death screen, main thread",
-    ("Games/Skyrim/SaveLoad.cpp", "HookQueueSaveLoadTask"):
-        "input handlers, menus and non-thread-safe Papyrus natives (Game.RequestSave), all main thread",
-    ("Games/Skyrim/SaveLoad.cpp", "HookProcessEvents"):
-        "BGSSaveLoadManager::ProcessEvents is called by the main loop",
-    ("Games/References.cpp", "HookSetCurrentPickREFR"):
-        "console reference picking, main thread (UI)",
-    ("Services/Generic/DiscoveryService.cpp", "DiscoveryService::OnEvent"):
-        "TESLoadGameEvent is sent by the load path at the end of BGSSaveLoadManager::ProcessEvents",
+        "BGSSaveLoadManager::LoadMostRecentSaveGame outer request, same checked game-thread boundary",
     ("Games/Skyrim/BSGraphics/BSGraphicsRenderer.cpp", "Hook_Renderer_Init"):
         "D3D11 device creation during startup, on the thread that then runs the main loop",
 }
 
 # Entry points that ARE the main thread: they drive the client and record its thread id.
 THREAD_DEFINING_ENTRIES: dict[tuple[str, str], str] = {
-    ("SkyrimVM64.cpp", "HookMainLoop"): "Main::Update (WinMain loop): drives World::Update and records the main thread",
+    ("SkyrimVM64.cpp", "HookVMUpdate"): "SkyrimVM::Update drives TiltedOnlineApp::Update on the game loop; World::Create binds the thread id",
 }
 
 # World members an engine thread may call (everything else on World::Get() is main-thread only).
@@ -93,7 +87,7 @@ WORLD_ANY_THREAD_MEMBERS = {
 
 # Getters whose result may be used off-thread with the methods listed (None: see the annotation).
 WORLD_GETTER_POLICY: dict[str, set[str] | None] = {
-    "Runner": {"Queue", "Trigger"},
+    "Runner": {"Queue", "QueueForThisWorld", "Trigger", "TriggerInSession", "Invalidate"},
     "Lifecycle": None,  # methods ending in AnyThread, see allowed_call()
 }
 
@@ -103,8 +97,8 @@ MAIN_THREAD_ONLY_CALLS = {
 }
 
 POST_CALLS = [
-    r"\bGetRunner\s*\(\s*\)\s*\.\s*(?:Queue|Trigger)\s*(?:<[^<>()]*>)?\s*\(",
-    r"\bm_runner\s*\.\s*(?:Queue|Trigger)\s*(?:<[^<>()]*>)?\s*\(",
+    r"\bGetRunner\s*\(\s*\)\s*\.\s*(?:Queue|QueueForThisWorld|Trigger|TriggerInSession)\s*(?:<[^<>()]*>)?\s*\(",
+    r"\bm_runner\s*\.\s*(?:Queue|QueueForThisWorld|Trigger|TriggerInSession)\s*(?:<[^<>()]*>)?\s*\(",
     r"\bQueueMainThreadTask\s*\(",
 ]
 
@@ -124,6 +118,21 @@ WORLD_MEMBER_CALL = re.compile(r"(?:World::Get\s*\(\s*\)|\bm_world)\s*\.\s*(\w+)
 ALIAS = re.compile(
     r"(?:const\s+)?(?:auto|[A-Z]\w*)\s*[&*]\s*(\w+)\s*=\s*&?\s*(?:World::Get\s*\(\s*\)|\bm_world)\s*\.\s*Get(\w+)\s*\(\s*\)\s*;"
 )
+
+# Reads that are false until a World exists, so code behind them never runs before World::Create().
+# World::IsFeatureEnabled is NOT one of them: no server has disabled anything yet, so it says true.
+WORLD_EXISTS_GUARD = re.compile(r"World::IsCreated\s*\(\s*\)|(?:World::)?Is\w+Cached\s*\(\s*\)|World::IsMainThread\s*\(\s*\)")
+WORLD_USE = re.compile(r"World::Get\s*\(\s*\)")
+# Entry kinds the engine can call before the World exists. The CEF handlers belong to the overlay,
+# which the World creates.
+EARLY_ENTRY_KINDS = {"hook", "papyrus", "sink"}
+
+TLS_FLAG_DECL = re.compile(r"(?<!extern )\bthread_local\s+bool\s+(\w+)")
+# (file relative to Code/client, flag) -> why a literal reset is correct there.
+TLS_LITERAL_RESET_OK: dict[tuple[str, str], str] = {
+    ("main.cpp", "s_inCrashLogger"):
+        "the crash logger returns at once when the flag is already set, so false IS the previous value",
+}
 
 # Parser rot guard: if the tree suddenly yields fewer entries, the parser broke, not the code.
 MIN_ENTRIES = {"hook": 60, "papyrus": 2, "sink": 5, "cef": 8}
@@ -325,6 +334,8 @@ def collect_entries(client: Path, sources: dict[str, str]) -> list[Entry]:
 
         detours = {d for _, d in re.findall(r"\bTP_HOOK(?:_IMMEDIATE)?\s*\(\s*&?\s*(\w+)\s*,\s*&?\s*(\w+)\s*\)", s)}
         detours |= set(re.findall(r"\bTP_MAKE_THISCALL\s*\(\s*(\w+)\s*,", s))
+        # Explicit chained vtable replacement is an engine entry just like a text detour.
+        detours |= set(re.findall(r"\bRFAB_VTABLE_HOOK\s*\([^,]+,\s*(\w+)\s*,", s))
         for name in sorted(detours):
             for m in re.finditer(r"\bTP_MAKE_THISCALL\s*\(\s*" + name + r"\s*,|\b" + name + r"\s*\(", s):
                 line_start = s.rfind("\n", 0, m.start()) + 1
@@ -422,6 +433,28 @@ def check_body(body: str, any_thread: dict[tuple[str, str], AnyThreadMethod], ex
     return sorted(set(problems))
 
 
+def check_tls_flag_resets(sources: dict[str, str]) -> list[str]:
+    """A thread_local bool flag must be restored to its previous value, never reset to a literal."""
+    flags: set[str] = set()
+    for s in sources.values():
+        flags.update(TLS_FLAG_DECL.findall(s))
+    failures: list[str] = []
+    if not flags:
+        return failures
+    reset = re.compile(r"\b(" + "|".join(sorted(re.escape(f) for f in flags)) + r")\s*=\s*false\s*;")
+    for f, s in sorted(sources.items()):
+        if f.startswith("Services/Debug/"):
+            continue
+        for m in reset.finditer(s):
+            if "thread_local" in s[max(0, m.start() - 80) : m.start()]:
+                continue  # the declaration itself
+            if (f, m.group(1)) in TLS_LITERAL_RESET_OK:
+                continue
+            failures.append(f"{f}:{line_of(s, m.start())} flag reset: thread_local {m.group(1)} is reset to false; "
+                            "restore the previous value (ScopedTlsValue) so a nested call cannot clear it")
+    return failures
+
+
 def load_sources(client: Path) -> dict[str, str]:
     sources: dict[str, str] = {}
     for path in sorted(client.rglob("*")):
@@ -457,6 +490,12 @@ def run(root: Path, verbose: bool, enforce_minimums: bool = True) -> list[str]:
             continue
         for problem in check_body(entry.body, any_thread, MAIN_THREAD_ONLY_CALLS.get(entry.file, set())):
             failures.append(f"{entry.file}:{entry.line} [{entry.kind}] {entry.name}: {problem}")
+        if entry.kind in EARLY_ENTRY_KINDS:
+            use = WORLD_USE.search(entry.body)
+            guard = WORLD_EXISTS_GUARD.search(entry.body)
+            if use and (not guard or guard.start() > use.start()):
+                failures.append(f"{entry.file}:{entry.line} [{entry.kind}] {entry.name}: world before creation: "
+                                "World::Get() is used before World::IsCreated() (or a published snapshot) was tested")
     for f, name in sorted(listed):
         failures.append(f"{f}: the main-thread list names {name}, which is no longer an entry point")
 
@@ -470,6 +509,8 @@ def run(root: Path, verbose: bool, enforce_minimums: bool = True) -> list[str]:
     for f, s in sources.items():
         if re.search(r"\bTaskQueue\b", s):
             failures.append(f"{f}: TiltedPhoques::TaskQueue runs tasks under its lock; use World's MainThreadQueue")
+
+    failures += check_tls_flag_resets(sources)
 
     if verbose:
         print(f"entry points: {len(entries)} {counts}; RFAB_ANY_THREAD methods: {len(any_thread)}; "
@@ -556,6 +597,15 @@ SELF_TEST_CASES: dict[str, tuple[str, list[str]]] = {
     "BadNegatedNoReturn": ("if (!World::IsMainThread()) { World::Get().GetRunner().Queue([]{}); } "
                            "World::Get().GetTransport().Send(x);", ["transport"]),
     "BadOutsidePost": ("World::Get().GetRunner().Queue([]{}); m_transport.Send(x);", ["transport"]),
+    "CleanWorldGuard": ("if (World::IsCreated() && World::IsConnectedCached()) World::Get().GetRunner().Trigger(HitEvent(a, b));", []),
+    "CleanWorldSnapshot": ("if (!World::IsConnectedCached()) return; World::Get().GetRunner().Trigger(HitEvent(a, b));", []),
+    "BadWorldUnguarded": ("World::Get().GetRunner().Trigger(HitEvent(a, b));", ["world before creation"]),
+    "BadWorldGuardAfter": ("World::Get().GetRunner().Trigger(HitEvent(a, b)); if (World::IsCreated()) return;", ["world before creation"]),
+    "BadWorldFeatureIsNoGuard": ("if (World::IsFeatureEnabled(Session::Feature::kX)) World::Get().GetRunner().Trigger(HitEvent(a, b));",
+                                 ["world before creation"]),
+    "CleanTlsGuard": ("ScopedTlsValue<bool> guard(s_goodFlag, true); Real(apThis);", []),
+    "CleanTlsRestore": ("const bool prev = s_goodFlag; s_goodFlag = true; Real(apThis); s_goodFlag = prev;", []),
+    "BadTlsReset": ("s_badFlag = true; Real(apThis); s_badFlag = false;", []),
     "Gate": ('RFAB_EXPECT_MAIN_THREAD("HookGate"); World::Get().GetTransport().Send(x);', []),
     "GateNoExpect": ("World::Get().GetTransport().Send(x);", ["without RFAB_EXPECT_MAIN_THREAD"]),
 }
@@ -577,9 +627,11 @@ def self_test() -> list[str]:
         (client / "Games").mkdir(parents=True)
         (client / "Services" / "FooService.h").write_text(SELF_TEST_HEADER)
         (client / "Services" / "Generic" / "FooService.cpp").write_text(SELF_TEST_SERVICE)
-        hooks = []
+        hooks = ["static thread_local bool s_goodFlag = false;\nstatic thread_local bool s_badFlag = false;\n"]
         for name, (body, _) in SELF_TEST_CASES.items():
-            hooks.append(f"static void* Real{name} = nullptr;\nvoid TP_MAKE_THISCALL(Hook{name}, Actor, int a)\n{{\n    {body}\n}}\n")
+            # Every case but the ones about the rule itself starts the way a real hook does.
+            prefix = "" if "World" in name and name.startswith(("CleanWorld", "BadWorld")) else "if (!World::IsCreated()) return;\n    "
+            hooks.append(f"static void* Real{name} = nullptr;\nvoid TP_MAKE_THISCALL(Hook{name}, Actor, int a)\n{{\n    {prefix}{body}\n}}\n")
         hooks.append("static TiltedPhoques::Initializer s_init([]() {\n" +
                      "".join(f"    TP_HOOK(&Real{n}, Hook{n});\n" for n in SELF_TEST_CASES) + "});\n")
         (client / "Games" / "Hooks.cpp").write_text("\n".join(hooks))
@@ -621,6 +673,8 @@ def self_test() -> list[str]:
     expect("RFAB_ANY_THREAD FooService::Find", False)  # template return type, call inside if() is not a definition
     expect("ScopedThing", False)  # a nested class does not capture the outer class's annotations
     expect("names HookGone, which is no longer an entry point", True)
+    expect("flag reset: thread_local s_badFlag is reset to false", True)
+    expect("s_goodFlag", False)  # a guard, or a hand-written save and restore, is the correct pattern
     return failures
 
 
@@ -635,7 +689,7 @@ def main() -> int:
         failures = self_test()
         for failure in failures:
             print(f"SELF-TEST FAIL: {failure}")
-        print(f"hook discipline self-test: {len(SELF_TEST_CASES) + 11 - len(failures)} checks, {len(failures)} failed")
+        print(f"hook discipline self-test: {len(SELF_TEST_CASES) + 13 - len(failures)} checks, {len(failures)} failed")
         return 1 if failures else 0
 
     failures = run(args.root, args.verbose)

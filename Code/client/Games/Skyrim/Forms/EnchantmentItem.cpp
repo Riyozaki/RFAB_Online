@@ -4,13 +4,9 @@
 #include <Magic/EffectItem.h>
 #include <World.h>
 #include <Games/BGSCreatedObjectManager.h>
-#include <Games/Memory.h>
 
 EnchantmentItem* EnchantmentItem::Create(const Inventory::EnchantmentData& aData) noexcept
 {
-    if (aData.Effects.empty())
-        return nullptr;
-
     TP_THIS_FUNCTION(TAddWeaponEnchantment, EnchantmentItem*, void, GameArray<EffectItem>*);
     POINTER_SKYRIMSE(TAddWeaponEnchantment, addWeaponEnchantment, 35263);
     TP_THIS_FUNCTION(TAddArmorEnchantment, EnchantmentItem*, void, GameArray<EffectItem>*);
@@ -20,7 +16,7 @@ EnchantmentItem* EnchantmentItem::Create(const Inventory::EnchantmentData& aData
 
     GameArray<EffectItem> effects{};
     effects.Resize(aData.Effects.size());
-    for (size_t i = 0; i < aData.Effects.size(); i++)
+    for (int i = 0; i < aData.Effects.size(); i++)
     {
         Inventory::EffectItem effect = aData.Effects[i];
 
@@ -35,26 +31,19 @@ EnchantmentItem* EnchantmentItem::Create(const Inventory::EnchantmentData& aData
 
         // TODO: TESCondition?
 
-        effects[static_cast<uint32_t>(i)] = effectItem;
+        effects[i] = effectItem;
     }
 
     BGSCreatedObjectManager* objManager = BGSCreatedObjectManager::Get();
 
     EnchantmentItem* pItem = nullptr;
-    if (objManager)
+    if (aData.IsWeapon)
     {
-        if (aData.IsWeapon)
-            pItem = TiltedPhoques::ThisCall(addWeaponEnchantment, objManager, &effects);
-        else
-            pItem = TiltedPhoques::ThisCall(addArmorEnchantment, objManager, &effects);
+        pItem = TiltedPhoques::ThisCall(addWeaponEnchantment, objManager, &effects);
     }
-
-    if (effects.data)
+    else
     {
-        Memory::Free(effects.data);
-        effects.data = nullptr;
-        effects.capacity = 0;
-        effects.length = 0;
+        pItem = TiltedPhoques::ThisCall(addArmorEnchantment, objManager, &effects);
     }
 
     return pItem;

@@ -7,6 +7,62 @@
 #include <Services/ImguiService.h>
 
 #include <d3d11.h>
+#include <dxgi.h>
+#include <Windows.h>
+
+namespace
+{
+using TSwapChainResizeBuffers = HRESULT(STDMETHODCALLTYPE*)(
+    IDXGISwapChain* apSwapChain,
+    UINT aBufferCount,
+    UINT aWidth,
+    UINT aHeight,
+    DXGI_FORMAT aNewFormat,
+    UINT aSwapChainFlags);
+
+RenderSystemD3D11* s_pActiveRenderSystem = nullptr;
+TSwapChainResizeBuffers s_realSwapChainResizeBuffers = nullptr;
+
+HRESULT STDMETHODCALLTYPE Hook_SwapChain_ResizeBuffers(
+    IDXGISwapChain* apSwapChain,
+    UINT aBufferCount,
+    UINT aWidth,
+    UINT aHeight,
+    DXGI_FORMAT aNewFormat,
+    UINT aSwapChainFlags)
+{
+    // Release CEF & ImGui D3D11 device/render-target objects BEFORE IDXGISwapChain::ResizeBuffers runs
+    // so resolution changes, Alt-Tab, and display-adapter reconfigurations never fail with DXGI_ERROR_INVALID_CALL.
+    if (s_pActiveRenderSystem && apSwapChain && apSwapChain == s_pActiveRenderSystem->GetSwapChain())
+        s_pActiveRenderSystem->OnReset(apSwapChain);
+
+    return s_realSwapChainResizeBuffers(apSwapChain, aBufferCount, aWidth, aHeight, aNewFormat, aSwapChainFlags);
+}
+
+void InstallSwapChainResizeHook(IDXGISwapChain* apSwapChain) noexcept
+{
+    if (!apSwapChain)
+        return;
+
+    void** pVTable = *reinterpret_cast<void***>(apSwapChain);
+    if (!pVTable)
+        return;
+
+    // IDXGISwapChain::ResizeBuffers is VTable slot 13.
+    constexpr size_t kResizeBuffersSlot = 13;
+    if (pVTable[kResizeBuffersSlot] == reinterpret_cast<void*>(&Hook_SwapChain_ResizeBuffers))
+        return;
+
+    DWORD oldProtect = 0;
+    if (VirtualProtect(&pVTable[kResizeBuffersSlot], sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect))
+    {
+        s_realSwapChainResizeBuffers = reinterpret_cast<TSwapChainResizeBuffers>(pVTable[kResizeBuffersSlot]);
+        pVTable[kResizeBuffersSlot] = reinterpret_cast<void*>(&Hook_SwapChain_ResizeBuffers);
+        DWORD ignored = 0;
+        VirtualProtect(&pVTable[kResizeBuffersSlot], sizeof(void*), oldProtect, &ignored);
+    }
+}
+} // namespace
 
 RenderSystemD3D11::RenderSystemD3D11(OverlayService& aOverlay, ImguiService& aImguiService)
     : m_pSwapChain(nullptr)
@@ -15,12 +71,12 @@ RenderSystemD3D11::RenderSystemD3D11(OverlayService& aOverlay, ImguiService& aIm
     , m_overlay(aOverlay)
     , m_imguiService(aImguiService)
 {
-    // Note: D3D11Hook is not utilized in the codebase
+}
 
-    // auto& d3d11 = TiltedPhoques::D3D11Hook::Get();
-    // m_createConnection = d3d11.OnCreate.Connect(std::bind(&RenderSystemD3D11::OnDeviceCreation, this, std::placeholders::_2));
-    // m_resetConnection = d3d11.OnLost.Connect(std::bind(&RenderSystemD3D11::OnReset, this, std::placeholders::_1));
-    // m_renderConnection = d3d11.OnPresent.Connect(std::bind(&RenderSystemD3D11::OnRender, this, std::placeholders::_1));
+RenderSystemD3D11::~RenderSystemD3D11()
+{
+    if (s_pActiveRenderSystem == this)
+        s_pActiveRenderSystem = nullptr;
 }
 
 HWND RenderSystemD3D11::GetWindow() const
@@ -39,6 +95,9 @@ void RenderSystemD3D11::OnDeviceCreation(IDXGISwapChain* apSwapChain, ID3D11Devi
     m_pSwapChain = apSwapChain;
     m_pDevice = apDevice;
     m_pDeviceContext = apContext;
+    s_pActiveRenderSystem = this;
+
+    InstallSwapChainResizeHook(apSwapChain);
 
     m_imguiService.Create(this, GetWindow());
     m_overlay.Create(this);

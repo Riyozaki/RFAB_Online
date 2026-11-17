@@ -4,13 +4,9 @@
 #include <GameServer.h>
 #include <Services/ServerListService.h>
 
-#include <Setting.h>
+#include <console/Setting.h>
 #include <future>
 
-// The public server-list announcer speaks HTTPS, which needs cpp-httplib's OpenSSL
-// support. A platform-independent build (the Linux core harness) has no OpenSSL and never
-// announces - `bAnnounceServer` defaults to false - so it compiles this file without TLS
-// instead of dropping the translation unit and losing the server's own code from the loop.
 #ifndef RFAB_NO_HTTPLIB_SSL
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #endif
@@ -68,19 +64,21 @@ void ServerListService::Announce() noexcept
         return;
 
     const auto pc = static_cast<uint16_t>(m_world.GetPlayerManager().Count());
-    int32_t flags = m_flags | kIsPublic;
+
+    m_flags |= kIsPublic;
     if (pServer->IsPasswordProtected())
-        flags |= kHasPassword;
-    m_flags = flags;
+        m_flags |= kHasPassword;
 
     const auto cInfo = pServer->GetInfo();
-    const uint16_t port = pServer->GetPort();
-    const uint16_t maxPlayers = uMaxPlayerCount.value_as<uint16_t>();
+    const auto port = pServer->GetPort();
+    const auto maxPlayers = uMaxPlayerCount.value_as<uint16_t>();
+    const bool isPublic = bAnnounceServer;
     const bool hasPassword = pServer->IsPasswordProtected();
+    const int32_t flags = m_flags;
 
-    std::thread([cInfo, port, pc, maxPlayers, hasPassword, flags]() {
-        PostAnnouncement(cInfo.name, cInfo.desc, cInfo.icon_url, port, cInfo.tick_rate, pc,
-                         maxPlayers, cInfo.tagList, true, hasPassword, flags);
+    std::thread([cInfo, port, pc, maxPlayers, isPublic, hasPassword, flags]() {
+        PostAnnouncement(cInfo.name, cInfo.desc, cInfo.icon_url, port, cInfo.tick_rate, pc, maxPlayers, cInfo.tagList,
+                         isPublic, hasPassword, flags);
     }).detach();
 }
 
@@ -88,6 +86,20 @@ void ServerListService::PostAnnouncement(String acName, String acDesc, String ac
                                          uint16_t aPlayerCount, uint16_t aPlayerMaxCount, String acTagList,
                                          bool aPublic, bool aPassword, int32_t aFlags) noexcept
 {
+#ifdef RFAB_NO_HTTPLIB_SSL
+    TP_UNUSED(acName);
+    TP_UNUSED(acDesc);
+    TP_UNUSED(acIconUrl);
+    TP_UNUSED(aPort);
+    TP_UNUSED(aTick);
+    TP_UNUSED(aPlayerCount);
+    TP_UNUSED(aPlayerMaxCount);
+    TP_UNUSED(acTagList);
+    TP_UNUSED(aPublic);
+    TP_UNUSED(aPassword);
+    TP_UNUSED(aFlags);
+    return;
+#else
     const std::string kVersion{BUILD_COMMIT};
     const httplib::Params params{
         {"name", std::string(acName.c_str(), acName.size())},
@@ -105,10 +117,7 @@ void ServerListService::PostAnnouncement(String acName, String acDesc, String ac
     };
 
     httplib::Client client(kMasterServerEndpoint);
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    // Nothing to verify when the build has no TLS at all.
     client.enable_server_certificate_verification(false);
-#endif
     client.set_read_timeout(std::chrono::milliseconds(30000));
     const auto response = client.Post("/announce", params);
 
@@ -116,7 +125,10 @@ void ServerListService::PostAnnouncement(String acName, String acDesc, String ac
     if (response)
     {
         if (response->status == 403)
-            GameServer::Get()->Kill();
+        {
+            if (auto* pServer = GameServer::Get())
+                pServer->Kill();
+        }
         else if (response->status != 200)
             spdlog::error("Server list error! {}", response->body);
     }
@@ -124,4 +136,5 @@ void ServerListService::PostAnnouncement(String acName, String acDesc, String ac
     {
         spdlog::error("Server could not reach the server list! {}", to_string(response.error()));
     }
+#endif
 }

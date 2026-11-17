@@ -24,6 +24,10 @@ ifeq ($(SANITIZE),1)
   # (Code/core/src/Serialization.cpp:34). That is an upstream bug we cannot fix from
   # here and it would fail every sanitized run; our own code stays fully checked.
   VENDOR_SAN := -fno-sanitize=undefined
+  # TiltedCore's allocators (every TiltedPhoques::Vector, Map, String, Buffer) take their memory
+  # from mimalloc, whose blocks AddressSanitizer does not see on its own. MI_TRACK_ASAN makes
+  # mimalloc poison what it frees, so a use after free of such a container is reported.
+  MIMALLOC_SAN := -fsanitize=address -fno-omit-frame-pointer -DMI_TRACK_ASAN=1
 endif
 
 BUILD_DIR ?= $(REPO_ROOT)/build/linux-core$(BUILD_SUFFIX)
@@ -53,6 +57,7 @@ INCLUDES := \
   -I$(REPO_ROOT)/Code/encoding \
   -I$(REPO_ROOT)/Code/encoding/Structs/Skyrim \
   -I$(REPO_ROOT)/Code/common \
+  -I$(REPO_ROOT)/Code/client \
   -I$(REPO_ROOT)/Code/tests \
   -I$(DEPS_DIR)/tcinc \
   -I$(TILTEDCORE)/Code/core/include \
@@ -68,37 +73,14 @@ PCH := -include $(REPO_ROOT)/Code/encoding/EncodingPch.h
 PORTABLE_TESTS := \
   $(REPO_ROOT)/Code/tests/main.cpp \
   $(REPO_ROOT)/Code/tests/encoding.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_health_inventory.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_coop.cpp \
+  $(REPO_ROOT)/Code/tests/playback_clock.cpp \
+  $(REPO_ROOT)/Code/client/Systems/PlaybackClock.cpp \
   $(REPO_ROOT)/Code/tests/rfab_wire_fuzz.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_string_cache_protocol.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_authority_lease.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_downed_revive.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_remote_lifecycle.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_experience_ledger.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_save_barrier.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_health_revision.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_session_sim.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_se1597_port.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_stage2_physics_ownership_anim.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_stage4_teleport_nullsafety.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v200_stabilization_audit.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v201_architectural_overhaul.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v202_root_cause_stabilization.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v203_architectural_stabilization.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v210_architectural_stabilization.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v300_phase1_clean_core.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v300_phase4_damage_movement_animation.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v310_hybrid_combat_magic_sync.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v312_racemenu_hair_color_sync.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v315_paused_pump_and_hook_hardening.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v316_adversarial_audit_hardening.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v317_full_codebase_critical_audit.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v400_protocol_and_authority.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v401_review_stability.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v410_session_features_and_resync.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v410_session_lifecycle.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v410_main_thread_queue.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v410_world_items.cpp \
-  $(REPO_ROOT)/Code/tests/rfab_v410_compat_overlay.cpp
+  $(REPO_ROOT)/Code/tests/rfab_v410_compat_overlay.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v411_breadcrumbs.cpp \
+  $(REPO_ROOT)/Code/tests/rfab_v411_safe_fs.cpp
 
 CORE_SRCS     := $(filter-out %MimallocAllocator.cpp,$(wildcard $(TILTEDCORE)/Code/core/src/*.cpp)) \
                  $(TILTEDCORE)/Code/core/src/MimallocAllocator.cpp
@@ -139,7 +121,7 @@ $(MIMALLOC_OBJ): $(MIMALLOC)/src/static.c $(MAKEFILE_LIST)
 	@echo "  CC    mimalloc"
 	@# -U, not -D...=0: mimalloc guards the malloc interposer with #if defined(), so
 	@# defining it to zero switched the override ON and broke AddressSanitizer.
-	@$(CC) $(CFLAGS) -w -UMI_MALLOC_OVERRIDE -I$(MIMALLOC)/include -c $< -o $@
+	@$(CC) $(CFLAGS) $(MIMALLOC_SAN) -w -UMI_MALLOC_OVERRIDE -I$(MIMALLOC)/include -c $< -o $@
 
 define compile_rule
 $(call obj_of,$(1),$(2)): $(2) $(MAKEFILE_LIST)
@@ -151,7 +133,10 @@ endef
 $(foreach s,$(CORE_SRCS),$(eval $(call compile_rule,core,$(s),$(VENDOR_SAN))))
 $(foreach s,$(ENCODING_SRCS),$(eval $(call compile_rule,encoding,$(s),$(PCH))))
 $(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),$(PCH))))
-$(foreach s,$(PORTABLE_TESTS),$(eval $(call compile_rule,tests,$(s),$(PCH))))
+# The suites are compiled WITHOUT the encoding prefix header, exactly like the xmake TPTests
+# target: a suite that only compiles because EncodingPch.h was force-included builds here and
+# fails under MSVC (first Windows CI run: rfab_v411_phase3_adaptation_tests.cpp, 38 errors).
+$(foreach s,$(PORTABLE_TESTS),$(eval $(call compile_rule,tests,$(s),)))
 
 -include $(ALL_DEPS)
 

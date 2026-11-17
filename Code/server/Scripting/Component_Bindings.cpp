@@ -10,7 +10,7 @@ void BindMovementComponent(sol::state_view aState)
     aState["GetMovementComponent"] = [](entt::entity aEntity) {
         return GameServer::Get()->GetWorld().try_get<MovementComponent>(aEntity);
     };
-        
+
     auto table =
         aState.new_usertype<MovementComponent>("MovementComponent", sol::constructors<MovementComponent()>());
     table["Tick"] = &MovementComponent::Tick;
@@ -18,7 +18,6 @@ void BindMovementComponent(sol::state_view aState)
     table["Rotation"] = &MovementComponent::Rotation;
     // movementComponentType["Variables"] = &MovementComponent::Variables;
     table["Direction"] = &MovementComponent::Direction;
-    table["Sent"] = &MovementComponent::Sent;
 }
 } // namespace
 

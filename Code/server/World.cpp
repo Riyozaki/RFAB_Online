@@ -6,29 +6,24 @@
 #include <Services/QuestService.h>
 #include <Services/ServerListService.h>
 #include <Services/ActorValueService.h>
-#include <Services/AdminService.h>
 #include <Services/InventoryService.h>
 #include <Services/MagicService.h>
 #include <Services/OverlayService.h>
 #include <Services/CommandService.h>
 #include <Services/StringCacheService.h>
-#include <Services/SessionResyncService.h>
-#include <Services/WorldItemService.h>
 #include <Services/CombatService.h>
 #include <Services/WeatherService.h>
 #include <Services/ScriptService.h>
 #include <Services/MapService.h>
+#include <Services/CoopService.h>
 
 #include <es_loader/ESLoader.h>
 
 World::World()
 {
-    m_spAdminService = std::make_shared<AdminService>(*this, m_dispatcher);
-    spdlog::default_logger()->sinks().push_back(std::static_pointer_cast<spdlog::sinks::sink>(m_spAdminService));
+    // Reserve entity 0 before any service creates entities so ServerId == 0 stays an unused sentinel.
+    m_reservedZeroEntity = entt::registry::create();
 
-    ctx().emplace<RfabProgressionService>(*this, m_dispatcher);
-    ctx().emplace<SaveSnapshotService>(*this, m_dispatcher);
-    ctx().emplace<EncounterService>(*this, m_dispatcher);
     ctx().emplace<CharacterService>(*this, m_dispatcher);
     ctx().emplace<PlayerService>(*this, m_dispatcher);
     ctx().emplace<CalendarService>(*this, m_dispatcher);
@@ -39,19 +34,14 @@ World::World()
     ctx().emplace<PartyService>(*this, m_dispatcher);
     ctx().emplace<ActorValueService>(*this, m_dispatcher);
     ctx().emplace<InventoryService>(*this, m_dispatcher);
-    // After InventoryService (its one inventory writer) and before HydratePersistedWorldState below,
-    // which restores the dropped items of the latest checkpoint.
-    ctx().emplace<WorldItemService>(*this, m_dispatcher);
     ctx().emplace<MagicService>(*this, m_dispatcher);
     ctx().emplace<OverlayService>(*this, m_dispatcher);
     ctx().emplace<CommandService>(*this, m_dispatcher);
     ctx().emplace<StringCacheService>(*this, m_dispatcher);
-    ctx().emplace<SessionResyncService>(*this, m_dispatcher);
     ctx().emplace<CombatService>(*this, m_dispatcher);
     ctx().emplace<WeatherService>(*this, m_dispatcher);
     ctx().emplace<MapService>(*this, m_dispatcher);
-
-    GetSaveSnapshotService().HydratePersistedWorldState();
+    ctx().emplace<CoopService>(*this, m_dispatcher);
 
     ESLoader::ESLoader loader;
     // emplace loaded mods into modscomponent.

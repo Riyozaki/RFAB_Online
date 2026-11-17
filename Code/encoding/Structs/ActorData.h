@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Structs/ActorValues.h>
-#include <Structs/GameId.h>
 #include <Structs/Inventory.h>
 
 struct ActorData
@@ -12,13 +11,12 @@ struct ActorData
     bool operator==(const ActorData& acRhs) const noexcept
     {
         return InitialActorValues == acRhs.InitialActorValues &&
-               InitialInventory == acRhs.InitialInventory && BaseId == acRhs.BaseId &&
-               IsDead == acRhs.IsDead && IsWeaponDrawn == acRhs.IsWeaponDrawn;
+               InitialInventory == acRhs.InitialInventory && IsDead == acRhs.IsDead &&
+               IsWeaponDrawn == acRhs.IsWeaponDrawn;
     }
 
     ActorValues InitialActorValues{};
     Inventory InitialInventory{};
-    GameId BaseId{};
     bool IsDead{};
     bool IsWeaponDrawn{};
 };

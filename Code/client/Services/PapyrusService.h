@@ -35,19 +35,7 @@ template <class Return, class Type, class... Args> struct PapyrusFunction
     {
     }
 
-    [[nodiscard]] explicit operator bool() const noexcept { return m_pFunction != nullptr; }
-
-    Return operator()(const Type* apThis, Args... args) const noexcept
-    {
-        if (!m_pFunction || !GameVM::Get() || !GameVM::Get()->virtualMachine)
-        {
-            if constexpr (!std::is_void_v<Return>)
-                return Return{};
-            else
-                return;
-        }
-        return m_pFunction(GameVM::Get()->virtualMachine, 0, apThis, std::forward<Args>(args)...);
-    }
+    Return operator()(const Type* apThis, Args... args) const noexcept { return m_pFunction(GameVM::Get()->virtualMachine, 0, apThis, std::forward<Args>(args)...); }
 
 private:
     TFunction m_pFunction;
@@ -95,6 +83,6 @@ private:
     TFunction m_pFunction;
 };
 
-#define PAPYRUS_FUNCTION(returnType, scope, name, ...) static PapyrusFunction<returnType, scope, ##__VA_ARGS__> s_p##name(World::Get().ctx().at<PapyrusService>().Get(#scope, #name));
-#define GLOBAL_PAPYRUS_FUNCTION(returnType, scope, name, ...) static GlobalPapyrusFunction<returnType, ##__VA_ARGS__> s_p##name(World::Get().ctx().at<PapyrusService>().Get(#scope, #name));
-#define LATENT_PAPYRUS_FUNCTION(returnType, scope, name, ...) static LatentPapyrusFunction<returnType, scope, ##__VA_ARGS__> s_p##name(World::Get().ctx().at<PapyrusService>().Get(#scope, #name));
+#define PAPYRUS_FUNCTION(returnType, scope, name, ...) static PapyrusFunction<returnType, scope, __VA_ARGS__> s_p##name(World::Get().ctx().at<PapyrusService>().Get(#scope, #name));
+#define GLOBAL_PAPYRUS_FUNCTION(returnType, scope, name, ...) static GlobalPapyrusFunction<returnType, __VA_ARGS__> s_p##name(World::Get().ctx().at<PapyrusService>().Get(#scope, #name));
+#define LATENT_PAPYRUS_FUNCTION(returnType, scope, name, ...) static LatentPapyrusFunction<returnType, scope, __VA_ARGS__> s_p##name(World::Get().ctx().at<PapyrusService>().Get(#scope, #name));

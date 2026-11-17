@@ -1,4 +1,5 @@
 #include "Projectile.h"
+#include <CrashBreadcrumbs.h>
 #include <Games/Skyrim/Forms/TESObjectWEAP.h>
 #include <Games/Skyrim/Forms/MagicItem.h>
 #include <Games/Skyrim/Forms/TESAmmo.h>
@@ -18,7 +19,7 @@ static TActorMagicCasterFire* RealActorMagicCasterFire = nullptr;
 
 extern "C" bool ShouldBlockRemoteMagicProjectile(MagicCaster* apCaster) noexcept
 {
-    if (!apCaster || !World::IsCreated() || !World::IsConnectedCached())
+    if (!apCaster || !World::IsCreated() || !World::IsOnlineCached())
         return false;
 
     const auto* pActorCaster = Cast<ActorMagicCaster>(apCaster);
@@ -46,8 +47,7 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
         return nullptr;
     }
 
-    GamePtr<TESObjectREFR> spObject = TESObjectREFR::LookupByHandle(result->handle.iBits);
-    Projectile* pProjectile = Cast<Projectile>(spObject.Get());
+    Projectile* pProjectile = Cast<Projectile>(TESObjectREFR::GetByHandle(result->handle.iBits));
 
     if (!pProjectile)
     {
@@ -62,7 +62,8 @@ BSPointerHandle<Projectile>* Projectile::Launch(BSPointerHandle<Projectile>* apR
 
 BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projectile>, Projectile::LaunchData& arData)
 {
-    if (!World::IsCreated() || !World::IsConnectedCached())
+    RFAB_HOOK_CRUMB("HookLaunch");
+    if (!World::IsCreated() || !World::IsOnlineCached())
         return TiltedPhoques::ThisCall(RealLaunch, apThis, arData);
 
     // sync concentration spells through spell cast sync, the rest through projectile sync
@@ -129,13 +130,12 @@ BSPointerHandle<Projectile>* TP_MAKE_THISCALL(HookLaunch, BSPointerHandle<Projec
         return nullptr;
     }
 
-    GamePtr<TESObjectREFR> spObject = TESObjectREFR::LookupByHandle(result->handle.iBits);
-    Projectile* pProjectile = Cast<Projectile>(spObject.Get());
+    Projectile* pProjectile = Cast<Projectile>(TESObjectREFR::GetByHandle(result->handle.iBits));
 
     if (pProjectile)
         Event.Power = pProjectile->fPower;
 
-    if (World::IsCreated() && World::IsConnectedCached())
+    if (World::IsCreated() && World::IsOnlineCached())
         World::Get().GetRunner().Trigger(Event);
 
     return result;

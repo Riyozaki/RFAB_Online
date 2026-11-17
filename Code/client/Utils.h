@@ -28,19 +28,19 @@ static void Assert(const char* apExpression, const char* apMessage)
 }
 
 std::optional<uint32_t> GetServerId(entt::entity aEntity) noexcept;
+std::optional<entt::entity> FindEntityByServerId(uint32_t aServerId) noexcept;
 
 template <class T> T* GetByServerId(const uint32_t acServerId) noexcept
 {
-    auto& world = World::Get();
-    const entt::entity entity = world.GetCharacterService().FindEntityByServerId(acServerId);
-    if (entity != entt::null)
+    if (const auto entity = FindEntityByServerId(acServerId))
     {
-        if (const auto* pFormIdComponent = world.try_get<FormIdComponent>(entity))
+        if (const auto* pFormIdComponent = World::Get().try_get<FormIdComponent>(*entity))
         {
-            if (TESForm* pForm = TESForm::GetById(pFormIdComponent->Id))
+            TESForm* pForm = TESForm::GetById(pFormIdComponent->Id);
+
+            if (pForm)
                 return Cast<T>(pForm);
         }
-        return nullptr;
     }
 
     spdlog::debug("{}: form not found for server id {:X}", __FUNCTION__, acServerId);

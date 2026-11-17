@@ -21,8 +21,4 @@ struct EnchantmentItem : MagicItem
     BGSListForm* pWornRestrictions;
 };
 
-#ifdef _MSC_VER
 static_assert(sizeof(EnchantmentItem) == 0xC0);
-#else
-static_assert(sizeof(EnchantmentItem) == 0xB8);
-#endif

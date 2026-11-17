@@ -1,7 +1,6 @@
 #pragma once
 
 #include <include/internal/cef_ptr.h>
-#include <common/Session/Lifecycle.h>
 
 namespace TiltedPhoques
 {
@@ -14,6 +13,8 @@ struct FormIdComponent;
 struct World;
 struct Actor;
 struct UpdateEvent;
+struct ConnectedEvent;
+struct DisconnectedEvent;
 struct TransportService;
 struct NotifyChatMessageBroadcast;
 struct NotifyPlayerList;
@@ -25,7 +26,7 @@ struct NotifyPlayerLevel;
 struct NotifyPlayerCellChanged;
 struct NotifyTeleport;
 struct NotifyPlayerHealthUpdate;
-#include <ChatMessageTypes.h>
+enum ChatMessageTypes;
 struct PartyJoinedEvent;
 struct PartyLeftEvent;
 
@@ -34,7 +35,7 @@ using TiltedPhoques::OverlayApp;
 /**
  * @brief Controls the UI from the client.
  */
-struct OverlayService final : Session::IParticipant
+struct OverlayService
 {
     OverlayService(World& aWorld, TransportService& transport, entt::dispatcher& aDispatcher);
     ~OverlayService() noexcept;
@@ -63,15 +64,10 @@ struct OverlayService final : Session::IParticipant
 
     void SetPlayerHealthPercentage(uint32_t aFormId) const noexcept;
 
-    // Session::ParticipantId::kOverlay: the UI's connect / disconnect.
-    void OnSessionBegin(const Session::Transition& acTransition) noexcept override;
-    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
-    // A connection attempt or handshake ended without a session (timeout, unresolvable host, rejected
-    // credentials): no session ends, but the UI left its "connecting" state. Called by TransportService.
-    void NotifyConnectionAttemptEnded() noexcept;
-
 protected:
     void OnUpdate(const UpdateEvent&) noexcept;
+    void OnConnectedEvent(const ConnectedEvent&) noexcept;
+    void OnDisconnectedEvent(const DisconnectedEvent&) noexcept;
     void OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept;
     void OnPlayerComponentRemoved(entt::registry& aRegistry, entt::entity aEntity) const noexcept;
     void OnConnectionError(const ConnectionErrorEvent& acConnectedEvent) const noexcept;
@@ -100,6 +96,8 @@ private:
     bool m_inGame = false;
 
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_connectedConnection;
+    entt::scoped_connection m_disconnectedConnection;
     entt::scoped_connection m_connectionErrorConnection;
     entt::scoped_connection m_cellChangeEventConnection;
     entt::scoped_connection m_chatMessageConnection;

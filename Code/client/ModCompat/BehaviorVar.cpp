@@ -28,9 +28,9 @@
 //
 
 #include <immersive_launcher/launcher.h>
+#include <common/Compat/SafeFs.h>
 #include <BSAnimationGraphManager.h>
 #include <Games/ActorExtension.h>
-#include <CoopAnimationState.h>
 #include "BehaviorVar.h"
 #include "BehaviorVarsMap.h"
 
@@ -38,7 +38,7 @@
 #include <Camera/PlayerCamera.h>
 
 #include <mutex>
-std::recursive_mutex mutex_lock;
+std::mutex mutex_lock;
 
 // How long we failList a behavior hash that can't be translated.
 // See explanation in BehaviorVar::Patch
@@ -48,7 +48,6 @@ const std::chrono::steady_clock::duration FAILLIST_DURATION(10min);
 BehaviorVar* BehaviorVar::single = nullptr;
 BehaviorVar* BehaviorVar::Get()
 {
-    std::lock_guard<std::recursive_mutex> guard(mutex_lock);
     if (!BehaviorVar::single)
         BehaviorVar::single = new BehaviorVar();
     return BehaviorVar::single;
@@ -69,7 +68,7 @@ namespace
 TiltedPhoques::String ToLowerCase(const TiltedPhoques::String& acStr)
 {
     TiltedPhoques::String lowerCaseStr(acStr);
-    std::transform(acStr.begin(), acStr.end(), lowerCaseStr.begin(), 
+    std::transform(acStr.begin(), acStr.end(), lowerCaseStr.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     return lowerCaseStr;
 }
@@ -296,42 +295,26 @@ const AnimationGraphDescriptor* BehaviorVar::ConstructModdedDescriptor(
     TiltedPhoques::Vector<uint32_t> floatVector(floatVarSorted.begin(), floatVarSorted.end());
     TiltedPhoques::Vector<uint32_t> intVector(intVarSorted.begin(), intVarSorted.end());
 
-    // Classify every synced Havok float variable into continuous linear, circular [0, 360) angle,
-    // or discrete step (MCO/SCAR/TUDM weapon flags, speed multipliers, i-frame windows, timers).
-    TiltedPhoques::Map<uint32_t, std::string_view> indexToVarName;
-    for (const auto& [varName, varIdx] : acReverseMap)
-        indexToVarName.emplace(varIdx, std::string_view(varName.data(), varName.size()));
+    // Construct a new descriptor
+    auto panimGraphDescriptor = new AnimationGraphDescriptor();
 
-    TiltedPhoques::Vector<AnimationFloatBlendMode> floatBlendModes;
-    floatBlendModes.reserve(floatVector.size());
-    for (const uint32_t varIdx : floatVector)
-    {
-        AnimationFloatBlendMode mode = AnimationFloatBlendMode::kContinuousLinear;
-        if (const auto nameIt = indexToVarName.find(varIdx); nameIt != indexToVarName.end())
-        {
-            mode = static_cast<AnimationFloatBlendMode>(
-                CoopAnimationState::ClassifyBehaviorFloatBlendKind(nameIt->second));
-        }
-        floatBlendModes.push_back(mode);
-    }
+    // This is a bit grubby, but it IS a struct with public members.
+    // Maybe the devs will help us out by agreeing to an additional constructor.
+    panimGraphDescriptor->BooleanLookUpTable = boolVector;
+    panimGraphDescriptor->FloatLookupTable = floatVector;
+    panimGraphDescriptor->IntegerLookupTable = intVector;
 
-    // Construct a new descriptor on the stack (no heap leak) and register into the
-    // node-stable, shared_mutex-protected AnimationGraphDescriptorManager.
-    AnimationGraphDescriptor animGraphDescriptor{};
-    animGraphDescriptor.BooleanLookUpTable = std::move(boolVector);
-    animGraphDescriptor.FloatLookupTable = std::move(floatVector);
-    animGraphDescriptor.IntegerLookupTable = std::move(intVector);
-    animGraphDescriptor.FloatBlendModes = std::move(floatBlendModes);
-
-    AnimationGraphDescriptorManager::Builder(AnimationGraphDescriptorManager::Get(), acNewHash, std::move(animGraphDescriptor));
+    // Add the new graph to the known behavior graphs
+    // TODO: doesn't handle case of the acNewHash already existing.
+    // That has to be addressed before we can support just adding
+    // more pre-existing vars to sync. For now, only get here
+    // when mods have changed the hash.
+    new AnimationGraphDescriptorManager::Builder(AnimationGraphDescriptorManager::Get(), acNewHash, *panimGraphDescriptor);
     return AnimationGraphDescriptorManager::Get().GetDescriptor(acNewHash);
 }
 
 const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apManager, Actor* apActor)
 {
-    if (!apManager || !apActor)
-        return nullptr;
-
     // Serialize, Actors are multi-threaded. Might not be strictly necessary between being on
     // the main game loop and under a BSSpinLock, but if so it won't hurt anything.
     std::lock_guard guard(mutex_lock);
@@ -339,9 +322,6 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     // Check if the animation descriptor has already been built.
     uint32_t hexFormID = apActor->formID;
     auto pExtendedActor = apActor->GetExtension();
-    if (!pExtendedActor)
-        return nullptr;
-
     auto hash = pExtendedActor->GraphDescriptorHash;
     const AnimationGraphDescriptor* pGraph = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
 
@@ -349,13 +329,10 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     // Use the base game animation graphs until a Master Behavior actor enters the room. Could be an NPC,
     // but will always happen no later than when the 2nd person joins the server and room.
     // Remote players are ALWAYS in 3rd person by definition
-    if (hexFormID == 0x14)
+    if (hexFormID == 0x14 && PlayerCamera::Get()->IsFirstPerson())
     {
-        if (auto* pCam = PlayerCamera::Get(); pCam && pCam->IsFirstPerson())
-        {
-            hash = AnimationGraphDescriptor_Master_Behavior::m_key;
-            pGraph = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
-        }
+        hash = AnimationGraphDescriptor_Master_Behavior::m_key;
+        pGraph = AnimationGraphDescriptorManager::Get().GetDescriptor(hash);
     }
 
     // If we found the descriptor we're done.
@@ -438,9 +415,10 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
     case 1: break;
 
     default:
-        spdlog::debug(__FUNCTION__ ": multiple behavior replacers share signature {:x} (selecting first match {}):", hash, behaviorPool[matchedReplacers[0]].creatureName);
+        spdlog::critical(__FUNCTION__ ": multiple behavior replacers have the same signature, this must be corrected:");
         for (auto& item : matchedReplacers)
-            spdlog::debug("   {}", behaviorPool[item].creatureName);
+            spdlog::critical("   {}", behaviorPool[item].creatureName);
+        spdlog::warn("Multiple behavior replacers have the same signature, choosing the first one.");
         break;
     }
 
@@ -475,7 +453,6 @@ const AnimationGraphDescriptor* BehaviorVar::Patch(BSAnimationGraphManager* apMa
 // Check if the behavior hash is on the failed liist
 bool BehaviorVar::FailListed(uint64_t hash)
 {
-    std::lock_guard<std::recursive_mutex> guard(mutex_lock);
     auto iter = failedBehaviors.find(hash);
     return iter != failedBehaviors.end() && std::chrono::steady_clock::now() < iter->second;
 }
@@ -483,7 +460,6 @@ bool BehaviorVar::FailListed(uint64_t hash)
 // Place the behavior hash on the failed list
 void BehaviorVar::FailList(uint64_t hash)
 {
-    std::lock_guard<std::recursive_mutex> guard(mutex_lock);
     failedBehaviors.insert_or_assign(hash, std::chrono::steady_clock::now() + FAILLIST_DURATION);
 }
 
@@ -491,9 +467,10 @@ void BehaviorVar::FailList(uint64_t hash)
 TiltedPhoques::Vector<std::filesystem::path> BehaviorVar::LoadDirs(const std::filesystem::path& acPath)
 {
     TiltedPhoques::Vector<std::filesystem::path> result;
-    for (auto& p : std::filesystem::directory_iterator(acPath))
-        if (p.is_directory())
-            result.push_back(p.path().string());
+    Compat::SafeFs::ForEachEntry(acPath, [&result](const std::filesystem::directory_entry& acEntry) {
+        if (Compat::SafeFs::IsDirectory(acEntry))
+            result.push_back(acEntry.path());
+    });
     return result;
 }
 
@@ -512,16 +489,15 @@ BehaviorVar::Replacer* BehaviorVar::LoadReplacerFromDir(const std::filesystem::p
     // modded actor, that we can use to connect the actor to their modded behavior variables.
     // It's not actually sync'ed, just there so we can find the match. For example, currently
     // bSTRMaster is used for humanoid/Player actors, and bSTRDragon for dragon behavior.
-    TiltedPhoques::String hashFile;
-    TiltedPhoques::String signatureFile;
-    TiltedPhoques::Vector<TiltedPhoques::String> floatVarsFile;
-    TiltedPhoques::Vector<TiltedPhoques::String> intVarsFile;
-    TiltedPhoques::Vector<TiltedPhoques::String> boolVarsFile;
+    std::filesystem::path hashFile;
+    std::filesystem::path signatureFile;
+    TiltedPhoques::Vector<std::filesystem::path> floatVarsFile;
+    TiltedPhoques::Vector<std::filesystem::path> intVarsFile;
+    TiltedPhoques::Vector<std::filesystem::path> boolVarsFile;
 
-    for (auto& p : std::filesystem::directory_iterator(aDir))
-    {
-        TiltedPhoques::String path(p.path().string());
-        TiltedPhoques::String base_filename = path.substr(path.find_last_of("/\\") + 1);
+    Compat::SafeFs::ForEachEntry(aDir, [&](const std::filesystem::directory_entry& acEntry) {
+        const std::filesystem::path& path = acEntry.path();
+        const std::string base_filename = Compat::SafeFs::FileNameUtf8Lossy(path);
 
         spdlog::debug("base_path: {}", base_filename);
 
@@ -529,51 +505,51 @@ BehaviorVar::Replacer* BehaviorVar::LoadReplacerFromDir(const std::filesystem::p
         {
             signatureFile = path;
 
-            spdlog::debug("signature variable file: {}", signatureFile);
+            spdlog::debug("signature variable file: {}", base_filename);
         }
         else if (base_filename.find("__hash.txt") != std::string::npos)
         {
             hashFile = path;
 
-            spdlog::debug("hash file: {}", hashFile);
+            spdlog::debug("hash file: {}", base_filename);
         }
         else if (base_filename.find("__float.txt") != std::string::npos)
         {
             floatVarsFile.push_back(path);
 
-            spdlog::debug("float file: {}", path);
+            spdlog::debug("float file: {}", base_filename);
         }
         else if (base_filename.find("__int.txt") != std::string::npos)
         {
             intVarsFile.push_back(path);
 
-            spdlog::debug("int file: {}", path);
+            spdlog::debug("int file: {}", base_filename);
         }
         else if (base_filename.find("__bool.txt") != std::string::npos)
         {
             boolVarsFile.push_back(path);
 
-            spdlog::debug("bool file: {}", path);
+            spdlog::debug("bool file: {}", base_filename);
         }
-    }
+    });
 
     // Check that there is a signature file (an identifying variable)
     // When an Actor's behavior is modified, it's animation signature doesn't match
     // any of the base STR built-in descriptors. We try to match up on a distinguishing
     // animation variable added by the animation. But without such a distinquishing
-    if (signatureFile == "")
+    if (signatureFile.empty())
         return nullptr;
 
     // Prepare reading files
     TiltedPhoques::String sigVar;
-    TiltedPhoques::String creatureName(aDir.filename().string());
+    TiltedPhoques::String creatureName(Compat::SafeFs::FileNameUtf8Lossy(aDir).c_str());
     TiltedPhoques::Vector<TiltedPhoques::String> floatVar;
     TiltedPhoques::Vector<TiltedPhoques::String> intVar;
     TiltedPhoques::Vector<TiltedPhoques::String> boolVar;
     TiltedPhoques::String tempString; // Temp string
 
     // If signature file is unreadable, this directory is useless.
-    std::ifstream fileSig(signatureFile.c_str(), std::ifstream::in);
+    std::ifstream fileSig(signatureFile, std::ifstream::in);
     if (!fileSig.is_open())
         return nullptr;
 
@@ -597,9 +573,9 @@ BehaviorVar::Replacer* BehaviorVar::LoadReplacerFromDir(const std::filesystem::p
     // on. So stripped off the need to provide the new hash, we'll just calculate it.
     //
     uint64_t orgHash = 0;
-    if (hashFile.size())
+    if (!hashFile.empty())
     {
-        std::ifstream file(hashFile.c_str(), std::ifstream::in);
+        std::ifstream file(hashFile, std::ifstream::in);
         if (file.is_open())
         {
             getline(file, tempString);
@@ -615,7 +591,7 @@ BehaviorVar::Replacer* BehaviorVar::LoadReplacerFromDir(const std::filesystem::p
     spdlog::debug("reading float var");
     for (auto& item : floatVarsFile)
     {
-        std::ifstream file(item.c_str(), std::ifstream::in);
+        std::ifstream file(item, std::ifstream::in);
         if (file.is_open())
         {
             while (std::getline(file, tempString))
@@ -632,7 +608,7 @@ BehaviorVar::Replacer* BehaviorVar::LoadReplacerFromDir(const std::filesystem::p
     spdlog::debug("reading int vars");
     for (auto& item : intVarsFile)
     {
-        std::ifstream file(item.c_str(), std::ifstream::in);
+        std::ifstream file(item, std::ifstream::in);
         if (file.is_open())
         {
             while (std::getline(file, tempString))
@@ -649,7 +625,7 @@ BehaviorVar::Replacer* BehaviorVar::LoadReplacerFromDir(const std::filesystem::p
     spdlog::debug("reading bool vars");
     for (auto& item : boolVarsFile)
     {
-        std::ifstream file(item.c_str(), std::ifstream::in);
+        std::ifstream file(item, std::ifstream::in);
         if (file.is_open())
         {
             while (std::getline(file, tempString))
@@ -714,7 +690,7 @@ void BehaviorVar::Init()
     std::filesystem::path pBehaviorsPath;
     pBehaviorsPath = launcher::GetLaunchContext()->gamePath / L"Data" / L"SkyrimTogetherRebornBehaviors";
 
-    if (!std::filesystem::is_directory(pBehaviorsPath))
+    if (!Compat::SafeFs::IsDirectory(pBehaviorsPath))
         return;
 
     auto behaviorDirs = LoadDirs(pBehaviorsPath);

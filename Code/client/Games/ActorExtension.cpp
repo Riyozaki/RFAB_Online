@@ -4,7 +4,7 @@
 
 bool ActorExtension::IsRemote() const noexcept
 {
-    return (onlineFlags.load(std::memory_order_relaxed) & kRemote) != 0;
+    return (onlineFlags.load(std::memory_order_relaxed) & (kRemote | kLocalAvatar)) == kRemote;
 }
 
 bool ActorExtension::IsLocal() const noexcept
@@ -14,47 +14,30 @@ bool ActorExtension::IsLocal() const noexcept
 
 bool ActorExtension::IsPlayer() const noexcept
 {
-    return (onlineFlags.load(std::memory_order_relaxed) & kPlayer) != 0;
+    return onlineFlags.load(std::memory_order_relaxed) & kPlayer;
 }
 
 bool ActorExtension::IsRemotePlayer() const noexcept
 {
-    const uint32_t flags = onlineFlags.load(std::memory_order_relaxed);
-    return (flags & (kRemote | kPlayer)) == (kRemote | kPlayer);
+    return IsRemote() && IsPlayer();
 }
 
 bool ActorExtension::IsLocalPlayer() const noexcept
 {
-    const uint32_t flags = onlineFlags.load(std::memory_order_relaxed);
-    return (flags & (kRemote | kPlayer)) == kPlayer;
-}
-
-bool ActorExtension::IsCreatedByNetwork() const noexcept
-{
-    return (onlineFlags.load(std::memory_order_relaxed) & kCreatedByNetwork) != 0;
-}
-
-bool ActorExtension::IsDownedPlayer() const noexcept
-{
-    return (onlineFlags.load(std::memory_order_relaxed) & kDownedPlayer) != 0;
-}
-
-bool ActorExtension::IsPlayerSummonFlag() const noexcept
-{
-    return (onlineFlags.load(std::memory_order_relaxed) & kPlayerSummon) != 0;
-}
-
-bool ActorExtension::HasCombatTargetLock() const noexcept
-{
-    return (onlineFlags.load(std::memory_order_relaxed) & kCombatTargetLocked) != 0;
+    return IsLocal() && IsPlayer();
 }
 
 void ActorExtension::SetRemote(bool aSet) noexcept
 {
-    if (aSet)
-        onlineFlags.fetch_or(kRemote, std::memory_order_relaxed);
-    else
-        onlineFlags.fetch_and(~kRemote, std::memory_order_relaxed);
+    auto flags = onlineFlags.load(std::memory_order_relaxed);
+    do
+    {
+        if (aSet && (flags & kLocalAvatar))
+            return;
+        const auto desired = aSet ? flags | kRemote : flags & ~kRemote;
+        if (onlineFlags.compare_exchange_weak(flags, desired, std::memory_order_relaxed))
+            return;
+    } while (true);
 }
 
 void ActorExtension::SetPlayer(bool aSet) noexcept
@@ -65,34 +48,19 @@ void ActorExtension::SetPlayer(bool aSet) noexcept
         onlineFlags.fetch_and(~kPlayer, std::memory_order_relaxed);
 }
 
-void ActorExtension::SetCreatedByNetwork(bool aSet) noexcept
+void ActorExtension::BindLocalAvatar() noexcept
 {
-    if (aSet)
-        onlineFlags.fetch_or(kCreatedByNetwork, std::memory_order_relaxed);
-    else
-        onlineFlags.fetch_and(~kCreatedByNetwork, std::memory_order_relaxed);
+    auto flags = onlineFlags.load(std::memory_order_relaxed);
+    while (!onlineFlags.compare_exchange_weak(flags, (flags | kPlayer | kLocalAvatar) & ~kRemote, std::memory_order_relaxed)) {}
 }
 
-void ActorExtension::SetDownedPlayer(bool aSet) noexcept
+void ActorExtension::SetLatestAction(const ActionEvent& aAction) noexcept
 {
-    if (aSet)
-        onlineFlags.fetch_or(kDownedPlayer, std::memory_order_relaxed);
-    else
-        onlineFlags.fetch_and(~kDownedPlayer, std::memory_order_relaxed);
+    std::scoped_lock lock(m_actionMutex);
+    m_latestAnimation = aAction;
 }
-
-void ActorExtension::SetPlayerSummonFlag(bool aSet) noexcept
+ActionEvent ActorExtension::GetLatestAction() const noexcept
 {
-    if (aSet)
-        onlineFlags.fetch_or(kPlayerSummon, std::memory_order_relaxed);
-    else
-        onlineFlags.fetch_and(~kPlayerSummon, std::memory_order_relaxed);
-}
-
-void ActorExtension::SetCombatTargetLock(bool aSet) noexcept
-{
-    if (aSet)
-        onlineFlags.fetch_or(kCombatTargetLocked, std::memory_order_relaxed);
-    else
-        onlineFlags.fetch_and(~kCombatTargetLocked, std::memory_order_relaxed);
+    std::scoped_lock lock(m_actionMutex);
+    return m_latestAnimation;
 }

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "version": "5.0.0-dev.1",
+  "ready_for_playtest": false,
+  "release_strategy": "One complete candidate; no intermediate gameplay releases or required intermediate two-player playtests.",
+  "decisions": {
+    "revive_hold_ms": 5000,
+    "wipe_countdown_ms": 5000,
+    "downed_timeout_ms": null,
+    "xp_policy": "equal_base_with_personal_rfab_multipliers",
+    "enemy_health_multiplier_two_players": 2,
+    "wipe_default": "reset_encounter",
+    "wipe_optional": "checkpoint_reload",
+    "secure_chests": "shared_campaign_storage",
+    "rfab_sources": "capability-based; do not fetch a presumed current RFAB build",
+    "bizarre": "detect and negotiate; never silently claim support for an unknown native reward path"
+  },
+  "milestones": {
+    "clean_baseline": "imported; Windows rebuild pending",
+    "health_and_ownership_contracts": "server/core tests pass; client and handoff races not yet validated",
+    "inventory_transfer_contract": "paired durable server ledger and production-wire reservation/retry/receipt/reconnect/restart tests pass; native executor and SKSE save bridge wired, Windows/game unverified",
+    "downed_and_revive": "production server wire tested; native client integrated but Windows/game unverified",
+    "encounter_reset_interior_and_exterior": "server model and staged client receipts implemented; native grounding/save boundary unverified",
+    "semantic_rfab_xp": "pending",
+    "enemy_health_scaling": "pending",
+    "shared_persistent_secure_chests": "pending",
+    "quickloot_and_autoloot": "native TESObjectREFR/Actor/Player RemoveItem gates wired; real mod/game path unverified",
+    "checkpoint_reload": "pending",
+    "adaptive_bindings_and_capability_negotiation": "protocol2; inventory advertised only with installed hooks and loaded matching SKSE co-save; RFAB-specific adapters still pending",
+    "candidate_build_and_fault_injection": "pending"
+  },
+  "game_tested": false,
+  "note": "Progress declarations are not test evidence. Keep ready_for_playtest false until all production paths are wired, the full automated matrix and Windows build pass, and candidate packaging is verified. In-game validation happens after that single candidate.",
+  "automated_evidence": {
+    "core_plain": "63 cases / 26675 assertions; 2026-11-17",
+    "server_plain": "5 production-wire scenarios + portable crash-record self-test; 2026-11-17",
+    "strict_hook_audit": "0 findings; hook self-test44 / actor-lifetime self-test21; source checks are not engine threading proof",
+    "powershell": "not run locally: pwsh unavailable",
+    "windows_client": "pending diagnostic build; no rewritten native/Skyrim evidence",
+    "sanitizers": "portable core passed; full server/native sanitizer validation pending",
+    "core_sanitized": "63 cases / 274427 assertions; ASan+UBSan, 128 fuzz / 512 soak seeds; 2026-11-17",
+    "strict_static": "passed; wire0new/0stale/8known; SE3086sites/3081unique/0AE; pwsh skipped"
+  }
+}

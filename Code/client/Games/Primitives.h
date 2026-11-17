@@ -1,11 +1,6 @@
 #pragma once
 
 #include <Games/Memory.h>
-#include <cstddef>
-#include <iterator>
-#include <memory>
-#include <type_traits>
-#include <utility>
 
 template <class T> struct GameArray
 {
@@ -26,37 +21,23 @@ template <class T> struct GameArray
 
     void Resize(size_t aLength) noexcept;
 
-    // Range for loop & C++20 <algorithm> compatibility
+    // Range for loop compatibility
     struct Iterator
     {
-        using iterator_category = std::forward_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = T;
-        using pointer = T*;
-        using reference = T&;
-
-        Iterator() = default;
         Iterator(T* apEntry)
             : m_pEntry(apEntry)
         {
         }
-        Iterator& operator++()
+        Iterator operator++()
         {
             ++m_pEntry;
             return *this;
         }
-        Iterator operator++(int)
-        {
-            Iterator tmp = *this;
-            ++(*this);
-            return tmp;
-        }
-        bool operator==(const Iterator& acRhs) const { return m_pEntry == acRhs.m_pEntry; }
         bool operator!=(const Iterator& acRhs) const { return m_pEntry != acRhs.m_pEntry; }
-        T& operator*() const { return *m_pEntry; }
+        const T& operator*() const { return *m_pEntry; }
 
     private:
-        T* m_pEntry{nullptr};
+        T* m_pEntry;
     };
 
     Iterator begin() { return Iterator(&data[0]); }
@@ -65,33 +46,19 @@ template <class T> struct GameArray
 
     struct ConstIterator
     {
-        using iterator_category = std::forward_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = T;
-        using pointer = const T*;
-        using reference = const T&;
-
-        ConstIterator() = default;
         ConstIterator(const T* apEntry)
             : m_pEntry(apEntry)
         {}
-        ConstIterator& operator++()
+        ConstIterator operator++()
         {
             ++m_pEntry;
             return *this;
         }
-        ConstIterator operator++(int)
-        {
-            ConstIterator tmp = *this;
-            ++(*this);
-            return tmp;
-        }
-        bool operator==(const ConstIterator& acRhs) const { return m_pEntry == acRhs.m_pEntry; }
         bool operator!=(const ConstIterator& acRhs) const { return m_pEntry != acRhs.m_pEntry; }
         const T& operator*() const { return *m_pEntry; }
-        
+
     private:
-        const T* m_pEntry{nullptr};
+        const T* m_pEntry;
     };
 
     ConstIterator begin() const { return ConstIterator(&data[0]); }
@@ -103,58 +70,18 @@ template <class T> struct GameArray
 
 template <class T> void GameArray<T>::Resize(size_t aLength) noexcept
 {
-    constexpr uint32_t kDontDeallocateMask = 0x80000000u;
-    constexpr uint32_t kCapacityMask = 0x7FFFFFFFu;
-
-    const uint32_t targetLength = static_cast<uint32_t>(aLength & kCapacityMask);
-    const uint32_t realCapacity = capacity & kCapacityMask;
-    const bool dontDeallocate = (capacity & kDontDeallocateMask) != 0;
-
-    if (realCapacity >= targetLength && (data != nullptr || targetLength == 0))
+    if (capacity >= aLength)
     {
-        if constexpr (!std::is_trivially_destructible_v<T>)
-        {
-            for (uint32_t i = targetLength; i < length; ++i)
-                std::destroy_at(&data[i]);
-        }
-        for (uint32_t i = length; i < targetLength; ++i)
-            std::construct_at(&data[i]);
-
-        length = targetLength;
-        return;
+        length = aLength & 0xFFFFFFFF;
     }
-
-    T* pNewData = targetLength > 0
-        ? reinterpret_cast<T*>(Memory::Allocate(sizeof(T) * targetLength))
-        : nullptr;
-
-    const uint32_t toCopy = (data != nullptr) ? ((length < targetLength) ? length : targetLength) : 0u;
-    for (uint32_t i = 0; i < toCopy; ++i)
+    else
     {
-        if constexpr (std::is_move_constructible_v<T>)
-            std::construct_at(&pNewData[i], std::move(data[i]));
-        else
-            std::construct_at(&pNewData[i], data[i]);
+        T* pNewData = reinterpret_cast<T*>(Memory::Allocate(sizeof(T) * aLength));
+        std::copy(data, data + length, pNewData);
+        Memory::Free(data);
+        data = pNewData;
+        capacity = length = aLength;
     }
-    for (uint32_t i = toCopy; i < targetLength; ++i)
-    {
-        std::construct_at(&pNewData[i]);
-    }
-
-    if (data != nullptr)
-    {
-        if constexpr (!std::is_trivially_destructible_v<T>)
-        {
-            for (uint32_t i = 0; i < length; ++i)
-                std::destroy_at(&data[i]);
-        }
-        if (!dontDeallocate)
-            Memory::Free(data);
-    }
-
-    data = pNewData;
-    capacity = targetLength;
-    length = targetLength;
 }
 
 static_assert(offsetof(GameArray<int>, length) == 0x10);
@@ -315,7 +242,7 @@ struct NiRefObject
     void DecRef();
     bool Release();
 
-    volatile LONG refCount;
+    volatile long refCount;
     uint32_t padC;
 };
 
@@ -362,114 +289,76 @@ static_assert(offsetof(NiPoint2, y) == 4);
 
 template <class T> struct GamePtr
 {
-    GamePtr() noexcept
+    GamePtr()
         : m_pPointer(nullptr)
     {
     }
 
-    GamePtr(std::nullptr_t) noexcept
-        : m_pPointer(nullptr)
-    {
-    }
-
-    // Adopts an already-AddRef'd pointer (e.g. directly from LookupREFRByHandle SE 16828) without extra IncRef.
-    static GamePtr Adopt(T* apAlreadyAddRefed) noexcept
-    {
-        GamePtr result;
-        result.m_pPointer = apAlreadyAddRefed;
-        return result;
-    }
-
-    T* Detach() noexcept
-    {
-        T* const pPtr = m_pPointer;
-        m_pPointer = nullptr;
-        return pPtr;
-    }
-
-    GamePtr(T* apPointer) noexcept
+    GamePtr(T* apPointer)
         : m_pPointer(apPointer)
     {
         if (m_pPointer)
             m_pPointer->handleRefObject.IncRef();
     }
 
-    GamePtr(const GamePtr<T>& acRhs) noexcept
+    GamePtr(const GamePtr<T>& acRhs)
         : m_pPointer(acRhs.m_pPointer)
     {
         if (m_pPointer)
             m_pPointer->handleRefObject.IncRef();
     }
 
-    GamePtr(GamePtr<T>&& aRhs) noexcept
-        : m_pPointer(aRhs.m_pPointer)
-    {
-        aRhs.m_pPointer = nullptr;
-    }
+    GamePtr(GamePtr<T>&& aRhs) { std::swap(m_pPointer, aRhs.m_pPointer); }
 
-    GamePtr& operator=(const GamePtr<T>& acRhs) noexcept
-    {
-        if (this != &acRhs && m_pPointer != acRhs.m_pPointer)
-        {
-            T* const pNew = acRhs.m_pPointer;
-            if (pNew)
-                pNew->handleRefObject.IncRef();
-            Release();
-            m_pPointer = pNew;
-        }
-
-        return *this;
-    }
-
-    GamePtr& operator=(T* apPointer) noexcept
-    {
-        if (m_pPointer != apPointer)
-        {
-            if (apPointer)
-                apPointer->handleRefObject.IncRef();
-            Release();
-            m_pPointer = apPointer;
-        }
-
-        return *this;
-    }
-
-    GamePtr& operator=(std::nullptr_t) noexcept
+    GamePtr& operator=(const GamePtr<T>& acRhs)
     {
         Release();
-        return *this;
-    }
 
-    GamePtr& operator=(GamePtr<T>&& aRhs) noexcept
-    {
-        if (this != &aRhs)
-        {
-            Release();
-            m_pPointer = aRhs.m_pPointer;
-            aRhs.m_pPointer = nullptr;
-        }
+        m_pPointer = acRhs.m_pPointer;
+
+        if (m_pPointer)
+            m_pPointer->handleRefObject.IncRef();
 
         return *this;
     }
 
-    T* Get() const noexcept { return m_pPointer; }
-    T* operator->() const noexcept { return m_pPointer; }
-    T* operator*() const noexcept { return m_pPointer; }
-    operator T*() const noexcept { return m_pPointer; }
-    explicit operator bool() const noexcept { return m_pPointer != nullptr; }
-
-    ~GamePtr() noexcept { Release(); }
-
-    void Release() noexcept
+    GamePtr& operator=(T* apPointer)
     {
-        T* const pOld = m_pPointer;
+        Release();
+
+        m_pPointer = apPointer;
+
+        if (m_pPointer)
+            m_pPointer->handleRefObject.IncRef();
+
+        return *this;
+    }
+
+    GamePtr& operator=(GamePtr<T>&& aRhs)
+    {
+        std::swap(m_pPointer, aRhs.m_pPointer);
+
+        return *this;
+    }
+
+    T* operator->() { return m_pPointer; }
+
+    T* operator*() { return m_pPointer; }
+
+    operator T*() { return m_pPointer; }
+
+    ~GamePtr() { Release(); }
+
+    void Release()
+    {
+        if (m_pPointer)
+            m_pPointer->handleRefObject.DecRefHandle();
+
         m_pPointer = nullptr;
-        if (pOld)
-            pOld->handleRefObject.DecRefHandle();
     }
 
 private:
-    T* m_pPointer{nullptr};
+    T* m_pPointer;
 };
 
 enum ETiltedFlags : uint8_t
@@ -495,6 +384,3 @@ template <class T, class THandle = BSUntypedPointerHandle<>> struct BSPointerHan
 
     THandle handle{};
 };
-
-// Engine locks (BSSpinLock, BSReadWriteLock, guards) live in BSCore/BSAtomic.h - see upstream #937.
-#include <BSCore/BSAtomic.h>

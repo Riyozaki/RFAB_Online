@@ -1168,6 +1168,21 @@ $env:TILTED_ACCEPT_EULA = "true"
     Write-Ok "Установлен клиентский пакет (для подключения к серверу хоста)."
 }
 
+# The report collector: one click gathers logs, crash records, versions and symbols into a zip.
+# The installer archive may be deleted after the installation, so the collector lives in the RFAB
+# folder. Failing to install it must never fail the installation.
+try {
+    $CollectorSrc = Join-Path $PSScriptRoot "Collect-RfabReport.ps1"
+    if (Test-Path -LiteralPath $CollectorSrc) {
+        Copy-Item -LiteralPath $CollectorSrc -Destination (Join-Path $RfabDir "Collect-RfabReport.ps1") -Force
+        $CollectBat = "@echo off`r`nchcp 65001 >nul`r`ntitle RFAB Online - report collector`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"%~dp0Collect-RfabReport.ps1`" %*`r`necho.`r`npause`r`n"
+        [System.IO.File]::WriteAllText((Join-Path $RfabDir "COLLECT_RFAB_REPORT.bat"), $CollectBat, [System.Text.Encoding]::ASCII)
+        Write-Ok "Сборщик отчёта о проблеме: $(Join-Path $RfabDir 'COLLECT_RFAB_REPORT.bat')"
+    }
+} catch {
+    Write-Warn "Сборщик отчёта не установлен: $($_.Exception.Message)"
+}
+
 Write-Host "`n==============================================================" -ForegroundColor Green
 Write-Host "  УСПЕШНО! Чистая установка RFAB Online завершена!            " -ForegroundColor Green
 Write-Host "==============================================================" -ForegroundColor Green
@@ -1182,5 +1197,7 @@ Write-Host "  3. В игре нажмите ПРАВЫЙ CTRL (или F2) -> П�
 Write-Host "     - Хост вводит:   127.0.0.1:10578" -ForegroundColor Cyan
 Write-Host "     - Друзья вводят: <IP хоста из окна сервера / Radmin VPN>:10578" -ForegroundColor Cyan
 Write-Host "     (В одну группу все игроки добавляются автоматически!)" -ForegroundColor Green
+Write-Host "  Если что-то пошло не так (вылет, рассинхрон):" -ForegroundColor White
+Write-Host "     $RfabDir\COLLECT_RFAB_REPORT.bat  -> zip с логами на рабочем столе" -ForegroundColor Yellow
 $global:LASTEXITCODE = 0
 exit 0

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <glm/glm.hpp>
-
 using TiltedPhoques::Buffer;
 
 struct Rotator2_NetQuantize : glm::vec2

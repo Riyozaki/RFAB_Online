@@ -8,15 +8,16 @@
 
 struct LocalComponent
 {
-    LocalComponent(uint32_t aId, uint64_t aOwnershipEpoch = 0) noexcept
+    LocalComponent(uint32_t aId, uint32_t aOwnershipEpoch) noexcept
         : Id(aId)
         , OwnershipEpoch(aOwnershipEpoch)
     {
     }
 
     uint32_t Id;
-    uint64_t OwnershipEpoch = 0;
+    uint32_t OwnershipEpoch;
     ActionEvent CurrentAction;
+    uint64_t MinimumActionTick{};
     bool IsDead = false;
     bool IsWeaponDrawn = false;
 };

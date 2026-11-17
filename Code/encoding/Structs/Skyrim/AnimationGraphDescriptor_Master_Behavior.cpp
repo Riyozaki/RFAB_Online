@@ -318,28 +318,11 @@ AnimationGraphDescriptor_Master_Behavior::AnimationGraphDescriptor_Master_Behavi
              // TODO: this was added extra for spell cast sync
              kPitchOverride, kNotCasting},
             {kTurnDelta, kDirection, kSpeedSampled, kweapAdj, kSpeed,
-             kweaponSpeedMult, k2HMweaponSpeedMult, kleftWeaponSpeedMult,
              // TODO: this was added extra for spell cast sync
              kCastBlend, kPitchOffset, kSpeedDamped, kPitch, kVelocityZ, k1stPRot, k1stPRotDamped, kCastBlendDamped},
             {kiRightHandEquipped, kiLeftHandEquipped, ki1HMState, kiState, kiLeftHandType, kiRightHandType, kiSyncIdleLocomotion, kiSyncForwardState, kiSyncTurnState, kiIsInSneak, kiWantBlock, kiRegularAttack,
              // TODO: this was added extra for spell cast sync
-             ktestint, kcurrentDefaultState},
-            {AnimationFloatBlendMode::kContinuousLinear,  // kTurnDelta
-             AnimationFloatBlendMode::kCircularDegrees360, // kDirection (0..360 wrap)
-             AnimationFloatBlendMode::kContinuousLinear,  // kSpeedSampled
-             AnimationFloatBlendMode::kDiscreteStep,      // kweapAdj
-             AnimationFloatBlendMode::kContinuousLinear,  // kSpeed
-             AnimationFloatBlendMode::kDiscreteStep,      // kweaponSpeedMult
-             AnimationFloatBlendMode::kDiscreteStep,      // k2HMweaponSpeedMult
-             AnimationFloatBlendMode::kDiscreteStep,      // kleftWeaponSpeedMult
-             AnimationFloatBlendMode::kContinuousLinear,  // kCastBlend
-             AnimationFloatBlendMode::kContinuousLinear,  // kPitchOffset
-             AnimationFloatBlendMode::kContinuousLinear,  // kSpeedDamped
-             AnimationFloatBlendMode::kContinuousLinear,  // kPitch
-             AnimationFloatBlendMode::kContinuousLinear,  // kVelocityZ
-             AnimationFloatBlendMode::kContinuousLinear,  // k1stPRot
-             AnimationFloatBlendMode::kContinuousLinear,  // k1stPRotDamped
-             AnimationFloatBlendMode::kContinuousLinear})); // kCastBlendDamped
+             ktestint, kcurrentDefaultState}));
 }
 
 /*

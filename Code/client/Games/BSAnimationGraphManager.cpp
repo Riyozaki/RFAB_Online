@@ -9,13 +9,12 @@
 
 SortedMap<uint32_t, String> BSAnimationGraphManager::DumpAnimationVariables(bool aPrintVariables)
 {
-    BSSpinLockGuard _{lock};
     SortedMap<uint32_t, String> variables;
 
     if (animationGraphIndex < animationGraphs.size)
     {
         const auto pGraph = animationGraphs.Get(animationGraphIndex);
-        if (pGraph && pGraph->hkxDB && pGraph->behaviorGraph)
+        if (pGraph)
         {
             const auto pDb = pGraph->hkxDB;
             const auto pBuckets = pDb->animationVariables.buckets;
@@ -29,11 +28,10 @@ SortedMap<uint32_t, String> BSAnimationGraphManager::DumpAnimationVariables(bool
                     if (!pBucket->next)
                         continue;
 
-                    uint32_t stepGuard = 0;
-                    while (pBucket && pBucket != pDb->animationVariables.end && stepGuard++ < 16384u)
+                    while (pBucket != pDb->animationVariables.end)
                     {
                         const auto variableIndex = pBucket->value;
-                        if (pVariableSet->size > static_cast<uint32_t>(variableIndex) && pBucket->key.AsAscii())
+                        if (pVariableSet->size > static_cast<uint32_t>(variableIndex))
                         {
                             variables[variableIndex] = pBucket->key.AsAscii();
                         }
@@ -59,18 +57,16 @@ SortedMap<uint32_t, String> BSAnimationGraphManager::DumpAnimationVariables(bool
 uint64_t BSAnimationGraphManager::GetDescriptorKey(int aForceIndex)
 {
     using TiltedPhoques::FHash::Crc64;
-    BSSpinLockGuard _{lock};
 
     String variableNames{};
     variableNames.reserve(8192);
     std::map<uint32_t, const char*> variables;
 
-    const uint32_t targetIdx = aForceIndex == -1 ? animationGraphIndex : static_cast<uint32_t>(aForceIndex);
-    if (targetIdx < animationGraphs.size)
+    if (animationGraphIndex < animationGraphs.size)
     {
-        const auto pGraph = animationGraphs.Get(targetIdx);
+        const auto pGraph = aForceIndex == -1 ? animationGraphs.Get(animationGraphIndex) : animationGraphs.Get(aForceIndex);
 
-        if (pGraph && pGraph->hkxDB && pGraph->behaviorGraph)
+        if (pGraph)
         {
             const auto pDb = pGraph->hkxDB;
             const auto pBuckets = pDb->animationVariables.buckets;
@@ -84,11 +80,10 @@ uint64_t BSAnimationGraphManager::GetDescriptorKey(int aForceIndex)
                     if (!pBucket->next)
                         continue;
 
-                    uint32_t stepGuard = 0;
-                    while (pBucket && pBucket != pDb->animationVariables.end && stepGuard++ < 16384u)
+                    while (pBucket != pDb->animationVariables.end)
                     {
                         const auto variableIndex = pBucket->value;
-                        if (pVariableSet->size > static_cast<uint32_t>(variableIndex) && pBucket->key.AsAscii())
+                        if (pVariableSet->size > static_cast<uint32_t>(variableIndex))
                         {
                             variables[variableIndex] = pBucket->key.AsAscii();
                         }
@@ -99,8 +94,7 @@ uint64_t BSAnimationGraphManager::GetDescriptorKey(int aForceIndex)
 
                 for (auto& [id, name] : variables)
                 {
-                    if (name)
-                        variableNames += name;
+                    variableNames += name;
                 }
             }
         }
@@ -114,12 +108,10 @@ uint64_t BSAnimationGraphManager::GetDescriptorKey(int aForceIndex)
 uint64_t BSAnimationGraphManager::GetProjectKey(int aForceIndex)
 {
     using TiltedPhoques::FHash::Crc64;
-    BSSpinLockGuard _{lock};
 
-    const uint32_t targetIdx = aForceIndex == -1 ? animationGraphIndex : static_cast<uint32_t>(aForceIndex);
-    if (targetIdx < animationGraphs.size)
+    if (animationGraphIndex < animationGraphs.size)
     {
-        const auto pGraph = animationGraphs.Get(targetIdx);
+        const auto pGraph = aForceIndex == -1 ? animationGraphs.Get(animationGraphIndex) : animationGraphs.Get(aForceIndex);
 
         if (pGraph && pGraph->projectName.AsAscii())
         {

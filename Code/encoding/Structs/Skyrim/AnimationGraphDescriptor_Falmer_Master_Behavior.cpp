@@ -98,7 +98,6 @@ AnimationGraphDescriptor_Falmer_Master_Behavior::AnimationGraphDescriptor_Falmer
                 kbHeadTracking,
                 kbWeapReady,
                 kIsBashing,
-                kIsFiringBow,
             },
             {
                 kSpeed,
@@ -111,9 +110,5 @@ AnimationGraphDescriptor_Falmer_Master_Behavior::AnimationGraphDescriptor_Falmer
                 kiSyncIdleLocomotion,
                 kiSyncTurnState,
                 kiCombatState,
-                kiRightHandType,
-                kiLeftHandType,
-                kiSyncAttackStance,
-                kiState,
             }));
 }

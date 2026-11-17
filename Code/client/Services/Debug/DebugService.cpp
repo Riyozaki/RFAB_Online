@@ -179,7 +179,7 @@ void DebugService::OnUpdate(const UpdateEvent& acUpdateEvent) noexcept
 
             static char s_address[256] = "127.0.0.1:10578";
             if (!m_transport.IsOnline())
-                m_transport.ConnectToServer(s_address);
+                m_transport.Connect(s_address);
             else
                 m_transport.Close();
         }
@@ -253,7 +253,8 @@ void DebugService::DrawServerView() noexcept
     {
         if (ImGui::Button("Connect"))
         {
-            m_transport.ConnectToServer(s_address, s_password);
+            m_transport.SetServerPassword(s_password);
+            m_transport.Connect(s_address);
         }
     }
 
@@ -269,11 +270,31 @@ void DebugService::OnDraw() noexcept
     ImGui::BeginMainMenuBar();
     if (ImGui::BeginMenu("Helpers"))
     {
-        if (ImGui::Button("Unstuck player"))
+        if (ImGui::Button("Unstuck player (knockback)"))
         {
             auto* pPlayer = PlayerCharacter::Get();
-            pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
+            if (pPlayer && pPlayer->currentProcess)
+                pPlayer->currentProcess->KnockExplosion(pPlayer, &pPlayer->position, 0.f);
         }
+
+        // Fallback for players stuck in dialogue / scenes with input blocked. Does not touch quest stages.
+        if (ImGui::Button("Restore player controls"))
+        {
+            if (auto* pPlayer = PlayerCharacter::Get())
+            {
+                pPlayer->StopCurrentDialogue(true);
+                if (auto* pControls = PlayerControls::GetInstance())
+                {
+                    pControls->SetBlockPlayerInput(false);
+                    pControls->SetActivateEnabled(true);
+                }
+                // Mirrors Game.EnablePlayerControls(). Scripts may disable them again through an input layer.
+                if (auto* pInputManager = BSInputEnableManager::Get())
+                    pInputManager->EnableOtherEvent(BSInputEnableManager::kPlayerControls, true, true);
+            }
+        }
+        ImGui::SetItemTooltip("Ends dialogue and re-enables controls disabled by scripts or scenes.\nMovement controls: %s",
+                              BSInputEnableManager::IsMovementControlsEnabled() ? "enabled" : "disabled");
 
         if (ImGui::Button("Stop all combat"))
         {
@@ -294,20 +315,16 @@ void DebugService::OnDraw() noexcept
 
         if (ImGui::Button("Clear stuck screen effects"))
         {
-            if (TES* pTes = TES::Get())
+            Vector<ImageSpaceModifierInstance*> modifiers;
+            for (const auto& modifier : TES::Get()->activeImageSpaceModifiers)
             {
-                TiltedPhoques::Vector<NiPointer<ImageSpaceModifierInstance>> activeModifiers;
-                for (const auto& modifier : pTes->activeImageSpaceModifiers)
-                {
-                    if (modifier.object)
-                        activeModifiers.push_back(modifier);
-                }
+                if (modifier.object)
+                    modifiers.push_back(modifier.object);
+            }
 
-                for (const auto& modifier : activeModifiers)
-                {
-                    if (modifier.object)
-                        ImageSpaceModifierInstance::Stop(modifier.object);
-                }
+            for (auto* pModifier : modifiers)
+            {
+                ImageSpaceModifierInstance::Stop(pModifier);
             }
         }
         ImGui::EndMenu();

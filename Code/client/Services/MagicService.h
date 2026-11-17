@@ -8,16 +8,11 @@
 #include <Messages/NotifyRemoveSpell.h>
 #include <spdlog/spdlog.h>
 #include <chrono>
-#include <unordered_map>
-#include <unordered_set>
-#include <common/Session/Lifecycle.h>
 
 struct World;
 struct TransportService;
 
 struct UpdateEvent;
-struct CellChangeEvent;
-struct PartyJoinedEvent;
 struct SpellCastEvent;
 struct InterruptCastEvent;
 struct AddTargetEvent;
@@ -36,7 +31,7 @@ struct NotifyInterruptCast;
  *
  * Contact cosideci for more info.
  */
-struct MagicService final : Session::IParticipant
+struct MagicService
 {
     MagicService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransport) noexcept;
     ~MagicService() noexcept = default;
@@ -48,11 +43,6 @@ struct MagicService final : Session::IParticipant
      * @see UpdateRevealOtherPlayersEffect
      */
     void StartRevealingOtherPlayers() noexcept;
-
-    // Session::ParticipantId::kMagic: queued local/remote effects and claims refer to actors of one
-    // world in one session.
-    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
-    void OnWorldLoadBegin(const Session::Transition& acTransition) noexcept override;
 
   protected:
     /**
@@ -91,9 +81,6 @@ struct MagicService final : Session::IParticipant
      * @brief Handles removal of a spell
      */
     void OnNotifyRemoveSpell(const NotifyRemoveSpell& acMessage) noexcept;
-    void DropQueuedEffects() noexcept;
-    void OnCellChangeEvent(const CellChangeEvent& acEvent) noexcept;
-    void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
 
   private:
     /**
@@ -109,20 +96,12 @@ struct MagicService final : Session::IParticipant
      */
     void UpdateRevealOtherPlayersEffect(bool aForceTrigger = false) noexcept;
 
-    void PollLocalPlayerActiveBuffs(double aDeltaSec) noexcept;
-    void ResyncLocalPlayerActiveBuffs() noexcept;
-
     World& m_world;
     entt::dispatcher& m_dispatcher;
     TransportService& m_transport;
     bool m_revealingOtherPlayers = false;
-    double m_buffPollAccumulatorSec = 0.0;
-    std::unordered_set<uint32_t> m_activeLocalPlayerSpells{};
-    std::unordered_map<uint64_t, uint64_t> m_concentrationClaimKeepaliveMs{};
 
     entt::scoped_connection m_updateConnection;
-    entt::scoped_connection m_cellChangeConnection;
-    entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_spellCastEventConnection;
     entt::scoped_connection m_notifySpellCastConnection;
     entt::scoped_connection m_interruptCastEventConnection;
@@ -191,4 +170,4 @@ struct MagicService final : Session::IParticipant
 
 // Exposed so we can increase log level of just this tricky code, in debugger or a build.
 // Non-const has to be initialized outside of class.
-inline spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};
+spdlog::level::level_enum MagicService::MagicQueue::m_logLevel{spdlog::level::debug};

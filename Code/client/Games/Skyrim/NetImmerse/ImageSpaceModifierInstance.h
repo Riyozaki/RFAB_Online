@@ -1,8 +1,5 @@
 #pragma once
 
-#include <NetImmerse/NiObject.h>
-#include <NetImmerse/NiPointer.h>
-
 struct ImageSpaceModifierInstanceForm;
 struct NiAVObject;
 

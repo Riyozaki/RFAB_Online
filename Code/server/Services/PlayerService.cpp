@@ -2,11 +2,9 @@
 #include "Events/CharacterExteriorCellChangeEvent.h"
 #include "Events/PlayerLeaveCellEvent.h"
 
-#include <algorithm>
-#include <cmath>
-
 #include <Services/PlayerService.h>
 #include <Services/CharacterService.h>
+#include <Services/CoopService.h>
 #include <GameServer.h>
 
 #include <Messages/ShiftGridCellRequest.h>
@@ -24,7 +22,7 @@
 #include <Setting.h>
 namespace
 {
-Console::Setting fGoldLossFactor{"Gameplay:fGoldLossFactor", "Factor of the amount of gold lost on death", 0.0f};
+Console::Setting fGoldLossFactor{"Gameplay:fGoldLossFactor", "How much of their gold players lose on death, from 0 to 1 (e.g. 0.05 loses 5%, 0 loses nothing)", 0.0f};
 }
 
 PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
@@ -39,9 +37,6 @@ PlayerService::PlayerService(World& aWorld, entt::dispatcher& aDispatcher) noexc
 
 void SendPlayerCellChanged(const Player* apPlayer) noexcept
 {
-    if (!apPlayer)
-        return;
-
     auto& cellComponent = apPlayer->GetCellComponent();
 
     NotifyPlayerCellChanged notify{};
@@ -55,105 +50,116 @@ void SendPlayerCellChanged(const Player* apPlayer) noexcept
 void PlayerService::HandleGridCellShift(const PacketEvent<ShiftGridCellRequest>& acMessage) const noexcept
 {
     auto* pPlayer = acMessage.pPlayer;
-    if (!pPlayer)
-        return;
 
     auto& message = acMessage.Packet;
 
-    const CellIdComponent oldCellComponent = pPlayer->GetCellComponent();
-    const GameId oldCell = oldCellComponent.Cell;
+    const GameId oldCell = pPlayer->GetCellComponent().Cell;
 
-    const CellIdComponent cell{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
+    CellIdComponent cell = CellIdComponent{message.PlayerCell, message.WorldSpaceId, message.CenterCoords};
     pPlayer->SetCellComponent(cell);
-    if (pPlayer->GetCharacter())
-    {
-        if (auto* pCharCell = m_world.try_get<CellIdComponent>(*pPlayer->GetCharacter()))
-        {
-            pCharCell->Cell = message.PlayerCell;
-            pCharCell->WorldSpaceId = message.WorldSpaceId;
-            if (!pCharCell->IsValid() || oldCellComponent.WorldSpaceId != message.WorldSpaceId)
-                pCharCell->CenterCoords = message.CenterCoords;
-        }
-    }
 
     m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
 
-    m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
+    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
+    for (auto character : characterView)
+    {
+        const auto& ownedComponent = characterView.get<OwnerComponent>(character);
+        const auto& characterCellComponent = characterView.get<CellIdComponent>(character);
+
+        if (ownedComponent.GetOwner() == pPlayer)
+            continue;
+
+        const auto& characterComponent = characterView.get<CharacterComponent>(character);
+        // An actor's parent cell can be temporary and absent from the client's cell list.
+        // Use the same worldspace/position range as movement broadcasts, including dragon range.
+        const bool isInRange = cell.IsInRange(characterCellComponent, characterComponent.IsDragon());
+
+        if (!isInRange)
+        {
+            continue;
+        }
+
+        CharacterSpawnRequest spawnMessage;
+        CharacterService::Serialize(m_world, character, &spawnMessage);
+
+        pPlayer->Send(spawnMessage);
+    }
 }
 
 void PlayerService::HandleExteriorCellEnter(const PacketEvent<EnterExteriorCellRequest>& acMessage) const noexcept
 {
     auto& message = acMessage.Packet;
     auto* pPlayer = acMessage.pPlayer;
-    if (!pPlayer)
-        return;
-
-    const CellIdComponent prevObserverCell = pPlayer->GetCellComponent();
-    const GridCellCoords observerGridCenter =
-        (prevObserverCell.IsValid() && prevObserverCell.WorldSpaceId == message.WorldSpaceId)
-            ? prevObserverCell.CenterCoords
-            : message.CurrentCoords;
-
-    pPlayer->SetCellComponent(CellIdComponent{message.CellId, message.WorldSpaceId, observerGridCenter});
 
     if (pPlayer->GetCharacter())
     {
-        const auto entity = *pPlayer->GetCharacter();
-        if (auto* pCharCell = m_world.try_get<CellIdComponent>(entity))
-            *pCharCell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
+        auto entity = *pPlayer->GetCharacter();
 
-        if (prevObserverCell.IsValid())
+        auto cell = CellIdComponent{message.CellId, message.WorldSpaceId, message.CurrentCoords};
+
+        if (pPlayer->GetCellComponent())
         {
             m_world.GetDispatcher().trigger(CharacterExteriorCellChangeEvent{pPlayer, entity, message.WorldSpaceId, message.CurrentCoords});
         }
-    }
 
-    m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
-    SendPlayerCellChanged(pPlayer);
+        pPlayer->SetCellComponent(cell);
+
+        SendPlayerCellChanged(pPlayer);
+    }
 }
 
 void PlayerService::HandleInteriorCellEnter(const PacketEvent<EnterInteriorCellRequest>& acMessage) const noexcept
 {
     auto* pPlayer = acMessage.pPlayer;
-    if (!pPlayer)
-        return;
 
     auto& message = acMessage.Packet;
 
     const auto oldCell = pPlayer->GetCellComponent().Cell;
 
-    const CellIdComponent cell{message.CellId, {}, {}};
+    auto cell = CellIdComponent{message.CellId, {}, {}};
     pPlayer->SetCellComponent(cell);
 
     m_world.GetDispatcher().trigger(PlayerLeaveCellEvent(oldCell));
 
     if (pPlayer->GetCharacter())
     {
-        const auto entity = *pPlayer->GetCharacter();
+        auto entity = *pPlayer->GetCharacter();
 
-        if (auto* pCellIdComponent = m_world.try_get<CellIdComponent>(entity))
+        if (auto pCellIdComponent = m_world.try_get<CellIdComponent>(entity); pCellIdComponent)
         {
-            *pCellIdComponent = cell;
             m_world.GetDispatcher().trigger(CharacterInteriorCellChangeEvent{pPlayer, entity, message.CellId});
         }
     }
 
-    m_world.GetCharacterService().ReconcileAllEntitiesForObserver(pPlayer);
+    auto characterView = m_world.view<CellIdComponent, CharacterComponent, OwnerComponent>();
+    for (auto character : characterView)
+    {
+        const auto& ownedComponent = characterView.get<OwnerComponent>(character);
+
+        if (ownedComponent.GetOwner() == pPlayer)
+            continue;
+
+        if (message.CellId != characterView.get<CellIdComponent>(character).Cell)
+            continue;
+
+        CharacterSpawnRequest spawnMessage;
+        CharacterService::Serialize(m_world, character, &spawnMessage);
+
+        pPlayer->Send(spawnMessage);
+    }
+
     SendPlayerCellChanged(pPlayer);
 }
 
 void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnRequest>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer)
-        return;
+    if (acMessage.pPlayer->GetCharacter() && m_world.ctx().at<CoopService>().Manages(World::ToInteger(*acMessage.pPlayer->GetCharacter())))
+        return; // RFAB recovery is server-coordinated; upstream respawn is not a bypass
 
-    const float rawGoldLossFactor = fGoldLossFactor.as_float();
-    const float goldLossFactor = std::isfinite(rawGoldLossFactor)
-        ? std::clamp(rawGoldLossFactor, 0.0f, 1.0f)
-        : 0.0f;
+    float goldLossFactor = fGoldLossFactor.as_float();
 
     auto character = acMessage.pPlayer->GetCharacter();
-    if (!character || !m_world.valid(*character))
+    if (!character)
         return;
 
     auto view = m_world.view<InventoryComponent>();
@@ -162,34 +168,30 @@ void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnReques
 
     if (it != view.end())
     {
-        if (goldLossFactor > 0.0f)
+        if (goldLossFactor != 0.0)
         {
             auto& inventoryComponent = view.get<InventoryComponent>(*it);
 
             GameId goldId(0, 0xF);
-            int32_t goldCount = std::max<int32_t>(0, inventoryComponent.Content.GetEntryCountById(goldId));
-            int32_t goldToRemove = std::clamp<int32_t>(
-                static_cast<int32_t>(static_cast<double>(goldCount) * static_cast<double>(goldLossFactor)),
-                0,
-                goldCount);
+            int32_t goldCount = inventoryComponent.Content.GetEntryCountById(goldId);
+            int32_t goldToRemove = static_cast<int32_t>(goldCount * goldLossFactor);
 
-            if (goldToRemove > 0)
-            {
-                Inventory::Entry entry{};
-                entry.BaseId = goldId;
-                entry.Count = -goldToRemove;
+            Inventory::Entry entry{};
+            entry.BaseId = goldId;
+            entry.Count = -goldToRemove;
 
-                inventoryComponent.Content.AddOrRemoveEntry(entry);
+            inventoryComponent.Content.AddOrRemoveEntry(entry);
 
-                NotifyInventoryChanges notifyInventoryChanges{};
-                notifyInventoryChanges.ServerId = World::ToInteger(*character);
-                notifyInventoryChanges.Item = entry;
-                notifyInventoryChanges.Drop = false;
+            NotifyInventoryChanges notifyInventoryChanges{};
+            notifyInventoryChanges.ServerId = World::ToInteger(*character);
+            if (const auto* pOwnerComponent = m_world.try_get<OwnerComponent>(*character))
+                notifyInventoryChanges.OwnershipEpoch = pOwnerComponent->OwnershipEpoch;
+            notifyInventoryChanges.Item = entry;
+            notifyInventoryChanges.Drop = false;
 
-                // Exclude respawned player from inventory changes notification...
-                if (!GameServer::Get()->SendToPlayersInRange(notifyInventoryChanges, *character, acMessage.GetSender()))
-                    spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
-            }
+            // Exclude respawned player from inventory changes notification...
+            if (!GameServer::Get()->SendToPlayersInRange(notifyInventoryChanges, *character, acMessage.GetSender()))
+                spdlog::error("{}: SendToPlayersInRange failed", __FUNCTION__);
 
             // ...and instead, send NotifyPlayerRespawn so that the client can print a message.
             NotifyPlayerRespawn notifyPlayerRespawn{};
@@ -209,9 +211,6 @@ void PlayerService::OnPlayerRespawnRequest(const PacketEvent<PlayerRespawnReques
 
 void PlayerService::OnPlayerLevelRequest(const PacketEvent<PlayerLevelRequest>& acMessage) const noexcept
 {
-    if (!acMessage.pPlayer || acMessage.Packet.NewLevel == 0 || acMessage.Packet.NewLevel > 10000)
-        return;
-
     acMessage.pPlayer->SetLevel(acMessage.Packet.NewLevel);
 
     NotifyPlayerLevel notify{};

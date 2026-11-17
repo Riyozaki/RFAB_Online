@@ -10,6 +10,7 @@
 #include <Components.h>
 #include <GameServer.h>
 #include <TiltedCore/Filesystem.hpp>
+#include <common/Compat/SafeFs.h>
 
 #include <resources/ResourceCollection.h>
 
@@ -67,7 +68,7 @@ ScriptService::~ScriptService()
     {
         m.clear();
     }
- 
+
     lockedState.collect_garbage();
 }
 
@@ -92,9 +93,9 @@ void ScriptService::Initialize(Resources::ResourceCollection& aCollection) noexc
         if (aManifest.EntryPoint.empty()) // just a dependency?
             return;
         auto entryPointPath = aCollection.GetResourceFolderPath() / aManifest.FolderName / aManifest.EntryPoint;
-        if (!std::filesystem::exists(entryPointPath))
+        if (!Compat::SafeFs::Exists(entryPointPath))
         {
-            spdlog::warn("Script entry point {} does not exist", entryPointPath.string());
+            spdlog::warn("Script entry point {} does not exist", Compat::SafeFs::ToUtf8Lossy(entryPointPath));
             return;
         }
         LoadScript(entryPointPath);
@@ -109,8 +110,10 @@ bool ScriptService::LoadScript(const std::filesystem::path& aPath)
         auto& luaVm = lua.Get();
 
         auto &env = m_sandboxes.emplace_back(luaVm, sol::create, luaVm.globals());
-        
-        const sol::protected_function_result result = luaVm.safe_script_file(aPath.string(), env);
+
+        // fs-throws-ok: Lua opens the file by its ANSI name, so the narrow form is what it needs;
+        // a name the code page cannot hold throws std::system_error, caught below with the others.
+        const sol::protected_function_result result = luaVm.safe_script_file(aPath.string(), env); // fs-throws-ok: see above
         if (!result.valid())
         {
             const sol::error error = result;

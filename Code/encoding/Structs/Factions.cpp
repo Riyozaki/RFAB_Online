@@ -1,7 +1,6 @@
 #include <Structs/Factions.h>
 #include <TiltedCore/Serialization.hpp>
 #include <common/CoopPacketSafety.h>
-#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -18,42 +17,44 @@ bool Factions::operator!=(const Factions& acRhs) const noexcept
 void Factions::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
     // Limit the number of factions to send
-    const size_t npcCount = std::min<size_t>(NpcFactions.size(), 0x1FF);
-    Serialization::WriteVarInt(aWriter, npcCount);
+    Serialization::WriteVarInt(aWriter, NpcFactions.size() & 0x1FF);
 
-    for (size_t i = 0; i < npcCount; ++i)
+    for (auto& entry : NpcFactions)
     {
-        NpcFactions[i].Serialize(aWriter);
+        entry.Serialize(aWriter);
     }
 
-    const size_t extraCount = std::min<size_t>(ExtraFactions.size(), 0x1FF);
-    Serialization::WriteVarInt(aWriter, extraCount);
+    Serialization::WriteVarInt(aWriter, ExtraFactions.size() & 0x1FF);
 
-    for (size_t i = 0; i < extraCount; ++i)
+    for (auto& entry : ExtraFactions)
     {
-        ExtraFactions[i].Serialize(aWriter);
+        entry.Serialize(aWriter);
     }
 }
 
 void Factions::Deserialize(TiltedPhoques::Buffer::Reader& aReader)
 {
-    const size_t npcCount = CoopPacketSafety::ClampCollectionCount(Serialization::ReadVarInt(aReader), 0x1FF);
+    const size_t npcCount = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        0x1FF);
+
     NpcFactions.clear();
-    NpcFactions.reserve(std::min<size_t>(npcCount, 64));
     for (size_t i = 0; i < npcCount && !aReader.Eof(); ++i)
     {
         Faction entry{};
         entry.Deserialize(aReader);
-        NpcFactions.push_back(entry);
+        NpcFactions.push_back(std::move(entry));
     }
 
-    const size_t extraCount = CoopPacketSafety::ClampCollectionCount(Serialization::ReadVarInt(aReader), 0x1FF);
+    const size_t extraCount = CoopPacketSafety::ClampCollectionCount(
+        Serialization::ReadVarInt(aReader),
+        0x1FF);
+
     ExtraFactions.clear();
-    ExtraFactions.reserve(std::min<size_t>(extraCount, 64));
     for (size_t i = 0; i < extraCount && !aReader.Eof(); ++i)
     {
         Faction entry{};
         entry.Deserialize(aReader);
-        ExtraFactions.push_back(entry);
+        ExtraFactions.push_back(std::move(entry));
     }
 }

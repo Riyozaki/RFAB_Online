@@ -1,15 +1,13 @@
 #include <Services/PartyService.h>
-#include <Services/RfabAdapterService.h>
+
 #include <Services/TransportService.h>
-#include <Services/WeatherService.h>
 
 #include <Events/UpdateEvent.h>
+#include <Events/DisconnectedEvent.h>
 #include <Events/PartyJoinedEvent.h>
 #include <Events/PartyLeftEvent.h>
 
 #include <Messages/NotifyPlayerList.h>
-#include <Messages/NotifyPlayerJoined.h>
-#include <Messages/NotifyPlayerLeft.h>
 #include <Messages/NotifyPartyInfo.h>
 #include <Messages/NotifyPartyInvite.h>
 #include <Messages/PartyInviteRequest.h>
@@ -30,10 +28,9 @@ PartyService::PartyService(World& aWorld, entt::dispatcher& aDispatcher, Transpo
     , m_transport(aTransportService)
 {
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&PartyService::OnUpdate>(this);
+    m_disconnectConnection = aDispatcher.sink<DisconnectedEvent>().connect<&PartyService::OnDisconnected>(this);
 
     m_playerListConnection = aDispatcher.sink<NotifyPlayerList>().connect<&PartyService::OnPlayerList>(this);
-    m_playerJoinedConnection = aDispatcher.sink<NotifyPlayerJoined>().connect<&PartyService::OnPlayerJoined>(this);
-    m_playerLeftConnection = aDispatcher.sink<NotifyPlayerLeft>().connect<&PartyService::OnPlayerLeft>(this);
     m_partyInfoConnection = aDispatcher.sink<NotifyPartyInfo>().connect<&PartyService::OnPartyInfo>(this);
     m_partyInviteConnection = aDispatcher.sink<NotifyPartyInvite>().connect<&PartyService::OnPartyInvite>(this);
     m_partyJoinedConnection = aDispatcher.sink<NotifyPartyJoined>().connect<&PartyService::OnPartyJoined>(this);
@@ -102,12 +99,11 @@ void PartyService::OnUpdate(const UpdateEvent& acEvent) noexcept
     }
 }
 
-void PartyService::OnSessionEnd(const Session::Transition&) noexcept
+void PartyService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
     DestroyParty();
-    // The next server sends its own NotifyPlayerList; until then nobody is online with us.
-    m_players.clear();
     m_invitations.clear();
+    m_nextUpdate = 0;
 }
 
 void PartyService::OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept
@@ -115,32 +111,21 @@ void PartyService::OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept
     m_players = acPlayerList.Players;
 }
 
-void PartyService::OnPlayerJoined(const NotifyPlayerJoined& acPlayerJoined) noexcept
-{
-    m_players[acPlayerJoined.PlayerId] = acPlayerJoined.Username;
-}
-
-void PartyService::OnPlayerLeft(const NotifyPlayerLeft& acPlayerLeft) noexcept
-{
-    m_players.erase(acPlayerLeft.PlayerId);
-}
-
 void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
 {
     if (m_inParty)
     {
         spdlog::debug("[PartyService]: Got party info update");
-        const bool wasLeader = m_isLeader.load(std::memory_order_relaxed);
         m_isLeader = acPartyInfo.IsLeader;
         m_leaderPlayerId = acPartyInfo.LeaderPlayerId;
         m_partyMembers = acPartyInfo.PlayerIds;
 
-        // Only the active party leader spawns random wilderness encounters; demoted leaders must reset to 0
-        if (TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1)))
-            pWorldEncountersEnabled->f = acPartyInfo.IsLeader ? 1.f : 0.f;
-
-        if (wasLeader != acPartyInfo.IsLeader && m_world.ctx().contains<WeatherService>())
-            m_world.ctx().at<WeatherService>().OnPartyLeadershipChanged(acPartyInfo.IsLeader);
+        // TODO: this can be done a bit prettier
+        if (m_isLeader)
+        {
+            TESGlobal* pWorldEncountersEnabled = Cast<TESGlobal>(TESForm::GetById(0xB8EC1));
+            pWorldEncountersEnabled->f = 1.f;
+        }
 
         auto pArguments = CefListValue::Create();
 
@@ -151,9 +136,7 @@ void PartyService::OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept
         pArguments->SetList(0, pPlayerIds);
         pArguments->SetInt(1, acPartyInfo.LeaderPlayerId);
 
-        if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
-            pOverlayApp->ExecuteAsync("partyInfo", pArguments);
-        m_world.GetRfabAdapterService().NotifyPartyLeadershipChanged();
+        m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInfo", pArguments);
     }
 }
 
@@ -163,12 +146,9 @@ void PartyService::OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcep
 
     m_invitations[acPartyInvite.InviterId] = acPartyInvite.ExpiryTick;
 
-    if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
-    {
-        auto pArguments = CefListValue::Create();
-        pArguments->SetInt(0, acPartyInvite.InviterId);
-        pOverlayApp->ExecuteAsync("partyInviteReceived", pArguments);
-    }
+    auto pArguments = CefListValue::Create();
+    pArguments->SetInt(0, acPartyInvite.InviterId);
+    m_world.GetOverlayService().GetOverlayApp()->ExecuteAsync("partyInviteReceived", pArguments);
 }
 
 void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept
@@ -180,19 +160,7 @@ void PartyService::OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcep
     m_leaderPlayerId = acPartyJoined.LeaderPlayerId;
     m_partyMembers = acPartyJoined.PlayerIds;
 
-    auto pArguments = CefListValue::Create();
-    auto pPlayerIds = CefListValue::Create();
-    for (int i = 0; i < m_partyMembers.size(); i++)
-        pPlayerIds->SetInt(i, m_partyMembers[i]);
-
-    pArguments->SetList(0, pPlayerIds);
-    pArguments->SetInt(1, acPartyJoined.LeaderPlayerId);
-
-    if (auto* pOverlayApp = m_world.GetOverlayService().GetOverlayApp())
-        pOverlayApp->ExecuteAsync("partyInfo", pArguments);
-
-    m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader.load(std::memory_order_relaxed)));
-    m_world.GetRfabAdapterService().NotifyPartyLeadershipChanged();
+    m_world.GetDispatcher().trigger(PartyJoinedEvent(m_isLeader));
 }
 
 void PartyService::OnPartyLeft(const NotifyPartyLeft& acPartyLeft) noexcept

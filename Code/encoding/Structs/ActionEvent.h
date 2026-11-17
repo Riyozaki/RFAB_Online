@@ -9,6 +9,7 @@ using TiltedPhoques::String;
 struct ActionEvent
 {
     uint64_t Tick{0};
+    uint32_t OwnershipEpoch{};
     uint32_t ActorId{0};
     uint32_t ActionId{0};
     uint32_t TargetId{0};

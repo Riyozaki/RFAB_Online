@@ -1,10 +1,9 @@
 #pragma once
 
-#include <common/Session/Lifecycle.h>
-
 struct World;
 struct TransportService;
 struct UpdateEvent;
+struct DisconnectedEvent;
 struct PartyJoinedEvent;
 struct PartyLeftEvent;
 struct NotifyWeatherChange;
@@ -12,20 +11,16 @@ struct NotifyWeatherChange;
 /**
  * @brief Responsible for weather changes, which is controlled on a party-per-party basis.
  */
-struct WeatherService final : Session::IParticipant
+struct WeatherService
 {
     WeatherService(World& aWorld, TransportService& aTransport, entt::dispatcher& aDispatcher);
     ~WeatherService() noexcept = default;
 
     TP_NOCOPYMOVE(WeatherService);
 
-    void OnPartyLeadershipChanged(bool aIsLeader) noexcept;
-
-    // Session::ParticipantId::kWeather: the party leader's weather applies only during a session.
-    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
-
 protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
+    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPartyJoinedEvent(const PartyJoinedEvent& acEvent) noexcept;
     void OnPartyLeftEvent(const PartyLeftEvent& acEvent) noexcept;
     void OnWaitingFor3DRemoved(entt::registry& aRegistry, entt::entity aEntity) noexcept;
@@ -49,6 +44,7 @@ private:
     uint32_t m_cachedWeatherId{};
 
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_partyJoinedConnection;
     entt::scoped_connection m_partyLeftConnection;
     entt::scoped_connection m_playerAddedConnection;

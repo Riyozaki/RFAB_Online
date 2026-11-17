@@ -39,8 +39,10 @@ class UI
 {
 public:
     static UI* Get();
+    static bool ShouldUnpauseMenus();
 
     bool GetMenuOpen(const BSFixedString& acName) const;
+    bool IsUnpausedMenuOpen() const;
     void CloseAllMenus();
     void DebugLogAllMenus();
 
@@ -66,10 +68,6 @@ public:
     creation::BSTHashMap<BSFixedString, UIMenuEntry> menuMap;
 
     uint64_t spinlock;
-    // These offsets are a bit unreliable.
-    //
-    //
-    // char pad_2[0x18];
     uint32_t numPausesGame;                // 160 (= 0) += 1 if (imenu->flags & 0x00001)
     uint32_t numItemMenus;                 // 164 (= 0) += 1 if (imenu->flags & 0x02000)
     uint32_t numDisablePauseMenu;          // 168 (= 0) += 1 if (imenu->flags & 0x00080)
@@ -87,7 +85,6 @@ public:
     uint32_t pad1C4;
 };
 
-// intellisense is too dumb but the compiler knows.
 #ifdef _MSC_VER
 static_assert(sizeof(UI) == 0x1C8);
 static_assert(offsetof(UI, UI::numPausesGame) == 0x160);

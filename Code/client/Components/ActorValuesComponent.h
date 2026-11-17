@@ -9,5 +9,4 @@
 struct ActorValuesComponent
 {
     ActorValues CurrentActorValues{};
-    uint32_t FormId{0};
 };

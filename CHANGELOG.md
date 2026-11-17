@@ -1,5 +1,27 @@
 # Журнал изменений (Changelog) — RFAB Online
 
+## 5.0.0-dev.1 — текущая разработка, не релиз
+
+Содержимое clean STR/SE 1.5.97 порта импортировано из RFABTogether `64e432ee7e39` в текущую
+ветку без смены истории/тегов/submodule pins. Старые описания ниже относятся только к
+историческим выпускам и **не перечисляют возможности текущего дерева**.
+
+- Исправлены знак HP, повторные sequenced mutations и перезапись HP обычным AV snapshot;
+  добавлены epoch/revision fencing и защита собственного аватара.
+- Укреплена арифметика остатков inventory и различение generated enchantment payloads.
+  Это ещё не атомарные переносы source→recipient.
+- Добавлен bounded co-op codec, negotiation/session/generation routing, серверная модель
+  indefinite downed / 5s revive / 5s wipe, двухфазный reset A и клиентская native-связка.
+  Клиентская часть пока не подтверждена Windows-сборкой и игрой.
+- Runner переведён с исполнения callbacks под mutex на ограниченные detached batches с
+  отменой задач старого поколения. Переполнение закрывает сессию, а не теряет операции молча.
+- Готовность единого кандидата остаётся **false**. XP bridge, HP×2, атомарный лут, постоянный
+  общий банк, QuickLoot/AutoLoot и checkpoint B не объявлены реализованными.
+
+Проверки и ограничения: [`журнал`](docs/RFAB_REBUILD_WORKLOG.md).
+
+## История выпущенных версий (не состояние 5.0.0-dev.1)
+
 В репозитории поддерживаются:
 - **[`v4.1.0` (`Latest`)](https://github.com/Riyozaki/RFAB_Online/releases/tag/v4.1.0)** — первый шаг архитектурной перестройки (`Protocol Break` относительно `4.0.x`): серверные выключатели каждой необязательной кооп-подсистемы (`Gameplay:bEnable*`, единая битовая маска `DisabledFeatureMask` в `ServerSettings`, консольные `ListFeatures`/`ReloadFeatures`) и самовосстановление потерянного состояния мира (`RequestResync` -> авторитетные снапшоты -> `NotifyResyncComplete`) вместо «NPC-невидимок» до переподключения; единый жизненный цикл сессии и мира на клиенте (`Session::Lifecycle`) вместо разрозненных сбросов при подключении/отключении/загрузке; плюс исправления N1–N4 (движковый `BSReadWriteLock` для `ExtraDataList`, пауза без потери пакетов, безопасное исчезновение подобранных предметов).
 - **[`v4.0.0`](https://github.com/Riyozaki/RFAB_Online/releases/tag/v4.0.0)** — мажорное обновление сетевого протокола и модели владения NPC (`Protocol Break`): сквозной `HealthRevision` во всех пакетах спавна, передачи владения, урона и смерти + серверные `ack`-ревизии для владельца (устранение ложных `kStaleIncrease` на регенерации врагов Requiem и защита от воскрешения трупов), самоисцеляющаяся 8-секундная аренда мировых NPC (`WorldNpcLeasePolicy`) с перехватом боя союзником при паузе владельца в `StatsMenu` и иммунитетом одиночной паузы (`RefreshUnrevoked`), 15-секундный `Authority::DeclineList` для каскада из 3+ игроков без пинг-понга, синхронизация `ActorData::BaseId` уровневых врагов (`TESLevCharacter`), чисто серверный `RequestVoluntaryOwnershipClaim`, безопасный порядок `RemoteComponent`-до-`LocalComponent` в `EntityIndexTable` и единый `VERSION -> BUILD_COMMIT` (`v4.0.0`).

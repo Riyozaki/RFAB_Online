@@ -50,6 +50,7 @@ extern void* RipAllocateN(size_t blockLength);
 
 #include <BuildInfo.h>
 #include <Games/Primitives.h>
+#include <ThreadAffinity.h>
 
 using TiltedPhoques::Allocator;
 using TiltedPhoques::App;

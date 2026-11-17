@@ -2,7 +2,6 @@
 
 #include <PlayerCharacter.h>
 #include <Forms/BGSHeadPart.h>
-#include <Forms/BGSListForm.h>
 #include <Forms/TESNPC.h>
 
 #include <Games/IFormFactory.h>
@@ -16,27 +15,6 @@ TESForm* TESForm::GetById(const uint32_t aId)
     POINTER_SKYRIMSE(TGetFormById, getFormById, 14461);
 
     return getFormById.Get()(aId);
-}
-
-TESForm* TESForm::GetByEditorId(const BSFixedString& acEditorId) noexcept
-{
-    if (!acEditorId.AsAscii() || acEditorId.AsAscii()[0] == '\0')
-        return nullptr;
-
-    using TLookupByEditorId = TESForm*(const char*);
-    POINTER_SKYRIMSE(TLookupByEditorId, lookupByEditorId, 14464);
-
-    return lookupByEditorId.Get()(acEditorId.AsAscii());
-}
-
-void BGSListForm::AddForm(TESForm* apForm) noexcept
-{
-    if (!apForm)
-        return;
-
-    TP_THIS_FUNCTION(TAddForm, void, BGSListForm, TESForm* apForm);
-    POINTER_SKYRIMSE(TAddForm, s_addForm, 20470);
-    TiltedPhoques::ThisCall(s_addForm, this, apForm);
 }
 
 void TESNPC::Serialize(String* apSaveBuffer) const noexcept
@@ -77,10 +55,10 @@ void TESNPC::Deserialize(const String& acBuffer, uint32_t aChangeFlags) noexcept
     Load(&loadBuffer);
 
     loadBuffer.buffer = nullptr;
-    overlayRace = nullptr;
+    originalRace = nullptr;
 
     if (const uint32_t cRemoved = spellList.RemoveNullEntries())
-        spdlog::warn("Removed {} unresolved spell/shout entries from NPC {:X}", cRemoved, formID);
+        spdlog::warn("Removed {} unresolved spell list entries from NPC {:X}", cRemoved, formID);
 }
 
 void TESNPC::Initialize() noexcept
@@ -97,11 +75,8 @@ void TESNPC::Initialize() noexcept
     npcClass = pPlayerBaseForm->npcClass;
     combatStyle = pPlayerBaseForm->combatStyle;
     raceForm.race = pPlayerBaseForm->raceForm.race;
-    overlayRace = nullptr;
-    outfits[0] = pPlayerBaseForm->outfits[0];
-    // Preserve gender bit (kFemale == 1 << 0) baseline until kBaseData (0x2) deserializes, and mark essential
-    // so Skyrim SE natively blocks decapitation kill-moves against co-op player clones!
-    actorData.flags = (pPlayerBaseForm->actorData.flags & 1u) | TESActorBaseData::BaseFlags::IS_ESSENTIAL;
+    defaultOutfit = pPlayerBaseForm->defaultOutfit;
+    sleepOutfit = pPlayerBaseForm->sleepOutfit;
     spellList.Initialize();
     // End defaults
 
@@ -119,13 +94,16 @@ void TESForm::Save_Reversed(const uint32_t aChangeFlags, Buffer::Writer& aWriter
 
 void TESForm::SetSkipSaveFlag(bool aSet) noexcept
 {
-    // Skyrim SE TESForm::inGameFormFlags (unk10 at +0x18 = 0xFFFF, matching upstream TiltedEvolution & v1.0.0)
-    // instructs TESObjectREFR::CheckSaveGame (vslot 0x0D) to skip serializing temporary 0xFFxxxxxx
-    // multiplayer references into .ess WITHOUT deleting live remote actors from the world.
     if (aSet)
+    {
         unk10 = 0xFFFF;
+    }
+    /*const uint32_t flag = 1 << 14;
+
+    if (aSet)
+        flags |= flag;
     else
-        unk10 = 0;
+        flags &= ~flag;*/
 }
 
 uint32_t TESForm::GetChangeFlags() const noexcept
@@ -143,8 +121,6 @@ uint32_t TESForm::GetChangeFlags() const noexcept
     POINTER_SKYRIMSE(Unk*, s_singleton, 516851);
 
     const auto pUnk = *(s_singleton.Get());
-    if (!pUnk || !pUnk->unk330)
-        return 0;
 
     ChangeFlags changeFlags;
     const auto cResult = TiltedPhoques::ThisCall(internalGetChangeFlags, pUnk->unk330, formID, changeFlags);
@@ -157,16 +133,12 @@ uint32_t TESForm::GetChangeFlags() const noexcept
 TESNPC* TESNPC::Create(const String& acBuffer, const uint32_t aChangeFlags) noexcept
 {
     auto pNpc = IFormFactory::Create<TESNPC>();
-    if (!pNpc)
-        return nullptr;
 
     pNpc->Initialize();
     pNpc->Deserialize(acBuffer, aChangeFlags);
-    pNpc->SetSkipSaveFlag(true);
-    pNpc->UnsetChanged(0xFFFFFFFF);
 
     // This forces facegen for some reason
-    pNpc->overlayRace = nullptr;
+    pNpc->originalRace = nullptr;
 
     return pNpc;
 }

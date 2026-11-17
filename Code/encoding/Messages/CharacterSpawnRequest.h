@@ -28,21 +28,19 @@ struct CharacterSpawnRequest final : ServerMessage
     bool operator==(const CharacterSpawnRequest& acRhs) const noexcept
     {
         return ServerId == acRhs.ServerId && FormId == acRhs.FormId && BaseId == acRhs.BaseId &&
-               CellId == acRhs.CellId && WorldSpaceId == acRhs.WorldSpaceId &&
-               Position == acRhs.Position && Rotation == acRhs.Rotation &&
+               CellId == acRhs.CellId && Position == acRhs.Position && Rotation == acRhs.Rotation &&
                ChangeFlags == acRhs.ChangeFlags && AppearanceBuffer == acRhs.AppearanceBuffer &&
                InventoryContent == acRhs.InventoryContent && FactionsContent == acRhs.FactionsContent &&
                ActionsToReplay == acRhs.ActionsToReplay && FaceTints == acRhs.FaceTints && PlayerId == acRhs.PlayerId &&
-               IsDead == acRhs.IsDead && IsPlayer == acRhs.IsPlayer && IsWeaponDrawn == acRhs.IsWeaponDrawn &&
-               IsPlayerSummon == acRhs.IsPlayerSummon && IsDragon == acRhs.IsDragon &&
-               HealthRevision == acRhs.HealthRevision && GetOpcode() == acRhs.GetOpcode();
+               OwnershipEpoch == acRhs.OwnershipEpoch && IsDead == acRhs.IsDead && IsPlayer == acRhs.IsPlayer && IsWeaponDrawn == acRhs.IsWeaponDrawn &&
+               IsPlayerSummon == acRhs.IsPlayerSummon && LeveledNpcPickId == acRhs.LeveledNpcPickId && GetOpcode() == acRhs.GetOpcode();
     }
 
     uint32_t ServerId{};
     GameId FormId{};
     GameId BaseId{};
+    GameId LeveledNpcPickId{};
     GameId CellId{};
-    GameId WorldSpaceId{};
     Vector3_NetQuantize Position{};
     Rotator2_NetQuantize Rotation{};
     uint32_t ChangeFlags{};
@@ -53,10 +51,9 @@ struct CharacterSpawnRequest final : ServerMessage
     Tints FaceTints{};
     ActorValues InitialActorValues{};
     uint32_t PlayerId{};
+    uint32_t OwnershipEpoch{};
     bool IsDead{};
     bool IsPlayer{};
     bool IsWeaponDrawn{};
     bool IsPlayerSummon{};
-    bool IsDragon{};
-    uint32_t HealthRevision{0};
 };

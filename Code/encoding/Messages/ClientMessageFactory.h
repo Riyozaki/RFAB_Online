@@ -1,17 +1,16 @@
 #pragma once
 
 #include <Messages/Message.h>
+#include <Messages/RequestCoopAction.h>
 #include <MetaMessage.h>
 
 #include <Messages/AuthenticationRequest.h>
 #include <Messages/AssignCharacterRequest.h>
-#include <Messages/CancelAssignmentRequest.h>
 #include <Messages/ClientReferencesMoveRequest.h>
 #include <Messages/EnterInteriorCellRequest.h>
 #include <Messages/RequestInventoryChanges.h>
 #include <Messages/RequestFactionsChanges.h>
 #include <Messages/RequestQuestUpdate.h>
-#include <Messages/RequestQuestSceneUpdate.h>
 #include <Messages/PartyInviteRequest.h>
 #include <Messages/PartyAcceptInviteRequest.h>
 #include <Messages/PartyLeaveRequest.h>
@@ -43,9 +42,11 @@
 #include <Messages/RequestRespawn.h>
 #include <Messages/SyncExperienceRequest.h>
 #include <Messages/RequestEquipmentChanges.h>
+#include <Messages/RequestInventorySnapshot.h>
 #include <Messages/SendChatMessageRequest.h>
 #include <Messages/TeleportCommandRequest.h>
 #include <Messages/SetTimeCommandRequest.h>
+#include <Messages/RequestActionEvents.h>
 #include <Messages/PlayerRespawnRequest.h>
 #include <Messages/DialogueRequest.h>
 #include <Messages/SubtitleRequest.h>
@@ -57,16 +58,6 @@
 #include <Messages/RequestCurrentWeather.h>
 #include <Messages/RequestSetWaypoint.h>
 #include <Messages/RequestRemoveWaypoint.h>
-#include <Messages/SyncRfabExperienceRequest.h>
-#include <Messages/RequestCoordinatedSaveLoad.h>
-#include <Messages/CoordinatedSaveAck.h>
-#include <Messages/SyncPlayerDownedState.h>
-#include <Messages/ReviveActionRequest.h>
-#include <Messages/CombatEncounterStateReport.h>
-#include <Messages/SyncRfabProgressionEvent.h>
-#include <Messages/RequestResync.h>
-#include <Messages/RequestWorldItemDrop.h>
-#include <Messages/RequestWorldItemPickup.h>
 
 using TiltedPhoques::UniquePtr;
 
@@ -76,14 +67,12 @@ struct ClientMessageFactory
 
     template <class T> static auto Visit(T&& func)
     {
-        auto s_visitor = CreateMessageVisitor<
-            AuthenticationRequest, AssignCharacterRequest, CancelAssignmentRequest, ClientReferencesMoveRequest, EnterInteriorCellRequest, RequestInventoryChanges, RequestFactionsChanges, RequestQuestUpdate, RequestQuestSceneUpdate, PartyInviteRequest, PartyAcceptInviteRequest, PartyLeaveRequest, PartyCreateRequest,
+        auto s_visitor = CreateMessageVisitor<RequestCoopAction,
+            AuthenticationRequest, AssignCharacterRequest, ClientReferencesMoveRequest, EnterInteriorCellRequest, RequestInventoryChanges, RequestInventorySnapshot, RequestFactionsChanges, RequestQuestUpdate, PartyInviteRequest, PartyAcceptInviteRequest, PartyLeaveRequest, PartyCreateRequest,
             PartyChangeLeaderRequest, PartyKickRequest, RequestActorValueChanges, RequestActorMaxValueChanges, EnterExteriorCellRequest, RequestHealthChangeBroadcast, ActivateRequest, LockChangeRequest, AssignObjectsRequest, RequestDeathStateChange, ShiftGridCellRequest,
             RequestOwnershipTransfer, RequestOwnershipClaim, RequestObjectInventoryChanges, SpellCastRequest, ProjectileLaunchRequest, InterruptCastRequest, AddTargetRequest, ScriptAnimationRequest, DrawWeaponRequest, MountRequest, NewPackageRequest, RequestRespawn, SyncExperienceRequest,
             RequestEquipmentChanges, SendChatMessageRequest, TeleportCommandRequest, PlayerRespawnRequest, DialogueRequest, SubtitleRequest, PlayerDialogueRequest, PlayerLevelRequest, TeleportRequest, RequestPlayerHealthUpdate, RequestWeatherChange, RequestCurrentWeather, RequestSetWaypoint,
-            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, SyncRfabExperienceRequest,
-            RequestCoordinatedSaveLoad, CoordinatedSaveAck, SyncPlayerDownedState, ReviveActionRequest, CombatEncounterStateReport, SyncRfabProgressionEvent, RequestResync,
-            RequestWorldItemDrop, RequestWorldItemPickup>;
+            RequestRemoveWaypoint, RemoveSpellRequest, SetTimeCommandRequest, RequestActionEvents>;
 
         return s_visitor(std::forward<T>(func));
     }

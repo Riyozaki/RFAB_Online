@@ -452,8 +452,7 @@ TEST_CASE("Co-op config overlay wiring: launcher, client and installers", "[rfab
         // ConfigOverlayRedirect.cpp writes only into its own overlay folder (PrepareOverlays above
         // proves the sources stay byte-identical).
         for (const char* file : {"Code/immersive_launcher/Launcher.cpp", "Code/immersive_launcher/stubs/DllBlocklist.cpp",
-                                 "Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp",
-                                 "Code/client/Services/Rfab/RfabXpAndBookSync.cpp", "Code/client/Services/RfabAdapterService.cpp"})
+                                 "Code/client/Games/Skyrim/Interface/Menus/SkillsMenu.cpp"})
         {
             INFO(file);
             const std::string text = ReadRepoSource(file);

@@ -1,18 +1,13 @@
 #pragma once
 
-#include <NetImmerse/NiPointer.h>
-#include <NetImmerse/ImageSpaceModifierInstance.h>
-
 struct NEW_REFR_DATA;
 struct TESObjectCELL;
 struct TESWorldSpace;
 struct NiPoint3;
 struct TESForm;
 struct TESFaction;
-struct TESGlobal;
-struct TESQuest;
-struct BGSListForm;
 struct Actor;
+struct ImageSpaceModifierInstance;
 
 struct GridCellArray
 {
@@ -112,67 +107,28 @@ struct ModManager
     static ModManager* Get() noexcept;
 
     uint32_t Spawn(NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCELL* apParentCell, TESWorldSpace* apWorldSpace, Actor* apCharacter) noexcept;
-    // Lets the engine allocate a new temporary reference of apBaseForm (TESDataHandler::
-    // CreateReferenceAtLocation with no pre-built reference, what PlaceAtMe does). Returns the
-    // reference handle, 0 on failure. Main thread only.
-    uint32_t SpawnReference(TESForm* apBaseForm, NiPoint3& aPosition, NiPoint3& aRotation, TESObjectCELL* apParentCell, TESWorldSpace* apWorldSpace) noexcept;
     Mod* GetByName(const char* acpName) const noexcept;
     TESObjectCELL* GetCellFromCoordinates(int32_t aX, int32_t aY, TESWorldSpace* aWorldSpace, bool aSpawnCell) noexcept;
 
-    uint8_t pad0[0x0E8];
-    GameArray<TESGlobal*> globals;
-    uint8_t pad100[0x118 - 0x100];
+    // Form arrays start at 0x10 and are indexed by FormType, 0x18 bytes each.
+    uint8_t pad0[0x118];
     GameArray<TESFaction*> factions;
     uint8_t pad130[0x748 - 0x130];
     GameArray<TESQuest*> quests;
-    uint8_t pad760[0x898 - 0x760];
-    GameArray<BGSListForm*> formLists;
-    uint8_t pad8B0[0xD60 - 0x8B0];
+    uint8_t pad760[0xD60 - 0x760];
     GameList<Mod> mods;
 };
 
-static_assert(offsetof(ModManager, globals) == 0x0E8);
 static_assert(offsetof(ModManager, factions) == 0x118);
 static_assert(offsetof(ModManager, quests) == 0x748);
-static_assert(offsetof(ModManager, formLists) == 0x898);
 static_assert(offsetof(ModManager, mods) == 0xD60);
 
 struct Setting
 {
     void* unk0;
-    union
-    {
-        uint64_t data;
-        float f;
-        int32_t i;
-        bool b;
-    };
+    uint64_t data;
     const char* name;
 };
-
-struct GameSettingCollection
-{
-    static GameSettingCollection* Get() noexcept;
-
-    struct MapItem
-    {
-        MapItem* next;
-        const char* key;
-        Setting* value;
-    };
-
-    Setting* GetSetting(const char* acpName) noexcept;
-
-    uint8_t unk0[0x118];
-    void* mapVtbl;
-    uint32_t bucketCount;
-    uint32_t pad124;
-    MapItem** buckets;
-};
-
-static_assert(offsetof(GameSettingCollection, mapVtbl) == 0x118);
-static_assert(offsetof(GameSettingCollection, bucketCount) == 0x120);
-static_assert(offsetof(GameSettingCollection, buckets) == 0x128);
 
 struct INISettingCollection
 {

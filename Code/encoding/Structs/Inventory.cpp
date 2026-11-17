@@ -1,7 +1,9 @@
 #include <Structs/Inventory.h>
+#include <cmath>
+#include <limits>
+#include <type_traits>
 #include <TiltedCore/Serialization.hpp>
 #include <common/CoopPacketSafety.h>
-#include <algorithm>
 
 using TiltedPhoques::Serialization;
 
@@ -23,68 +25,91 @@ void Inventory::EffectItem::Deserialize(TiltedPhoques::Buffer::Reader& aReader) 
     EffectId.Deserialize(aReader);
 }
 
+namespace
+{
+// This revision intentionally changes the wire format. Collection overflow invalidates the whole
+// inventory; it must not clamp a count then interpret its unread tail as the next field.
+struct InventoryWire
+{
+    TiltedPhoques::Buffer::Reader* Reader{};
+    TiltedPhoques::Buffer::Writer* Writer{};
+    bool Valid{true};
+    template <class T> void Number(T& value)
+    {
+        if (!Valid) return;
+        if constexpr (std::is_same_v<T, float>)
+        {
+            if (Reader) Valid = Reader->ReadBytes(reinterpret_cast<uint8_t*>(&value), sizeof(value));
+            else Valid = Writer->WriteBytes(reinterpret_cast<const uint8_t*>(&value), sizeof(value));
+            Valid = Valid && std::isfinite(value);
+        }
+        else
+        {
+            uint64_t bits = static_cast<uint64_t>(value);
+            constexpr size_t width = std::is_same_v<T, bool> ? 1 : sizeof(T) * 8;
+            if (Reader) { Valid = Reader->ReadBits(bits, width); value = static_cast<T>(bits); }
+            else Valid = Writer->WriteBits(bits, width);
+        }
+    }
+    void Form(GameId& id) { Number(id.ModId); Number(id.BaseId); }
+    void Item(Inventory::Entry& v)
+    {
+        Form(v.BaseId); Number(v.Count); Number(v.ExtraCharge); Form(v.ExtraEnchantId); Number(v.ExtraEnchantCharge);
+        Number(v.EnchantData.IsWeapon);
+        uint16_t count = static_cast<uint16_t>(v.EnchantData.Effects.size());
+        if (!Reader && v.EnchantData.Effects.size() > CoopPacketSafety::kMaxEnchantEffects) Valid = false;
+        Number(count);
+        if (!Valid || count > CoopPacketSafety::kMaxEnchantEffects) { Valid = false; return; }
+        if (Reader) v.EnchantData.Effects.resize(count);
+        for (auto& e : v.EnchantData.Effects)
+        { Number(e.Magnitude); Number(e.Area); Number(e.Duration); Number(e.RawCost); Form(e.EffectId); }
+        Number(v.ExtraHealth); Form(v.ExtraPoisonId); Number(v.ExtraPoisonCount); Number(v.ExtraSoulLevel);
+        Number(v.ExtraEnchantRemoveUnequip); Number(v.ExtraWorn); Number(v.ExtraWornLeft); Number(v.IsQuestItem);
+        Number(v.ExtraPresence); Form(v.ExtraOwnerId); Form(v.ExtraUniqueBaseId); Number(v.ExtraUniqueId); Number(v.HasUnsupportedExtra);
+        uint16_t length = static_cast<uint16_t>(v.ExtraTextDisplayName.size());
+        if (!Reader && v.ExtraTextDisplayName.size() > 160) Valid = false;
+        Number(length);
+        if (!Valid || length > 160) { Valid = false; return; }
+        if (Reader)
+        {
+            v.ExtraTextDisplayName.resize(length);
+            Valid = Reader->ReadBytes(reinterpret_cast<uint8_t*>(v.ExtraTextDisplayName.data()), length);
+        }
+        else Valid = Writer->WriteBytes(reinterpret_cast<const uint8_t*>(v.ExtraTextDisplayName.data()), length);
+        if (v.ExtraTextDisplayName.find('\0') != String::npos) Valid = false;
+        bool footer = v.WireValid && Valid;
+        Number(footer);
+        Valid = Valid && footer;
+        if (Reader) v.WireValid = Valid;
+    }
+    void Items(Inventory& v)
+    {
+        Number(v.Revision);
+        uint16_t count = static_cast<uint16_t>(v.Entries.size());
+        if (!Reader && v.Entries.size() > CoopPacketSafety::kMaxInventoryEntries) Valid = false;
+        Number(count);
+        if (!Valid || count > CoopPacketSafety::kMaxInventoryEntries) { Valid = false; return; }
+        if (Reader) v.Entries.resize(count);
+        for (auto& entry : v.Entries) { Item(entry); if (!Valid) break; }
+        Form(v.CurrentMagicEquipment.LeftHandSpell); Form(v.CurrentMagicEquipment.RightHandSpell); Form(v.CurrentMagicEquipment.Shout);
+        bool footer = v.WireValid && Valid;
+        Number(footer);
+        Valid = Valid && footer;
+        if (Reader) v.WireValid = Valid;
+    }
+};
+}
 void Inventory::Entry::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    BaseId.Serialize(aWriter);
-    Serialization::WriteVarInt(aWriter, Count);
-
-    Serialization::WriteFloat(aWriter, ExtraCharge);
-
-    ExtraEnchantId.Serialize(aWriter);
-    Serialization::WriteVarInt(aWriter, ExtraEnchantCharge);
-    Serialization::WriteVarInt(aWriter, EnchantData.Effects.size());
-    for (const EffectItem& effect : EnchantData.Effects)
-    {
-        effect.Serialize(aWriter);
-    }
-
-    Serialization::WriteFloat(aWriter, ExtraHealth);
-
-    ExtraPoisonId.Serialize(aWriter);
-    Serialization::WriteVarInt(aWriter, ExtraPoisonCount);
-
-    Serialization::WriteVarInt(aWriter, ExtraSoulLevel);
-
-    Serialization::WriteBool(aWriter, EnchantData.IsWeapon);
-    Serialization::WriteBool(aWriter, ExtraEnchantRemoveUnequip);
-    Serialization::WriteBool(aWriter, ExtraWorn);
-    Serialization::WriteBool(aWriter, ExtraWornLeft);
-    Serialization::WriteBool(aWriter, IsQuestItem);
+    auto copy = *this;
+    InventoryWire{nullptr, &aWriter}.Item(copy);
 }
-
 void Inventory::Entry::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    BaseId.Deserialize(aReader);
-    Count = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    ExtraCharge = Serialization::ReadFloat(aReader);
-
-    ExtraEnchantId.Deserialize(aReader);
-    ExtraEnchantCharge = Serialization::ReadVarInt(aReader) & 0xFFFF;
-    const size_t effectCount = CoopPacketSafety::ClampCollectionCount(
-        Serialization::ReadVarInt(aReader),
-        CoopPacketSafety::kMaxEnchantEffects);
-    EnchantData.Effects.clear();
-    EnchantData.Effects.reserve(effectCount);
-    for (size_t i = 0; i < effectCount && !aReader.Eof(); i++)
-    {
-        EffectItem effect{};
-        effect.Deserialize(aReader);
-        EnchantData.Effects.push_back(effect);
-    }
-
-    ExtraHealth = Serialization::ReadFloat(aReader);
-
-    ExtraPoisonId.Deserialize(aReader);
-    ExtraPoisonCount = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    ExtraSoulLevel = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
-
-    EnchantData.IsWeapon = Serialization::ReadBool(aReader);
-    ExtraEnchantRemoveUnequip = Serialization::ReadBool(aReader);
-    ExtraWorn = Serialization::ReadBool(aReader);
-    ExtraWornLeft = Serialization::ReadBool(aReader);
-    IsQuestItem = Serialization::ReadBool(aReader);
+    *this = {};
+    InventoryWire codec{&aReader, nullptr};
+    codec.Item(*this);
+    WireValid = codec.Valid;
 }
 
 bool Inventory::operator==(const Inventory& acRhs) const noexcept
@@ -109,32 +134,16 @@ bool Inventory::Entry::operator!=(const Inventory::Entry& acRhs) const noexcept
 
 void Inventory::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    const size_t entryCount = std::min(Entries.size(), CoopPacketSafety::kMaxInventoryEntries);
-    Serialization::WriteVarInt(aWriter, entryCount);
-    for (size_t i = 0; i < entryCount; ++i)
-    {
-        Entries[i].Serialize(aWriter);
-    }
-
-    CurrentMagicEquipment.Serialize(aWriter);
+    auto copy = *this;
+    InventoryWire{nullptr, &aWriter}.Items(copy);
 }
-
 void Inventory::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 {
-    const size_t count = CoopPacketSafety::ClampCollectionCount(
-        Serialization::ReadVarInt(aReader),
-        CoopPacketSafety::kMaxInventoryEntries);
-    Entries.clear();
-    Entries.reserve(std::min<size_t>(count, 256));
-    for (size_t i = 0; i < count && !aReader.Eof(); i++)
-    {
-        Entry entry{};
-        entry.Deserialize(aReader);
-        Entries.push_back(std::move(entry));
-    }
-
-    if (!aReader.Eof())
-        CurrentMagicEquipment.Deserialize(aReader);
+    *this = {};
+    InventoryWire codec{&aReader, nullptr};
+    codec.Items(*this);
+    WireValid = codec.Valid;
+    if (!WireValid) Entries.clear();
 }
 
 std::optional<Inventory::Entry> Inventory::GetEntryById(GameId& aItemId) const noexcept
@@ -155,63 +164,39 @@ int32_t Inventory::GetEntryCountById(GameId& aItemId) const noexcept
     return entry->Count;
 }
 
-void Inventory::AddOrRemoveEntry(const Entry& acEntry) noexcept
+bool Inventory::AddOrRemoveEntry(const Entry& acEntry) noexcept
 {
-    if (acEntry.Count == 0)
-        return;
-
-    if (acEntry.Count > 0)
-    {
-        auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
-        if (duplicate != Entries.end())
-        {
-            duplicate->Count += acEntry.Count;
-        }
-        else
-        {
-            Entries.push_back(acEntry);
-        }
-        return;
-    }
-
-    // acEntry.Count < 0: remove items without ever pushing phantom negative-count entries into Entries.
-    int32_t remainingToRemove = -acEntry.Count;
-
-    // 1. Prefer exact extra-data match first
-    auto duplicate = std::find_if(Entries.begin(), Entries.end(), [acEntry](Entry& entry) { return entry.CanBeMerged(acEntry); });
+    if (!WireValid || !acEntry.WireValid || acEntry.ExtraTextDisplayName.size() > 160 || acEntry.EnchantData.Effects.size() > CoopPacketSafety::kMaxEnchantEffects || acEntry.Count == 0 || acEntry.BaseId == GameId{} || !std::isfinite(acEntry.ExtraCharge) || !std::isfinite(acEntry.ExtraHealth))
+        return false;
+    auto duplicate = std::find_if(Entries.begin(), Entries.end(), [&acEntry](const Entry& entry) { return entry.CanBeMerged(acEntry); });
+    const int64_t oldCount = duplicate != Entries.end() ? duplicate->Count : 0;
+    const int64_t newCount = oldCount + static_cast<int64_t>(acEntry.Count);
+    if (newCount < 0 || newCount > std::numeric_limits<int32_t>::max())
+        return false;
     if (duplicate != Entries.end())
     {
-        if (duplicate->Count > remainingToRemove)
-        {
-            duplicate->Count -= remainingToRemove;
-            return;
-        }
-
-        remainingToRemove -= std::max(0, duplicate->Count);
-        Entries.erase(duplicate);
+        if (newCount == 0)
+            Entries.erase(duplicate);
+        else
+            duplicate->Count = static_cast<int32_t>(newCount);
     }
+    else if (newCount > 0)
+        Entries.push_back(acEntry);
+    return true;
+}
 
-    // 2. Fallback: match by BaseId (handles looting worn corpse gear where ExtraWorn became false at removal time,
-    // or items whose ExtraCharge/ExtraHealth changed slightly).
-    while (remainingToRemove > 0)
+bool Inventory::IsValid() const noexcept
+{
+    if (!WireValid || Entries.size() > CoopPacketSafety::kMaxInventoryEntries) return false;
+    for (const auto& entry : Entries)
     {
-        auto fallback = std::find_if(
-            Entries.begin(),
-            Entries.end(),
-            [&acEntry](const Entry& entry) { return entry.BaseId == acEntry.BaseId && entry.Count > 0; });
-
-        if (fallback == Entries.end())
-            break;
-
-        if (fallback->Count > remainingToRemove)
-        {
-            fallback->Count -= remainingToRemove;
-            break;
-        }
-
-        remainingToRemove -= fallback->Count;
-        Entries.erase(fallback);
+        if (!entry.WireValid || entry.ExtraTextDisplayName.size() > 160 || entry.EnchantData.Effects.size() > CoopPacketSafety::kMaxEnchantEffects || entry.ExtraSoulLevel < 0 || entry.ExtraSoulLevel > 5 || entry.BaseId == GameId{} || entry.Count <= 0 || !std::isfinite(entry.ExtraCharge) || !std::isfinite(entry.ExtraHealth))
+            return false;
+        for (const auto& effect : entry.EnchantData.Effects)
+            if (!std::isfinite(effect.Magnitude) || !std::isfinite(effect.RawCost))
+                return false;
     }
+    return true;
 }
 
 void Inventory::UpdateEquipment(const Inventory& acNewInventory) noexcept

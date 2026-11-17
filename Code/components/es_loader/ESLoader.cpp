@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <common/Compat/SafeFs.h>
 
 #include <Records/CLMT.h>
 #include <Records/NPC.h>
@@ -29,12 +30,12 @@ String ReadWString(Buffer::Reader& aReader) noexcept
 
 ESLoader::ESLoader()
 {
-    m_directory = fs::current_path() / "Data"; //< Keep upper case to match Skyrim's file system
+    m_directory = Compat::SafeFs::CurrentPathOr(fs::path(".")) / "Data"; //< Keep upper case to match Skyrim's file system
 }
 
 UniquePtr<RecordCollection> ESLoader::BuildRecordCollection() noexcept
 {
-    if (!fs::is_directory(m_directory))
+    if (!Compat::SafeFs::IsDirectory(m_directory))
     {
         // spdlog::warn("Data directory not found.");
         return nullptr;
@@ -257,14 +258,29 @@ UniquePtr<RecordCollection> ESLoader::LoadFiles()
 
 fs::path ESLoader::GetPath(String& aFilename)
 {
-    for (const auto& entry : fs::directory_iterator(m_directory))
-    {
-        String filename = entry.path().filename().string().c_str();
-        if (filename == aFilename)
-            return entry.path();
-    }
+    // The walk cannot throw, and neither can the comparison: a file in Data whose name the ANSI code
+    // page cannot hold used to end the server here, inside the noexcept BuildRecordCollection (M14).
+    // The name is compared as UTF-8 (what Mod Organizer writes into loadorder.txt) and, as before,
+    // in the ANSI form (what the game's own launcher writes).
+    fs::path found;
+    Compat::SafeFs::ForEachEntry(m_directory, [&](const fs::directory_entry& acEntry) {
+        bool matches = aFilename == Compat::SafeFs::FileNameUtf8Lossy(acEntry.path()).c_str();
+        if (!matches)
+        {
+            try
+            {
+                matches = aFilename == acEntry.path().filename().string().c_str(); // fs-throws-ok: caught right here
+            }
+            catch (...)
+            {
+            }
+        }
+        if (matches)
+            found = acEntry.path();
+        return !matches;
+    });
 
-    return fs::path();
+    return found;
 }
 
 } // namespace ESLoader

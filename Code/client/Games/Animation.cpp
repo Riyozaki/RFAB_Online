@@ -20,28 +20,15 @@ static TPerformAction* RealPerformAction;
 // TODO: make scoped override
 thread_local bool g_forceAnimation = false;
 
-// This is where the Actors AI is enabled/disabled: almost all of NPC AI/behavior is
-// determined by Actions that are run on them.
-
 uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apAction)
 {
-    if (!World::IsCreated() || !World::IsConnectedCached())
-        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
-
-    if (!apAction || !apAction->actor)
+    if (!World::IsCreated())
         return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
     auto pActor = apAction->actor;
     const auto pExtension = pActor->GetExtension();
-    if (!pExtension)
-        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
-    // Fast path for forced local animations and echoed someFlag==1 actions:
-    // never run SaveAnimationVariables() / BehaviorVarPatch across 8 AI worker threads when the action won't be sent.
-    if (g_forceAnimation || apAction->someFlag == 1)
-        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
-
-    if (!pExtension->IsRemote())
+    if (!pExtension->IsRemote() || g_forceAnimation)
     {
         ActionEvent action;
         action.State1 = pActor->actorState.flags1;
@@ -49,34 +36,32 @@ uint8_t TP_MAKE_THISCALL(HookPerformAction, ActorMediator, TESActionData* apActi
         action.Type = apAction->unkInput | (apAction->someFlag ? 0x4 : 0);
         action.Tick = World::Get().GetTick();
         action.ActorId = pActor->formID;
-        action.ActionId = apAction->action ? apAction->action->formID : 0;
+        action.ActionId = apAction->action->formID;
         action.TargetId = apAction->target ? apAction->target->formID : 0;
 
         pActor->SaveAnimationVariables(action.Variables);
 
         const auto res = TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
 
-        action.EventName = apAction->eventName.AsAscii() ? apAction->eventName.AsAscii() : "";
-        action.TargetEventName = apAction->targetEventName.AsAscii() ? apAction->targetEventName.AsAscii() : "";
+        // spdlog::debug("Action event name: {}, target name: {}", apAction->eventName.AsAscii(), apAction->targetEventName.AsAscii());
+
+        // This is a weird case where it gets spammed and doesn't do much, not sure if it still needs to be sent over the network
+        if (apAction->someFlag == 1 || g_forceAnimation)
+            return res;
+
+        action.EventName = apAction->eventName.AsAscii();
+        action.TargetEventName = apAction->targetEventName.AsAscii();
         action.IdleId = apAction->idleForm ? apAction->idleForm->formID : 0;
 
-        // Save for later (thread-safe sharded store: HookPerformAction executes on Skyrim AI worker threads!)
-        if (res && pActor->formID != 0)
+        // Save for later
+        if (res)
         {
-            ActorExtension::SetLatestAnimation(pActor->formID, action);
+            pExtension->SetLatestAction(action);
         }
 
         World::Get().GetRunner().Trigger(action);
 
         return res;
-    }
-
-    const char* actionKeyword = (apAction->action && apAction->action->keyword.AsAscii())
-        ? apAction->action->keyword.AsAscii()
-        : "";
-    if (Actor::TryAcceptRemoteHitReactionAction(pActor, actionKeyword))
-    {
-        return TiltedPhoques::ThisCall(RealPerformAction, apThis, apAction);
     }
 
     return 0;
@@ -91,40 +76,13 @@ ActorMediator* ActorMediator::Get() noexcept
 
 bool ActorMediator::PerformAction(TESActionData* apAction) noexcept
 {
-    if (apAction->actor->formID == 0x13482)
-    {
-        /*static Set<uint32_t> s_ids;
-
-        spdlog::error("New frame");
-        for(auto i = 0; i < action.Variables.size(); ++i)
-        {
-            auto& oldVars = pExtension->LatestVariables.Variables;
-            auto& newVars = action.Variables;
-            if(oldVars[i] != newVars[i] && s_ids.count(i) == 0)
-            {
-                //s_ids.insert(i);
-                spdlog::info("Var {} changed from {} to {}", i, oldVars[i], newVars[i]);
-            }
-        }*/
-        // spdlog::info("Play animation name: {} with idle {:X} and target {:X} and unk {:X}", apAction->action->keyword.AsAscii(), (apAction->idleForm ? apAction->idleForm->formID : 0), (apAction->target ? apAction->target->formID : 0), apAction->unkInput);
-    }
-
     const auto res = TiltedPhoques::ThisCall(RealPerformAction, this, apAction);
-    // const auto res = RePerformAction(apAction, aValue);
-
-    if (res && apAction->actor->formID == 0x13482)
-    {
-        //    spdlog::info("Passed !");
-    }
 
     return res != 0;
 }
 
 bool ActorMediator::ForceAction(TESActionData* apAction) noexcept
 {
-    if (!apAction)
-        return false;
-
     TP_THIS_FUNCTION(TAnimationStep, uint8_t, ActorMediator, TESActionData*);
     using TApplyAnimationVariables = void*(void*, TESActionData*);
 
@@ -142,7 +100,7 @@ bool ActorMediator::ForceAction(TESActionData* apAction) noexcept
         ApplyAnimationVariables(*qword_142F271B8.Get(), apAction);
     }
 
-    return result != 0;
+    return result;
 }
 
 ActionInput::ActionInput(uint32_t aParam1, Actor* apActor, BGSAction* apAction, TESObjectREFR* apTarget)

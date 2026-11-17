@@ -25,6 +25,7 @@ using TiltedPhoques::Debug;
 
 namespace
 {
+// Client instances use tp_client.log, tp_client_instance_2.log, tp_client_instance_3.log, etc.
 std::shared_ptr<spdlog::sinks::rotating_file_sink_mt> CreateClientLogSink(const std::filesystem::path& acLogPath)
 {
     std::string filename = "tp_client.log";
@@ -33,23 +34,29 @@ std::shared_ptr<spdlog::sinks::rotating_file_sink_mt> CreateClientLogSink(const 
         const auto mutexName = fmt::format("SkyrimTogether.ClientLog.Instance_{}", instance);
         HANDLE pMutex = CreateMutexA(nullptr, FALSE, mutexName.c_str());
         const DWORD error = GetLastError();
+
         if (!pMutex)
         {
+            // Never fall back to a filename that another client may be writing to.
+            spdlog::warn("Failed to reserve a client log slot (error {}); using a process-specific log", error);
             filename = fmt::format("tp_client_pid_{}.log", GetCurrentProcessId());
             break;
         }
+
         if (error == ERROR_ALREADY_EXISTS)
         {
             CloseHandle(pMutex);
             continue;
         }
+
+        // Keep this slot's mutex handle open until process exit, like ArrangeGameWindows.
         if (instance > 1)
             filename = fmt::format("tp_client_instance_{}.log", instance);
         break;
     }
-    return std::make_shared<spdlog::sinks::rotating_file_sink_mt>(acLogPath / filename, 1048576 * 10, 5);
+    return std::make_shared<spdlog::sinks::rotating_file_sink_mt>(acLogPath / filename, 1048576 * 5, 3);
 }
-} // namespace
+}
 
 extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
 
@@ -69,7 +76,7 @@ TiltedOnlineApp::TiltedOnlineApp()
     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     auto logger = std::make_shared<spdlog::logger>("", spdlog::sinks_init_list{console, rotatingLogger});
     logger->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t] %$ %v");
-    logger->flush_on(spdlog::level::err);
+    logger->flush_on(spdlog::level::info);
     spdlog::flush_every(std::chrono::seconds(1));
     set_default_logger(logger);
 }
@@ -109,17 +116,17 @@ bool TiltedOnlineApp::EndMain()
 
 void TiltedOnlineApp::Update()
 {
-    // Reverting a change that used to be here to disable bUseFaceGenPreprocessedHeads==true (which is 
-    // the default) handling. Extensive testing over months by multiple parties showed that enabling 
-    // the flag introduces no issues WITH PROPERLY GENERATED CHARACTERS (in-game character generation 
+    // Reverting a change that used to be here to disable bUseFaceGenPreprocessedHeads==true (which is
+    // the default) handling. Extensive testing over months by multiple parties showed that enabling
+    // the flag introduces no issues WITH PROPERLY GENERATED CHARACTERS (in-game character generation
     // or showracemenu). The shortcut of  "coc riverwood" from the main menu skips proper character generation.
-    // 
+    //
     // Plus, having it on  has some benefits like helping with neck seams. Comment to avoid revisiting.
-    // 
+    //
     // There are still some issues to track down, like hair color and maybe face tint not syncing correctly,
     // but they are unrelated and unchanged by this flag.
-    // 
- 
+    //
+
     // Make sure the window stays active
     POINTER_SKYRIMSE(uint32_t, bAlwaysActive, 508799);
 

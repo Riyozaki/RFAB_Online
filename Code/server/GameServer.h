@@ -1,10 +1,8 @@
 #pragma once
 
-#include <AdminMessages/Message.h>
 #include <Messages/AuthenticationRequest.h>
 #include <Messages/Message.h>
 #include <World.h>
-#include <common/Session/Features.h>
 
 using TiltedPhoques::ConnectionId_t;
 using TiltedPhoques::Server;
@@ -56,11 +54,9 @@ struct GameServer final : Server
 
     // Packet dispatching
     void Send(ConnectionId_t aConnectionId, const ServerMessage& acServerMessage, TiltedPhoques::EPacketFlags aPacketFlags = TiltedPhoques::kReliable) const;
-    void Send(ConnectionId_t aConnectionId, const ServerAdminMessage& acServerMessage) const;
     void SendToLoaded(const ServerMessage& acServerMessage) const;
     void SendToPlayers(const ServerMessage& acServerMessage, const Player* apExcludeSender = nullptr) const;
     bool SendToPlayersInRange(const ServerMessage& acServerMessage, const entt::entity acOrigin, const Player* apExcludeSender = nullptr) const;
-    void SendToLeader(const ServerMessage& acServerMessage, const PartyComponent& acPartyComponent, const Player* apLeader) const;
     void SendToParty(const ServerMessage& acServerMessage, const PartyComponent& acPartyComponent, const Player* apExcludeSender = nullptr) const;
     void SendToPartyInRange(const ServerMessage& acServerMessage, const PartyComponent& acPartyComponent, const entt::entity acOrigin, const Player* apExcludeSender = nullptr) const;
 
@@ -68,12 +64,8 @@ struct GameServer final : Server
 
     bool IsRunning() const noexcept { return !m_requestStop; }
     bool IsPasswordProtected() const noexcept { return m_isPasswordProtected; }
-
-    template <class T> void ForEachAdmin(const T& aFunctor)
-    {
-        for (auto id : m_adminSessions)
-            aFunctor(id);
-    }
+    [[nodiscard]] bool IsPublicServer() const noexcept;
+    [[nodiscard]] bool AllowsAutoPartyJoin() const noexcept;
 
     struct Uptime
     {
@@ -84,7 +76,6 @@ struct GameServer final : Server
     };
     Uptime GetUptime() const noexcept;
 
-    bool HasWorld() const noexcept { return m_pWorld != nullptr; }
     World& GetWorld() const noexcept { return *m_pWorld; }
 
     [[nodiscard]] const TiltedPhoques::Set<ConnectionId_t>& GetAdminSessions() const noexcept { return m_adminSessions; }
@@ -114,7 +105,6 @@ private:
     std::chrono::high_resolution_clock::time_point m_startTime;
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
     std::function<void(UniquePtr<ClientMessage>&, ConnectionId_t)> m_messageHandlers[kClientOpcodeMax];
-    std::function<void(UniquePtr<ClientAdminMessage>&, ConnectionId_t)> m_adminMessageHandlers[kClientAdminOpcodeMax];
 
     bool m_isPasswordProtected{};
 
@@ -131,8 +121,3 @@ private:
 
     static inline GameServer* s_pInstance = nullptr;
 };
-
-// Effective coop feature switches (Gameplay:bEnable* cvars folded into one mask, see
-// common/Session/Features.h). Server services gate the relays they own with IsCoopFeatureEnabled.
-[[nodiscard]] uint32_t GetDisabledCoopFeatureMask() noexcept;
-[[nodiscard]] bool IsCoopFeatureEnabled(Session::Feature aFeature) noexcept;

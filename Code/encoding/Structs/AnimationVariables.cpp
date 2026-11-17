@@ -14,8 +14,8 @@ bool AnimationVariables::operator!=(const AnimationVariables& acRhs) const noexc
 }
 
 // std::vector<bool> implementation is unspecified, but often packed reasonably.
-// The spec does not guarantee contiguous memory, though, so somewhat laborious 
-// translation needed. Should be better than winding down several layers to 
+// The spec does not guarantee contiguous memory, though, so somewhat laborious
+// translation needed. Should be better than winding down several layers to
 // TiltedPhoques::Serialization::WriteBool, though.
 //
 void AnimationVariables::VectorBool_to_String(const Vector<bool>& bools, TiltedPhoques::String& chars) const
@@ -29,12 +29,7 @@ void AnimationVariables::VectorBool_to_String(const Vector<bool>& bools, TiltedP
             *citer |= *biter++ ? mask : 0;
 }
 
-// Unpacks a bitstream into bools. The two sizes are independent: the counts come from
-// one part of the packet and the packed bytes from another, so a sender can declare more
-// values than it paid bytes for. The loop used to walk the output and read the input in
-// lockstep without ever checking the input end - a remote read past the string, which
-// AddressSanitizer reports as a stack-buffer-overflow on a short (SSO) string.
-// Bits the packet did not carry stay false.
+// The Vector<bool> must be the correct size when called.
 //
 void AnimationVariables::String_to_VectorBool(const TiltedPhoques::String& chars, Vector<bool>& bools)
 {
@@ -70,7 +65,7 @@ void AnimationVariables::Save(std::ostream& aOutput) const
     // Booleans bitpacked and not guaranteed contiguous.
     TiltedPhoques::String chars;
     VectorBool_to_String(Booleans, chars);
- 
+
     aOutput.write(reinterpret_cast<const char*>(chars.data()), chars.size());
     aOutput.write(reinterpret_cast<const char*>(Integers.data()), Integers.size() * sizeof(uint32_t));
     aOutput.write(reinterpret_cast<const char*>(Floats.data()), Floats.size() * sizeof(float));
@@ -80,7 +75,7 @@ void AnimationVariables::Save(std::ostream& aOutput) const
 //
 // Sends 3 VarInts, the count of Booleans, Integers and Floats, in that order. Then sends a bitstream of the
 // sum of those counts. For the Booleans, these represent the bit values for the Booleans. For the Integers and
-// Floats, it represents a truth table for whether the value has changed. If values HAVE changed, they follow on 
+// Floats, it represents a truth table for whether the value has changed. If values HAVE changed, they follow on
 // the stream.
 //
 //
@@ -119,7 +114,7 @@ void AnimationVariables::GenerateDiff(const AnimationVariables& aPrevious, Tilte
 // with a Changed? truth table for Integers and Floats.
 // The Changed? table is scanned and for each true bit, the corresponsing Integer
 // or Float is deserialized.
-// 
+//
 void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader)
 {
     const size_t booleansSize = CoopPacketSafety::ClampCollectionCount(
@@ -131,12 +126,11 @@ void AnimationVariables::ApplyDiff(TiltedPhoques::Buffer::Reader& aReader)
     const size_t floatsSize = CoopPacketSafety::ClampCollectionCount(
         TiltedPhoques::Serialization::ReadVarInt(aReader),
         CoopPacketSafety::kMaxAnimVars);
-
     if (Integers.size() != integersSize)
         Integers.assign(integersSize, 0);
     if (Floats.size() != floatsSize)
         Floats.assign(floatsSize, 0.f);
-    
+
     TiltedPhoques::Vector<bool> changedVector(booleansSize + integersSize + floatsSize);
     auto chars = TiltedPhoques::Serialization::ReadString(aReader);
     String_to_VectorBool(chars, changedVector);

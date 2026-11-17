@@ -28,6 +28,32 @@ std::optional<uint32_t> GetServerId(entt::entity aEntity) noexcept
     return {serverId};
 }
 
+std::optional<entt::entity> FindEntityByServerId(const uint32_t aServerId) noexcept
+{
+    const auto localView = World::Get().view<LocalComponent>();
+    const auto localIt = std::find_if(
+        localView.begin(), localView.end(),
+        [localView, aServerId](const entt::entity aEntity) { return localView.get<LocalComponent>(aEntity).Id == aServerId; });
+    if (localIt != localView.end())
+        return *localIt;
+
+    const auto remoteView = World::Get().view<RemoteComponent>();
+    const auto remoteIt = std::find_if(
+        remoteView.begin(), remoteView.end(),
+        [remoteView, aServerId](const entt::entity aEntity) { return remoteView.get<RemoteComponent>(aEntity).Id == aServerId; });
+    if (remoteIt != remoteView.end())
+        return *remoteIt;
+
+    const auto objectView = World::Get().view<ObjectComponent>();
+    const auto objectIt = std::find_if(
+        objectView.begin(), objectView.end(),
+        [objectView, aServerId](const entt::entity aEntity) { return objectView.get<ObjectComponent>(aEntity).Id == aServerId; });
+    if (objectIt != objectView.end())
+        return *objectIt;
+
+    return std::nullopt;
+}
+
 void ShowHudMessage(const TiltedPhoques::String& acMessage)
 {
     using TShowHudMessage = void(const char*, const char*, bool);

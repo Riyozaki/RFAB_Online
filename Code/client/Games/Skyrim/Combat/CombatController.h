@@ -6,6 +6,7 @@ struct CombatState;
 struct CombatInventory;
 struct CombatAimController;
 struct CombatAreaStandard;
+struct CombatTargetSelector;
 
 // Verified against NetScriptFramework.SkyrimSE.1_5_97_0.bin (sizeof == 0xD8):
 // AE 1.6.629 inserted an 8-byte spinlock at +0x68 (aimControllerLock); Skyrim SE 1.5.97 has none.

@@ -9,8 +9,11 @@
 
 struct ObjectComponent
 {
-    ObjectComponent() noexcept = default;
+    ObjectComponent(Player* apLastSender)
+        : pLastSender(apLastSender)
+    {
+    }
 
+    Player* pLastSender;
     LockData CurrentLockData{};
-    bool HasAuthoritativeMutation{false};
 };

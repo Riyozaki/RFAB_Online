@@ -9,167 +9,52 @@
 
 #include <Forms/BGSAction.h>
 #include <AI/AIProcess.h>
+#include <Camera/PlayerCamera.h>
 #include <Misc/MiddleProcess.h>
 
-#include <Messages/ClientReferencesMoveRequest.h>
+#include <Messages/RequestActionEvents.h>
+#include <Structs/Movement.h>
 
 #include <Components.h>
-#include <Utils.h>
 #include <World.h>
 
 #include <Forms/TESObjectCELL.h>
 #include <Forms/TESWorldSpace.h>
-#include <CoopAnimationState.h>
-
-extern thread_local const char* g_animErrorCode;
-extern thread_local bool g_forceAnimation;
-
-namespace
-{
-constexpr uint32_t kEncodedActorServerIdTag = 0xFF800000u;
-constexpr uint32_t kEncodedActorServerIdMask = 0x007FFFFFu;
-
-void ForceDefaultIdleGraphReset(Actor* apActor, RemoteAnimationComponent& aAnimComp, uint64_t aTick) noexcept
-{
-    if (!apActor || apActor->IsDead())
-        return;
-    if (aAnimComp.LastSitSleepNormalizeTick != 0 && aTick < aAnimComp.LastSitSleepNormalizeTick + 500)
-        return;
-
-    aAnimComp.LastSitSleepNormalizeTick = aTick;
-    aAnimComp.PendingFurnitureGraphExit = false;
-    aAnimComp.InRemoteFurnitureIdle = false;
-
-    const bool prevForce = g_forceAnimation;
-    g_forceAnimation = true;
-    BSFixedString defaultStateEvt("IdleForceDefaultState");
-    apActor->SendAnimationEvent(&defaultStateEvt);
-    g_forceAnimation = prevForce;
-}
-}
 
 void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationComponent& aAnimationComponent, const uint64_t aTick) noexcept
 {
-    // Check if animation graph is ready before attempting to play animations
-    if (!apActor || !apActor->animationGraphHolder.IsReady())
-        return;
-
-    float horizontalSpeed = 0.0f;
-    {
-        const entt::entity actorEntity = aWorld.GetCharacterService().FindActorEntityByFormId(apActor->formID);
-        if (actorEntity != entt::null)
-        {
-            if (const auto* pInterp = aWorld.try_get<InterpolationComponent>(actorEntity))
-                horizontalSpeed = pInterp->LastHorizontalSpeed;
-        }
-    }
-
     auto& actions = aAnimationComponent.TimePoints;
-    if (actions.empty())
+    if (apActor && apActor->GetExtension()->CoopDowned.load(std::memory_order_relaxed))
     {
-        // Continuous SitSleep/Furniture guard: if a remote bandit replayed a chair/furniture idle on spawn
-        // (or still carries SitSleepState != 0) and is now running/fighting away from any furniture without
-        // having delivered an exit event, snap its ChairRootBehavior back to standing locomotion immediately.
-        const uint32_t curSitSleep = CoopAnimationState::GetSitSleepState(apActor->actorState.flags1);
-        const bool inCombatOrMoving =
-            CoopAnimationState::IsWeaponDrawn(apActor->actorState.flags2) ||
-            CoopAnimationState::GetMeleeAttackState(apActor->actorState.flags1) != 0u ||
-            horizontalSpeed > 65.0f;
-
-        if ((aAnimationComponent.PendingFurnitureGraphExit ||
-             ((curSitSleep != 0u || aAnimationComponent.InRemoteFurnitureIdle) && inCombatOrMoving)) &&
-            !apActor->HasValidNearbyFurniture())
-        {
-            apActor->actorState.flags1 = CoopAnimationState::ClearSitSleepState(apActor->actorState.flags1);
-            ForceDefaultIdleGraphReset(apActor, aAnimationComponent, aTick);
-        }
+        actions.clear(); // old attacks/idle state must not stand up a server-latched downed avatar
         return;
     }
 
-    // Drop ancient backlog (>2s stale non-replay actions) if a lag burst queued >16 events, preventing freeze catch-up storms,
-    // while latching PendingFurnitureGraphExit if any furniture/idle exit event had to be skipped.
-    while (actions.size() > 16 && aAnimationComponent.ReplayCount == 0 && aTick > 2000 && actions.front().Tick + 2000 < aTick)
+    const auto it = std::begin(actions);
+    if (it != std::end(actions) && it->Tick <= aTick)
     {
-        if (CoopAnimationState::IsFurnitureOrIdleExitEvent(actions.front().EventName))
-            aAnimationComponent.PendingFurnitureGraphExit = true;
-        actions.pop_front();
-    }
-
-    // Drain up to 8 causal actions per frame in order so multi-event Skyrim/RFAB combat transitions
-    // (e.g. ActionDraw + weaponDraw, ActionRightAttack + attackStart + BashStart) fire together cleanly!
-    uint32_t processedThisFrame = 0;
-    while (!actions.empty() && actions.front().Tick <= aTick && processedThisFrame < 8)
-    {
+        // Check if animation graph is ready before attempting to play animations
+        if (!apActor->animationGraphHolder.IsReady())
+        {
+            // Animation graph not ready, keep the action in queue and try again later
+            return;
+        }
         if (aAnimationComponent.ReplayCount > 0 && aAnimationComponent.ResetAnimationGraphForReplay)
         {
             apActor->animationGraphHolder.RevertAnimationGraphManager();
             aAnimationComponent.ResetAnimationGraphForReplay = false;
-            aAnimationComponent.InRemoteFurnitureIdle = false;
-            aAnimationComponent.PendingFurnitureGraphExit = false;
         }
 
-        const auto first = actions.front();
-        actions.pop_front();
-        ++processedThisFrame;
+        const auto& first = *it;
 
         const auto actionId = first.ActionId;
         const auto targetId = first.TargetId;
 
         const auto pAction = Cast<BGSAction>(TESForm::GetById(actionId));
-        TESObjectREFR* pTarget = nullptr;
-        if ((targetId & kEncodedActorServerIdTag) == kEncodedActorServerIdTag)
-        {
-            pTarget = Utils::GetByServerId<TESObjectREFR>(targetId & kEncodedActorServerIdMask);
-        }
-        else if (targetId != 0 && targetId != 0x14 && (targetId & 0xFF000000u) != 0xFF000000u)
-        {
-            pTarget = Cast<TESObjectREFR>(TESForm::GetById(targetId));
-        }
+        const auto pTarget = Cast<TESObjectREFR>(TESForm::GetById(targetId));
 
-        const uint32_t prevFlags1 = apActor->actorState.flags1;
-        const bool hasNearbyFurniture = apActor->HasValidNearbyFurniture() || (pTarget != nullptr && CoopAnimationState::IsFurnitureEnterEvent(first.EventName));
-        const auto sitDecision = CoopAnimationState::EvaluateRemoteSitSleepTransition(
-            prevFlags1,
-            first.State1,
-            first.State2,
-            hasNearbyFurniture,
-            first.EventName,
-            horizontalSpeed);
-
-        apActor->actorState.flags1 = sitDecision.NormalizedFlags1;
+        apActor->actorState.flags1 = first.State1;
         apActor->actorState.flags2 = first.State2;
-        if (const auto* pExt = apActor->GetExtension(); pExt && pExt->IsRemotePlayer())
-        {
-            if (pExt->IsDownedPlayer())
-            {
-                // Preserve ACTOR_LIFE_STATE::kBleedout (8, bits 21..24) on downed remote player clones so native
-                // Skyrim AI / CombatTargetSelector never treats a downed teammate as a standing kAlive target.
-                apActor->actorState.flags1 =
-                    (apActor->actorState.flags1 & ~CoopAnimationState::kLifeStateMask) |
-                    (CoopAnimationState::kLifeStateBleedout << CoopAnimationState::kLifeStateShift);
-            }
-            else if (CoopAnimationState::IsDownedOrBleedoutLifeState(apActor->actorState.flags1))
-            {
-                // Prevent late/in-flight pre-revive action packets from putting a revived 0xFF teammate back into kBleedout!
-                (void)CoopAnimationState::NormalizePostReviveActorState(
-                    apActor->actorState.flags1,
-                    apActor->actorState.flags2);
-            }
-        }
-
-        if (CoopAnimationState::IsFurnitureEnterEvent(first.EventName) && hasNearbyFurniture)
-            aAnimationComponent.InRemoteFurnitureIdle = true;
-        else if (CoopAnimationState::IsFurnitureOrIdleExitEvent(first.EventName))
-        {
-            aAnimationComponent.InRemoteFurnitureIdle = false;
-            aAnimationComponent.PendingFurnitureGraphExit = false;
-        }
-
-        if (sitDecision.ForceDefaultIdleGraph || aAnimationComponent.PendingFurnitureGraphExit ||
-            (aAnimationComponent.InRemoteFurnitureIdle && !hasNearbyFurniture && CoopAnimationState::IsWeaponDrawn(first.State2)))
-        {
-            ForceDefaultIdleGraphReset(apActor, aAnimationComponent, aTick);
-        }
 
         apActor->LoadAnimationVariables(first.Variables);
 
@@ -181,10 +66,12 @@ void AnimationSystem::Update(World& aWorld, Actor* apActor, RemoteAnimationCompo
         actionData.idleForm = Cast<TESIdleForm>(TESForm::GetById(first.IdleId));
         actionData.someFlag = ((first.Type & 0x4) != 0) ? 1 : 0;
 
-        ActorMediator::Get()->ForceAction(&actionData);
+        const auto result = ActorMediator::Get()->ForceAction(&actionData);
 
         if (aAnimationComponent.ReplayCount > 0)
             aAnimationComponent.ReplayCount--;
+
+        actions.pop_front();
     }
 }
 
@@ -202,8 +89,13 @@ void AnimationSystem::Clean(World& aWorld, const entt::entity aEntity) noexcept
 void AnimationSystem::AddActionsForReplay(RemoteAnimationComponent& aAnimationComponent,
                                           const ActionReplayChain& acReplay) noexcept
 {
-    aAnimationComponent.TimePoints.insert(aAnimationComponent.TimePoints.end(), acReplay.Actions.begin(),
-                                          acReplay.Actions.end());
+    // A replay rebuilds past state, so it is due right away rather than when playback reaches the original ticks
+    for (auto action : acReplay.Actions)
+    {
+        action.Tick = 0;
+        aAnimationComponent.TimePoints.push_back(std::move(action));
+    }
+
     aAnimationComponent.ReplayCount = acReplay.Actions.size();
     aAnimationComponent.ResetAnimationGraphForReplay = acReplay.ResetAnimationGraph;
 }
@@ -223,59 +115,53 @@ void AnimationSystem::AddAction(RemoteAnimationComponent& aAnimationComponent, c
     aAnimationComponent.TimePoints.push_back(lastProcessedAction);
 }
 
-void AnimationSystem::Serialize(World& aWorld, ClientReferencesMoveRequest& aMovementSnapshot, LocalComponent& localComponent, LocalAnimationComponent& animationComponent, FormIdComponent& formIdComponent)
+void AnimationSystem::SerializeMovement(World& aWorld, Actor* apActor, Movement& aMovement) noexcept
 {
-    const auto pForm = TESForm::GetById(formIdComponent.Id);
-    const auto pActor = Cast<Actor>(pForm);
-    if (!pActor)
+    if (const auto pCell = apActor->parentCell)
+        aWorld.GetModSystem().GetServerModId(pCell->formID, aMovement.CellId.ModId, aMovement.CellId.BaseId);
+
+    if (const auto pWorldSpace = apActor->GetWorldSpace())
+        aWorld.GetModSystem().GetServerModId(pWorldSpace->formID, aMovement.WorldSpaceId.ModId, aMovement.WorldSpaceId.BaseId);
+
+    aMovement.Position = apActor->position;
+
+    aMovement.Rotation.x = apActor->rotation.x;
+    aMovement.Rotation.y = apActor->rotation.z;
+
+    apActor->SaveAnimationVariables(aMovement.Variables);
+
+    if (apActor->currentProcess && apActor->currentProcess->middleProcess)
+    {
+        aMovement.Direction = apActor->currentProcess->middleProcess->direction;
+
+        static BSFixedString s_targetLocation("TargetLocation");
+        NiPoint3 target{};
+
+        if (apActor == PlayerCharacter::Get() && apActor->currentProcess->middleProcess->lookAt && PlayerCamera::Get()->IsThirdPerson() &&
+            apActor->animationGraphHolder.GetVariableNiPoint3(&s_targetLocation, &target))
+        {
+            aMovement.HasLookAt = true;
+            aMovement.LookOffset = target - apActor->GetLookingAtLocation();
+        }
+    }
+}
+
+void AnimationSystem::SerializeActions(RequestActionEvents& aMessage, LocalComponent& localComponent, LocalAnimationComponent& animationComponent) noexcept
+{
+    if (animationComponent.Actions.empty())
         return;
 
-    auto& update = aMovementSnapshot.Updates[localComponent.Id];
-    auto& movement = update.UpdatedMovement;
+    auto& actions = animationComponent.Actions;
+    actions.erase(std::remove_if(actions.begin(), actions.end(), [&](const auto& action) {
+        return action.Tick < localComponent.MinimumActionTick;
+    }), actions.end());
+    if (actions.empty())
+        return;
+    for (auto& action : actions)
+        action.OwnershipEpoch = localComponent.OwnershipEpoch;
+    localComponent.CurrentAction = animationComponent.Actions.back();
 
-    if (const auto pCell = pActor->parentCell)
-        World::Get().GetModSystem().GetServerModId(pCell->formID, movement.CellId.ModId, movement.CellId.BaseId);
-
-    if (const auto pWorldSpace = pActor->GetWorldSpace())
-        World::Get().GetModSystem().GetServerModId(pWorldSpace->formID, movement.WorldSpaceId.ModId, movement.WorldSpaceId.BaseId);
-
-    movement.Position = pActor->position;
-
-    movement.Rotation.x = pActor->rotation.x;
-    movement.Rotation.y = pActor->rotation.z;
-
-    pActor->SaveAnimationVariables(movement.Variables);
-
-    if (pActor->currentProcess && pActor->currentProcess->middleProcess)
-    {
-        movement.Direction = pActor->currentProcess->middleProcess->direction;
-    }
-
-    for (auto entry : animationComponent.Actions)
-    {
-        if (entry.TargetId != 0)
-        {
-            const entt::entity targetEntity = aWorld.GetCharacterService().FindAnyEntityByFormId(entry.TargetId);
-            if (targetEntity != entt::null)
-            {
-                if (const auto targetServerId = Utils::GetServerId(targetEntity); targetServerId.has_value())
-                    entry.TargetId = kEncodedActorServerIdTag | (targetServerId.value() & kEncodedActorServerIdMask);
-                else if (entry.TargetId == 0x14 || (entry.TargetId & 0xFF000000u) == 0xFF000000u)
-                    entry.TargetId = 0;
-            }
-            else if (entry.TargetId == 0x14 || (entry.TargetId & 0xFF000000u) == 0xFF000000u)
-            {
-                entry.TargetId = 0;
-            }
-        }
-        update.ActionEvents.push_back(std::move(entry));
-    }
-
-    auto latestAction = animationComponent.GetLatestAction();
-
-    if (latestAction)
-        localComponent.CurrentAction = latestAction.MoveResult();
-
+    aMessage.Actions[localComponent.Id] = std::move(animationComponent.Actions);
     animationComponent.Actions.clear();
 }
 

@@ -1,6 +1,7 @@
 #include "MenuTopicManager.h"
 
 #include <Events/PlayerDialogueEvent.h>
+#include <TESObjectREFR.h>
 
 TP_THIS_FUNCTION(TPlayDialogueOption, bool, MenuTopicManager, int32_t aIndex);
 static TPlayDialogueOption* RealPlayDialogueOption = nullptr;
@@ -11,9 +12,23 @@ MenuTopicManager* MenuTopicManager::Get() noexcept
     return *s_singleton.Get();
 }
 
+bool MenuTopicManager::IsPlayerDialogueSpeaker(const TESObjectREFR* apSpeaker) noexcept
+{
+    if (!apSpeaker)
+        return false;
+
+    const auto* pManager = Get();
+    // lastSpeaker survives menu closure; using it here would also capture
+    // subsequent ambient speech from a remotely owned NPC.
+    return pManager && pManager->IsCurrentSpeaker(apSpeaker->GetHandle());
+}
+
 bool TP_MAKE_THISCALL(HookPlayDialogueOption, MenuTopicManager, int32_t aIndex)
 {
-    if (apThis && apThis->pOptions && aIndex >= 0)
+    if (!World::IsCreated())
+        return TiltedPhoques::ThisCall(RealPlayDialogueOption, apThis, aIndex);
+
+    if (apThis->pOptions)
     {
         int i = 0;
         const char* pText = nullptr;
@@ -21,18 +36,14 @@ bool TP_MAKE_THISCALL(HookPlayDialogueOption, MenuTopicManager, int32_t aIndex)
         {
             if (i == aIndex)
             {
-                if (option && option->text && option->text[0] != '\0')
-                    pText = option->text;
+                pText = option->text;
                 break;
             }
             i++;
         }
 
-        if (pText != nullptr && World::IsCreated() && World::IsConnectedCached())
-        {
-            String safeText(pText);
-            World::Get().GetRunner().Trigger(PlayerDialogueEvent(std::move(safeText)));
-        }
+        if (pText != nullptr)
+            World::Get().GetRunner().Trigger(PlayerDialogueEvent(pText));
     }
 
     return TiltedPhoques::ThisCall(RealPlayDialogueOption, apThis, aIndex);

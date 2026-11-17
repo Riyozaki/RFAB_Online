@@ -6,7 +6,6 @@
 
 struct WaitingForAssignmentComponent
 {
-    uint32_t Cookie{};
-    bool DirtyInventory{false};
-    float PendingHealthDelta{0.0f};
+    uint32_t Cookie;
+    bool Cancelled{false};
 };

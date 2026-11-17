@@ -1,5 +1,3 @@
-local function istable(t) return type(t) == 'table' end
-
 add_requires("sol2 v3.3.0", {configs = {lua = "lua"}})
 
 local function build_server()
@@ -13,6 +11,8 @@ local function build_server()
     add_files("**.cpp")
     if is_plat("windows") then
         add_files("server.rc")
+        -- Linker map for Tools/rfab/symbolize_crash.py (see Code/immersive_launcher/xmake.lua).
+        add_shflags("/MAP", { force = true })
     end
     if is_plat("linux") then
         add_cxxflags("-fvisibility=hidden")
@@ -23,7 +23,6 @@ local function build_server()
         "Resources",
         "ESLoader",
         "BaseLib",
-        "AdminProtocol",
         "TiltedConnect"
     )
     add_packages(

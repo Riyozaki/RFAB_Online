@@ -1,8 +1,6 @@
 #include <TiltedOnlinePCH.h>
 
 #include <Services/DiscoveryService.h>
-#include <Services/CharacterService.h>
-#include <Services/CoordinatedSaveService.h>
 #include <Games/TES.h>
 
 #include <Games/References.h>
@@ -17,31 +15,21 @@
 #include <Events/GridCellChangeEvent.h>
 #include <Events/CellChangeEvent.h>
 #include <Events/LocationChangeEvent.h>
+#include <Events/ConnectedEvent.h>
 #include <Events/ConnectionErrorEvent.h>
+#include <Events/WorldLoadedEvent.h>
 
 #include <World.h>
-#include <Components.h>
-
-#include <chrono>
-
-namespace
-{
-[[nodiscard]] uint64_t NowDiscoverySteadyMs() noexcept
-{
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
-}
-} // namespace
+#include <BranchInfo.h>
 
 DiscoveryService::DiscoveryService(World& aWorld, entt::dispatcher& aDispatcher) noexcept
     : m_world(aWorld)
     , m_dispatcher(aDispatcher)
 {
     m_preUpdateConnection = m_dispatcher.sink<PreUpdateEvent>().connect<&DiscoveryService::OnUpdate>(this);
+    m_connectedConnection = m_dispatcher.sink<ConnectedEvent>().connect<&DiscoveryService::OnConnected>(this);
 
-    EventDispatcherManager::Get()->loadGameEvent.RegisterSink(this);
+    m_loadedConnection = m_dispatcher.sink<WorldLoadedEvent>().connect<&DiscoveryService::OnWorldLoaded>(this);
 }
 
 void DiscoveryService::VisitCell(bool aForceTrigger) noexcept
@@ -52,7 +40,7 @@ void DiscoveryService::VisitCell(bool aForceTrigger) noexcept
 
     if (pPlayer->GetWorldSpace())
         VisitExteriorCell(aForceTrigger);
-    else if (pPlayer->GetParentCell())
+    else if (pPlayer->GetParentCellEx())
         VisitInteriorCell(aForceTrigger);
 
     // exactly how the game does it too
@@ -99,10 +87,12 @@ void DiscoveryService::VisitExteriorCell(bool aForceTrigger) noexcept
         TESObjectCELL* pCell = pPlayer->GetParentCellEx();
         if (!pCell)
             pCell = ModManager::Get()->GetCellFromCoordinates(gameCurrentGrid.X, gameCurrentGrid.Y, pWorldSpace, false);
+        if (!pCell)
+            return;
 
-        if (!pCell || !m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
+        if (!m_world.GetModSystem().GetServerModId(pCell->formID, cellChangeEvent.CellId))
         {
-            spdlog::error("Failed to find cell id for form id {:X}", pCell ? pCell->formID : 0u);
+            spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
             return;
         }
 
@@ -118,7 +108,7 @@ void DiscoveryService::VisitInteriorCell(bool aForceTrigger) noexcept
 {
     ResetCachedCellData();
 
-    const uint32_t cellId = PlayerCharacter::Get()->GetParentCell()->formID;
+    const uint32_t cellId = PlayerCharacter::Get()->GetParentCellEx()->formID;
     if (m_interiorCellId != cellId || aForceTrigger)
     {
         CellChangeEvent cellChangeEvent{};
@@ -178,10 +168,12 @@ void DiscoveryService::DetectGridCellChange(TESWorldSpace* aWorldSpace, bool aNe
     TESObjectCELL* pCell = PlayerCharacter::Get()->GetParentCellEx();
     if (!pCell)
         pCell = ModManager::Get()->GetCellFromCoordinates(pTES->currentGridX, pTES->currentGridY, aWorldSpace, false);
+    if (!pCell)
+        return;
 
-    if (!pCell || !m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
+    if (!m_world.GetModSystem().GetServerModId(pCell->formID, changeEvent.PlayerCell))
     {
-        spdlog::error("Failed to find cell id for form id {:X}", pCell ? pCell->formID : 0u);
+        spdlog::error("Failed to find cell id for form id {:X}", pCell->formID);
         return;
     }
 
@@ -217,64 +209,39 @@ void DiscoveryService::VisitForms() noexcept
 
     for (uint32_t i = 0; i < pProcessLists->highActorHandleArray.length; ++i)
     {
-        GamePtr<TESObjectREFR> spRefr = TESObjectREFR::LookupByHandle(pProcessLists->highActorHandleArray[i]);
-        TESObjectREFR* const pRefr = spRefr.Get();
-        if (!pRefr)
-            continue;
-
-        if (pRefr->GetNiNode())
+        TESObjectREFR* const pRefr = TESObjectREFR::GetByHandle(pProcessLists->highActorHandleArray[i]);
+        if (pRefr)
         {
-            m_niNodeFlickerGraceFrames.erase(pRefr->formID);
-            m_demotionHoldTracker.NotifyPresentInHigh(pRefr->formID);
-            visitor(pRefr);
-        }
-        else if (m_forms.count(pRefr->formID) != 0 &&
-                 !pRefr->IsDisabled() &&
-                 !pRefr->IsDeleted() &&
-                 pRefr->parentCell &&
-                 pRefr->parentCell->loadedCellData != nullptr)
-        {
-            // Keep already-registered high-process actors alive across short (<15-frame) 3D rebuilds
-            // (QueueNiNodeUpdate, helmet/armor equip, vampire/werewolf transform, exterior grid seam).
-            constexpr uint8_t kMaxNiNodeFlickerFrames = 15;
-            uint8_t& missingFrames = m_niNodeFlickerGraceFrames[pRefr->formID];
-            if (missingFrames < kMaxNiNodeFlickerFrames)
+            if (pRefr->GetNiNode())
             {
-                ++missingFrames;
-                s_previousForms.erase(pRefr->formID);
+                visitor(pRefr);
             }
         }
     }
 
     // Not in actor holder
-    if (PlayerCharacter* pPlayer = PlayerCharacter::Get())
+    if (auto* pPlayer = PlayerCharacter::Get())
         visitor(pPlayer);
 
-    // We dispatch removal events first to prevent needless reallocations.
-    // Actors that genuinely unloaded, detached, disabled, or were deleted are removed immediately (0ms),
-    // whereas live actors still in an attached cell that merely dipped from `High` into `Middle-High` AI
-    // process (or are rebuilding 3D) are held for 3.5s so boundary oscillation never thrashes ServerId.
-    const uint64_t nowMs = NowDiscoverySteadyMs();
+    // We dispatch removal events first to prevent needless reallocations
     for (uint32_t formId : s_previousForms)
     {
-        TESObjectREFR* pStillLoaded = Cast<TESObjectREFR>(TESForm::GetById(formId));
-        const bool isDisabledOrDeleted =
-            !pStillLoaded || pStillLoaded->IsDisabled() || pStillLoaded->IsDeleted();
-        const bool existsInAttachedLoadedCell =
-            pStillLoaded &&
-            pStillLoaded->parentCell &&
-            pStillLoaded->parentCell->IsAttachedAndLoaded();
-
-        if (m_demotionHoldTracker.ShouldRetainMissingFromHigh(
-                formId,
-                existsInAttachedLoadedCell,
-                isDisabledOrDeleted,
-                nowMs))
+        // A conform can remove both the 3D and the high-process handle. Keep the
+        // existing discovery entry so rebuilding it does not cancel its assignment.
+        // TODO: GetById performance in loop?
+        if (auto* pActor = Cast<Actor>(TESForm::GetById(formId)); pActor && !pActor->IsDeleted())
         {
-            continue;
+            using ReconciliationStage = ActorExtension::ReconciliationStage;
+            const auto cStage = pActor->GetExtension()->Reconciliation;
+            const auto* pCell = pActor->GetParentCellEx();
+            // Finish the disable/enable pair even if the cell starts unloading.
+            // Once enabled, an unloaded cell is a real removal.
+            if (cStage == ReconciliationStage::WaitingForDisable || (cStage == ReconciliationStage::WaitingFor3D && pCell && pCell->IsAttached()))
+            {
+                continue;
+            }
         }
 
-        m_niNodeFlickerGraceFrames.erase(formId);
         m_dispatcher.trigger(ActorRemovedEvent(formId));
         m_forms.erase(formId);
     }
@@ -283,73 +250,15 @@ void DiscoveryService::VisitForms() noexcept
     m_dispatcher.update<ActorAddedEvent>();
 }
 
-void DiscoveryService::HoldActorRemoval(uint32_t aFormId, uint64_t aDurationMs) noexcept
-{
-    m_demotionHoldTracker.ArmExplicitHold(aFormId, NowDiscoverySteadyMs(), aDurationMs);
-}
-
-void DiscoveryService::OnWorldLoadBegin(const Session::Transition&) noexcept
-{
-    ResetLoadedForms();
-}
-
-void DiscoveryService::OnWorldLoadEnd(const Session::Transition& acTransition) noexcept
-{
-    if (!acTransition.Succeeded)
-        ReconcileMissingWorldEntities();
-}
-
-void DiscoveryService::ResetLoadedForms() noexcept
-{
-    m_forms.clear();
-    m_niNodeFlickerGraceFrames.clear();
-    m_demotionHoldTracker.Clear();
-    m_interiorCellId = 0;
-    m_pLocation = nullptr;
-    ResetCachedCellData();
-}
-
-void DiscoveryService::ReconcileMissingWorldEntities() noexcept
-{
-    if (!m_forms.empty())
-    {
-        Set<uint32_t> liveEntityFormIds;
-        auto actorView = m_world.view<FormIdComponent>(entt::exclude<ObjectComponent>);
-        for (entt::entity entity : actorView)
-            liveEntityFormIds.insert(actorView.get<FormIdComponent>(entity).Id);
-
-        for (auto it = m_forms.begin(); it != m_forms.end();)
-        {
-            if (!liveEntityFormIds.count(*it))
-                it = m_forms.erase(it);
-            else
-                ++it;
-        }
-    }
-
-    VisitForms();
-}
-
 void DiscoveryService::OnUpdate(const PreUpdateEvent& acUpdateEvent) noexcept
 {
     TP_UNUSED(acUpdateEvent);
 
-    if (m_world.GetCharacterService().IsEngineWorldLoading())
-        return;
-
     VisitCell();
-
-    // Phase 3 (`WorldReloadBarrier`): when a non-leader Guest finishes `.ess` loading before Host,
-    // keep updating `VisitCell()` (so cell topology stays accurate) while holding NPC `VisitForms()`
-    // until Host releases the reload barrier (or the safety timeout expires), guaranteeing Host claims
-    // canonical `Sticky Host Cell Authority` without double-transfer churn.
-    if (m_world.GetCoordinatedSaveService().IsHoldingWorldDiscoveryForHostBarrier())
-        return;
-
     VisitForms();
 }
 
-void DiscoveryService::OnSessionBegin(const Session::Transition&) noexcept
+void DiscoveryService::OnConnected(const ConnectedEvent& acEvent) noexcept
 {
     // uGridsToLoad should always be 5, as this is what the server enforces
     auto* pSetting = INISettingCollection::Get()->GetSetting("uGridsToLoad:General");
@@ -361,48 +270,16 @@ void DiscoveryService::OnSessionBegin(const Session::Transition&) noexcept
         m_world.GetRunner().Trigger(errorEvent);
     }
 
-    // Ensure 0x14 (local PlayerCharacter) and all currently loaded actors have live EnTT entities
-    // even if a save load previously detached all actor entities via DetachAllActorsForEngineLoad().
-    ReconcileMissingWorldEntities();
     VisitCell(true);
 }
 
-BSTEventResult DiscoveryService::OnEvent(const TESLoadGameEvent*, const EventDispatcher<TESLoadGameEvent>*)
+void DiscoveryService::OnWorldLoaded(const WorldLoadedEvent&) noexcept
 {
-    RFAB_EXPECT_MAIN_THREAD("DiscoveryService::OnEvent(TESLoadGameEvent)");
-    spdlog::info("Finished loading, triggering visit cell and fresh actor discovery");
-
-    // RFAB Online: RFAB runs hundreds of Requiem/SKSE plugins by design.
-    // Only warn if SkyrimTogether.esp itself was not enabled in MO2's load order;
-    // never spam the upstream vanilla-only "non_default_install" popup on save load.
-    Mod* pSkyrimTogether = ModManager::Get()->GetByName("SkyrimTogether.esp");
-    if (!pSkyrimTogether)
-    {
-        spdlog::warn("[RFAB] SkyrimTogether.esp is missing from active load order ({} mods loaded)!",
-                     ModManager::Get()->mods.Size());
-        ConnectionErrorEvent errorEvent{};
-        errorEvent.ErrorDetail = "{\"error\": \"non_default_install\"}";
-
-        m_world.GetRunner().Trigger(errorEvent);
-    }
-    else
-    {
-        spdlog::info("[RFAB] SkyrimTogether.esp verified active (slot {:02X}) across {} loaded mods.",
-                     pSkyrimTogether->standardId, ModManager::Get()->mods.Size());
-    }
-
-    // Clear stale pre-load form IDs (especially 0x14 PlayerCharacter and nearby NPCs destroyed during
-    // DetachAllActorsForEngineLoad) so VisitForms() immediately re-creates their EnTT entities once
-    // the world load ends (Session::Lifecycle) and the `WorldReloadBarrier` Host gate settles.
-    ResetLoadedForms();
-    if (!m_world.GetCharacterService().IsEngineWorldLoading())
-    {
-        VisitCell(true);
-        if (!m_world.GetCoordinatedSaveService().IsHoldingWorldDiscoveryForHostBarrier())
-            VisitForms();
-    }
-
-    return BSTEventResult::kOk;
+    ResetCachedCellData();
+    m_interiorCellId = 0;
+    m_forms.clear();
+    m_pLocation = nullptr;
+    // World::Update visits the new timeline in PreUpdate, AFTER disconnect and all reset handlers.
 }
 
 void DiscoveryService::ResetCachedCellData() noexcept

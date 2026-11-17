@@ -5,11 +5,7 @@
 
 struct BSMaskedShaderMaterial
 {
-    virtual ~BSMaskedShaderMaterial();
-    virtual BSMaskedShaderMaterial* Create();
-    virtual void Copy(BSMaskedShaderMaterial* apSource);
-
-    uint8_t pad08[0x98];
+    uint8_t pad0[0xA0];
 
     NiPointer<NiTexture> renderedTexture;
 };

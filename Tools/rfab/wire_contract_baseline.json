@@ -1,0 +1,54 @@
+{
+  "_comment": "Known wire-contract violations (Tools/rfab/check_wire_contract.py) for clean upstream TiltedEvolution (13ff0b5a) in Phase 0. Every entry needs a reason. The check fails on a violation that is not listed here and on an entry that no longer occurs.",
+  "known": [
+    {
+      "rule": "W1",
+      "subject": "NotifyDrawWeapon",
+      "detail": "ServerMessage is never constructed under Code/server",
+      "reason": "Dead type inherited from upstream TiltedEvolution (13ff0b5a); kept verbatim in Phase 0 so the wire format matches upstream."
+    },
+    {
+      "rule": "W2",
+      "subject": "NotifyDrawWeapon",
+      "detail": "ServerMessage has no handler under Code/client",
+      "reason": "Dead type inherited from upstream TiltedEvolution (13ff0b5a); kept verbatim in Phase 0 so the wire format matches upstream."
+    },
+    {
+      "rule": "W2",
+      "subject": "NotifySetTimeResult",
+      "detail": "ServerMessage has no handler under Code/client",
+      "reason": "Inherited from upstream TiltedEvolution: the result of the set-time command is currently ignored on the client."
+    },
+    {
+      "rule": "W1",
+      "subject": "NotifyPlayerDialogue",
+      "detail": "ServerMessage is never constructed under Code/server",
+      "reason": "Inherited from upstream TiltedEvolution: the server relays dialogue via NotifyChatMessageBroadcast instead."
+    },
+    {
+      "rule": "W1",
+      "subject": "NotifyObjectInventoryChanges",
+      "detail": "ServerMessage is never constructed under Code/server",
+      "reason": "Dead type inherited from upstream TiltedEvolution: only forward declarations remain on both sides."
+    },
+    {
+      "rule": "W2",
+      "subject": "NotifyObjectInventoryChanges",
+      "detail": "ServerMessage has no handler under Code/client",
+      "reason": "Dead type inherited from upstream TiltedEvolution: only forward declarations remain on both sides."
+    },
+    {
+      "rule": "W1",
+      "subject": "RequestObjectInventoryChanges",
+      "detail": "ClientMessage is never constructed under Code/client",
+      "reason": "Dead type inherited from upstream TiltedEvolution: only forward declarations remain on both sides."
+    },
+    {
+      "rule": "W2",
+      "subject": "RequestObjectInventoryChanges",
+      "detail": "ClientMessage has no handler under Code/server",
+      "reason": "Dead type inherited from upstream TiltedEvolution: only forward declarations remain on both sides."
+    }
+  ],
+  "reserved": []
+}

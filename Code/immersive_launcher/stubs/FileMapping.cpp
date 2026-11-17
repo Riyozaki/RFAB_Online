@@ -379,7 +379,7 @@ NTSTATUS WINAPI TP_LdrLoadDll(const wchar_t* apPath, uint32_t* apFlags, UNICODE_
         const wchar_t *name = &fileName[pos + 1];
         if (stubs::IsSoulsRE(name))
             stubs::g_IsSoulsREActive = true;
-        
+
         if (stubs::IsDllBlocked(name))
         {
             // invalid image hash
@@ -397,14 +397,64 @@ extern "C" __declspec(dllexport) const wchar_t* GetTiltedClientDirW() noexcept
     return s_OverridePath.c_str();
 }
 
+namespace
+{
+std::wstring ResolvePhysicalClientDir() noexcept
+{
+    wchar_t modulePath[4096]{};
+    const DWORD modLen = GetModuleFileNameW(nullptr, modulePath, static_cast<DWORD>(std::size(modulePath)));
+    if (modLen > 0 && modLen < std::size(modulePath))
+    {
+        // Under MO2 USVFS, GetModuleFileNameW(nullptr) returns the virtualized path
+        // `<GameRoot>\Data\SkyrimTogetherReborn\SkyrimTogether.exe` (which does not exist on NTFS
+        // outside USVFS). Querying GetFinalPathNameByHandleW on an open handle asks the NTFS kernel
+        // directly and yields the real physical folder (`MO2\mods\RFAB_Online\SkyrimTogetherReborn`),
+        // ensuring AddDllDirectory, CEF subprocesses, crash dumps, logs, and rfab_coop_config all
+        // resolve to an existing physical directory outside Data\.
+        HANDLE hExe = CreateFileW(
+            modulePath,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (hExe != INVALID_HANDLE_VALUE)
+        {
+            wchar_t finalBuf[4096]{};
+            const DWORD finalLen = GetFinalPathNameByHandleW(
+                hExe, finalBuf, static_cast<DWORD>(std::size(finalBuf)), FILE_NAME_NORMALIZED);
+            CloseHandle(hExe);
+
+            if (finalLen > 0 && finalLen < std::size(finalBuf))
+            {
+                std::wstring resolved(finalBuf, finalLen);
+                if (resolved.rfind(L"\\\\?\\UNC\\", 0) == 0)
+                    resolved.replace(0, 8, L"\\\\");
+                else if (resolved.rfind(L"\\\\?\\", 0) == 0)
+                    resolved.erase(0, 4);
+
+                std::replace(resolved.begin(), resolved.end(), L'/', L'\\');
+                const size_t slashPos = resolved.find_last_of(L'\\');
+                if (slashPos != std::wstring::npos && slashPos > 0)
+                    return resolved.substr(0, slashPos);
+            }
+        }
+    }
+
+    std::wstring fallback = TiltedPhoques::GetPath().wstring();
+    std::replace(fallback.begin(), fallback.end(), L'/', L'\\');
+    return fallback;
+}
+} // namespace
+
 #define VALIDATE(x) \
     if (x != MH_OK) \
         Die(L"CoreStubsInit(): Fatal Minhook error.", true);
 
 void CoreStubsInit()
 {
-    s_OverridePath = TiltedPhoques::GetPath().wstring();
-    std::replace(s_OverridePath.begin(), s_OverridePath.end(), L'/', L'\\');
+    s_OverridePath = ResolvePhysicalClientDir();
     SetEnvironmentVariableW(L"RFAB_TILTED_CLIENT_DIR", s_OverridePath.c_str());
 
     VALIDATE(MH_Initialize());

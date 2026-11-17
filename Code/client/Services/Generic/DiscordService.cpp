@@ -10,6 +10,8 @@
 #include <base/threading/ThreadUtils.h>
 #include <Events/LocationChangeEvent.h>
 
+extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
+
 #define DISCORD_OVERLAY_ENABLE 0
 
 IDiscordUserEvents DiscordService::s_mUserEvents = {DiscordService::OnUserUpdate};
@@ -62,14 +64,17 @@ void DiscordService::OnLocationChangeEvent() noexcept
 
         if (pLocation)
         {
-            if (const char* locName = pLocation->GetName())
-                strncpy_s(m_ActivityState.details, locName, _TRUNCATE);
+            if (const char* pLocName = pLocation->GetName())
+                strncpy_s(m_ActivityState.details, sizeof(DiscordActivity::details), pLocName, _TRUNCATE);
         }
 
         if (pWorldspace)
         {
-            if (const char* wsName = pWorldspace->fullName.value.AsAscii())
-                strncpy_s(m_ActivityState.state, wsName, _TRUNCATE);
+            if (pWorldspace->fullName.value.data)
+            {
+                if (const char* pWsName = pWorldspace->fullName.value.AsAscii())
+                    strncpy_s(m_ActivityState.state, sizeof(DiscordActivity::state), pWsName, _TRUNCATE);
+            }
 
             if (m_lastWorldspaceId != pWorldspace->formID)
             {
@@ -147,8 +152,6 @@ void DiscordService::WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
 #endif
 }
-
-extern "C" const wchar_t* GetTiltedClientDirW() noexcept;
 
 bool DiscordService::Init()
 {

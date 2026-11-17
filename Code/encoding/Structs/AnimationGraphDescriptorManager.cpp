@@ -1,6 +1,5 @@
 #include <Structs/AnimationGraphDescriptorManager.h>
-
-#include <mutex>
+#include <iostream>
 
 AnimationGraphDescriptorManager& AnimationGraphDescriptorManager::Get() noexcept
 {
@@ -10,7 +9,6 @@ AnimationGraphDescriptorManager& AnimationGraphDescriptorManager::Get() noexcept
 
 const AnimationGraphDescriptor* AnimationGraphDescriptorManager::GetDescriptor(uint64_t aKey) const noexcept
 {
-    std::shared_lock<std::shared_mutex> lock(m_mutex);
     const auto it = m_descriptors.find(aKey);
     if (it != std::end(m_descriptors))
         return &it->second;
@@ -25,37 +23,14 @@ AnimationGraphDescriptorManager::Builder::Builder(AnimationGraphDescriptorManage
 
 void AnimationGraphDescriptorManager::Register(uint64_t aKey, AnimationGraphDescriptor aAnimationGraphDescriptor) noexcept
 {
-    // std::unordered_map is node-based, so concurrent insertions (e.g. from BehaviorVar::Patch on
-    // Havok behavior-graph worker threads) never invalidate existing const AnimationGraphDescriptor*
-    // pointers held by animation serialization/deserialization callers even across bucket rehashes.
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
-    m_descriptors.try_emplace(aKey, std::move(aAnimationGraphDescriptor));
-}
-
-void AnimationGraphDescriptorManager::UpdateKey(uint64_t aKey, uint64_t newKey) noexcept
-{
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
-    if (aKey == newKey || m_descriptors.find(newKey) != std::end(m_descriptors))
+    if (m_descriptors.count(aKey))
         return;
 
-    const auto it = m_descriptors.find(aKey);
-    if (it != std::end(m_descriptors))
-        m_descriptors.try_emplace(newKey, it->second);
+    m_descriptors[aKey] = std::move(aAnimationGraphDescriptor);
 }
 
-void AnimationGraphDescriptorManager::Update(uint64_t aKey, uint64_t newKey, AnimationGraphDescriptor aAnimationGraphDescriptor) noexcept
+const TiltedPhoques::Map<uint64_t, AnimationGraphDescriptor>& AnimationGraphDescriptorManager::GetDescriptors()
+    const noexcept
 {
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
-    (void)aKey;
-    // Never overwrite an already-registered descriptor in place: worker threads hold raw
-    // const AnimationGraphDescriptor* pointers returned by GetDescriptor() after releasing m_mutex,
-    // and insert_or_assign would destroy and free the existing LookupTable vectors underneath them.
-    m_descriptors.try_emplace(newKey, std::move(aAnimationGraphDescriptor));
-}
-
-std::unordered_map<uint64_t, AnimationGraphDescriptor> AnimationGraphDescriptorManager::GetDescriptors() const
-{
-    std::shared_lock<std::shared_mutex> lock(m_mutex);
     return m_descriptors;
 }
-

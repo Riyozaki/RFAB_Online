@@ -1,15 +1,11 @@
 #pragma once
 
-#include <atomic>
-#include <common/Session/Lifecycle.h>
-
 struct World;
 struct ImguiService;
 struct TransportService;
 struct UpdateEvent;
+struct DisconnectedEvent;
 struct NotifyPlayerList;
-struct NotifyPlayerJoined;
-struct NotifyPlayerLeft;
 struct NotifyPartyInfo;
 struct NotifyPartyInvite;
 struct NotifyPartyJoined;
@@ -18,31 +14,21 @@ struct NotifyPartyLeft;
 /**
  * @brief Manages the party of the local player.
  */
-struct PartyService final : Session::IParticipant
+struct PartyService
 {
     PartyService(World& aWorld, entt::dispatcher& aDispatcher, TransportService& aTransportService) noexcept;
     ~PartyService() = default;
 
     TP_NOCOPYMOVE(PartyService);
 
-    [[nodiscard]] bool IsInParty() const noexcept { return m_inParty.load(std::memory_order_acquire); }
-    [[nodiscard]] bool IsLeader() const noexcept { return m_isLeader.load(std::memory_order_acquire); }
-    [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId.load(std::memory_order_acquire); }
-    [[nodiscard]] bool IsPlayerInParty(const uint32_t aPlayerId) const noexcept
-    {
-        if (!m_inParty.load(std::memory_order_acquire) || aPlayerId == 0)
-            return false;
-        for (const uint32_t memberId : m_partyMembers)
-        {
-            if (memberId == aPlayerId)
-                return true;
-        }
-        return false;
-    }
+    [[nodiscard]] bool IsInParty() const noexcept { return m_inParty; }
+    [[nodiscard]] bool IsLeader() const noexcept { return m_isLeader; }
+    [[nodiscard]] uint32_t GetLeaderPlayerId() const noexcept { return m_leaderPlayerId; }
 
     const Vector<uint32_t>& GetPartyMembers() const noexcept { return m_partyMembers; }
     const Map<uint32_t, String>& GetPlayers() const noexcept { return m_players; }
     Map<uint32_t, uint64_t>& GetInvitations() noexcept { return m_invitations; }
+    [[nodiscard]] bool HasPendingInvitations() const noexcept { return !m_invitations.empty(); }
 
     void CreateParty() const noexcept;
     void LeaveParty() const noexcept;
@@ -51,15 +37,10 @@ struct PartyService final : Session::IParticipant
     void KickPartyMember(const uint32_t aPlayerId) const noexcept;
     void ChangePartyLeader(const uint32_t aPlayerId) const noexcept;
 
-    // Session::ParticipantId::kParty: party, player list and invitations all belong to one server.
-    // A coordinated live reload keeps the session, so they survive it.
-    void OnSessionEnd(const Session::Transition& acTransition) noexcept override;
-
 protected:
     void OnUpdate(const UpdateEvent& acEvent) noexcept;
+    void OnDisconnected(const DisconnectedEvent& acEvent) noexcept;
     void OnPlayerList(const NotifyPlayerList& acPlayerList) noexcept;
-    void OnPlayerJoined(const NotifyPlayerJoined& acPlayerJoined) noexcept;
-    void OnPlayerLeft(const NotifyPlayerLeft& acPlayerLeft) noexcept;
     void OnPartyInfo(const NotifyPartyInfo& acPartyInfo) noexcept;
     void OnPartyInvite(const NotifyPartyInvite& acPartyInvite) noexcept;
     void OnPartyJoined(const NotifyPartyJoined& acPartyJoined) noexcept;
@@ -72,18 +53,17 @@ private:
     Map<uint32_t, uint64_t> m_invitations;
     uint64_t m_nextUpdate{0};
 
-    std::atomic<bool> m_inParty{false};
-    std::atomic<bool> m_isLeader{false};
-    std::atomic<uint32_t> m_leaderPlayerId{0};
+    bool m_inParty = false;
+    bool m_isLeader = false;
+    uint32_t m_leaderPlayerId;
     Vector<uint32_t> m_partyMembers;
 
     World& m_world;
     TransportService& m_transport;
 
     entt::scoped_connection m_updateConnection;
+    entt::scoped_connection m_disconnectConnection;
     entt::scoped_connection m_playerListConnection;
-    entt::scoped_connection m_playerJoinedConnection;
-    entt::scoped_connection m_playerLeftConnection;
     entt::scoped_connection m_partyInfoConnection;
     entt::scoped_connection m_partyInviteConnection;
     entt::scoped_connection m_partyJoinedConnection;

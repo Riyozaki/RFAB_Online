@@ -99,4 +99,5 @@ struct MenuPausePolicy
     policy.PatchStatsMenuInput = !acEnvironment.PerkTreeModsPresent;
     return policy;
 }
+
 } // namespace Compat

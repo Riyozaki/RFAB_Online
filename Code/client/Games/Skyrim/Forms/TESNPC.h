@@ -19,17 +19,15 @@ struct TESNPC : TESActorBase
     static constexpr FormType Type = FormType::Npc;
 
     static TESNPC* Create(const String& acBuffer, uint32_t aChangeFlags) noexcept;
-    static TESNPC* GetLeveledSourceNpc(const TESNPC* apNpc) noexcept;
 
     TESNPC* GetTemplateBase() const noexcept
     {
-        TESNPC* pTemplate = npcTemplate;
-        uint32_t depth = 0;
+        TESNPC* pTemplate = faceNPC;
 
-        while (pTemplate && pTemplate->IsTemporary() && depth++ < 16u)
-            pTemplate = pTemplate->npcTemplate;
+        while (pTemplate && pTemplate->IsTemporary())
+            pTemplate = pTemplate->faceNPC;
 
-        return (pTemplate && !pTemplate->IsTemporary()) ? pTemplate : nullptr;
+        return pTemplate;
     }
 
     struct FaceMorphs
@@ -62,14 +60,15 @@ struct TESNPC : TESActorBase
     uintptr_t unk114;
     TESCombatStyle* combatStyle;
     size_t unk11C;
-    TESRace* overlayRace;
-    TESNPC* npcTemplate;
+    TESRace* originalRace;
+    TESNPC* faceNPC;
     float height;
     float weight;
-    uintptr_t unk130;
+    void* sounds;
     BSFixedString shortName;
-    TESObjectARMO* farArmo;
-    BGSOutfit* outfits[2];
+    TESObjectARMO* farSkin;
+    BGSOutfit* defaultOutfit;
+    BGSOutfit* sleepOutfit;
     uintptr_t unk144;
     TESFaction* faction;
 
@@ -97,13 +96,7 @@ struct TESNPC : TESActorBase
     void Initialize() noexcept;
 };
 
-#ifdef _MSC_VER
 static_assert(offsetof(TESNPC, npcClass) == 0x1C0);
-static_assert(offsetof(TESNPC, headData) == 0x1C8);
+static_assert(offsetof(TESNPC, faceNPC) == 0x1F0);
 static_assert(offsetof(TESNPC, color) == 0x246);
 static_assert(offsetof(TESNPC, relationships) == 0x250);
-#else
-static_assert(offsetof(TESNPC, npcClass) == 0x1B8);
-static_assert(offsetof(TESNPC, color) == 0x23E);
-static_assert(offsetof(TESNPC, relationships) == 0x248);
-#endif

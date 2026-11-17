@@ -7,6 +7,8 @@
 
 #include <filesystem>
 
+#include <common/Compat/SafeFs.h>
+
 namespace oobe
 {
 using namespace TiltedPhoques;
@@ -43,7 +45,8 @@ bool ValidatePath(const std::wstring& acPath)
         errorText += TARGET_NAME L".exe not found\n";
     }
 
-    if (!std::filesystem::exists(acPath) || !std::filesystem::exists(cTitlePath))
+    // SafeFs: exists() without an error_code throws on anything but a plain "not found" (M14).
+    if (!Compat::SafeFs::Exists(acPath) || !Compat::SafeFs::Exists(cTitlePath))
     {
         SetLastError(ERROR_BAD_PATHNAME);
         errorText += L"Path does not exist\n";

@@ -21,7 +21,7 @@ void DebugService::DrawProcessView()
     ImGui::PushID(id);
     if (ImGui::Button("Toggle"))
     {
-        m_world.GetRunner().Queue([pProcesses]() { pProcesses->bProcessHigh = !pProcesses->bProcessHigh; });
+        m_world.GetRunner().QueueForThisWorld([pProcesses]() { pProcesses->bProcessHigh = !pProcesses->bProcessHigh; });
     }
     ImGui::PopID();
     id++;
@@ -32,7 +32,7 @@ void DebugService::DrawProcessView()
     ImGui::PushID(id);
     if (ImGui::Button("Toggle"))
     {
-        m_world.GetRunner().Queue([pProcesses]() { pProcesses->bProcessLow = !pProcesses->bProcessLow; });
+        m_world.GetRunner().QueueForThisWorld([pProcesses]() { pProcesses->bProcessLow = !pProcesses->bProcessLow; });
     }
     ImGui::PopID();
     id++;
@@ -43,7 +43,7 @@ void DebugService::DrawProcessView()
     ImGui::PushID(id);
     if (ImGui::Button("Toggle"))
     {
-        m_world.GetRunner().Queue([pProcesses]() { pProcesses->bProcessMHigh = !pProcesses->bProcessMHigh; });
+        m_world.GetRunner().QueueForThisWorld([pProcesses]() { pProcesses->bProcessMHigh = !pProcesses->bProcessMHigh; });
     }
     ImGui::PopID();
     id++;
@@ -54,7 +54,7 @@ void DebugService::DrawProcessView()
     ImGui::PushID(id);
     if (ImGui::Button("Toggle"))
     {
-        m_world.GetRunner().Queue([pProcesses]() { pProcesses->bProcessMLow = !pProcesses->bProcessMLow; });
+        m_world.GetRunner().QueueForThisWorld([pProcesses]() { pProcesses->bProcessMLow = !pProcesses->bProcessMLow; });
     }
     ImGui::PopID();
     id++;
@@ -65,7 +65,7 @@ void DebugService::DrawProcessView()
     ImGui::PushID(id);
     if (ImGui::Button("Toggle"))
     {
-        m_world.GetRunner().Queue([pProcesses]() { pProcesses->bProcessSchedule = !pProcesses->bProcessSchedule; });
+        m_world.GetRunner().QueueForThisWorld([pProcesses]() { pProcesses->bProcessSchedule = !pProcesses->bProcessSchedule; });
     }
     ImGui::PopID();
     id++;

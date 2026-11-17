@@ -20,11 +20,9 @@ bool QuestLog::operator!=(const QuestLog& acRhs) const noexcept
 
 void QuestLog::Serialize(TiltedPhoques::Buffer::Writer& aWriter) const noexcept
 {
-    const size_t count = std::min(Entries.size(), CoopPacketSafety::kMaxQuests);
-    aWriter.WriteBits(count & 0xFFFF, 16);
-    for (size_t i = 0; i < count; ++i)
+    aWriter.WriteBits(Entries.size() & 0xFFFF, 16);
+    for (auto& e : Entries)
     {
-        const auto& e = Entries[i];
         e.Id.Serialize(aWriter);
 
         // id's can be in the full 16 bit range
@@ -39,15 +37,14 @@ void QuestLog::Deserialize(TiltedPhoques::Buffer::Reader& aReader) noexcept
 
     const size_t count = CoopPacketSafety::ClampCollectionCount(temp & 0xFFFF, CoopPacketSafety::kMaxQuests);
     Entries.clear();
-    Entries.reserve(std::min<size_t>(count, 256));
 
     for (size_t i = 0; i < count && !aReader.Eof(); ++i)
     {
         Entry e{};
         e.Id.Deserialize(aReader);
-        uint64_t stageBits = 0;
-        aReader.ReadBits(stageBits, 16);
-        e.Stage = stageBits & 0xFFFF;
+        uint64_t stage = 0;
+        aReader.ReadBits(stage, 16);
+        e.Stage = stage & 0xFFFF;
         Entries.push_back(e);
     }
 }

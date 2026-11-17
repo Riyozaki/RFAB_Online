@@ -95,15 +95,6 @@ struct Skills
     uint32_t legendaryLevels[Skill::kTotal];
 };
 
-static_assert(sizeof(Skills) == 0x128);
-
-struct PlayerSkills
-{
-    Skills* data;
-};
-
-static_assert(sizeof(PlayerSkills) == 0x8);
-
 struct TESQuest;
 
 struct PlayerCharacter : Actor
@@ -121,13 +112,13 @@ struct PlayerCharacter : Actor
     void SetDifficulty(const int32_t aDifficulty, bool aForceUpdate = true, bool aExpectGameDataLoaded = true) noexcept;
 
     void AddSkillExperience(int32_t aSkill, float aExperience) noexcept;
-    float GetSkillExperience(Skills::Skill aSkill) const noexcept { return pSkills->data->skills[aSkill].xp; }
+    float GetSkillExperience(Skills::Skill aSkill) const noexcept { return (*pSkills)->skills[aSkill].xp; }
 
     NiPoint3 RespawnPlayer() noexcept;
 
     void PayCrimeGoldToAllFactions() noexcept;
 
-    void SetWaypoint(NiPoint3* apPosition, TESForm* apWorldSpaceOrCell) noexcept;
+    void SetWaypoint(NiPoint3* apPosition, TESWorldSpace* apWorldSpace) noexcept;
     void RemoveWaypoint() noexcept;
 
     struct Objective
@@ -146,7 +137,7 @@ struct PlayerCharacter : Actor
     uint8_t pad1[0x580 - sizeof(Actor)];
     GameArray<ObjectiveInstance> objectives;
     uint8_t pad598[0x9B0 - 0x598];
-    PlayerSkills* pSkills;
+    Skills** pSkills;
     uint8_t pad9B8[0xAC8 - 0x9B8];
     TESForm* locationForm;
     uint8_t padAD0[0x28];

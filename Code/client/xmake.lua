@@ -3,12 +3,12 @@ local function build_client(name)
 target(name)
     set_kind("static")
     set_group("Client")
-    add_includedirs(".","../../Libraries/")
+    add_includedirs(".", "../../Libraries/")
     set_pcxxheader("TiltedOnlinePCH.h")
 
-    -- exclude game specifc stuff
-    add_headerfiles("**.h|Games/Skyrim/**|Services/Vivox/**")
-    add_files("**.cpp|Games/Skyrim/**|Services/Vivox/**")
+    -- exclude game specific stuff
+    add_headerfiles("**.h|Games/Skyrim/**")
+    add_files("**.cpp|Games/Skyrim/**")
 
     after_install(function(target)
         -- copy dlls
@@ -28,7 +28,6 @@ target(name)
         elseif os.isdir(prebuilt_ui) and os.isfile(path.join(prebuilt_ui, "index.html")) then
             os.cp(prebuilt_ui, path.join(target:installdir(), "bin"))
         end
-        -- copy RFAB EditorID/modpack bindings manifest for both MO2 root-Data layout (SKSE/Plugins/) and game-dir layout (Data/SKSE/Plugins/)
         local rfab_bindings = path.join(target:scriptdir(), "..", "..", "Data", "SKSE", "Plugins", "RFAB_Online_Bindings.json")
         if os.isfile(rfab_bindings) then
             os.mkdir(path.join(target:installdir(), "SKSE", "Plugins"))
@@ -43,7 +42,7 @@ target(name)
     add_headerfiles("Games/Skyrim/**.h")
     -- rather hacky:
     add_includedirs("Games/Skyrim")
-    add_deps("SkyrimEncoding")
+    add_deps("SkyrimEncoding", "RFABCoopState")
     add_deps(
         "UiProcess",
         "CommonLib",
@@ -70,16 +69,6 @@ target(name)
         "glm",
         "mem",
         "xbyak")
-
-    if has_config("vivox") then
-        add_files("Services/Vivox/**.cpp")
-        add_headerfiles("Services/Vivox/**.h")
-        add_includedirs("Services/Vivox")
-        add_deps("Vivox")
-        add_defines("TP_VIVOX=1")
-    else
-        add_defines("TP_VIVOX=0")
-    end
 
     add_syslinks(
         "version",

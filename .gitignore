@@ -125,3 +125,9 @@ dist_ready/RFAB_Online_MO2/SkyrimTogetherReborn/UI/
 # Server checkpoint history written by the integration harness (Tools/rfab/linux-server):
 # `SaveSnapshotService` stores it next to the process, and the harness removes it on exit.
 Data/rfab_checkpoints.bin
+
+# Durable runtime campaign journal; never package or commit a player campaign.
+Data/rfab_campaign/
+
+# Per-character native effect receipts/ownership locks are live data, not release assets.
+Data/SKSE/Plugins/RFAB_Online/

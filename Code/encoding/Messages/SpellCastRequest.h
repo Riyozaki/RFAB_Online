@@ -2,7 +2,6 @@
 
 #include "Message.h"
 #include <Structs/GameId.h>
-#include <cmath>
 
 struct SpellCastRequest final : ClientMessage
 {
@@ -16,21 +15,11 @@ struct SpellCastRequest final : ClientMessage
     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
 
-    bool operator==(const SpellCastRequest& acRhs) const noexcept
-    {
-        return CasterId == acRhs.CasterId &&
-               SpellFormId == acRhs.SpellFormId &&
-               CastingSource == acRhs.CastingSource &&
-               IsDualCasting == acRhs.IsDualCasting &&
-               DesiredTarget == acRhs.DesiredTarget &&
-               std::abs(EffectivenessMult - acRhs.EffectivenessMult) < 0.0001f &&
-               GetOpcode() == acRhs.GetOpcode();
-    }
+    bool operator==(const SpellCastRequest& acRhs) const noexcept { return CasterId == acRhs.CasterId && SpellFormId == acRhs.SpellFormId && CastingSource == acRhs.CastingSource && IsDualCasting == acRhs.IsDualCasting && DesiredTarget == acRhs.DesiredTarget && GetOpcode() == acRhs.GetOpcode(); }
 
-    uint32_t CasterId{};
+    uint32_t CasterId;
     GameId SpellFormId{};
-    int32_t CastingSource{};
-    bool IsDualCasting{false};
+    int32_t CastingSource;
+    bool IsDualCasting;
     uint32_t DesiredTarget{};
-    float EffectivenessMult{1.0f};
 };

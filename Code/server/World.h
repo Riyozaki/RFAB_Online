@@ -1,19 +1,11 @@
 #pragma once
 
-#include "Services/AdminService.h"
-
 #include <Services/PlayerService.h>
 #include <Services/PartyService.h>
 #include <Services/CharacterService.h>
 #include <Services/CalendarService.h>
 #include <Services/QuestService.h>
 #include <Services/ScriptService.h>
-#include <Services/RfabProgressionService.h>
-#include <Services/SaveSnapshotService.h>
-#include <Services/EncounterService.h>
-#include <Services/ActorValueService.h>
-#include <Services/InventoryService.h>
-#include <Services/ObjectService.h>
 
 #include "Game/PlayerManager.h"
 
@@ -22,7 +14,18 @@ namespace ESLoader
 struct RecordCollection;
 }
 
-struct World : entt::registry
+namespace WorldParts
+{
+// Owns the event dispatcher as the FIRST base class so entt::registry (and every service in ctx()
+// holding entt::scoped_connection into m_dispatcher) is destroyed BEFORE m_dispatcher is freed.
+struct DispatcherOwner
+{
+protected:
+    entt::dispatcher m_dispatcher;
+};
+} // namespace WorldParts
+
+struct World : WorldParts::DispatcherOwner, entt::registry
 {
     World();
     ~World() noexcept;
@@ -41,18 +44,6 @@ struct World : entt::registry
     const CalendarService& GetCalendarService() const noexcept { return ctx().at<const CalendarService>(); }
     QuestService& GetQuestService() noexcept { return ctx().at<QuestService>(); }
     const QuestService& GetQuestService() const noexcept { return ctx().at<const QuestService>(); }
-    RfabProgressionService& GetRfabProgressionService() noexcept { return ctx().at<RfabProgressionService>(); }
-    const RfabProgressionService& GetRfabProgressionService() const noexcept { return ctx().at<const RfabProgressionService>(); }
-    SaveSnapshotService& GetSaveSnapshotService() noexcept { return ctx().at<SaveSnapshotService>(); }
-    const SaveSnapshotService& GetSaveSnapshotService() const noexcept { return ctx().at<const SaveSnapshotService>(); }
-    EncounterService& GetEncounterService() noexcept { return ctx().at<EncounterService>(); }
-    const EncounterService& GetEncounterService() const noexcept { return ctx().at<const EncounterService>(); }
-    ActorValueService& GetActorValueService() noexcept { return ctx().at<ActorValueService>(); }
-    const ActorValueService& GetActorValueService() const noexcept { return ctx().at<const ActorValueService>(); }
-    InventoryService& GetInventoryService() noexcept { return ctx().at<InventoryService>(); }
-    const InventoryService& GetInventoryService() const noexcept { return ctx().at<const InventoryService>(); }
-    ObjectService& GetObjectService() noexcept { return ctx().at<ObjectService>(); }
-    const ObjectService& GetObjectService() const noexcept { return ctx().at<const ObjectService>(); }
     PlayerManager& GetPlayerManager() noexcept { return m_playerManager; }
     const PlayerManager& GetPlayerManager() const noexcept { return m_playerManager; }
     ScriptService& GetScriptService() const noexcept { return *m_pScriptService; }
@@ -64,10 +55,22 @@ struct World : entt::registry
 
     [[nodiscard]] static uint32_t ToInteger(entt::entity aEntity) { return to_integral(aEntity); }
 
-private:
-    entt::dispatcher m_dispatcher;
+    // Reserve EnTT entity 0 so no real character/object/player ever receives ServerId == 0.
+    [[nodiscard]] bool valid(entt::entity aEntity) const noexcept
+    {
+        return aEntity != m_reservedZeroEntity && entt::registry::valid(aEntity);
+    }
 
-    TiltedPhoques::SharedPtr<AdminService> m_spAdminService;
+    auto destroy(entt::entity aEntity)
+    {
+        if (aEntity == m_reservedZeroEntity)
+            return version_type{};
+        return entt::registry::destroy(aEntity);
+    }
+
+private:
+    entt::entity m_reservedZeroEntity{entt::null};
+
     TiltedPhoques::UniquePtr<ScriptService> m_pScriptService;
     PlayerManager m_playerManager;
     UniquePtr<ESLoader::RecordCollection> m_recordCollection;

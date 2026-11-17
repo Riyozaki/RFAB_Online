@@ -11,11 +11,11 @@ void AssignCharacterResponse::SerializeRaw(TiltedPhoques::Buffer::Writer& aWrite
     AllActorValues.Serialize(aWriter);
     CurrentInventory.Serialize(aWriter);
     ActionsToReplay.Serialize(aWriter);
+    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
     Serialization::WriteBool(aWriter, Owner);
     Serialization::WriteBool(aWriter, IsDead);
     Serialization::WriteBool(aWriter, IsWeaponDrawn);
-    Serialization::WriteVarInt(aWriter, OwnershipEpoch);
-    Serialization::WriteVarInt(aWriter, HealthRevision);
+    LeveledNpcPickId.Serialize(aWriter);
 }
 
 void AssignCharacterResponse::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -27,11 +27,12 @@ void AssignCharacterResponse::DeserializeRaw(TiltedPhoques::Buffer::Reader& aRea
     CellId.Deserialize(aReader);
     WorldSpaceId.Deserialize(aReader);
     AllActorValues.Deserialize(aReader);
+    if (!AllActorValues.IsValid()) return;
     CurrentInventory.Deserialize(aReader);
     ActionsToReplay.Deserialize(aReader);
+    OwnershipEpoch = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
     Owner = Serialization::ReadBool(aReader);
     IsDead = Serialization::ReadBool(aReader);
     IsWeaponDrawn = Serialization::ReadBool(aReader);
-    OwnershipEpoch = Serialization::ReadVarInt(aReader);
-    HealthRevision = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    LeveledNpcPickId.Deserialize(aReader);
 }

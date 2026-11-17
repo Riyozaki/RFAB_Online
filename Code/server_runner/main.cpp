@@ -13,7 +13,11 @@
 #include <base/simpleini/SimpleIni.h>
 #include <base/threading/ThreadUtils.h>
 
+#include "CrashRecord.h"
 #include "DediRunner.h"
+#include <common/Compat/SafeFs.h>
+
+#include <cstring>
 
 #ifdef _WIN32
 #include <base/dialogues/win/TaskDialog.h>
@@ -36,7 +40,7 @@ constexpr char kEULATextTrue[] = "bConfirmEULA=true";
 
 namespace fs = std::filesystem;
 
-Console::StringSetting sLogLevel{"sLogLevel", "Log level to print", "info"};
+Console::StringSetting sLogLevel{"sLogLevel", "How much detail the server log shows: trace, debug, info, warn or error", "info"};
 using namespace std::chrono_literals;
 } // namespace
 
@@ -68,6 +72,7 @@ struct LogInstance
         globalOut->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%l] [tid %t] %$ %v");
 
         globalOut->set_level(level::from_str(sLogLevel.value()));
+        globalOut->flush_on(level::info);
         spdlog::flush_every(std::chrono::seconds(2));
 
         // as the library is compiled into the client + server we have to do this twice
@@ -138,11 +143,10 @@ static bool ShowEULADialog()
 static bool IsEULAAccepted()
 {
     std::error_code ec;
-    const auto cfgDir = fs::current_path() / kConfigPathName;
+    const auto cfgDir = Compat::SafeFs::CurrentPathOr(fs::path(".")) / kConfigPathName;
     fs::create_directories(cfgDir, ec);
     const auto path = cfgDir / kEULAName;
 
-    // Auto-create / repair EULA.txt out of the box so headless / 1-click RFAB server startup never blocks on a Win32 TaskDialog
     if (exists(path, ec))
     {
         const auto data = TiltedPhoques::LoadFile(path);
@@ -158,6 +162,7 @@ static bool IsEULAAccepted()
 }
 
 GS_IMPORT bool CheckBuildTag(const char* apBuildTag);
+GS_IMPORT void RfabServerCrashSelfTestFault();
 
 void ConfigureConsoleMode()
 {
@@ -170,6 +175,11 @@ void ConfigureConsoleMode()
 
 int main(int argc, char** argv)
 {
+    // Install crash recorder first so any crash writes logs/STServer_Crash.log.
+    ServerCrash::Install();
+    if (argc >= 2 && std::strcmp(argv[1], ServerCrash::kSelfTestSwitch) == 0)
+        return ServerCrash::RunSelfTest(argc >= 3 ? argv[2] : "", &RfabServerCrashSelfTestFault);
+
     ConfigureConsoleMode();
 
     // the binaries are not from the same commit.
@@ -182,10 +192,13 @@ int main(int argc, char** argv)
     (void)logger;
 
     // Note(Vince): This started crashing on 1.7+ lets disable it for now.
-    // RegisterQuitHandler(); 
+    // RegisterQuitHandler();
 
     // Keep stack free.
     const auto cpRunner{std::make_unique<DediRunner>(argc, argv)};
+    if (!cpRunner->IsValid())
+        return 0;
+
     if (bConsole)
     {
         cpRunner->StartTerminalIO();

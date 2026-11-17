@@ -20,6 +20,10 @@
 #include <TiltedCore/Serialization.hpp>
 #include <TiltedCore/ViewBuffer.hpp>
 
+#include <optional>
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+
 #include <Messages/ClientMessageFactory.h>
 #include <Structs/AnimationVariables.h>
 #include <Messages/ServerMessageFactory.h>

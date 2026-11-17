@@ -305,6 +305,24 @@ inline std::string Po3Tweaks(std::string_view aOriginal)
 {
     return SetIniValue(aOriginal, "Fixes", "Load EditorIDs", "true");
 }
+
+inline std::string RfabPluginIni(std::string_view aOriginal)
+{
+    // Stock RFAB.ini ships with `bAlwaysActive=false`, which freezes the game loop on Alt-Tab,
+    // causing stale simulation keepalives, NPC lease revocations, and coordinated save timeouts.
+    return SetIniValue(aOriginal, "General", "bAlwaysActive", "true");
+}
+
+inline std::string SseDisplayTweaks(std::string_view aOriginal)
+{
+    // DXGI Exclusive Fullscreen (Fullscreen=true / bFull Screen=1, SwapEffect=discard) conflicts with
+    // the D3D11/CEF overlay on mode transitions, Alt-Tab, and multi-adapter/virtual-display systems,
+    // causing black screens and crashes even before joining a server. Force borderless flip presentation
+    // (Fullscreen=false, Borderless=true) inside the co-op process while leaving solo RFAB untouched.
+    std::string out = SetIniValue(aOriginal, "Render", "Fullscreen", "false");
+    out = SetIniValue(out, "Render", "Borderless", "true");
+    return out;
+}
 } // namespace Transforms
 
 inline constexpr std::string_view kEngineFixesKeys[] = {
@@ -322,6 +340,8 @@ inline constexpr std::string_view kSkyrimSoulsKeys[] = {
 inline constexpr std::string_view kRfabAutosaveKeys[] = {
     "enabled", "enable autosave", "save in combat", "save after combat", "save on location change", "save on sleep/wait"};
 inline constexpr std::string_view kPo3TweaksKeys[] = {"load editorids"};
+inline constexpr std::string_view kRfabPluginIniKeys[] = {"balwaysactive"};
+inline constexpr std::string_view kSseDisplayTweaksKeys[] = {"fullscreen", "borderless"};
 
 inline bool Rule::IsManagedKey(std::string_view aKey) const noexcept
 {
@@ -342,7 +362,7 @@ inline bool Rule::IsManagedKey(std::string_view aKey) const noexcept
     return false;
 }
 
-inline constexpr size_t kRuleCount = 5;
+inline constexpr size_t kRuleCount = 8;
 
 inline const std::array<Rule, kRuleCount>& GetRules() noexcept
 {
@@ -359,6 +379,16 @@ inline const std::array<Rule, kRuleCount>& GetRules() noexcept
          std::size(kRfabAutosaveKeys)},
         {"po3-tweaks", "SKSE/Plugins/po3_Tweaks.ini", RuleKind::kOverlay, &Transforms::Po3Tweaks,
          "the client matches items and spells by editor id", kPo3TweaksKeys, std::size(kPo3TweaksKeys)},
+        {"rfab-ini", "RFAB.ini", RuleKind::kOverlay, &Transforms::RfabPluginIni,
+         "keeps the game loop active while Alt-Tabbed so network keepalives, NPC leases, and coordinated saves do not stall",
+         kRfabPluginIniKeys, std::size(kRfabPluginIniKeys)},
+        {"sse-display-tweaks", "SKSE/Plugins/SSEDisplayTweaks.ini", RuleKind::kOverlay, &Transforms::SseDisplayTweaks,
+         "DXGI Exclusive Fullscreen (SwapEffect=discard) conflicts with the D3D11/CEF overlay; borderless flip avoids crashes and black screens",
+         kSseDisplayTweaksKeys, std::size(kSseDisplayTweaksKeys)},
+        {"sse-display-tweaks-custom", "SKSE/Plugins/SSEDisplayTweaks_Custom.ini", RuleKind::kOverlay,
+         &Transforms::SseDisplayTweaks,
+         "overrides any user SSEDisplayTweaks_Custom.ini Exclusive Fullscreen setting with borderless flip while running RFAB Online",
+         kSseDisplayTweaksKeys, std::size(kSseDisplayTweaksKeys)},
         {"betterstealing", "NetScriptFramework/Plugins/BetterStealing.dll", RuleKind::kHide, nullptr,
          ".NET plugin patches the add-item prologues (SE 36525/19282) the client hooks; NetScriptFramework logs and "
          "skips a plugin it cannot open"},

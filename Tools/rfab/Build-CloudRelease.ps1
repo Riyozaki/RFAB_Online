@@ -43,6 +43,36 @@ if ($env:GITHUB_ACTIONS -eq "true" -and $env:GITHUB_REF) {
         $PublishRelease = $false
     }
 }
+# A repository other than the upstream one builds, tests and packages, but does not publish on
+# its own: the protected tags and the backup manifests below describe the upstream release history,
+# and a fork that reached this point on its main branch would try to mirror releases it never had.
+# A repository opts in by committing a file named RELEASE_FROM_THIS_REPOSITORY at its root; it then
+# publishes its own versions and skips the legacy mirrors (RfabMirrorsLegacyReleases below).
+$script:RfabUpstreamRepository = "Riyozaki/RFAB_Online"
+$script:RfabRepositorySlug = if ($env:GITHUB_REPOSITORY) { $env:GITHUB_REPOSITORY } else { $script:RfabUpstreamRepository }
+if ($env:GITHUB_ACTIONS -eq "true" -and ($script:RfabRepositorySlug -ne $script:RfabUpstreamRepository)) {
+    $forkOptInFile = Join-Path $script:RfabRepoRoot "RELEASE_FROM_THIS_REPOSITORY"
+    if (-not (Test-Path -LiteralPath $forkOptInFile)) {
+        if ($PublishRelease) {
+            Write-Host "[RELEASE] $script:RfabRepositorySlug has not opted in to publishing (no RELEASE_FROM_THIS_REPOSITORY file); building and verifying only." -ForegroundColor Yellow
+        }
+        $PublishRelease = $false
+    }
+}
+# Work-in-progress builds are artifacts only, even on main or when this script is run locally.
+# The owner requested one complete candidate, not a series of incomplete gameplay releases.
+$readinessFile = Join-Path $script:RfabRepoRoot "docs\RFAB_RELEASE_STATUS.json"
+if (-not (Test-Path -LiteralPath $readinessFile)) {
+    throw "Release readiness manifest is missing: $readinessFile"
+}
+$readiness = [System.IO.File]::ReadAllText($readinessFile) | ConvertFrom-Json
+if ($readiness.version -ne $VersionTag.TrimStart('v')) {
+    throw "Release readiness manifest does not match $VersionTag"
+}
+if (($readiness.ready_for_playtest -ne $true) -or ($VersionTag -match '-dev\.')) {
+    Write-Host "[RELEASE] Work in progress: build/test/package only. No intermediate GitHub Release will be published." -ForegroundColor Yellow
+    $PublishRelease = $false
+}
 $env:RFAB_PUBLISHING_RELEASE = if ($PublishRelease) { "1" } else { "0" }
 
 $ProtectedTags = @("v1.0.0", "v1.1.0", "v1.2.0", "v1.2.0-backup", "v1.2.0-hotfix.1", "v1.2.0-hotfix.2", "v2.0.0-alpha.1", "v2.0.0-alpha.2", "v2.0.0", "v2.0.1", "v2.0.1-backup", "v2.0.2", "v2.0.2-backup", "v2.0.3", "v2.0.3-backup", "v2.1.0", "v2.1.0-backup", "v3.0.0", "v3.0.0-backup", "v3.1.0", "v3.1.0-backup", "v3.1.1", "v3.1.1-backup", "v3.1.2", "v3.1.2-backup", "v3.1.3", "v3.1.3-backup", "v3.1.4", "v3.1.5", "v3.1.6", "v3.1.7-backup", "v3.1.7", "v3.1.8")
@@ -50,7 +80,18 @@ if ($PublishRelease -and ($VersionTag -in $ProtectedTags)) {
     throw "Release policy violation: '$VersionTag' is an immutable protected release. Bump VERSION and cut a new tag instead of overwriting it."
 }
 
-$IsPrereleaseTag = ($VersionTag.Contains("-")) -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main" -and ($env:GITHUB_REF -notlike "refs/tags/v*"))
+# The legacy release mirrors (the Ensure-V*BackupRelease functions below) describe the release
+# history of $script:RfabUpstreamRepository only; every other repository skips them.
+$script:RfabMirrorsLegacyReleases = $PublishRelease -and ($script:RfabRepositorySlug -eq $script:RfabUpstreamRepository)
+# The opt-in file may carry the single word "prerelease" on a line of its own: the release is
+# then published as a GitHub pre-release (a build that has not been through a playtest yet).
+$script:RfabOptInPrerelease = $false
+$rfabOptInFile = Join-Path $script:RfabRepoRoot "RELEASE_FROM_THIS_REPOSITORY"
+if (Test-Path -LiteralPath $rfabOptInFile) {
+    $rfabOptInText = [System.IO.File]::ReadAllText($rfabOptInFile)
+    if ($rfabOptInText -match '(?im)^\s*prerelease\s*$') { $script:RfabOptInPrerelease = $true }
+}
+$IsPrereleaseTag = ($VersionTag.Contains("-")) -or $script:RfabOptInPrerelease -or ($env:GITHUB_REF -and $env:GITHUB_REF -ne "refs/heads/main" -and ($env:GITHUB_REF -notlike "refs/tags/v*"))
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
@@ -70,6 +111,7 @@ $script:ProgressLog = New-Object System.Collections.Generic.List[string]
 $CacheMarker = Join-Path $env:LOCALAPPDATA ".xmake\packages\.rfab_cached_ok"
 
 function Ensure-V120BackupRelease([string]$RepoRootPath) {
+    if (-not $PublishRelease) { return }
     try {
         if (-not $env:GH_TOKEN) { return }
         & cmd.exe /d /s /c "gh release view v1.2.0-backup >nul 2>&1"
@@ -893,7 +935,14 @@ function Emit-Annotation([string]$Level, [string]$Title, [string]$Msg) {
     Write-Host "::${Level} title=${Title}::${clean}"
 }
 
+# A job step shows at most ten annotations per level. When several commands of this script may fail
+# in one run (the per-target builds of step 4), each gets a share and the two legacy annotations
+# (DIAG_MATCHES, DIAG_TAIL) are left out: ci_diagnostics.py already reports the same lines.
+$script:DiagMaxChunks = 8
+$script:DiagShared = $false
+
 function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
+    $stepResults = ""
     Write-Host "`n==> $StepName" -ForegroundColor Cyan
     $script:ProgressLog.Add("- ⏳ Running: ``$StepName`` ($([DateTime]::UtcNow.ToString('HH:mm:ss')) UTC)")
 
@@ -915,14 +964,25 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
         $tailShow = if ($allLines.Length -gt 80) { $allLines[($allLines.Length - 80)..($allLines.Length - 1)] } else { $allLines }
         foreach ($ln in $tailShow) { Write-Host $ln }
         if ($code -ne 0) {
+            # First errors first, repeats dropped, in as many annotations as one step may carry.
+            # The two annotations below keep only the last 3500 characters, which on a cascade of
+            # compiler errors is the end of the cascade and never its cause.
+            try {
+                $diagScript = Join-Path $script:RfabRepoRoot "Tools\rfab\ci_diagnostics.py"
+                if (Test-Path -LiteralPath $diagScript) {
+                    & python $diagScript --log $stepLog --step $StepName --exit-code $code --max-chunks $script:DiagMaxChunks
+                }
+            } catch {
+                Write-Host "[DIAG] ci_diagnostics.py could not run: $($_.Exception.Message)"
+            }
             $errMatches = @($allLines | Where-Object { $_ -match '(?i)(error\s+[A-Z]*\d+|fatal error|unresolved external|error:|Traceback|Assertion|Exception)' } | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             if ($errMatches.Count -gt 0) {
                 $script:LastDiagMatches = ($errMatches -join "`r`n")
-                Emit-Annotation "warning" "DIAG_MATCHES" ($errMatches -join "`n")
+                if (-not $script:DiagShared) { Emit-Annotation "warning" "DIAG_MATCHES" ($errMatches -join "`n") }
             }
             $compactTail = @($tailShow | ForEach-Object { $_ -replace '-external:[^\s]+', '' })
             $script:LastDiagTail = ($compactTail -join "`r`n")
-            Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n")
+            if (-not $script:DiagShared) { Emit-Annotation "warning" "DIAG_TAIL" ($compactTail -join "`n") }
             if ($PublishRelease -and ($VersionTag -notin $ProtectedTags) -and ($VersionTag -ne "v2.0.2" -or $script:V202BackupReady)) {
                 $failLogAsset = Join-Path $env:TEMP "build_step_log.txt"
                 Copy-Item -LiteralPath $stepLog -Destination $failLogAsset -Force -ErrorAction SilentlyContinue
@@ -931,27 +991,49 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
             Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
             throw "$StepName exited with code $code"
         }
+        # What the step said about itself (test totals, lines marked [RFAB_RESULT]) goes into its
+        # notice: of a successful run, notices are all that can be read from outside GitHub.
+        try {
+            $diagScript = Join-Path $script:RfabRepoRoot "Tools\rfab\ci_diagnostics.py"
+            if (Test-Path -LiteralPath $diagScript) {
+                $stepResults = ((& python $diagScript --log $stepLog --results-only) | Out-String).Trim()
+            }
+        } catch {
+            $stepResults = ""
+        }
         Remove-Item -LiteralPath $stepLog -Force -ErrorAction SilentlyContinue
     } elseif ($code -ne 0) {
         throw "$StepName exited with code $code (no log file)"
     }
     $script:ProgressLog[$script:ProgressLog.Count - 1] = "- ✅ Completed: ``$StepName`` ($([DateTime]::UtcNow.ToString('HH:mm:ss')) UTC)"
-    Emit-Annotation "notice" "RFAB_BUILD" "OK: $StepName"
+    # A job step shows ten notices at most, and the whole build is one job step: the per-target
+    # builds of step 4 stay silent when they succeed, so that BUILD_VERIFIED is not the one dropped.
+    if (-not $script:DiagShared) {
+        if ($stepResults) {
+            Emit-Annotation "notice" "RFAB_BUILD" "OK: $StepName | $stepResults"
+        } else {
+            Emit-Annotation "notice" "RFAB_BUILD" "OK: $StepName"
+        }
+    }
 }
 
 try {
     $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\.."))
     Set-Location -LiteralPath $RepoRoot
 
-    Ensure-V120BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V202BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V203BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V210BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V300BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V310BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V311BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V312BackupRelease -RepoRootPath $RepoRoot
-    Ensure-V313BackupRelease -RepoRootPath $RepoRoot
+    if ($script:RfabMirrorsLegacyReleases) {
+        Ensure-V120BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V202BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V203BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V210BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V300BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V310BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V311BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V312BackupRelease -RepoRootPath $RepoRoot
+        Ensure-V313BackupRelease -RepoRootPath $RepoRoot
+    } else {
+        Write-Host "[BACKUP] $($script:RfabRepositorySlug) keeps no legacy release mirrors; skipping them." -ForegroundColor DarkGray
+    }
 
     Invoke-LoggedCmd "[1/8] Submodules init + SE 1.5.97 Submodule Patches" "git submodule sync --recursive && git submodule update --init --force --recursive --depth=1 && python Tools\rfab\patch_submodules.py"
     Invoke-LoggedCmd "[2/8] SE 1.5.97 Port Audit + Release Invariants" "python Tools\rfab\verify_se1597_port.py && python Tools\rfab\check_release_invariants.py"
@@ -960,6 +1042,30 @@ try {
     }
     Invoke-LoggedCmd "[3/8] xmake config (Windows x64 /MT $BuildMode)" "xmake config --plat=windows --arch=x64 --mode=$BuildMode --yes -vD"
     $script:PackagesReady = $true
+
+    # xmake stops at the first failing target, so one run used to show the errors of whichever
+    # target failed first and nothing about the others. The three targets that hold the project's
+    # own code are built one by one and a failure does not stop the next: a single run reports the
+    # tests, the server and the client. The full build afterwards is the gate, as before.
+    $buildFailures = New-Object System.Collections.Generic.List[string]
+    $script:DiagShared = $true
+    foreach ($buildGroup in @(
+            @{ Name = "tests";  Target = "TPTests";              Chunks = 2 },
+            @{ Name = "server"; Target = "SkyrimTogetherServer"; Chunks = 2 },
+            @{ Name = "client"; Target = "SkyrimTogetherClient"; Chunks = 4 })) {
+        $script:DiagMaxChunks = $buildGroup.Chunks
+        try {
+            Invoke-LoggedCmd "[4/8] xmake build: $($buildGroup.Name) ($($buildGroup.Target))" "xmake build -y -v $($buildGroup.Target)"
+        } catch {
+            $buildFailures.Add($buildGroup.Name)
+            Write-Host "[4/8] $($buildGroup.Name) failed; building the remaining targets to collect their errors too" -ForegroundColor Yellow
+        }
+    }
+    $script:DiagShared = $false
+    $script:DiagMaxChunks = 8
+    if ($buildFailures.Count -gt 0) {
+        throw "[4/8] xmake build failed for: $($buildFailures -join ', ')"
+    }
 
     Invoke-LoggedCmd "[4/8] xmake build (Client + Launcher + Server + Tests)" "xmake -y -v"
 
@@ -997,7 +1103,7 @@ try {
     $QuickUpdZip  = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_Quick_Update.zip"
     $PdbZip       = Join-Path $RepoRoot "release_artifacts\RFAB_Online_${VersionTag}_PDB_Symbols.zip"
     $ShaFile      = Join-Path $RepoRoot "release_artifacts\SHA256SUMS.txt"
-    $RelTitle     = "RFAB Online $VersionTag - Full Clean Standalone Installer (Skyrim SE 1.5.97.0.8)"
+    $RelTitle     = if ($IsPrereleaseTag) { "RFAB Together $VersionTag - Playtest Build (Skyrim SE 1.5.97)" } else { "RFAB Together $VersionTag (Skyrim SE 1.5.97)" }
     $RelFlags     = if ($IsPrereleaseTag) { "--prerelease" } else { '"--prerelease=false" --latest' }
     $CreateFlags  = if ($IsPrereleaseTag) { "--prerelease" } else { "--latest" }
 
@@ -1042,7 +1148,7 @@ try {
 
         & cmd.exe /d /s /c "gh release delete-asset $VersionTag build_step_log.txt --yes >nul 2>&1"
         & cmd.exe /d /s /c "gh release edit $VersionTag --target $CommitSha --title `"$RelTitle`" --notes-file `"$NotesFile`" $RelFlags"
-        Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/Riyozaki/RFAB_Online/releases/tag/$VersionTag"
+        Emit-Annotation "notice" "RELEASE_READY" "Published https://github.com/$($script:RfabRepositorySlug)/releases/tag/$VersionTag"
     }
     $global:LASTEXITCODE = 0
     exit 0

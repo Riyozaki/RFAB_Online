@@ -1,32 +1,12 @@
 #pragma once
-
-#include <cstdint>
 #include <Games/Magic/MagicSystem.h>
+#include <cstdint>
 
-/**
- * @brief Dispatched when a spell has been cast locally.
- * Stores pure scalar snapshot values rather than a raw ActorMagicCaster* so unloading/deleting
- * an actor before RunnerService::OnUpdate drains the queue can never cause a use-after-free.
- */
+// Snapshot the caster identity and casting properties inside the engine callback, not its
+// transient ActorMagicCaster*. A spell can finish or its caster unload before the next frame.
 struct SpellCastEvent
 {
-    SpellCastEvent(
-        uint32_t aCasterFormId,
-        MagicSystem::CastingSource aCastingSource,
-        bool aIsDualCasting,
-        uint32_t aSpellId,
-        uint32_t aDesiredTargetID) noexcept
-        : CasterFormId(aCasterFormId)
-        , CastingSource(aCastingSource)
-        , IsDualCasting(aIsDualCasting)
-        , SpellId(aSpellId)
-        , DesiredTargetID(aDesiredTargetID)
-    {
-    }
-
-    uint32_t CasterFormId{0};
-    MagicSystem::CastingSource CastingSource{MagicSystem::CastingSource::LEFT_HAND};
-    bool IsDualCasting{false};
-    uint32_t SpellId{0};
-    uint32_t DesiredTargetID{0};
+    uint32_t CasterId{}, SpellId{}, DesiredTargetID{};
+    MagicSystem::CastingSource Source{};
+    bool DualCasting{};
 };

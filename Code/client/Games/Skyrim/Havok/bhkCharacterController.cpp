@@ -1,30 +1,8 @@
-#include <TiltedOnlinePCH.h>
-
 #include <Havok/bhkCharacterController.h>
 
 bool bhkCharacterController::UpdateStepTiming(float aMovementDeltaTime) noexcept
 {
-    // Verified against SkyrimSE.exe 1.5.97.0 (TrueHUD / SKSE64):
-    //   523660 = g_deltaTime (0x2F6B948), 523661 = g_deltaTimeRealTime (0x2F6B94C)
-    POINTER_SKYRIMSE(float, s_deltaTime, 523660);
-    POINTER_SKYRIMSE(float, s_deltaTimeRealTime, 523661);
-
-    const float dtMain = s_deltaTime.Get() ? *s_deltaTime.Get() : 0.f;
-    const float dtReal = s_deltaTimeRealTime.Get() ? *s_deltaTimeRealTime.Get() : 0.f;
-    const float frameDt = (dtMain > 0.0001f) ? dtMain : dtReal;
-    return stepInfo.UpdateDeltaTime(frameDt, aMovementDeltaTime);
-}
-
-void bhkCharacterController::ResetTeleportPhysicsState(float aNewZ) noexcept
-{
-    UpdateStepTiming();
-    for (int i = 0; i < 4; ++i)
-    {
-        outVelocity[i] = 0.0f;
-        initialVelocity[i] = 0.0f;
-        velocityMod[i] = 0.0f;
-    }
-    if (std::isfinite(aNewZ))
-        fallStartHeight = aNewZ;
-    fallTime = 0.0f;
+    // Same physics timestep used by the native rigid-body controller movement path
+    POINTER_SKYRIMSE(float, s_physicsDeltaTime, 512261);
+    return stepInfo.UpdateDeltaTime(*s_physicsDeltaTime.Get(), aMovementDeltaTime);
 }

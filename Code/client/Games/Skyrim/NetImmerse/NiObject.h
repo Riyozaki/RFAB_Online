@@ -3,7 +3,6 @@
 #include <Games/Primitives.h>
 
 struct NiRTTI;
-struct NiNode;
 struct NiTriBasedGeom;
 
 struct NiObject : NiRefObject
@@ -12,11 +11,11 @@ struct NiObject : NiRefObject
 
     virtual NiRTTI* GetRTTI();
 
-    virtual NiNode* AsNiNode();
+    virtual void sub_3();
     virtual void sub_4();
     virtual void sub_5();
     virtual void sub_6();
-    virtual NiTriBasedGeom* AsBSGeometry();
+    virtual void sub_7();
     virtual void sub_8();
     virtual NiTriBasedGeom* CastToNiTriBasedGeom();
     virtual void sub_A();

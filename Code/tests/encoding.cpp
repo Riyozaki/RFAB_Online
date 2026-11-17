@@ -15,7 +15,6 @@
 
 #include <Messages/ClientMessageFactory.h>
 #include <Messages/ServerMessageFactory.h>
-#include <Structs/ServerSettings.h>
 #include <Structs/Vector2_NetQuantize.h>
 
 #include <TiltedCore/Math.hpp>
@@ -166,29 +165,6 @@ TEST_CASE("Static structures", "[encoding.static]")
     }
 }
 
-TEST_CASE("Server settings", "[encoding.server_settings]")
-{
-    ServerSettings sendSettings, recvSettings;
-    sendSettings.Difficulty = 3;
-    sendSettings.GreetingsEnabled = true;
-    sendSettings.PvpEnabled = true;
-    sendSettings.SyncPlayerHomes = true;
-    sendSettings.DeathSystemEnabled = false;
-    sendSettings.SyncPlayerCalendar = true;
-    sendSettings.AutoPartyJoin = false;
-    sendSettings.HealthMultiplier = 2.5f;
-
-    Buffer buff(1000);
-    Buffer::Writer writer(&buff);
-    sendSettings.Serialize(writer);
-
-    Buffer::Reader reader(&buff);
-    recvSettings.Deserialize(reader);
-
-    REQUIRE(sendSettings == recvSettings);
-    REQUIRE(recvSettings.HealthMultiplier == 2.5f);
-}
-
 TEST_CASE("Differential structures", "[encoding.differential]")
 {
     GIVEN("Full ActionEvent")
@@ -300,7 +276,7 @@ TEST_CASE("Differential structures", "[encoding.differential]")
     GIVEN("AnimationVariables")
     {
         AnimationVariables vars, recvVars;
- 
+
         vars.Booleans.resize(76);
         String testString("\xDE\xAD\xBE\xEF"
                           "\xDE\xAD\xBE\xEF\x76\xB");
@@ -408,109 +384,6 @@ TEST_CASE("Packets", "[encoding.packets]")
         REQUIRE(sendMessage == recvMessage);
     }
 
-    SECTION("SyncRfabExperienceRequest")
-    {
-        Buffer buff(1000);
-
-        SyncRfabExperienceRequest sendMessage, recvMessage;
-        sendMessage.Experience = 250;
-
-        Buffer::Writer writer(&buff);
-        sendMessage.Serialize(writer);
-
-        Buffer::Reader reader(&buff);
-
-        uint64_t trash;
-        reader.ReadBits(trash, 8); // pop opcode
-
-        recvMessage.DeserializeRaw(reader);
-
-        REQUIRE(sendMessage == recvMessage);
-    }
-
-    SECTION("NotifySyncRfabExperience")
-    {
-        Buffer buff(1000);
-
-        NotifySyncRfabExperience sendMessage, recvMessage;
-        sendMessage.Experience = 250;
-
-        Buffer::Writer writer(&buff);
-        sendMessage.Serialize(writer);
-
-        Buffer::Reader reader(&buff);
-
-        uint64_t trash;
-        reader.ReadBits(trash, 8); // pop opcode
-
-        recvMessage.DeserializeRaw(reader);
-
-        REQUIRE(sendMessage == recvMessage);
-    }
-
-    SECTION("RfabProgressionAllyProtectionSync")
-    {
-        {
-            Buffer buff(1000);
-            SyncRfabProgressionEvent sendMsg, recvMsg;
-            sendMsg.Kind = SyncRfabProgressionEvent::EventKind::AllyProtectionSync;
-            sendMsg.EpochId = 7;
-            sendMsg.GlobalValue = 0.0f;
-
-            Buffer::Writer writer(&buff);
-            sendMsg.Serialize(writer);
-
-            Buffer::Reader reader(&buff);
-            uint64_t opcode = 0;
-            reader.ReadBits(opcode, 8);
-            recvMsg.DeserializeRaw(reader);
-
-            REQUIRE(sendMsg == recvMsg);
-            REQUIRE(recvMsg.Kind == SyncRfabProgressionEvent::EventKind::AllyProtectionSync);
-        }
-        {
-            Buffer buff(1000);
-            NotifyRfabProgressionEvent sendMsg, recvMsg;
-            sendMsg.Kind = NotifyRfabProgressionEvent::EventKind::AllyProtectionSync;
-            sendMsg.EpochId = 7;
-            sendMsg.XpDelta = 2;
-            sendMsg.GlobalValue = 1.0f;
-            sendMsg.AuthoritativeTotalXp = 1500;
-
-            Buffer::Writer writer(&buff);
-            sendMsg.Serialize(writer);
-
-            Buffer::Reader reader(&buff);
-            uint64_t opcode = 0;
-            reader.ReadBits(opcode, 8);
-            recvMsg.DeserializeRaw(reader);
-
-            REQUIRE(sendMsg == recvMsg);
-            REQUIRE(recvMsg.Kind == NotifyRfabProgressionEvent::EventKind::AllyProtectionSync);
-            REQUIRE(recvMsg.XpDelta == 2);
-            REQUIRE(recvMsg.GlobalValue == 1.0f);
-        }
-    }
-
-    SECTION("CancelAssignmentRequest")
-    {
-        Buffer buff(1000);
-
-        CancelAssignmentRequest sendMessage, recvMessage;
-        sendMessage.Cookie = 14523698;
-        Buffer::Writer writer(&buff);
-        sendMessage.Serialize(writer);
-
-        Buffer::Reader reader(&buff);
-
-        uint64_t trash;
-        reader.ReadBits(trash, 8); // pop opcode
-
-        recvMessage.DeserializeRaw(reader);
-
-        REQUIRE(sendMessage == recvMessage);
-    }
-
     SECTION("AssignCharacterRequest")
     {
         Buffer buff(1000);
@@ -557,8 +430,14 @@ TEST_CASE("Packets", "[encoding.packets]")
     GIVEN("ClientReferencesMoveRequest")
     {
         ClientReferencesMoveRequest sendMessage, recvMessage;
-        auto& update = sendMessage.Updates[1];
-        auto& move = update.UpdatedMovement;
+        sendMessage.Tick = 1712345678901;
+        auto& move = sendMessage.Updates[1];
+        move.Position.x = 1234.5f;
+        move.Direction = 0.75f;
+        move.HasLookAt = true;
+        move.LookOffset.x = -320.f;
+        move.LookOffset.y = 215.f;
+        move.LookOffset.z = -48.f;
 
         AnimationVariables vars;
         vars.Booleans.resize(76);
@@ -592,7 +471,123 @@ TEST_CASE("Packets", "[encoding.packets]")
 
         recvMessage.DeserializeRaw(reader);
 
-        REQUIRE(recvMessage.Updates[1].UpdatedMovement == sendMessage.Updates[1].UpdatedMovement);
+        REQUIRE(recvMessage.Tick == sendMessage.Tick);
+        REQUIRE(recvMessage.Updates[1] == sendMessage.Updates[1]);
+    }
+
+    GIVEN("RequestActionEvents")
+    {
+        ActionEvent firstAction;
+        firstAction.Tick = 1712345678901;
+        firstAction.ActionId = 42;
+        firstAction.TargetId = 963741;
+        firstAction.State1 = 6547;
+        firstAction.EventName = "jumpStandingStart";
+
+        ActionEvent secondAction = firstAction;
+        secondAction.Tick += 120;
+        secondAction.ActionId = 43;
+        secondAction.EventName = "attackStart";
+        secondAction.TargetEventName = "toast";
+
+        RequestActionEvents sendMessage, recvMessage;
+        sendMessage.Actions[1] = {firstAction, secondAction};
+        sendMessage.Actions[7] = {secondAction};
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sendMessage.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        uint64_t trash;
+        reader.ReadBits(trash, 8); // pop opcode
+
+        recvMessage.DeserializeRaw(reader);
+
+        REQUIRE(sendMessage == recvMessage);
+    }
+
+    GIVEN("NotifyActionEvents")
+    {
+        ActionEvent action;
+        action.Tick = 1712345678901;
+        action.ActionId = 42;
+        action.EventName = "blockStart";
+
+        NotifyActionEvents sendMessage;
+        sendMessage.Actions[3] = {action, action};
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sendMessage.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        const ServerMessageFactory factory;
+        auto pMessage = factory.Extract(reader);
+
+        REQUIRE(pMessage);
+        REQUIRE(pMessage->GetOpcode() == sendMessage.GetOpcode());
+        REQUIRE(*CastUnique<NotifyActionEvents>(std::move(pMessage)) == sendMessage);
+    }
+
+    GIVEN("RequestInventorySnapshot")
+    {
+        Inventory::Entry armor;
+        armor.BaseId.BaseId = 0x12E46;
+        armor.Count = 1;
+        armor.ExtraWorn = true;
+
+        Inventory::Entry gold;
+        gold.BaseId.BaseId = 0xF;
+        gold.Count = 250;
+
+        RequestInventorySnapshot sendMessage;
+        sendMessage.ServerId = 0x10042;
+        sendMessage.OwnershipEpoch = 7;
+        sendMessage.CurrentInventory.Entries = {armor, gold};
+        sendMessage.CurrentInventory.CurrentMagicEquipment.RightHandSpell.BaseId = 0x12FCD;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sendMessage.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        const ClientMessageFactory factory;
+        auto pMessage = factory.Extract(reader);
+
+        REQUIRE(pMessage);
+        REQUIRE(pMessage->GetOpcode() == sendMessage.GetOpcode());
+        REQUIRE(*CastUnique<RequestInventorySnapshot>(std::move(pMessage)) == sendMessage);
+    }
+
+    GIVEN("NotifyInventorySnapshot")
+    {
+        Inventory::Entry armor;
+        armor.BaseId.BaseId = 0x12E46;
+        armor.Count = 1;
+        armor.ExtraWornLeft = true;
+
+        NotifyInventorySnapshot sendMessage;
+        sendMessage.ServerId = 0x10042;
+        sendMessage.OwnershipEpoch = 7;
+        sendMessage.CurrentInventory.Entries = {armor};
+        sendMessage.CurrentInventory.CurrentMagicEquipment.Shout.BaseId = 0x13E07;
+
+        Buffer buff(1000);
+        Buffer::Writer writer(&buff);
+        sendMessage.Serialize(writer);
+
+        Buffer::Reader reader(&buff);
+
+        const ServerMessageFactory factory;
+        auto pMessage = factory.Extract(reader);
+
+        REQUIRE(pMessage);
+        REQUIRE(pMessage->GetOpcode() == sendMessage.GetOpcode());
+        REQUIRE(*CastUnique<NotifyInventorySnapshot>(std::move(pMessage)) == sendMessage);
     }
 }
 
@@ -617,136 +612,5 @@ TEST_CASE("StringCache", "[encoding.string_cache]")
         recvUpdate.DeserializeRaw(reader);
 
         REQUIRE(update == recvUpdate);
-    }
-}
-
-TEST_CASE("v4.0.0 HealthRevision and ActorData::BaseId wire round-trips", "[encoding.v400]")
-{
-    const ServerMessageFactory serverFactory;
-    const ClientMessageFactory clientFactory;
-
-    SECTION("AssignCharacterResponse carries OwnershipEpoch and HealthRevision")
-    {
-        AssignCharacterResponse outgoing{};
-        outgoing.Cookie = 77u;
-        outgoing.ServerId = 0x1020u;
-        outgoing.PlayerId = 0u;
-        outgoing.Owner = true;
-        outgoing.IsDead = false;
-        outgoing.IsWeaponDrawn = true;
-        outgoing.OwnershipEpoch = 19ull;
-        outgoing.HealthRevision = 42u;
-        outgoing.AllActorValues.ActorValuesList[24] = 185.5f;
-        outgoing.AllActorValues.ActorMaxValuesList[24] = 250.0f;
-
-        Buffer buff(4096);
-        Buffer::Writer writer(&buff);
-        outgoing.Serialize(writer);
-
-        Buffer::Reader reader(&buff);
-        auto pDecoded = serverFactory.Extract(reader);
-        REQUIRE(pDecoded);
-        auto pMsg = CastUnique<AssignCharacterResponse>(std::move(pDecoded));
-        REQUIRE(*pMsg == outgoing);
-        REQUIRE(pMsg->OwnershipEpoch == 19ull);
-        REQUIRE(pMsg->HealthRevision == 42u);
-    }
-
-    SECTION("CharacterSpawnRequest carries BaseId and HealthRevision")
-    {
-        CharacterSpawnRequest outgoing{};
-        outgoing.ServerId = 0x2040u;
-        outgoing.FormId = GameId(1u, 0x0E5F72u);
-        outgoing.BaseId = GameId(3u, 0x023BC1u);
-        outgoing.CellId = GameId(0u, 0x009ABCu);
-        outgoing.HealthRevision = 13u;
-        outgoing.InitialActorValues.ActorValuesList[24] = 95.0f;
-        outgoing.InitialActorValues.ActorMaxValuesList[24] = 200.0f;
-
-        Buffer buff(4096);
-        Buffer::Writer writer(&buff);
-        outgoing.Serialize(writer);
-
-        Buffer::Reader reader(&buff);
-        auto pDecoded = serverFactory.Extract(reader);
-        REQUIRE(pDecoded);
-        auto pMsg = CastUnique<CharacterSpawnRequest>(std::move(pDecoded));
-        REQUIRE(*pMsg == outgoing);
-        REQUIRE(pMsg->BaseId == GameId(3u, 0x023BC1u));
-        REQUIRE(pMsg->HealthRevision == 13u);
-    }
-
-    SECTION("NotifySpawnData and RequestOwnershipClaim carry ActorData::BaseId and HealthRevision")
-    {
-        NotifySpawnData outgoing{};
-        outgoing.Id = 0x3050u;
-        outgoing.HealthRevision = 88u;
-        outgoing.NewActorData.BaseId = GameId(4u, 0x045678u);
-        outgoing.NewActorData.IsDead = false;
-        outgoing.NewActorData.IsWeaponDrawn = true;
-        outgoing.NewActorData.InitialActorValues.ActorValuesList[24] = 120.0f;
-
-        Buffer buff(4096);
-        Buffer::Writer writer(&buff);
-        outgoing.Serialize(writer);
-
-        Buffer::Reader reader(&buff);
-        auto pDecoded = serverFactory.Extract(reader);
-        REQUIRE(pDecoded);
-        auto pMsg = CastUnique<NotifySpawnData>(std::move(pDecoded));
-        REQUIRE(*pMsg == outgoing);
-        REQUIRE(pMsg->HealthRevision == 88u);
-        REQUIRE(pMsg->NewActorData.BaseId == GameId(4u, 0x045678u));
-
-        RequestOwnershipClaim claimOutgoing{};
-        claimOutgoing.ServerId = 0x3050u;
-        claimOutgoing.NewActorData = outgoing.NewActorData;
-
-        Buffer claimBuff(4096);
-        Buffer::Writer claimWriter(&claimBuff);
-        claimOutgoing.Serialize(claimWriter);
-
-        Buffer::Reader claimReader(&claimBuff);
-        auto pClaimDecoded = clientFactory.Extract(claimReader);
-        REQUIRE(pClaimDecoded);
-        auto pClaim = CastUnique<RequestOwnershipClaim>(std::move(pClaimDecoded));
-        REQUIRE(*pClaim == claimOutgoing);
-        REQUIRE(pClaim->NewActorData.BaseId == GameId(4u, 0x045678u));
-    }
-
-    SECTION("NotifyOwnershipTransfer and NotifyDeathStateChange carry HealthRevision")
-    {
-        NotifyOwnershipTransfer grant{};
-        grant.ServerId = 0x4060u;
-        grant.OwnershipEpoch = 31ull;
-        grant.HealthRevision = 64u;
-
-        Buffer grantBuff(1024);
-        Buffer::Writer grantWriter(&grantBuff);
-        grant.Serialize(grantWriter);
-
-        Buffer::Reader grantReader(&grantBuff);
-        auto pGrantDecoded = serverFactory.Extract(grantReader);
-        REQUIRE(pGrantDecoded);
-        auto pGrant = CastUnique<NotifyOwnershipTransfer>(std::move(pGrantDecoded));
-        REQUIRE(*pGrant == grant);
-        REQUIRE(pGrant->OwnershipEpoch == 31ull);
-        REQUIRE(pGrant->HealthRevision == 64u);
-
-        NotifyDeathStateChange death{};
-        death.Id = 0x4060u;
-        death.IsDead = true;
-        death.HealthRevision = 65u;
-
-        Buffer deathBuff(1024);
-        Buffer::Writer deathWriter(&deathBuff);
-        death.Serialize(deathWriter);
-
-        Buffer::Reader deathReader(&deathBuff);
-        auto pDeathDecoded = serverFactory.Extract(deathReader);
-        REQUIRE(pDeathDecoded);
-        auto pDeath = CastUnique<NotifyDeathStateChange>(std::move(pDeathDecoded));
-        REQUIRE(*pDeath == death);
-        REQUIRE(pDeath->HealthRevision == 65u);
     }
 }

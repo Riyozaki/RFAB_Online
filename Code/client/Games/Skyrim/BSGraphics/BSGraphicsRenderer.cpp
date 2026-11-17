@@ -47,7 +47,8 @@ LRESULT CALLBACK Hook_WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
 void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData, const BSGraphics::ApplicationWindowProperties* aFBData, BSGraphics::RendererInitReturn* aOut)
 {
-    RFAB_EXPECT_MAIN_THREAD("Hook_Renderer_Init");
+    if (!World::IsCreated() || !RFAB_EXPECT_MAIN_THREAD())
+        return Renderer_Init(self, aOSData, aFBData, aOut);
     // we feed this a shared icon as the resource directory of our former launcher data is already overwritten with the
     // game.
     aOSData->hIcon = g_SharedWindowIcon;
@@ -57,7 +58,26 @@ void Hook_Renderer_Init(Renderer* self, BSGraphics::RendererInitOSData* aOSData,
     RealWndProc = aOSData->pWndProc;
     aOSData->pWndProc = Hook_WndProc;
 
-    Renderer_Init(self, aOSData, aFBData, aOut);
+    // DXGI Exclusive Fullscreen (bFull Screen=1 / SwapEffect=discard) conflicts with the D3D11/CEF
+    // overlay on mode transitions, Alt-Tab, and multi-adapter/virtual-display setups; force borderless
+    // windowed presentation to avoid known presentation conflicts (not a general crash guarantee).
+    BSGraphics::ApplicationWindowProperties safeProps{};
+    const BSGraphics::ApplicationWindowProperties* pEffectiveProps = aFBData;
+    if (aFBData && aFBData->bFullScreen)
+    {
+        safeProps = *aFBData;
+        safeProps.bFullScreen = false;
+        safeProps.bBorderlessWindow = true;
+        pEffectiveProps = &safeProps;
+        if (self)
+        {
+            self->Data.bFullScreen = 0;
+            self->Data.bAppFullScreen = false;
+            self->Data.bBorderlessWindow = true;
+        }
+    }
+
+    Renderer_Init(self, aOSData, pEffectiveProps, aOut);
 
     g_sRs = &World::Get().ctx().at<RenderSystemD3D11>();
     // This how the game does it too

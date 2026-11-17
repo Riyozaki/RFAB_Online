@@ -223,6 +223,9 @@ def main():
         r"INSTALL_RFAB_ONLINE.bat",
         r"PROCHTI_MENYA.txt",
         r"Tools\rfab\Setup-RfabOnline.ps1",
+        # The report collector: installed into the RFAB folder by the installer, and usable from the archive.
+        r"COLLECT_RFAB_REPORT.bat",
+        r"Tools\rfab\Collect-RfabReport.ps1",
     ):
         full = os.path.join(stage_dir, rel)
         assert os.path.isfile(full) and os.path.getsize(full) > 20, f"Missing or empty release file: {full}"

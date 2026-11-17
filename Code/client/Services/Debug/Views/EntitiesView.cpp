@@ -67,9 +67,9 @@ void DebugService::DisplayEntities() noexcept
         char name[256];
 
         if (!pActor->baseForm)
-            sprintf_s(name, std::size(name), "UNNAMED (%x)", formComponent.Id);
-        else
-            sprintf_s(name, std::size(name), "%s (%x)", pActor->baseForm->GetName(), formComponent.Id);
+            strncpy_s(name, "UNNAMED", sizeof(name));
+
+        sprintf_s(name, std::size(name), "%s (%x)", pActor->baseForm->GetName(), formComponent.Id);
 
         if (ImGui::Selectable(name, m_formId == formComponent.Id))
             m_formId = formComponent.Id;
@@ -152,7 +152,7 @@ void DebugService::DisplayFormComponent(FormIdComponent& aFormComponent) const n
     /*
     if (ImGui::Button("Teleport away"))
     {
-        m_world.GetRunner().Queue([id = aFormComponent.Id]() {
+        m_world.GetRunner().QueueForThisWorld([id = aFormComponent.Id]() {
             Actor* pActor = Cast<Actor>(TESForm::GetById(id));
             TESObjectCELL* pCell = Cast<TESObjectCELL>(TESForm::GetById(0x133C6));
             NiPoint3 pos{};
@@ -169,7 +169,7 @@ void DebugService::DisplayFormComponent(FormIdComponent& aFormComponent) const n
     ImGui::InputFloat3("Rotation", pActor->rotation.AsArray(), "%.3f", ImGuiInputTextFlags_ReadOnly);
     int isDead = int(pActor->IsDead());
     ImGui::InputScalar("Is dead?", ImGuiDataType_U8, &isDead, 0, 0, "%" PRIx8, ImGuiInputTextFlags_ReadOnly);
-    int isRemote = int(pActor->GetExtension() ? pActor->GetExtension()->IsRemote() : false);
+    int isRemote = int(pActor->GetExtension()->IsRemote());
     ImGui::InputScalar("Is remote?", ImGuiDataType_U8, &isRemote, 0, 0, "%" PRIx8, ImGuiInputTextFlags_ReadOnly);
     auto handle = pActor->GetHandle();
     ImGui::InputInt("Handle", (int*)&handle.handle.iBits, 0, 0, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_CharsHexadecimal);
@@ -193,6 +193,7 @@ void DebugService::DisplayLocalComponent(LocalComponent& aLocalComponent, const 
 
     auto& action = aLocalComponent.CurrentAction;
     ImGui::InputInt("Net Id", (int*)&aLocalComponent.Id, 0, 0, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::InputInt("Ownership Epoch", (int*)&aLocalComponent.OwnershipEpoch, 0, 0, ImGuiInputTextFlags_ReadOnly);
     ImGui::InputInt("Action Id", (int*)&action.ActionId, 0, 0, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::InputInt("Idle Id", (int*)&action.IdleId, 0, 0, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::InputScalarN("State", ImGuiDataType_U32, &action.State1, 2, nullptr, nullptr, "%x", ImGuiInputTextFlags_ReadOnly);
@@ -204,14 +205,15 @@ void DebugService::DisplayRemoteComponent(RemoteComponent& aRemoteComponent, con
         return;
 
     ImGui::InputInt("Server Id", (int*)&aRemoteComponent.Id, 0, 0, ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::InputInt("Ownership Epoch", (int*)&aRemoteComponent.OwnershipEpoch, 0, 0, ImGuiInputTextFlags_ReadOnly);
 
     if (ImGui::Button("Take ownership"))
     {
-        m_world.GetRunner().Queue(
+        m_world.GetRunner().QueueForThisWorld(
             [acEntity, acFormId]()
             {
                 if (auto* pRemoteCompoment = World::Get().try_get<RemoteComponent>(acEntity))
-                    (void)World::Get().GetCharacterService().RequestVoluntaryOwnershipClaim(acFormId, pRemoteCompoment->Id, acEntity);
+                    World::Get().GetCharacterService().RequestOwnership(acFormId, pRemoteCompoment->Id, acEntity);
             });
     }
 }
