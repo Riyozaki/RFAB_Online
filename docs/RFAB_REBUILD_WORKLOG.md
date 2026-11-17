@@ -215,3 +215,16 @@ Windows44140814679 пока in_progress; он не включает послед
 Никакого release/tag/второго игрового теста: VERSION5.0.0-dev.1, readiness=false. Всё ещё нужны
 semantic XP, save-bound enemy HP×2, genuine retreat A/AI-task/hazard quiescence, save/load edge
 failures, полный Windows package и один финальный gameplay test; optional B не выдаётся за A.
+
+
+### Windows follow-up: не выдавать PCH за header dependency
+
+Windows8701c61/run44140814679 завершился **FAIL**: CommonLib не имеет PCH, а новые ledger/catalog
+тянули старые upstream GameId/Inventory headers, полагавшиеся на EncodingPch.h. Добавлены direct
+cstdint/functional/Buffer/Stl includes; Linux common TUs теперь тоже собираются **без** PCH.
+Новый first-include test отдельно разбирает все17 co-op/wire boundary headers — локально PASS.
+Исправлен lazy REPO_ROOT Makefile: included .d не должен менять значение корня в поздних recipes.
+Windowsa183409/run44144088071 остановился ещё в новой PowerShell preflight до native build;
+в текущем запуске причина не попала в Checks annotation (сырой log redirect недоступен). Preflight
+перенесён в существующий Invoke-LoggedCmd, чтобы следующий запуск показал конкретную ошибку.
+Никаких выводов о native/installer success из portable pass не делается.

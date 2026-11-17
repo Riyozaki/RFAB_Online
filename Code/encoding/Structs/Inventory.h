@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MagicEquipment.h"
+#include <TiltedCore/Stl.hpp>
 #include <optional>
 #include <functional>
 

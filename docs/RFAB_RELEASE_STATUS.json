@@ -36,7 +36,7 @@
     "server_plain": "6 production-wire scenarios + portable crash-record self-test; includes import/race/deposit/lease/lock/privacy/missing-plugin restart refusal; 2026-11-17",
     "strict_hook_audit": "0 findings; hook self-test44 / actor-lifetime self-test21; source checks are not engine threading proof",
     "powershell": "not run locally: pwsh unavailable",
-    "windows_client": "44135805841 failed (encoding include dependency, Winsock macro); both fixed; 44140814679 on8701c61 still building at last check; newest storage/native/installer changes not included",
+    "windows_client": "8701c61/run44140814679 failed: CommonLib compiles without PCH and exposed GameId/Inventory missing direct includes; fixed and 17 standalone header parses passed locally; a183409/run44144088071 stopped in preflight, diagnostics being surfaced; native build remains unproven",
     "sanitizers": "latest storage core passed; refreshed server sanitizer build running (an earlier parallel build hit sandbox memory limit, not a test pass)",
     "core_sanitized": "66 cases / 274595 assertions; ASan+UBSan, 128 fuzz / 512 soak seeds; 2026-11-17",
     "strict_static": "passed; wire0new/0stale/8known; SE3086sites/3081unique/0AE; pwsh skipped",

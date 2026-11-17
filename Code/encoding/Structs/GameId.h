@@ -1,5 +1,10 @@
 #pragma once
 
+#include <cstdint>
+#include <cstddef>
+#include <functional>
+#include <TiltedCore/Buffer.hpp>
+
 using TiltedPhoques::Buffer;
 
 struct GameId

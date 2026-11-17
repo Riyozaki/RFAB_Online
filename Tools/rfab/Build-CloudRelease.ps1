@@ -95,10 +95,6 @@ $IsPrereleaseTag = ($VersionTag.Contains("-")) -or $script:RfabOptInPrerelease -
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:RfabScriptRoot "Test-PowerShellSyntax.ps1")
-if ($LASTEXITCODE -ne 0) { throw "PowerShell 5.1 source parsing failed" }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:RfabScriptRoot "Preserve-RuntimeData.ps1") -SelfTest
-if ($LASTEXITCODE -ne 0) { throw "Runtime-preservation self-test failed" }
 
 
 $script:PackagesReady = $false
@@ -1025,6 +1021,10 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
 try {
     $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\.."))
     Set-Location -LiteralPath $RepoRoot
+
+    # Keep preflight failures in the same Checks annotations as native compiler diagnostics.
+    # Raw Actions log redirects need not be reachable from the development environment.
+    Invoke-LoggedCmd "[0/8] PowerShell 5.1 syntax and runtime-data preservation" "powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tools\rfab\Test-PowerShellSyntax.ps1 && powershell.exe -NoProfile -ExecutionPolicy Bypass -File Tools\rfab\Preserve-RuntimeData.ps1 -SelfTest"
 
     if ($script:RfabMirrorsLegacyReleases) {
         Ensure-V120BackupRelease -RepoRootPath $RepoRoot

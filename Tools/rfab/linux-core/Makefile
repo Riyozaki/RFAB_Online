@@ -11,7 +11,10 @@
 # Scope: everything here is OS independent. The Skyrim client (hooks, D3D11, CEF) and the
 # GameNetworkingSockets transport are NOT part of this target - they stay on the xmake build.
 
-REPO_ROOT ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../..)
+# Freeze this before dependency .d files extend MAKEFILE_LIST; late recipe expansion must
+# not reinterpret a generated header dependency file as the repository's own Makefile.
+REPO_ROOT ?= $(abspath $(dir $(firstword $(MAKEFILE_LIST)))/../../..)
+REPO_ROOT := $(REPO_ROOT)
 
 # SANITIZE=1 rebuilds the same suites with AddressSanitizer + UndefinedBehaviorSanitizer
 # into their own object tree. Use it when a test passes but the behaviour looks wrong:
@@ -98,12 +101,19 @@ TEST_OBJS     := $(foreach s,$(PORTABLE_TESTS),$(call obj_of,tests,$(s)))
 MIMALLOC_OBJ  := $(OBJ_DIR)/mimalloc.o
 
 ALL_OBJS := $(CORE_OBJS) $(ENCODING_OBJS) $(COMMON_OBJS) $(TEST_OBJS) $(MIMALLOC_OBJ)
-ALL_DEPS := $(ALL_OBJS:.o=.d)
+# Every public co-op boundary is also parsed as the FIRST include in its own TU. A PCH
+# in an unrelated target must never make a header appear self-contained when it is not.
+STANDALONE_HEADERS := $(wildcard $(REPO_ROOT)/Code/common/Coop/*.h) \
+  $(addprefix $(REPO_ROOT)/Code/encoding/Structs/,GameId.h Inventory.h MagicEquipment.h)
+header_check = $(BUILD_DIR)/headers/$(call rel_name,$(1)).ok
+HEADER_CHECKS := $(foreach h,$(STANDALONE_HEADERS),$(call header_check,$(h)))
+ALL_DEPS := $(ALL_OBJS:.o=.d) $(HEADER_CHECKS:.ok=.d)
 
-.PHONY: all run clean
-all: $(BIN)
+.PHONY: all headers run clean
+all: $(BIN) $(HEADER_CHECKS)
+headers: $(HEADER_CHECKS)
 
-run: $(BIN)
+run: all
 	@$(BIN) -r compact
 
 $(BIN): $(ALL_OBJS)
@@ -132,11 +142,22 @@ endef
 
 $(foreach s,$(CORE_SRCS),$(eval $(call compile_rule,core,$(s),$(VENDOR_SAN))))
 $(foreach s,$(ENCODING_SRCS),$(eval $(call compile_rule,encoding,$(s),$(PCH))))
-$(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),$(PCH))))
+# CommonLib has NO PCH in the shipping xmake target. Do not hide its transitive includes
+# behind EncodingPch.h (Windows run44140814679 caught missing GameId/Inventory includes).
+$(foreach s,$(COMMON_SRCS),$(eval $(call compile_rule,common,$(s),)))
 # The suites are compiled WITHOUT the encoding prefix header, exactly like the xmake TPTests
 # target: a suite that only compiles because EncodingPch.h was force-included builds here and
 # fails under MSVC (first Windows CI run: rfab_v411_phase3_adaptation_tests.cpp, 38 errors).
 $(foreach s,$(PORTABLE_TESTS),$(eval $(call compile_rule,tests,$(s),)))
+
+define header_rule
+$(call header_check,$(1)): $(1) $(MAKEFILE_LIST)
+	@mkdir -p $$(dir $$@)
+	@echo "  HDR   $$(patsubst $$(REPO_ROOT)/%,%,$$<)"
+	@$$(CXX) -std=c++20 -DNOMINMAX -w $$(INCLUDES) -I$$(REPO_ROOT)/Tools/rfab/linux-server/stub -x c++ -fsyntax-only -MMD -MP -MF $$(@:.ok=.d) -MT $$@ $$<
+	@touch $$@
+endef
+$(foreach h,$(STANDALONE_HEADERS),$(eval $(call header_rule,$(h))))
 
 -include $(ALL_DEPS)
 
