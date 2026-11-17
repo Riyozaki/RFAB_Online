@@ -174,3 +174,10 @@ build, package/fault проверки и единственного финаль
 strict static exit0, Python storage profile **12 PASS**, pwsh локально отсутствует.
 Внешние research .cache-файлы убраны из Git и добавлен ignore; runtime/generated profile data
 тоже не включаются в исходники. Artwork пользователя не менялся. ready_for_playtest=false.
+
+
+Дополнение Windows diagnostic `44135805841`: после получения всех Checks annotations видна
+ещё независимая ошибка companion: имя переменной `s_host` раскрывалось в legacy макрос
+winsock.h (`S_un_b/s_b2`). Переменная переименована, target RFABCoopState добавлен отдельной
+ранней группой в Build-CloudRelease, чтобы эта маленькая проверка не ждала сборки CEF.
+Windows run для `8218a8a` отменён как заведомо содержащий тот же макрос; Linux CI не отменялся.

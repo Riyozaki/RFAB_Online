@@ -4,12 +4,13 @@
 namespace
 {
 using namespace Coop::SKSE;
-const Host* s_host{};
+// winsock.h defines the legacy macro s_host; never use it as a bridge variable name.
+const Host* g_coopBridge{};
 void Message(Messaging::Message* message)
 {
-    if (!message || !s_host) return;
+    if (!message || !g_coopBridge) return;
     // SKSE passes PostLoadGame success as a bool-sized POINTER VALUE (not bool*).
-    s_host->Message(message->Type, message->Data != nullptr);
+    g_coopBridge->Message(message->Type, message->Data != nullptr);
 }
 }
 extern "C" __declspec(dllexport) bool SKSEPlugin_Query(const Coop::SKSE::Interface* skse, Coop::SKSE::PluginInfo* info)
@@ -30,9 +31,9 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const Coop::SKSE::Interfac
     const auto* host = get(Coop::SKSE::kBridgeVersion);
     if (!host || host->Version != Coop::SKSE::kBridgeVersion || host->Size != sizeof(*host) ||
         !serialization || serialization->Version < 4 || !messaging || messaging->Version < 2) return false;
-    s_host = host;
+    g_coopBridge = host;
     const auto plugin = skse->GetPluginHandle();
-    if (!messaging->RegisterListener(plugin, "SKSE", Message)) { s_host = nullptr; return false; }
+    if (!messaging->RegisterListener(plugin, "SKSE", Message)) { g_coopBridge = nullptr; return false; }
     serialization->SetUniqueID(plugin, Coop::SKSE::kRecord);
     serialization->SetSaveCallback(plugin, host->Save);
     serialization->SetLoadCallback(plugin, host->Load);

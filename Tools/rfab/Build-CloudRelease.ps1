@@ -1050,6 +1050,7 @@ try {
     $buildFailures = New-Object System.Collections.Generic.List[string]
     $script:DiagShared = $true
     foreach ($buildGroup in @(
+            @{ Name = "save bridge"; Target = "RFABCoopState"; Chunks = 2 },
             @{ Name = "tests";  Target = "TPTests";              Chunks = 2 },
             @{ Name = "server"; Target = "SkyrimTogetherServer"; Chunks = 2 },
             @{ Name = "client"; Target = "SkyrimTogetherClient"; Chunks = 4 })) {
