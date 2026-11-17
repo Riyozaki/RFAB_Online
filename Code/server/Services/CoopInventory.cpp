@@ -182,6 +182,19 @@ bool CoopService::ObserveInventory(uint32_t aEntity, Inventory& aContent, uint32
     aContent.Revision = m_inventory->Find(binding->second)->Revision;
     return true;
 }
+bool CoopService::NearStorageAccess(Player* player, GameId point) const noexcept
+{
+    if (!player || !player->GetCharacter() || !player->HasMod(point.ModId)) return false;
+    const auto* movement = m_world.try_get<MovementComponent>(*player->GetCharacter());
+    const auto* owner = m_world.try_get<OwnerComponent>(*player->GetCharacter());
+    const auto* location = m_world.try_get<CellIdComponent>(*player->GetCharacter());
+    const auto access = NameForm(point), cell = NameForm(player->GetCellComponent().Cell);
+    const auto worldId = player->GetCellComponent().WorldSpaceId;
+    const auto world = worldId ? NameForm(worldId) : std::optional<Coop::StableForm>{};
+    if (!movement || !owner || owner->GetOwner() != player || !location || location->WorldSpaceId != worldId ||
+        (!worldId && location->Cell != player->GetCellComponent().Cell) || !access || !cell || (worldId && !world)) return false;
+    return m_storageCatalog.InReach(*access, *cell, world, movement->Position.x, movement->Position.y, movement->Position.z);
+}
 bool CoopService::CanAccessInventory(Player* aPlayer, const Client& aClient, uint32_t aEntity, uint8_t aReason) const noexcept
 {
     if (!aPlayer) return false;
@@ -195,15 +208,16 @@ bool CoopService::CanAccessInventory(Player* aPlayer, const Client& aClient, uin
         {
             if (!(aClient.Capabilities & Coop::PersistentStorage) || open == m_openStorage.end()) return false;
             const auto lease = open->second.find(binding->second);
-            if (lease == open->second.end() || Now() < lease->second.Seen || Now() - lease->second.Seen > 2000) return false;
+            if (lease == open->second.end() || Now() < lease->second.Seen || Now() - lease->second.Seen > 2000 ||
+                !NearStorageAccess(aPlayer, lease->second.Point)) return false;
             const auto points = m_world.view<FormIdComponent, CellIdComponent>();
             for (auto point : points)
                 if (points.get<FormIdComponent>(point).Id == lease->second.Point &&
-                    aPlayer->GetCellComponent().Cell == points.get<CellIdComponent>(point).Cell &&
-                    aPlayer->GetCellComponent().WorldSpaceId == points.get<CellIdComponent>(point).WorldSpaceId)
+                    aPlayer->GetCellComponent().WorldSpaceId == points.get<CellIdComponent>(point).WorldSpaceId &&
+                    (aPlayer->GetCellComponent().WorldSpaceId || aPlayer->GetCellComponent().Cell == points.get<CellIdComponent>(point).Cell))
                 {
                     const auto* object = m_world.try_get<ObjectComponent>(point);
-                    return !object || !object->CurrentLockData.IsLocked;
+                    return object && !object->CurrentLockData.IsLocked; // missing lock state is not unlocked proof
                 }
             return false;
         }
@@ -354,9 +368,9 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::StorageOp
     for (auto entity : refs)
         if (refs.get<FormIdComponent>(entity).Id == aOpen.AccessPoint &&
             !refs.get<ObjectComponent>(entity).CurrentLockData.IsLocked &&
-            aPlayer->GetCellComponent().Cell == refs.get<CellIdComponent>(entity).Cell &&
-            aPlayer->GetCellComponent().WorldSpaceId == refs.get<CellIdComponent>(entity).WorldSpaceId) nearby = true;
-    if (!nearby) return;
+            aPlayer->GetCellComponent().WorldSpaceId == refs.get<CellIdComponent>(entity).WorldSpaceId &&
+            (aPlayer->GetCellComponent().WorldSpaceId || aPlayer->GetCellComponent().Cell == refs.get<CellIdComponent>(entity).Cell)) nearby = true;
+    if (!nearby || !NearStorageAccess(aPlayer, aOpen.AccessPoint)) return;
     // Validate BEFORE registering/writing any bank. A forged foreign form must not turn a
     // harmless rejected import into a failed durable journal write that faults the campaign.
     if (aOpen.ConfirmImport)

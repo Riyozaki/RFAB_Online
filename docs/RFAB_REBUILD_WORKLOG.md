@@ -329,3 +329,40 @@ Semantic XP, trusted server access coordinates, полноценные native li
 genuine A retreat/AI-task/targeted-hazard quiescence и полный Windows package остаются работой
 единого кандидата. Optional B не подменён A. Версия dev/readiness=false; release/tag и
 промежуточный совместный игровой тест не создавались.
+
+
+### 2026-11-17 — trusted secure-bank placement, not a client-registered cell permission
+
+- Catalog V2 добавляет к access/backing identity точное положение winning REFR DATA,
+  parent CELL и optional WRLD из GRUP context установленного профиля. Выигрывающие overrides
+  клетки/положения учитываются; missing/alias/deleted/contradictory/out-of-range metadata
+  не заменяется координатами клиента. CELL DATA читает документированные 1/2-byte flags.
+  Старый шестиколоночный V1 spatial authority не содержит и отвергается; требуется новый
+  вывод offline generator, не редактирование guessed coordinates. Профиль пользователя не искался.
+- Сервер сверяет accepted **own-avatar** movement с собственным каталогом при open, inventory
+  query и каждом source→destination переносе. Дистанция ≤320 units (native client≤256 плюс
+  транспортный допуск); lease2s не разрешает вывод после ухода от сундука. Lock перепроверяется,
+  missing Object/lock state не считается unlocked. Поддельная регистрация в той же cell больше
+  не делает далёкий listed access доступным. Это не серверная physics/anti-teleport гарантия.
+- Interior требует точную CELL identity. Exterior persistent reference может принадлежать
+  world persistent CELL, отличной от current player grid CELL: там граница — World + distance,
+  а не ложное равенство клеток. Native client проверяет настоящий pointWorld, 3D, дистанцию
+  и отклонение от catalog position≤32 units; script-moved point требует отдельного адаптера.
+- Канонический mismatch signature теперь включает CELL/WRLD и exact float bits XYZ,
+  независимо от порядка строк/equivalent decimal spelling. FNV не выдаётся за authenticity.
+  Hidden backing и shared campaign identity не менялись, личные содержимое/кошельки не сливались.
+  Формат и воспроизводимые действия описаны в `RFAB_INSTALLED_STORAGE_PROFILE.md`.
+
+Проверки: **76 core cases / 29 132 assertions PASS**, **18 synthetic parser tests PASS**,
+**7 production-wire server scenarios + portable crash-record PASS**, full static PASS
+(local pwsh skipped). Wire bank scenario дополнен distant same-cell access, реальным
+own-avatar move packet, свежим lease вне радиуса, read/transfer refusal и lock disappearance/
+relock. Это synthetic/portable evidence, не проверка установленной игры.
+
+Linux CI650773e/run44159753198 завершён **success всеми4 jobs**, в том числе HP/wire4 core и
+server под ASan+UBSan и UI build. Он **не** включает новые catalog positions. Local J1 sequential
+HP+V2 core/server sanitizer run (gold для сервера) начат; на момент записи ещё выполняется.
+Windows650/run44159753450/job134310070974 ещё in_progress; полный rewritten Windows build,
+package и Skyrim success не заявляются. VERSION5.0.0-dev.1/readiness=false, без release/tag/
+промежуточного совместного теста. Остаются semantic XP, native life/phase/respawn adapters,
+genuine encounter A AI-task/retreat/targeted-hazard quiescence и optional genuine checkpoint B.

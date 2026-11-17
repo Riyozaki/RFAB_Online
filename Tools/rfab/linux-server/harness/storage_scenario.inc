@@ -5,7 +5,9 @@ void RunPersistentStorageScenario(Console::ConsoleRegistry& console)
     TemporaryWorkingDirectory fixture;
     std::error_code ec;
     std::filesystem::create_directories("config", ec);
-    const std::string rules = "RFAB.esp\t801\t0\tRFAB.esp\t800\t0\nRFAB.esp\t802\t0\tRFAB.esp\t800\t0\n";
+    const std::string rules = "RFAB.esp\t801\t0\tRFAB.esp\t800\t0\tSkyrim.esm\t165a8\t0\t-\t0\t0\t100\t200\t0\n"
+        "RFAB.esp\t802\t0\tRFAB.esp\t800\t0\tSkyrim.esm\t16789\t0\t-\t0\t0\t100\t200\t0\n"
+        "RFAB.esp\t803\t0\tRFAB.esp\t800\t0\tSkyrim.esm\t165a8\t0\t-\t0\t0\t10000\t200\t0\n";
     { std::ofstream out("config/RFAB_Storage.tsv"); out << rules; }
     Coop::StorageCatalog catalog;
     Check(catalog.Parse(rules), "test allowlist is canonical and both access points resolve one backing");
@@ -54,6 +56,13 @@ void RunPersistentStorageScenario(Console::ConsoleRegistry& console)
         auto as = latest.template operator()<Coop::StorageState>(6001), bs = latest.template operator()<Coop::StorageState>(6002);
         Check(as && bs && as->NeedsImport && bs->NeedsImport && as->Items.empty() && bs->Items.empty(), "old personal storage is never imported merely because somebody opened a menu");
         if (!as || !bs) return;
+        // Point803 IS catalog-listed and claims the right cell, but its installed DATA is far
+        // away. AssignObjectsRequest has no trusted spatial authority to move it near Alice.
+        assignAccess(alice, GameId(1, 0x803), cityA);
+        auto distant = openA; distant.AccessPoint = GameId(1, 0x803);
+        Harness::ClearOutbox(); send(alice, distant);
+        Check(!latest.template operator()<Coop::StorageState>(6001),
+            "registered same-cell catalog point cannot open a bank from its distant static coordinates");
         auto forged = openA; forged.ConfirmImport = true;
         auto foreign = item; foreign.ExtraOwnerId = GameId(54, 0x123); foreign.ExtraPresence |= Inventory::Entry::Ownership;
         forged.Import.push_back(foreign);
@@ -91,6 +100,35 @@ void RunPersistentStorageScenario(Console::ConsoleRegistry& console)
         take.DestinationRevision = world.get<InventoryComponent>(*alice->GetCharacter()).Content.Revision;
         take.DestinationEpoch = world.get<OwnerComponent>(*alice->GetCharacter()).OwnershipEpoch;
         take.Nonce = 601; take.Item = item;
+        world.get<ObjectComponent>(accessEntity).CurrentLockData.IsLocked = true;
+        Harness::ClearOutbox(); send(alice, take);
+        const auto reLocked = latest.template operator()<Coop::TransferReply>(6001);
+        Check(reLocked && reLocked->Result == Coop::TransferResult::Rejected,
+            "a fresh lease cannot bypass a point locked after opening");
+        world.remove<ObjectComponent>(accessEntity);
+        Harness::ClearOutbox(); send(alice, take);
+        const auto noLockState = latest.template operator()<Coop::TransferReply>(6001);
+        Check(noLockState && noLockState->Result == Coop::TransferResult::Rejected,
+            "lost point/lock state is not interpreted as an unlocked access");
+        world.emplace<ObjectComponent>(accessEntity, alice);
+        const auto moveAlice = [&](float x) {
+            const auto entity = *alice->GetCharacter();
+            ClientReferencesMoveRequest move; move.Tick = world.get<MovementComponent>(entity).Tick + 1;
+            auto& update = move.Updates[aid]; update.OwnershipEpoch = take.DestinationEpoch;
+            update.CellId = cityA; update.Position = {x, 200.f, 0.f};
+            return DeliverWire(world, move, alice);
+        };
+        Check(moveAlice(10000.f) && world.get<MovementComponent>(*alice->GetCharacter()).Position.x == 10000.f,
+            "own-avatar production movement, not a StorageOpen position claim, defines access distance");
+        Harness::ClearOutbox(); send(alice, openA); send(alice, Coop::InventoryQuery{as->Entity});
+        Check(!latest.template operator()<Coop::StorageState>(6001) && !latest.template operator()<Coop::InventoryState>(6001),
+            "far avatar cannot open or read a bank despite a still-fresh valid menu lease");
+        Harness::ClearOutbox(); send(alice, take);
+        const auto tooFar = latest.template operator()<Coop::TransferReply>(6001);
+        Check(tooFar && tooFar->Result == Coop::TransferResult::Rejected && Coop::ExactCount(world.get<InventoryComponent>(se).Content, item) == 1,
+            "each transfer rechecks trusted distance; walking away cannot spend an earlier near lease");
+        Check(moveAlice(100.f), "own avatar returns near the verified static access");
+        send(alice, openA);
         Harness::ClearOutbox(); send(alice, take);
         const auto prepared = latest.template operator()<Coop::TransferReply>(6001);
         Check(prepared && prepared->Result == Coop::TransferResult::Prepared, "nearby access lease authorizes a paired transfer from an off-cell bank");

@@ -23,7 +23,7 @@
     "encounter_reset_interior_and_exterior": "server model and staged client receipts implemented; native grounding/save boundary unverified",
     "semantic_rfab_xp": "pending",
     "enemy_health_scaling": "wire4 per-static-reference life/base/max stamp, frozen two-capable-player encounter policy, canonical fraction x2, per-recipient ACK and saved native receipt wired/tested portably; dynamic refs, native respawn and unknown scripted phases still need explicit adapters (no guessed x4/base division)",
-    "shared_persistent_secure_chests": "installed VMAD generator/catalog, hidden-backing service, explicit import/adoption and same-revision cache-race fence wired; six production-wire scenarios pass including cross-cohort access/privacy/restart; Windows/game unverified",
+    "shared_persistent_secure_chests": "V2 installed VMAD+winning REFR/CELL/WRLD placement catalog; server rechecks own-avatar distance at open/read/every transfer, fresh leases do not bypass it; 7 wire scenarios including spatial/lock/privacy/restart regressions pass; native cache and installed-profile game validation still pending",
     "quickloot_and_autoloot": "native TESObjectREFR/Actor/Player RemoveItem gates wired; real mod/game path unverified",
     "checkpoint_reload": "pending",
     "adaptive_bindings_and_capability_negotiation": "protocol4/+coop-wire-4 requires rebuilding both ends; enemy scaling advertised only with loaded matching co-save + durable transfer boundary; installed storage catalog signatures checked; semantic RFAB XP adapter still pending",
@@ -33,16 +33,17 @@
   "game_tested": false,
   "note": "Progress declarations are not test evidence. Keep ready_for_playtest false until all production paths are wired, the full automated matrix and Windows build pass, and candidate packaging is verified. In-game validation happens after that single candidate.",
   "automated_evidence": {
-    "core_plain": "75 cases / 29091 assertions PASS after HP-scale and save-pin revocation changes; 128 concurrent reservation races cause assertion count to vary slightly by schedule; common no-PCH/standalone headers; 2026-11-17",
-    "server_plain": "7 production-wire scenarios + portable crash-record self-test PASS; new scale scenario covers x2 fraction, repeated contact/hits, recipient ACK, max guards, excluded actors, imported life, duplicate-life rejection, late viewer, late peer freeze and disconnect handoff; 2026-11-17",
+    "core_plain": "76 cases / 29132 assertions PASS after HP/save-pin revocation and trusted bank position changes; assertion count varies slightly with 128 admission races; common no-PCH and standalone headers; 2026-11-17",
+    "server_plain": "7 production-wire scenarios + crash-record PASS; includes canonical x2 and saved life/handoff, same-cell distant registered access rejection, own-avatar wire movement, fresh-lease out-of-range read/transfer refusal and missing/relocked point refusal; 2026-11-17",
     "strict_hook_audit": "0 findings; hook self-test44 / actor-lifetime self-test21; source checks are not engine threading proof",
     "powershell": "Windows5f37bd8: 8 scripts parsed PASS on PowerShell5.1.20348.5773; local pwsh unavailable",
-    "windows_client": "f3d62ad/run44149881757 job134274941000 FAIL at client compile: LootService.cpp:82 const Actor* cannot call GetExtension(). Direct includes from previous run passed this boundary; use mutable Actor pointer fixed in current tree. No full rewritten native build/package PASS.",
-    "sanitizers": "Pre-HP/mailbox run completed successfully: core72/276435 and all six production-wire server scenarios + crash record under ASan+UBSan; sequential J1/gold avoided earlier linker OOM. Current HP/save-revocation code requires a fresh sanitized run.",
+    "windows_client": "650773e/run44159753450 job134310070974 still in progress; includes LootService const correction and HP wiring, not V2 positions. Latest completed f3 run failed const Actor* at LootService.cpp:82; no rewritten native client/package PASS.",
+    "sanitizers": "650773e Linux CI sanitized core+7-scenario server PASS; previous local pre-HP core72/276435 +6server/crash ASan+UBSan PASS. Fresh local HP+V2-position core/server J1+gold run is still running; do not count it as completed.",
     "core_sanitized": "pre-HP state72 cases / 276435 assertions PASS under ASan+UBSan with RFAB_FUZZ_SEEDS=128; 2026-11-17; not current HP validation",
-    "strict_static": "all source checks PASS after wire4/HP edits; hook0/lifetime0, SE3086sites/3081unique/0AE; local pwsh skipped",
-    "linux_ci": "0291b0f/run44148961280 and f3d62ad/run44149881546: all jobs success, including mailbox changes; these exclude the current wire4/HP work",
-    "storage_profile": "12 synthetic installed-plugin/VMAD parser tests passed",
+    "strict_static": "all source checks PASS after trusted positions; hooks0/lifetime0, wire0new/0stale/8known, SE3086sites/3081unique/0AE; local pwsh skipped",
+    "linux_ci": "650773e/run44159753198: all four jobs success (core, sanitized core, real server harness under sanitizers and UI); validates wire4/HP but excludes newer V2 position changes. Earlier0291/f3 also success.",
+    "storage_profile": "18 synthetic installed-plugin/VMAD/placement parser tests PASS; includes winning moved-reference/cell override, exterior persistent cell/world, missing placement/group refusal, contradictory groups, one-/two-byte CELL flags, malformed input and load-order/light handling; not installed RFAB evidence",
     "installer": "5f37bd8/run44145825537 step0 PASS: 8 scripts parsed by PowerShell5.1.20348.5773, runtime preservation self-test PASS (clean binaries, byte-exact campaign, retained backup, live-lease refusal, injected publication fault, dirty-package refusal). Not a full installer/package/game or live-update guarantee."
-  }
+  },
+  "storage_catalog_format": "V2: 15 TAB-separated fields; canonical access/backing/CELL/optional WRLD + XYZ. Requires regeneration of V1 from installed profile, not guessed client coordinates."
 }

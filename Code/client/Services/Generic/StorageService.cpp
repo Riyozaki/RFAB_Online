@@ -17,6 +17,7 @@
 #include <PlayerCharacter.h>
 #include <TESObjectREFR.h>
 #include <Forms/TESObjectCELL.h>
+#include <Forms/TESWorldSpace.h>
 #include <Interface/UI.h>
 #include <atomic>
 #include <memory>
@@ -59,7 +60,7 @@ bool StorageService::IsBacking(uint32_t form) noexcept
 }
 void StorageService::OnLoaded(const WorldLoadedEvent&) noexcept
 {
-    m_open.clear(); m_access.clear(); m_backings.clear(); m_lastOpen = 0;
+    m_open.clear(); m_access.clear(); m_accessPositions.clear(); m_backings.clear(); m_lastOpen = 0;
     auto guards = std::make_shared<std::set<uint32_t>>();
     // An adapter update cannot make an already adopted campaign cache a personal offline bag.
     for (const auto& saved : m_world.ctx().at<SaveStateService>().State().Storages) guards->insert(saved.Form);
@@ -70,15 +71,17 @@ void StorageService::OnLoaded(const WorldLoadedEvent&) noexcept
         auto* point = Cast<TESObjectREFR>(TESForm::GetById(access));
         auto* storage = Cast<TESObjectREFR>(TESForm::GetById(backing));
         if (!access || !backing || !point || !point->baseForm || !storage || !storage->baseForm ||
+            !Resolve(rule.Location.Cell) || (rule.Location.World && !Resolve(*rule.Location.World)) ||
             storage->baseForm->formType != FormType::Container || storage->IsTemporary() || point->IsTemporary() ||
             (m_access.contains(access) && m_access.at(access) != backing))
         {
             m_valid = false;
             continue;
         }
-        m_access[access] = backing; m_backings[backing] = rule.Backing; guards->insert(backing);
+        m_access[access] = backing; m_accessPositions[access] = rule.Location;
+        m_backings[backing] = rule.Backing; guards->insert(backing);
     }
-    if (!m_valid) { m_access.clear(); m_backings.clear(); }
+    if (!m_valid) { m_access.clear(); m_accessPositions.clear(); m_backings.clear(); }
     s_backings.store(std::move(guards), std::memory_order_release);
 }
 void StorageService::OnDisconnected(const DisconnectedEvent&) noexcept
@@ -89,10 +92,22 @@ bool StorageService::NearAccess(uint32_t form) const noexcept
 {
     auto* player = PlayerCharacter::Get();
     auto* access = Cast<TESObjectREFR>(TESForm::GetById(form));
-    return player && access && player->GetNiNode() && access->GetNiNode() && player->parentCell &&
-        player->parentCell == access->parentCell && player->parentCell->IsAttached() &&
-        glm::length2(player->position - access->position) <= 256.f * 256.f && !player->IsDead() &&
-        !player->GetExtension()->CoopDowned.load(std::memory_order_relaxed);
+    const auto position = m_accessPositions.find(form);
+    if (!player || !access || position == m_accessPositions.end() || !player->GetNiNode() || !access->GetNiNode() ||
+        !player->parentCell || !access->parentCell || !player->parentCell->IsAttached() || player->IsDead() ||
+        player->GetExtension()->CoopDowned.load(std::memory_order_relaxed)) return false;
+    auto* world = player->GetWorldSpace();
+    if (position->second.World)
+    {
+        auto* pointWorld = access->GetWorldSpace();
+        if (!world || !pointWorld || world != pointWorld || world->formID != Resolve(*position->second.World)) return false;
+    }
+    else if (world || player->parentCell != access->parentCell || player->parentCell->formID != Resolve(position->second.Cell)) return false;
+    const auto& expected = position->second;
+    const glm::vec3 anchor{expected.X, expected.Y, expected.Z};
+    // A script-moved access needs a new trusted adapter, not an arbitrary current-client point.
+    return glm::length2(access->position - anchor) <= 32.f * 32.f &&
+        glm::length2(player->position - access->position) <= 256.f * 256.f;
 }
 void StorageService::OnActivate(const ActivateEvent& event) noexcept
 {

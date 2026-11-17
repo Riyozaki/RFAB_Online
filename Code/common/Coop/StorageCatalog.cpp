@@ -1,7 +1,9 @@
 #include <Coop/StorageCatalog.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
+#include <cmath>
 #include <fstream>
 #include <map>
 
@@ -22,9 +24,21 @@ std::optional<StableForm> Form(std::string_view plugin, std::string_view local, 
         !StorageKey("catalog", form)) return {};
     return form;
 }
-std::string Canonical(const StableForm& form)
+std::string Canonical(const StableForm& form) { return *StorageKey("catalog", form); }
+std::optional<float> Coordinate(std::string_view text)
 {
-    return *StorageKey("catalog", form);
+    float value{};
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (text.empty() || result.ec != std::errc{} || result.ptr != text.data() + text.size() ||
+        !std::isfinite(value) || std::abs(value) > 100000000.f) return {};
+    return value == 0.f ? 0.f : value; // canonicalize negative zero
+}
+std::string Canonical(const StorageRule& rule)
+{
+    const auto& p = rule.Location;
+    return Canonical(rule.Access) + "\t" + Canonical(rule.Backing) + "\t" + Canonical(p.Cell) + "\t" +
+        (p.World ? Canonical(*p.World) : "-") + "\t" + std::to_string(std::bit_cast<uint32_t>(p.X)) + "\t" +
+        std::to_string(std::bit_cast<uint32_t>(p.Y)) + "\t" + std::to_string(std::bit_cast<uint32_t>(p.Z)) + "\n";
 }
 }
 bool StorageCatalog::Read(const std::filesystem::path& path)
@@ -53,37 +67,50 @@ bool StorageCatalog::Parse(std::string_view text)
         text = end == text.npos ? std::string_view{} : text.substr(end + 1);
         if (line.ends_with('\r')) line.remove_suffix(1);
         if (line.empty() || line.starts_with('#')) continue;
-        if (line.size() > 512 || rules.size() >= 1024) return false;
-        std::array<std::string_view, 6> fields;
+        if (line.size() > 1024 || rules.size() >= 1024) return false;
+        std::array<std::string_view, 15> fields;
         for (size_t i = 0; i < fields.size(); ++i)
         {
             const auto tab = line.find('\t');
-            if ((i == 5) != (tab == line.npos)) return false;
+            if ((i == fields.size() - 1) != (tab == line.npos)) return false;
             fields[i] = line.substr(0, tab);
             line = tab == line.npos ? std::string_view{} : line.substr(tab + 1);
         }
         auto access = Form(fields[0], fields[1], fields[2]), backing = Form(fields[3], fields[4], fields[5]);
-        if (!access || !backing || *access == *backing) return false;
+        auto cell = Form(fields[6], fields[7], fields[8]);
+        std::optional<StableForm> world;
+        if (fields[9] != "-")
+        {
+            world = Form(fields[9], fields[10], fields[11]);
+            if (!world) return false;
+        }
+        else if (fields[10] != "0" || fields[11] != "0") return false;
+        const auto x = Coordinate(fields[12]), y = Coordinate(fields[13]), z = Coordinate(fields[14]);
+        if (!access || !backing || *access == *backing || !cell || !x || !y || !z) return false;
         // A repeated access row (even an identical one) hides generation/merge mistakes.
-        if (!rules.emplace(Canonical(*access), StorageRule{*access, *backing}).second) return false;
+        if (!rules.emplace(Canonical(*access), StorageRule{*access, *backing, {*cell, world, *x, *y, *z}}).second) return false;
     }
     if (rules.empty()) return false;
     uint64_t signature = 14695981039346656037ull;
     for (auto& [key, rule] : rules)
     {
-        for (const unsigned char c : key + "\t" + Canonical(rule.Backing) + "\n")
-        { signature ^= c; signature *= 1099511628211ull; }
+        for (const unsigned char c : Canonical(rule)) { signature ^= c; signature *= 1099511628211ull; }
         m_rules.push_back(std::move(rule));
     }
     m_signature = signature ? signature : 1;
     return true;
 }
-const StableForm* StorageCatalog::Backing(const StableForm& form) const
+const StorageRule* StorageCatalog::Find(const StableForm& form) const
 {
     const auto key = StorageKey("catalog", form);
     if (!key) return nullptr;
-    for (const auto& rule : m_rules) if (Canonical(rule.Access) == *key) return &rule.Backing;
+    for (const auto& rule : m_rules) if (Canonical(rule.Access) == *key) return &rule;
     return nullptr;
+}
+const StableForm* StorageCatalog::Backing(const StableForm& form) const
+{
+    const auto* rule = Find(form);
+    return rule ? &rule->Backing : nullptr;
 }
 bool StorageCatalog::IsBacking(const StableForm& form) const
 {
@@ -91,5 +118,22 @@ bool StorageCatalog::IsBacking(const StableForm& form) const
     if (!key) return false;
     for (const auto& rule : m_rules) if (Canonical(rule.Backing) == *key) return true;
     return false;
+}
+bool StorageCatalog::InReach(const StableForm& access, const StableForm& cell, const std::optional<StableForm>& world,
+    float x, float y, float z, float radius) const
+{
+    const auto* rule = Find(access);
+    const auto c = StorageKey("catalog", cell);
+    // Exterior persistent refs can live in the world's persistent CELL rather than the
+    // player's current grid CELL. World identity + catalog-space distance is the boundary there.
+    if (!rule || !c || (!world && *c != Canonical(rule->Location.Cell)) || world.has_value() != rule->Location.World.has_value() ||
+        !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(radius) || radius <= 0.f || radius > 320.f) return false;
+    if (world)
+    {
+        const auto w = StorageKey("catalog", *world);
+        if (!w || *w != Canonical(*rule->Location.World)) return false;
+    }
+    const double dx = double(x) - rule->Location.X, dy = double(y) - rule->Location.Y, dz = double(z) - rule->Location.Z;
+    return dx * dx + dy * dy + dz * dz <= double(radius) * radius;
 }
 }

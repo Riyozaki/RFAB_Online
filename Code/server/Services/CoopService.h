@@ -72,6 +72,7 @@ private:
     std::optional<std::string> InventoryKey(uint32_t aEntity) const;
     std::optional<Coop::StableForm> NameForm(GameId) const;
     bool ItemAvailable(Player*, const Inventory::Entry&) const noexcept;
+    bool NearStorageAccess(Player*, GameId aPoint) const noexcept;
     bool CanAccessInventory(Player*, const Client&, uint32_t aEntity, uint8_t aReason) const noexcept;
     void SendInventory(Player*, uint32_t aEntity) noexcept;
     Coop::TransferReply TransferReply(const Coop::InventoryLedger::Record&, uint32_t aRequester) const;

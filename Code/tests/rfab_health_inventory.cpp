@@ -569,7 +569,9 @@ TEST_CASE("A campaign journal has at most one live process owner and can be reac
 TEST_CASE("Installed storage catalog is canonical bounded tab separated and all-or-nothing", "[rfab][storage][profile]")
 {
     Coop::StorageCatalog catalog;
-    const std::string rules = "# generated from installed VMAD\r\nRFAB.esp\t000801\t0\tStorage Patch.esp\t000800\t1\r\nrfab.esp\t000802\t0\tstorage patch.esp\t000800\t1\r\n";
+    const std::string location = "\tskyrim.esm\t0165a8\t0\t-\t0\t0\t100\t200\t0";
+    const std::string rules = "# generated from installed VMAD + REFR/CELL\r\nRFAB.esp\t000801\t0\tStorage Patch.esp\t000800\t1" + location +
+        "\r\nrfab.esp\t000802\t0\tstorage patch.esp\t000800\t1" + location + "\r\n";
     REQUIRE(catalog.Parse(rules)); REQUIRE(catalog.Rules().size() == 2);
     const auto signature = catalog.Signature(); REQUIRE(signature);
     REQUIRE(catalog.Backing({"rfab.ESP", 0x801, false}));
@@ -577,7 +579,8 @@ TEST_CASE("Installed storage catalog is canonical bounded tab separated and all-
     CHECK(catalog.IsBacking({"Storage Patch.ESP", 0x800, true}));
     CHECK_FALSE(catalog.IsBacking({"Storage Patch.ESP", 0x800, false}));
     Coop::StorageCatalog reordered;
-    REQUIRE(reordered.Parse("rfab.esp\t802\t0\tstorage patch.esp\t800\t1\nrfab.esp\t801\t0\tstorage patch.esp\t800\t1"));
+    REQUIRE(reordered.Parse("rfab.esp\t802\t0\tstorage patch.esp\t800\t1" + location +
+        "\nrfab.esp\t801\t0\tstorage patch.esp\t800\t1" + location));
     CHECK(reordered.Signature() == signature);
     for (const std::string bad : {"", "rfab.esp 801 0 rfab.esp 800 0", "rfab.esp\t801\t0\trfab.esp\t800\t2",
             "rfab.esp\t801\t0\trfab.esp\t1800\t1", "../rfab.esp\t801\t0\trfab.esp\t800\t0",
@@ -911,4 +914,37 @@ TEST_CASE("Revocation during a pinned save cannot reopen future saves when the p
     CHECK_FALSE(f.Mail.SaveAllowed()); CHECK_FALSE(f.Mail.BeginNative(f.Epoch));
     // Only an explicit valid publication can reopen it; real faulted ClientTimeline never does.
     REQUIRE(f.Mail.Publish(f.Epoch, f.Bytes, true)); CHECK(f.Mail.SaveAllowed());
+}
+TEST_CASE("Trusted bank positions fence open and each transfer independently of object registration", "[rfab][storage][profile][position]")
+{
+    const Coop::StableForm access{"RFAB.esp", 0x801, false}, cell{"skyrim.esm", 0x165a8, false};
+    const std::string prefix = "rfab.esp\t801\t0\trfab.esp\t800\t0\tskyrim.esm\t165a8\t0\t";
+    Coop::StorageCatalog catalog;
+    REQUIRE(catalog.Parse(prefix + "-\t0\t0\t100\t200\t0"));
+    CHECK(catalog.InReach(access, cell, {}, 100.f, 200.f, 0.f));
+    CHECK(catalog.InReach(access, cell, {}, 420.f, 200.f, 0.f));
+    CHECK_FALSE(catalog.InReach(access, cell, {}, 420.01f, 200.f, 0.f));
+    CHECK_FALSE(catalog.InReach(access, cell, {}, 100.f, 200.f, 321.f));
+    CHECK_FALSE(catalog.InReach(access, cell, {}, 10000.f, 200.f, 0.f));
+    CHECK_FALSE(catalog.InReach(access, {"skyrim.esm", 0x16789, false}, {}, 100.f, 200.f, 0.f));
+    CHECK_FALSE(catalog.InReach(access, cell, Coop::StableForm{"skyrim.esm", 0x3c, false}, 100.f, 200.f, 0.f));
+    CHECK_FALSE(catalog.InReach({"rfab.esp", 0x802, false}, cell, {}, 100.f, 200.f, 0.f));
+    for (float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        CHECK_FALSE(catalog.InReach(access, cell, {}, bad, 200.f, 0.f));
+        CHECK_FALSE(catalog.InReach(access, cell, {}, 100.f, 200.f, 0.f, bad));
+    }
+    CHECK_FALSE(catalog.InReach(access, cell, {}, 100.f, 200.f, 0.f, 10000.f));
+    const auto signature = catalog.Signature();
+    Coop::StorageCatalog equivalent;
+    REQUIRE(equivalent.Parse(prefix + "-\t0\t0\t1e2\t200.0\t-0")); CHECK(equivalent.Signature() == signature);
+    REQUIRE(equivalent.Parse(prefix + "-\t0\t0\t101\t200\t0")); CHECK(equivalent.Signature() != signature);
+    REQUIRE(equivalent.Parse(prefix + "skyrim.esm\t3c\t0\t100\t200\t0")); CHECK(equivalent.Signature() != signature);
+    // A persistent exterior ref's parent CELL is not the player's current grid CELL.
+    CHECK(equivalent.InReach(access, {"skyrim.esm", 0x9999, false}, Coop::StableForm{"skyrim.esm", 0x3c, false}, 100.f, 200.f, 0.f));
+    CHECK_FALSE(equivalent.InReach(access, cell, Coop::StableForm{"skyrim.esm", 0x3d, false}, 100.f, 200.f, 0.f));
+    for (const std::string invalid : {"-\t0\t0\tnan\t200\t0", "-\t0\t0\tinf\t200\t0", "-\t0\t0\t1e40\t200\t0",
+        "-\t0\t0\t100000008\t200\t0", "-\t1\t0\t100\t200\t0", "skyrim.esm\t3c\t2\t100\t200\t0"})
+    { REQUIRE_FALSE(catalog.Parse(prefix + invalid)); CHECK(catalog.Rules().empty()); CHECK(catalog.Signature() == 0); }
+    CHECK_FALSE(catalog.Parse("rfab.esp\t801\t0\trfab.esp\t800\t0")); // V1 is not spatial authorization
 }

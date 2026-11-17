@@ -15,6 +15,7 @@ import argparse
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import struct
@@ -69,7 +70,8 @@ class Reader:
         return self.take(count).decode("utf-8", errors="strict")
 
 
-def records(data: bytes, start: int = 0, end: int | None = None, depth: int = 0) -> Iterator[tuple[bytes, int, int, bytes]]:
+def records(data: bytes, start: int = 0, end: int | None = None, depth: int = 0,
+            cell: int = 0, world: int = 0) -> Iterator[tuple[bytes, int, int, bytes, tuple[int, int]]]:
     end = len(data) if end is None else end
     if depth > 32:
         raise ProfileError("Excessive GRUP nesting")
@@ -82,7 +84,24 @@ def records(data: bytes, start: int = 0, end: int | None = None, depth: int = 0)
         if kind == b"GRUP":
             if size < 24 or size > end - pos:
                 raise ProfileError("Invalid GRUP bounds")
-            yield from records(data, pos + 24, pos + size, depth + 1)
+            label, group = struct.unpack_from("<Ii", data, pos + 8)
+            if group < 0 or group > 10:
+                raise ProfileError("Unsupported GRUP type")
+            child_cell, child_world = cell, world
+            if group == 0:  # top record-type group, not a FormID
+                child_cell = child_world = 0
+            elif group == 1:  # world children
+                if not label or cell or world:
+                    raise ProfileError("Invalid/nested world children group")
+                child_world = label
+            elif group == 6:  # cell children; label is the parent CELL FormID
+                if not label or cell:
+                    raise ProfileError("Invalid/nested cell children group")
+                child_cell = label
+            elif group in {8, 9, 10}:  # persistent, temporary, visible distant
+                if not cell or label != cell:
+                    raise ProfileError("Reference subgroup does not match its parent CELL")
+            yield from records(data, pos + 24, pos + size, depth + 1, child_cell, child_world)
             pos += size
             continue
         if size > end - pos - 24 or size > MAX_RECORD:
@@ -98,7 +117,7 @@ def records(data: bytes, start: int = 0, end: int | None = None, depth: int = 0)
             payload = decoder.decompress(payload[4:], expected + 1)
             if len(payload) != expected or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
                 raise ProfileError("Invalid compressed size/stream")
-        yield kind, flags, form, payload
+        yield kind, flags, form, payload, (cell, world)
         pos += 24 + size
 
 
@@ -210,6 +229,10 @@ class Record:
     deleted: bool
     base: Form | None
     scripts: dict
+    cell: Form | None = None
+    world: Form | None = None
+    position: tuple[float, float, float] | None = None
+    interior: bool | None = None
 
 
 def load_plugins(paths: list[Path]) -> tuple[list[Plugin], dict[str, Plugin]]:
@@ -250,27 +273,43 @@ def generate(paths: list[Path]) -> tuple[str, dict]:
         data = plugin.path.read_bytes()
         if hashlib.sha256(data).hexdigest() != plugin.digest:
             raise ProfileError(f"{plugin.name}: input changed while scanning")
-        for kind, flags, raw, payload in records(data):
+        for kind, flags, raw, payload, location in records(data):
             count += 1
             if count > MAX_RECORDS:
                 raise ProfileError("Profile record limit exceeded")
-            if kind not in {b"REFR", b"CONT", b"ACTI"}:
+            if kind not in {b"REFR", b"CONT", b"ACTI", b"CELL", b"WRLD"}:
                 continue
             form = plugin.resolve(raw, plugins)
             base, scripts, seen = None, {}, set()
+            position, interior = None, None
+            cell = plugin.resolve(location[0], plugins) if location[0] else None
+            world = plugin.resolve(location[1], plugins) if location[1] else None
             for field, value in subrecords(payload):
-                if field not in {b"NAME", b"VMAD"}:
+                if field not in {b"NAME", b"VMAD", b"DATA"}:
                     continue
                 if field in seen:
-                    raise ProfileError(f"{plugin.name}: duplicate NAME/VMAD")
+                    raise ProfileError(f"{plugin.name}: duplicate NAME/VMAD/DATA")
                 seen.add(field)
                 if field == b"NAME" and kind == b"REFR":
                     if len(value) != 4:
                         raise ProfileError("Invalid REFR NAME length")
                     base = plugin.resolve(struct.unpack("<I", value)[0], plugins)
-                elif field == b"VMAD" and SCRIPT.encode() in value.lower():
+                elif field == b"VMAD" and kind in {b"REFR", b"CONT", b"ACTI"} and SCRIPT.encode() in value.lower():
                     scripts = vmad(value, plugin, plugins)
-            winning[form] = Record(kind, bool(flags & 0x20), base, scripts)
+                elif field == b"DATA" and kind == b"REFR":
+                    if len(value) != 24:
+                        raise ProfileError("REFR has invalid position/rotation DATA length")
+                    xyz_rot = struct.unpack("<6f", value)
+                    if not all(math.isfinite(n) for n in xyz_rot) or any(abs(n) > 100_000_000 for n in xyz_rot[:3]):
+                        raise ProfileError("REFR has non-finite/out-of-range coordinates")
+                    position = xyz_rot[:3]
+                elif field == b"DATA" and kind == b"CELL":
+                    # TES5Edit's CELL DATA definition explicitly accepts the historical
+                    # one-byte flags too. Only bit0 determines interior/exterior here.
+                    if len(value) not in {1, 2}:
+                        raise ProfileError("CELL has invalid DATA flags length")
+                    interior = bool(int.from_bytes(value, "little") & 1)
+            winning[form] = Record(kind, bool(flags & 0x20), base, scripts, cell, world, position, interior)
     rules: dict[Form, Form] = {}
     for access, record in winning.items():
         if record.kind != b"REFR" or record.deleted:
@@ -294,17 +333,33 @@ def generate(paths: list[Path]) -> tuple[str, dict]:
         container = winning.get(target.base) if target and target.base else None
         if not target or target.deleted or target.kind != b"REFR" or not container or container.deleted or container.kind != b"CONT":
             raise ProfileError(f"{access}: SecureChest does not resolve to a live container reference")
+        parent = winning.get(record.cell)
+        if record.position is None or record.cell is None or not parent or parent.deleted or parent.kind != b"CELL":
+            raise ProfileError(f"{access}: no trusted access position or parent CELL; not trusting client registration")
+        if parent.interior is None or parent.interior == bool(record.world) or parent.world != record.world:
+            raise ProfileError(f"{access}: ambiguous interior/exterior CELL/WRLD context")
+        if record.world:
+            w = winning.get(record.world)
+            if not w or w.deleted or w.kind != b"WRLD":
+                raise ProfileError(f"{access}: exterior parent does not resolve to a live WRLD")
         rules[access] = backing
     if not rules or len(rules) > MAX_RULES:
         raise ProfileError("No verified secure access points, or more than 1024; no allowlist was created")
-    rows = [access.tsv() + "\t" + backing.tsv() for access, backing in sorted(rules.items())]
+    def location_tsv(access: Form) -> str:
+        r = winning[access]
+        xyz = "\t".join(format(n if n else 0., ".9g") for n in r.position)
+        return r.cell.tsv() + "\t" + (r.world.tsv() if r.world else "-\t0\t0") + "\t" + xyz
+
+    rows = [access.tsv() + "\t" + backing.tsv() + "\t" + location_tsv(access) for access, backing in sorted(rules.items())]
     canonical = "\n".join(rows) + "\n"
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    manifest = {"schema": 1, "storage_sha256": digest, "runtime": "1.5.97", "game_tested": False,
+    manifest = {"schema": 2, "storage_sha256": digest, "runtime": "1.5.97", "game_tested": False,
                 "plugins": [{"name": p.name, "light": p.light, "sha256": p.digest} for p in ordered],
-                "storage": [{"access": a.audit(), "backing": b.audit()} for a, b in sorted(rules.items())],
+                "storage": [{"access": a.audit(), "backing": b.audit(), "cell": winning[a].cell.audit(),
+                             "world": winning[a].world.audit() if winning[a].world else None,
+                             "position": winning[a].position} for a, b in sorted(rules.items())],
                 "note": "Installed VMAD data only; not proof of reward/native/arena capability. Keep old personal contents until explicit import."}
-    return "# RFAB_STORAGE_V1 sha256=" + digest + "\n# access-plugin\tlocal-hex\tlight\tbacking-plugin\tlocal-hex\tlight\n" + canonical, manifest
+    return "# RFAB_STORAGE_V2 sha256=" + digest + "\n# access(plugin/local/light)\tbacking(plugin/local/light)\tcell(plugin/local/light)\tworld(plugin/local/light, or -/0/0)\tx\ty\tz\n" + canonical, manifest
 
 
 def active_paths(data: Path, plugins_file: Path) -> list[Path]:

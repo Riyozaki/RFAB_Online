@@ -48,6 +48,7 @@ private:
     bool m_valid{}, m_executing{};
     uint32_t m_lastOpen{};
     std::map<uint32_t, uint32_t> m_access;
+    std::map<uint32_t, Coop::StorageLocation> m_accessPositions;
     std::map<uint32_t, Coop::StableForm> m_backings;
     std::map<uint32_t, Open> m_open;
     entt::scoped_connection m_loaded, m_disconnected, m_activate, m_packet, m_update;

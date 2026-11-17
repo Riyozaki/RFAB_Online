@@ -157,8 +157,9 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
     bool storageProfile = !m_storageAccess.empty();
     if (aHello.Capabilities & Coop::PersistentStorage)
         for (const auto& rule : m_storageCatalog.Rules())
-            for (const auto& form : {rule.Access, rule.Backing})
+            for (const auto& form : {rule.Access, rule.Backing, rule.Location.Cell, rule.Location.World.value_or(Coop::StableForm{})})
             {
+                if (!form.Local) continue; // no world only for an interior
                 const auto id = m_world.ctx().at<ModsComponent>().Find(String(form.Plugin.data(), form.Plugin.size()), form.Light);
                 storageProfile &= id && aPlayer->HasMod(*id);
             }
