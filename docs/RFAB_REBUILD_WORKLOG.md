@@ -273,3 +273,16 @@ text diff summary объясняется существующим `.gitattribute
 
 XP adapter, save-bound HP×2 и настоящий retreat A/AI/hazard quiescence остаются следующими
 реализациями. Кандидат/релиз/тег и игровой тест не выпускались; ready_for_playtest=false.
+
+
+### Windows5f37bd8: installer preflight PASS; next native compile diagnostic
+
+Run44145825537/job134260540145 завершён FAIL на step4 client compile. Step0 **PASS**:
+PowerShell5.1.20348.5773 разобрал8 scripts; retained-runtime install self-test прошёл clean
+replacement/byte-exact campaign/backup/live-lease refusal/injected publication fault/dirty
+package refusal. Это первая execution-проверка исправленного helper, не полный install/game PASS.
+CommonLib/header blocker пройден. MSVC выявил missing complete ActorExtension и GridCellCoords
+в `Services/Generic/CoopService.cpp`. Добавлены прямые includes, тот же boundary исправлен у
+Loot/Storage/AV services; Storage получил явный Games/TES include. Диагностика сохранена в
+excluded build/windows-fifth-annotations.jsonl, результат продублирован здесь. 0291b0f Linux/
+Windows CI и новые local sanitizer runs пока выполняются; ready_for_playtest=false.

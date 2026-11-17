@@ -1,4 +1,5 @@
 #include <TiltedOnlinePCH.h>
+#include <Games/ActorExtension.h>
 #include <Services/CoopService.h>
 #include <Services/ActorValueService.h>
 #include <Services/InventoryHook.h>
@@ -28,6 +29,7 @@
 #include <Systems/InterpolationSystem.h>
 #include <Systems/AnimationSystem.h>
 #include <Coop/Encounter.h>
+#include <Structs/GridCellCoords.h>
 #include <random>
 
 namespace
@@ -114,7 +116,8 @@ void CoopService::OnConnected(const ConnectedEvent&) noexcept
 {
     m_active = false;
     m_session = m_generation = m_serverOperation = m_operation = m_helloAt = m_lastPoll = 0;
-    m_safeSince = m_lastAnchor = m_hold = m_target = m_encounter = 0;
+    m_safeSince = m_lastAnchor = m_hold = m_encounter = 0;
+    m_target = 0;
     m_reportedEnemies.clear();
     m_downed.clear(); m_appliedRevision.clear(); m_appliedFormId.clear();
 }

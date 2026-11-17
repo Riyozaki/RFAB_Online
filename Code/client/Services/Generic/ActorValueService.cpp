@@ -1,4 +1,5 @@
 #include <TiltedOnlinePCH.h>
+#include <Games/ActorExtension.h>
 
 #include <Services/ActorValueService.h>
 #include <World.h>

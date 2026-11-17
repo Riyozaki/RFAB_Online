@@ -1,4 +1,5 @@
 #include <TiltedOnlinePCH.h>
+#include <Games/ActorExtension.h>
 #include <Services/StorageService.h>
 #include <Services/CoopService.h>
 #include <Services/SaveStateService.h>
@@ -7,6 +8,7 @@
 #include <Coop/ScopedValue.h>
 #include <Coop/StorageCache.h>
 #include <World.h>
+#include <Games/TES.h>
 #include <Events/ActivateEvent.h>
 #include <Events/CoopActionEvent.h>
 #include <Events/DisconnectedEvent.h>

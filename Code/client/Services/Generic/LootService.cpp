@@ -1,4 +1,5 @@
 #include <TiltedOnlinePCH.h>
+#include <Games/ActorExtension.h>
 #include <Services/LootService.h>
 #include <Services/CoopService.h>
 #include <Services/SaveStateService.h>
