@@ -13,6 +13,8 @@ local function build_runner()
         "**.cpp")
     if is_plat("windows") then
         add_files("server_runner.rc")
+        -- Startup faults can occur in the runner before STServer.dll is entered.
+        add_ldflags("/MAP", { force = true })
     end
     add_deps(
         "CommonLib",

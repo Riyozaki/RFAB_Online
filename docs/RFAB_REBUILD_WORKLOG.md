@@ -382,3 +382,26 @@ production server harness и UI; он уже включает V2 positions/по�
 этого локального server run нет. Windows95/run44161929745 пока in_progress и всё ещё
 содержит MagicService constness. Readiness=false; semantic XP и native lifecycle/reset
 работа продолжаются в едином кандидате, без промежуточного игрового релиза/теста.
+
+
+### 2026-11-17 — Windows native compilation PASS; startup string-storage defect
+
+5eb2b92/run44164596104 job134327165116 подтвердил **client + launcher + server + SKSE
+companion compilation PASS**, native **76/29 132 PASS**, UI PASS и staging import/resource gate
+PASS. Весь workflow при этом **FAIL**: обязательный live server smoke boot получил access
+violation в `SkyrimTogetherServer.exe`, до готового пакета. Linux5eb/run44164596125 — all4 SUCCESS.
+
+Найден конкретный дефект, которого пакетный harness раньше не касался: `Console::Setting`
+с deduced `const char*` выбирал FixedStorage, но INI/command providers безусловно обращались
+к нему как к StringSetting/DynamicStringStorage. Это запись за пределы статического объекта,
+причём даже при отсутствующем INI key. Campaign теперь явно StringSetting; default template
+выбирает dynamic storage для char-string, предотвращая повторение CTAD-ошибки. Добавлены
+compile-time type checks и реальная загрузка длинной/отсутствующей строки через INI, затем
+command provider. Локальная серверная перекомпиляция ещё выполняется на момент этой записи;
+подтверждение исправления Windows smoke ожидается, причина по одному RVA не объявляется доказанной.
+
+Runner теперь получает собственный linker map; compact symbols генерируются **до** smoke boot.
+Падение сохраняет stdout/stderr/crash logs + оба server symbol files и symbolic output в CI
+diagnostics; failed build log тоже сохраняется как artifact. Код возврата child сохраняется
+через раннее получение Process.Handle. Smoke gate не ослаблен, публикация/dev readiness не менялись.
+Семантический XP реализуется отдельным следующим изменением, не входит в этот fix commit.

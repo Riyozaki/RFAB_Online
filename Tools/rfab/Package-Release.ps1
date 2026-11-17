@@ -169,6 +169,40 @@ $pyCode = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 if ($pyCode -ne 0) { throw "verify_release_bundle.py failed ($pyCode)!" }
 
+# Linker maps -> symbols. The maps go into the PDB archive as they are. A compact table of the
+# launcher (and of the server) is installed next to the binary, so that Collect-RfabReport.ps1 puts
+# the symbols of exactly this build into every report; Tools\rfab\symbolize_crash.py reads both
+# forms. Nothing here may fail the build: a build without symbols is still a build.
+foreach ($sym in @(
+        @{ Map = "SkyrimSE.map"; Out = (Join-Path $StageClient "RFAB_Online_Symbols.gz") },
+        @{ Map = "STServer.map"; Out = (Join-Path $StageServer "RFAB_Online_Server_Symbols.gz") },
+        @{ Map = "SkyrimTogetherServer.map"; Out = (Join-Path $StageServer "RFAB_Online_Runner_Symbols.gz") })) {
+    try {
+        $mapFile = $null
+        foreach ($searchRoot in @($BuildRel, (Join-Path $RepoRoot "build"))) {
+            if (-not $mapFile -and (Test-Path -LiteralPath $searchRoot)) {
+                $mapFile = Get-ChildItem -LiteralPath $searchRoot -Filter $sym.Map -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            }
+        }
+        if (-not $mapFile -and (Test-Path -LiteralPath (Join-Path $RepoRoot $sym.Map))) {
+            $mapFile = Get-Item -LiteralPath (Join-Path $RepoRoot $sym.Map)
+        }
+        if (-not $mapFile) {
+            Write-Host "[RFAB_RESULT] symbols: $($sym.Map) NOT FOUND - crash addresses of this build cannot be named"
+            continue
+        }
+        Copy-Item -LiteralPath $mapFile.FullName -Destination (Join-Path $PdbDir $mapFile.Name) -Force
+        $ErrorActionPreference = "Continue"
+        & python (Join-Path $RepoRoot "Tools\rfab\symbolize_crash.py") --export-symbols $mapFile.FullName --out $sym.Out
+        $symCode = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
+        if ($symCode -ne 0) { Write-Host "[RFAB_RESULT] symbols: export of $($sym.Map) failed ($symCode)" }
+    } catch {
+        $ErrorActionPreference = "Stop"
+        Write-Host "[RFAB_RESULT] symbols: $($sym.Map) not packaged: $($_.Exception.Message)"
+    }
+}
+
 Write-Host "==> [5/6] Live Windows x64 Server Smoke-Boot & Clean-Wipe Installer Verification..." -ForegroundColor Cyan
 $SmokeDir = Join-Path $env:TEMP ("rfab_srv_smoke_" + [Guid]::NewGuid().ToString("N"))
 Invoke-RobocopySafe -Src $StageServer -Dst $SmokeDir -ExtraArgs @("/E")
@@ -179,11 +213,37 @@ $proc = Start-Process -FilePath (Join-Path $SmokeDir "SkyrimTogetherServer.exe")
                       -RedirectStandardOutput (Join-Path $SmokeDir "stdout.txt") `
                       -RedirectStandardError  (Join-Path $SmokeDir "stderr.txt") `
                       -PassThru -NoNewWindow
+$null = $proc.Handle # retain ExitCode even if the child dies before the first check
 Start-Sleep -Seconds 4
 if ($proc.HasExited) {
+    $proc.WaitForExit()
+    $diagnostics = Join-Path $OutDir "diagnostics"
+    New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+    foreach ($relative in @("stdout.txt", "stderr.txt", "logs\STServerOut.log", "logs\STServer_Crash.log")) {
+        $source = Join-Path $SmokeDir $relative
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $diagnostics ([System.IO.Path]::GetFileName($relative))) -Force
+        }
+    }
+    $symbolArgs = @()
+    foreach ($name in @("RFAB_Online_Server_Symbols.gz", "RFAB_Online_Runner_Symbols.gz")) {
+        $source = Join-Path $StageServer $name
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination $diagnostics -Force
+            $symbolArgs += @("--map", $source)
+        }
+    }
+    $crashLog = Join-Path $diagnostics "STServer_Crash.log"
+    if (Test-Path -LiteralPath $crashLog) {
+        $ErrorActionPreference = "Continue"
+        $named = (& python (Join-Path $RepoRoot "Tools\rfab\symbolize_crash.py") $crashLog @symbolArgs 2>&1 | Out-String)
+        $ErrorActionPreference = "Stop"
+        [System.IO.File]::WriteAllText((Join-Path $diagnostics "smoke-symbolized.txt"), $named)
+        Write-Host $named
+    }
     $so = Get-Content -LiteralPath (Join-Path $SmokeDir "stdout.txt") -Raw -ErrorAction SilentlyContinue
     $se = Get-Content -LiteralPath (Join-Path $SmokeDir "stderr.txt") -Raw -ErrorAction SilentlyContinue
-    throw "SkyrimTogetherServer.exe exited prematurely with code $($proc.ExitCode)! STDOUT: $so | STDERR: $se"
+    throw "SkyrimTogetherServer.exe exited prematurely with code $($proc.ExitCode)! Same-build diagnostics retained. STDOUT: $so | STDERR: $se"
 }
 Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $SmokeDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -316,39 +376,6 @@ Write-Host "  [OK] End-to-end installer test passed: clean wipe, other mods unto
 Write-Host "==> [6/6] Compressing Release ZIP Archives & SHA256 Checksums..." -ForegroundColor Cyan
 Get-ChildItem -LiteralPath $BuildRel -Filter "*.pdb" -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $PdbDir $_.Name) -Force
-}
-
-# Linker maps -> symbols. The maps go into the PDB archive as they are. A compact table of the
-# launcher (and of the server) is installed next to the binary, so that Collect-RfabReport.ps1 puts
-# the symbols of exactly this build into every report; Tools\rfab\symbolize_crash.py reads both
-# forms. Nothing here may fail the build: a build without symbols is still a build.
-foreach ($sym in @(
-        @{ Map = "SkyrimSE.map"; Out = (Join-Path $StageClient "RFAB_Online_Symbols.gz") },
-        @{ Map = "STServer.map"; Out = (Join-Path $StageServer "RFAB_Online_Server_Symbols.gz") })) {
-    try {
-        $mapFile = $null
-        foreach ($searchRoot in @($BuildRel, (Join-Path $RepoRoot "build"))) {
-            if (-not $mapFile -and (Test-Path -LiteralPath $searchRoot)) {
-                $mapFile = Get-ChildItem -LiteralPath $searchRoot -Filter $sym.Map -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            }
-        }
-        if (-not $mapFile -and (Test-Path -LiteralPath (Join-Path $RepoRoot $sym.Map))) {
-            $mapFile = Get-Item -LiteralPath (Join-Path $RepoRoot $sym.Map)
-        }
-        if (-not $mapFile) {
-            Write-Host "[RFAB_RESULT] symbols: $($sym.Map) NOT FOUND - crash addresses of this build cannot be named"
-            continue
-        }
-        Copy-Item -LiteralPath $mapFile.FullName -Destination (Join-Path $PdbDir $mapFile.Name) -Force
-        $ErrorActionPreference = "Continue"
-        & python (Join-Path $RepoRoot "Tools\rfab\symbolize_crash.py") --export-symbols $mapFile.FullName --out $sym.Out
-        $symCode = $LASTEXITCODE
-        $ErrorActionPreference = "Stop"
-        if ($symCode -ne 0) { Write-Host "[RFAB_RESULT] symbols: export of $($sym.Map) failed ($symCode)" }
-    } catch {
-        $ErrorActionPreference = "Stop"
-        Write-Host "[RFAB_RESULT] symbols: $($sym.Map) not packaged: $($_.Exception.Message)"
-    }
 }
 
 # The server's crash record (work plan 4.5). The packaged server is made to die on purpose, twice:

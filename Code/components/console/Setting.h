@@ -4,6 +4,9 @@
 
 #include <TiltedCore/Stl.hpp>
 #include <base/Check.h>
+#include <cstring>
+#include <string>
+#include <type_traits>
 
 namespace Console
 {
@@ -168,7 +171,11 @@ private:
 
 // Settings can have their own custom storage spaces.
 // However, make sure to make the providers aware of this.
-template <typename T, class TStorage = detail::FixedStorage<T>> class Setting : public SettingBase, public TStorage
+// Providers dispatch kString to StringSetting::StoreValue. A deduced const char* must own
+// DynamicStringStorage too: FixedStorage<const char*> has no std::string at that address and
+// loading even an absent INI key would corrupt the following static objects.
+template <typename T, class TStorage = std::conditional_t<std::is_same_v<T, const char*>, detail::DynamicStringStorage<char>, detail::FixedStorage<T>>>
+class Setting : public SettingBase, public TStorage
 {
 public:
     Setting(const char* acName, const char* acDesc, const T acDefault, const SettingsFlags acFlags = SettingsFlags::kNone)

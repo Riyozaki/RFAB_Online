@@ -6,7 +6,7 @@
 
 namespace
 {
-Console::Setting sRfabCampaign{"RFAB:sCampaign", "Stable campaign journal name (letters, digits, dash, underscore)", "rfab-coop"};
+Console::StringSetting sRfabCampaign{"RFAB:sCampaign", "Stable campaign journal name (letters, digits, dash, underscore)", "rfab-coop"};
 
 }
 

@@ -965,6 +965,10 @@ function Invoke-LoggedCmd([string]$StepName, [string]$CmdString) {
         $tailShow = if ($allLines.Length -gt 80) { $allLines[($allLines.Length - 80)..($allLines.Length - 1)] } else { $allLines }
         foreach ($ln in $tailShow) { Write-Host $ln }
         if ($code -ne 0) {
+            $diagDir = Join-Path $script:RfabRepoRoot "build\ci-diagnostics"
+            New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
+            $safeName = $StepName -replace '[^a-zA-Z0-9._-]+', '-'
+            Copy-Item -LiteralPath $stepLog -Destination (Join-Path $diagDir ($safeName + ".log")) -Force
             # First errors first, repeats dropped, in as many annotations as one step may carry.
             # The two annotations below keep only the last 3500 characters, which on a cascade of
             # compiler errors is the end of the cascade and never its cause.

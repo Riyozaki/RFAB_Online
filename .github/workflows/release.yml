@@ -49,6 +49,8 @@ jobs:
             release_artifacts/*.zip
             release_artifacts/SHA256SUMS.txt
             release_artifacts/RELEASE_NOTES.md
+            release_artifacts/diagnostics/**
+            build/ci-diagnostics/*.log
           if-no-files-found: warn
           retention-days: 14
           compression-level: 0

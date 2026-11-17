@@ -8,6 +8,8 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include <ConsoleRegistry.h>
+#include <IniSettingsProvider.h>
+#include <CommandSettingsProvider.h>
 #include <Components.h>
 #include <GameServer.h>
 #include <World.h>
@@ -711,6 +713,23 @@ int main()
     TemporaryWorkingDirectory workdir;
     Console::ConsoleRegistry console("ConOut");
 
+    // The packet harness previously never loaded production settings. The Windows boot did,
+    // exposing a CTAD string setting with FixedStorage interpreted as DynamicStringStorage.
+    static_assert(std::is_same_v<decltype(Console::Setting{"type-only", "", "value"}), Console::StringSetting>);
+    static_assert(std::is_same_v<Console::Setting<const char*>, Console::StringSetting>);
+    {
+        auto* campaign = console.FindSetting("RFAB:sCampaign");
+        Check(campaign && campaign->type == Console::SettingBase::Type::kString, "production campaign setting uses the string provider");
+        std::ofstream("settings-string-regression.ini") << "[RFAB]\nsCampaign=campaign-name-longer-than-small-string-buffer\n";
+        Console::LoadSettingsFromIni(console, "settings-string-regression.ini");
+        Check(campaign && std::string(campaign->c_str()) == "campaign-name-longer-than-small-string-buffer", "real INI provider owns a long campaign string instead of writing beyond FixedStorage");
+        std::ofstream("settings-string-regression.ini") << "[RFAB]\n";
+        Console::LoadSettingsFromIni(console, "settings-string-regression.ini");
+        Check(campaign && std::string(campaign->c_str()) == "campaign-name-longer-than-small-string-buffer", "absent string key retains an owned default without static-memory corruption");
+        char arg0[] = "server"; char arg1[] = "--RFAB:sCampaign=rfab-coop"; char* args[] = {arg0, arg1};
+        Console::LoadSettingsFromCommand(console, 2, args);
+        Check(campaign && std::string(campaign->c_str()) == "rfab-coop", "command provider uses the same safe string storage and restores the fixture campaign");
+    }
     RunEntityZeroAndLifecycleScenario(console);
     RunTwoPlayerSyncAndOwnershipScenario(console);
     RunOverlayChatSafetyScenario(console);
