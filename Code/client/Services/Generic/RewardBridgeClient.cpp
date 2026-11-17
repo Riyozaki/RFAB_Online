@@ -9,6 +9,19 @@ Coop::RewardMailbox& RewardBridgeClient::Mailbox() noexcept
     static Coop::RewardMailbox mailbox;
     return mailbox;
 }
+Coop::PersonalRewardMailbox& RewardBridgeClient::PersonalMailbox() noexcept
+{
+    static Coop::PersonalRewardMailbox mailbox;
+    return mailbox;
+}
+bool RewardBridgeClient::RequestPersonal(const Coop::PersonalRewardRequest& request) noexcept
+{
+    if (request.Epoch != SaveStateBridge::Epoch() || !Mailbox().ClaimApplication(request.Epoch, request.Token)) return false;
+    PersonalMailbox().NewEpoch(request.Epoch);
+    if (PersonalMailbox().Submit(request)) return true;
+    Mailbox().Complete(request.Epoch, {request.Epoch, request.Token, Coop::Rewards::Result::NotApplied, 0, 0});
+    return false;
+}
 bool RewardBridgeClient::Register(uint64_t epoch, const Coop::Rewards::Adapter* adapter) noexcept
 {
     if (!adapter || epoch != SaveStateBridge::Epoch()) return false;
@@ -20,7 +33,9 @@ bool RewardBridgeClient::Register(uint64_t epoch, const Coop::Rewards::Adapter* 
         if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
             reinterpret_cast<LPCWSTR>(adapter->ApplyReward), &module)) return false;
     }
-    return Mailbox().Register(epoch, *adapter);
+    const bool registered = Mailbox().Register(epoch, *adapter);
+    if (registered) PersonalMailbox().NewEpoch(epoch);
+    return registered;
 }
 uint64_t RewardBridgeClient::Epoch() noexcept { return SaveStateBridge::Epoch(); }
 Coop::Rewards::Mode RewardBridgeClient::Mode() noexcept { return Mailbox().Mode(); }

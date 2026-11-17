@@ -12,6 +12,7 @@
 #include <Misc/BSScript.h>
 #include <Misc/GameVM.h>
 #include <limits>
+#include <random>
 
 namespace
 {
@@ -30,7 +31,8 @@ struct ApplyArguments final : BSScript::IFunctionArguments
         args->vars[1].Set<int32_t>(Base);
     }
 };
-bool DispatchPapyrus(const Coop::Rewards::Adapter& adapter, uint64_t epoch, uint64_t token, int32_t base)
+bool DispatchPapyrus(const Coop::Rewards::Adapter& adapter, uint64_t epoch, uint64_t token, int32_t base,
+    const char* eventName = "OnRFABCoopRewardApply")
 {
     auto* game = GameVM::Get();
     auto* vm = game ? game->virtualMachine : nullptr;
@@ -38,7 +40,7 @@ bool DispatchPapyrus(const Coop::Rewards::Adapter& adapter, uint64_t epoch, uint
     if (!adapter.Receiver || !policy || !policy->IsHandleObjectAvailable(adapter.Receiver)) return false;
     ApplyArguments args;
     args.Ticket = fmt::format("{:016x}:{:016x}", epoch, token); args.Base = base;
-    BSFixedString event("OnRFABCoopRewardApply");
+    BSFixedString event(eventName);
     vm->SendEvent(adapter.Receiver, event, &args); // the VM packs owned scalar arguments synchronously
     return true; // enqueue is NOT application; the script must complete both pools and return its ticket
 }
@@ -46,6 +48,19 @@ bool DispatchPapyrus(const Coop::Rewards::Adapter& adapter, uint64_t epoch, uint
 RewardService::RewardService(World& world, entt::dispatcher& dispatcher, TransportService& transport) noexcept
     : m_world(world), m_transport(transport)
 {
+    try
+    {
+        std::random_device random;
+        // ESS may retain a delayed VM stack across a process restart, whose load epoch starts
+        // counting again. Never restart application tickets at the predictable value one.
+        m_tokens = ((uint64_t(random()) << 32) ^ random()) & ((1ull << 60) - 1);
+        m_tokenSeeded = true;
+    }
+    catch (const std::exception& error)
+    {
+        m_blocked = true;
+        spdlog::error("[RFAB] cannot seed native XP tickets; semantic XP disabled: {}", error.what());
+    }
     m_update = dispatcher.sink<UpdateEvent>().connect<&RewardService::OnUpdate>(this);
     m_connected = dispatcher.sink<ConnectedEvent>().connect<&RewardService::OnConnected>(this);
     m_disconnected = dispatcher.sink<DisconnectedEvent>().connect<&RewardService::OnDisconnected>(this);
@@ -74,7 +89,7 @@ void RewardService::Describe(Coop::Hello& hello) const
     const auto& saves = m_world.ctx().at<SaveStateService>();
     for (const auto& progress : saves.State().Rewards) hello.Rewards.push_back({progress.Campaign, progress.Revision, progress.Digest});
     const auto adapter = RewardBridgeClient::Mailbox().Adapter(SaveStateBridge::Epoch());
-    if (m_blocked || !saves.Ready() || !adapter) return;
+    if (m_blocked || !saves.Ready() || !adapter || !ProfileMatches(*adapter)) return;
     hello.Capabilities |= Coop::SemanticRewards | ((adapter->Flags & Coop::Rewards::Bizarre) ? Coop::BizarreAdapter : 0u);
     hello.RewardSignature = adapter->Signature; hello.RewardKinds = adapter->Kinds;
 }
@@ -99,8 +114,10 @@ void RewardService::OnWorldLoaded(const WorldLoadedEvent&) noexcept
 {
     m_epoch = SaveStateBridge::Epoch();
     RewardBridgeClient::Mailbox().NewEpoch(m_epoch);
+    RewardBridgeClient::PersonalMailbox().NewEpoch(m_epoch);
     m_inputs.clear(); m_grants.clear(); m_sources.clear(); m_completed.clear(); m_application.reset();
-    m_blocked = m_semantic = false;
+    m_blocked = !m_tokenSeeded; m_semantic = false;
+    RefreshProfile();
 }
 void RewardService::Fail(const char* reason) noexcept
 {
@@ -151,8 +168,11 @@ void RewardService::OnUpdate(const UpdateEvent&) noexcept
     if (m_blocked) return;
     auto& coop = m_world.ctx().at<CoopService>();
     m_semantic = coop.Supports(Coop::SemanticRewards);
+    const auto adapter = bridge.Adapter(m_epoch);
+    if (coop.Active() && adapter && (!m_semantic || !ProfileMatches(*adapter)))
+    { Fail("Installed XP adapter appeared after negotiation or no longer matches its compiled profile; reconnect after a clean load"); return; }
     if (!m_semantic) return;
-    if (m_epoch != SaveStateBridge::Epoch() || !m_world.ctx().at<SaveStateService>().Ready())
+    if (m_epoch != SaveStateBridge::Epoch() || !adapter || !ProfileMatches(*adapter) || !m_world.ctx().at<SaveStateService>().Ready())
     { Fail("Semantic XP no longer owns a matching loaded native timeline"); return; }
     bridge.Configure(m_epoch, Coop::Rewards::Mode::Active);
     for (auto& event : bridge.Take(m_epoch))
@@ -220,6 +240,10 @@ void RewardService::Apply(const Coop::RewardGrant& grant) noexcept
             m_completed.emplace(grant.RewardId, std::make_pair(application.Grant, *application.Receipt));
             m_application.reset();
             spdlog::info("[RFAB] semantic reward {} committed, base {}, personal final {}", grant.RewardId, grant.BaseXP, application.Receipt->FinalXP);
+            const auto text = fmt::format("RFAB: +{} XP (shared base {}, personal multiplier)", application.Receipt->FinalXP, grant.BaseXP);
+            Utils::ShowHudMessage(String(text.c_str()));
+            if (const auto adapter = RewardBridgeClient::Mailbox().Adapter(application.Epoch); adapter && adapter->Receiver)
+                DispatchPapyrus(*adapter, application.Epoch, application.Token, application.Receipt->FinalXP, "OnRFABCoopRewardApplied");
             return;
         }
         Fail(grant.Reason.empty() ? "Semantic reward rejected/quarantined after native admission" : grant.Reason.c_str()); return;
@@ -245,7 +269,7 @@ void RewardService::Start(const Coop::RewardGrant& grant) noexcept
     auto& bridge = RewardBridgeClient::Mailbox();
     const auto adapter = bridge.Adapter(m_epoch);
     const auto* progress = Progress();
-    if (!adapter || (progress ? progress->Revision : 0) != grant.BeforeRevision || (progress ? progress->Digest : 0) != grant.BeforeDigest)
+    if (!adapter || !ProfileMatches(*adapter) || (progress ? progress->Revision : 0) != grant.BeforeRevision || (progress ? progress->Digest : 0) != grant.BeforeDigest)
     { Fail("Native reward adapter or before-receipt chain differs from the server offer"); return; }
     const auto effect = Coop::NativeEffect(Coop::EffectKind::Reward, coop.Session(), coop.Generation(), grant.RewardId);
     if (!saves.Begin(Coop::EffectKind::Reward, effect)) return; // defer a pinned save or another serial effect; never block the game thread
@@ -284,6 +308,8 @@ void RewardService::PollApplication() noexcept
     if (application.Epoch != SaveStateBridge::Epoch()) return;
     if (!application.Receipt)
     {
+        if (const auto request = RewardBridgeClient::PersonalMailbox().Take(application.Epoch, application.Token)) ApplyPersonal(*request);
+        if (m_blocked || !m_application || application.Epoch != SaveStateBridge::Epoch() || m_world.IsLoadingWorld()) return;
         const auto completion = RewardBridgeClient::Mailbox().Completion(application.Epoch, application.Token);
         if (completion)
         {

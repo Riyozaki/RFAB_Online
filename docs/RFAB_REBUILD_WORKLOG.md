@@ -440,3 +440,32 @@ SUCCESS относится к pre-semantic startup fix; Windows3fe/run4416944563
 Readiness=false/dev5.0.0-dev.1; без release/tag/промежуточного совместного теста. Остаются genuine
 installed RFAB source adapter, полный native life/reset/phase, A AI-task/targeted-hazard quiescence,
 downed/save/config recovery matrix и optional genuine coordinated B, плюс current Windows/package.
+
+
+### 2026-11-17 — личный XP, проверяемый source adapter и исправление Windows compile gate
+
+- Built-in personal path получает только ticket + реальные property FormID + quantum. На VM
+  потоке больше нет Resolve/GetObjectForHandle/TESGlobal pointer access. Host использует offered
+  base, проверенную Papyrus float→int→quantum формулу, engine wallet setter + SKSE level points,
+  exact independent increments/read-back под serial native/save reservation. Unknown/partial
+  mutation не повторяется. Случайный process prefix ticket защищает от старого VM stack после
+  рестарта; отказ RNG блокирует capability, а не завершает noexcept constructor исключением.
+- Exact-preimage generator проверяет исходные SHA, CalculateXP и обе записи ModXP/helper, меняет
+  только reviewed award regions/callers, сохраняет encoding/CRLF/spending/side effects и attached
+  lifecycle registration. Не подменяет newer Handler историческим. Source-only output не мод;
+  real compiler опционален, runtime table появляется лишь после всех успешных компиляций.
+- Client hashes compiled PEX/declared DLL через Data view, сопоставляет attached receiver и ждёт
+  регистрацию до Hello. Неверный/неизвестный профиль не выдаёт semantic capability и не включает
+  legacy fallback. Подробнее RFAB_INSTALLED_REWARD_PROFILE.md. **Самого installed newer RFAB
+  профиля/real compiler output здесь нет**, новый RFAB не искался; синтетика не compatibility proof.
+- Plain core **93/30 520 PASS**, strict static PASS, storage18/reward-generator18/native5 PASS.
+  Новые compiler-staging tests используют явный mock и не выдаются за Papyrus compilation.
+  Текущий93-case ASan ещё выполняется. Ранее server ASan завершился0: все8 wire + crash-record
+  PASS, ASan+UBSan no findings; после восстановления sandbox старый build log не сохранился.
+- Windows3fe/run44169445636 SUCCESS incl. unchanged server smoke. Semantic20775/run44172443126
+  FAIL из-за TESQuest::Type (вложенный enum типа задания, не FormType). Исправлено на
+  FormType::QuestItem; новые native files пока требуют свежего Windows CI. Linux20775 SUCCESS.
+- Sandbox восстановился с файлами текущей работы, но branch/index были на исходном adf3573.
+  recover_workspace report обнаружил только известные15 local files/7 untracked, ни stale ни
+  missing; выполнен mixed reset текущей ветки к её origin20775 **без изменения файлов**.
+  Artwork не тронут. Readiness=false; совместный плейтест по-прежнему один, после всей работы.

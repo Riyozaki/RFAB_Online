@@ -59,6 +59,7 @@ struct SaveStateService
     bool Ready() const noexcept;
     bool CanSave() const noexcept { return Ready() && m_timeline.CanSave() && SaveStateBridge::SaveAllowed(); }
     SaveNativePin PinNative() noexcept;
+    bool NativeAdmitted(Coop::EffectId) const noexcept;
     bool Begin(Coop::EffectKind, Coop::EffectId);
     bool Applied(Coop::EffectId);
     bool Commit(Coop::EffectId);
@@ -68,6 +69,7 @@ struct SaveStateService
     bool StampReward(Coop::SavedRewards);
     void Quarantine();
     void Uncertain(Coop::EffectId);
+    void Uncertain(Coop::EffectId, uint64_t aExpectedEpoch);
     void PollFault();
     const Coop::CharacterState& State() const noexcept { return m_timeline.State(); }
 private:

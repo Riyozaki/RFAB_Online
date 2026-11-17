@@ -117,7 +117,7 @@ void CoopService::OnConnected(const ConnectedEvent&) noexcept
 {
     m_active = false;
     m_world.SetSemanticRewards(false);
-    m_session = m_generation = m_serverOperation = m_operation = m_helloAt = m_lastPoll = 0;
+    m_session = m_generation = m_serverOperation = m_operation = m_helloAt = m_lastPoll = m_adapterWaitAt = 0;
     m_safeSince = m_lastAnchor = m_hold = m_encounter = 0;
     m_target = 0;
     m_reportedEnemies.clear();
@@ -222,6 +222,19 @@ void CoopService::OnUpdate(const UpdateEvent&) noexcept
     const uint64_t now = Now();
     if (!Active())
     {
+        // A generated installed profile must register its actual attached Quest after load.
+        // Do not race Hello ahead of that VM event and silently negotiate legacy XP instead.
+        if (!m_world.ctx().at<RewardService>().ReadyToNegotiate())
+        {
+            if (!m_adapterWaitAt) m_adapterWaitAt = now;
+            if (now - m_adapterWaitAt >= 15000)
+            {
+                Utils::ShowHudMessage("RFAB: XP adapter did not register a matching installed profile after load. Connection closed; no legacy XP fallback.");
+                m_transport.Close();
+            }
+            return;
+        }
+        m_adapterWaitAt = 0;
         if (!m_helloAt || now - m_helloAt >= 2000)
         {
             m_helloAt = now;

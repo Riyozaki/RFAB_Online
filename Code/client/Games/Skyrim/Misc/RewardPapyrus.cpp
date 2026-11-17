@@ -1,6 +1,7 @@
 #include <TiltedOnlinePCH.h>
 #include <Misc/RewardPapyrus.h>
-#include <Forms/TESQuest.h>
+#include <Forms/TESForm.h>
+#include <algorithm>
 #include <Services/RewardService.h>
 #include <charconv>
 #include <cstring>
@@ -29,7 +30,7 @@ std::optional<std::pair<uint64_t, uint64_t>> Ticket(std::string_view text)
 }
 struct RewardFunction final : BSScript::NativeFunction
 {
-    enum Operation { Register, Epoch, Mode, Submit, Complete, Claim, CanApply };
+    enum Operation { Register, Epoch, Mode, Submit, Complete, Claim, CanApply, RequestPersonal };
     Operation Op;
     uint32_t Count{};
     RewardFunction(BSScript::IVirtualMachine* vm, Operation op, const char* name, uint32_t count, BSScript::Variable::Type result)
@@ -52,6 +53,8 @@ struct RewardFunction final : BSScript::NativeFunction
         }
         if (op == Submit) for (uint32_t i = 1; i <= 5; ++i) parameters.data[i].type = BSScript::Variable::kInteger;
         if (op == Complete) for (uint32_t i = 1; i <= 3; ++i) parameters.data[i].type = BSScript::Variable::kInteger;
+        if (op == RequestPersonal)
+            for (uint32_t i = 1; i <= 3; ++i) parameters.data[i].type = BSScript::Variable::kInteger;
     }
     bool HasCallback() override { return true; }
     bool MarshallAndDispatch(BSScript::Variable*, BSScript::IVirtualMachine* vm, uint32_t, BSScript::Variable* out, BSScript::StackFrame* frame) override
@@ -64,7 +67,7 @@ struct RewardFunction final : BSScript::NativeFunction
         {
             args[i] = frame->GetStackFrameVariable(i, page);
             if (!args[i]) return false;
-            if (Op == Register && i == 0) continue; // Form has a complex VM type, not scalar kObject
+            if (Op == Register && i == 0) continue; // complex VM type, not scalar kObject
             if (args[i]->type != parameters.data[i].type) return false;
         }
         switch (Op)
@@ -87,7 +90,7 @@ struct RewardFunction final : BSScript::NativeFunction
                 adapter.Flags = Coop::Rewards::kRequiredFlags | (args[4]->data.b ? Coop::Rewards::Bizarre : 0u);
                 adapter.Receiver = object->GetHandle(); std::copy(name.begin(), name.end(), std::begin(adapter.Name));
                 auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
-                valid = policy && policy->HandleIsType(static_cast<uint32_t>(TESQuest::Type), adapter.Receiver) &&
+                valid = policy && policy->HandleIsType(static_cast<uint32_t>(FormType::QuestItem), adapter.Receiver) &&
                     policy->IsHandleObjectAvailable(adapter.Receiver) && RewardBridgeClient::Register(*epoch, &adapter);
             }
             out->Set<bool>(valid); return true;
@@ -119,6 +122,16 @@ struct RewardFunction final : BSScript::NativeFunction
             }
             out->Set<bool>(valid); return true;
         }
+        case RequestPersonal:
+        {
+            const auto ticket = Ticket(Text(args[0]));
+            // The generated Quest passes its actual properties' GetFormID() values. Native
+            // VM ingress never resolves/retains a TESGlobal pointer across a possible load.
+            const auto wallet = static_cast<uint32_t>(args[1]->data.i), multiplier = static_cast<uint32_t>(args[2]->data.i);
+            const bool valid = ticket && wallet && multiplier && RewardBridgeClient::RequestPersonal({ticket->first, ticket->second,
+                wallet, multiplier, static_cast<uint32_t>(args[3]->data.i)});
+            out->Set<bool>(valid); return true;
+        }
         case Claim:
         case CanApply:
         {
@@ -144,4 +157,5 @@ void BindRFABRewardFunctions(BSScript::IVirtualMachine* vm)
     vm->BindNativeMethod(new RewardFunction(vm, RewardFunction::Complete, "Complete", 4, V::kBoolean));
     vm->BindNativeMethod(new RewardFunction(vm, RewardFunction::Claim, "Claim", 1, V::kBoolean));
     vm->BindNativeMethod(new RewardFunction(vm, RewardFunction::CanApply, "CanApply", 1, V::kBoolean));
+    vm->BindNativeMethod(new RewardFunction(vm, RewardFunction::RequestPersonal, "RequestPersonalApply", 4, V::kBoolean));
 }

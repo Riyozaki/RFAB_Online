@@ -71,6 +71,7 @@ class NativeDeclarationTests(unittest.TestCase):
             "Submit": ("int", ("string", "int", "int", "int", "int", "int", "string", "string")),
             "Complete": ("bool", ("string", "int", "int", "int")),
             "Claim": ("bool", ("string",)), "CanApply": ("bool", ("string",)),
+            "RequestPersonalApply": ("bool", ("string", "int", "int", "int")),
         }
         self.assertEqual({f.name: (f.result, tuple(t for _, t in f.parameters)) for f in script.functions}, expected)
 

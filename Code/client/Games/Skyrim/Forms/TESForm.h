@@ -5,6 +5,7 @@
 
 enum class FormType : uint8_t
 {
+    Global = 9,
     Armor = 26,
     Book = 27,
     Container = 28,

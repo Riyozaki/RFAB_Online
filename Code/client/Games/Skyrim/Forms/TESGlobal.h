@@ -5,6 +5,7 @@
 
 struct TESGlobal : TESForm
 {
+    static constexpr FormType Type = FormType::Global;
     BSString unk14;
     uint8_t unk1C;
     uint8_t pad[3];

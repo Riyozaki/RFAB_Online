@@ -87,6 +87,7 @@ void World::SignalWorldLoad() noexcept
     world->m_loadPending.store(false, std::memory_order_release);
     world->m_nativeFlags.fetch_and(~5u, std::memory_order_release);
     RewardBridgeClient::Mailbox().NewEpoch(SaveStateBridge::Epoch());
+    RewardBridgeClient::PersonalMailbox().NewEpoch(SaveStateBridge::Epoch());
     world->m_runner.Invalidate();
     world->m_preloadPending.store(true, std::memory_order_release);
 }

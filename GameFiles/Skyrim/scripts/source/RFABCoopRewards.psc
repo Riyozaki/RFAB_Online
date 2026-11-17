@@ -19,7 +19,16 @@ int Function GetMode() global native
 ; Quest/custom: source+context+actual incarnation/occurrence must identify the semantic event.
 int Function Submit(string epoch, int kind, int source, int context, int actor, int baseXP, string life, string occurrence) global native
 
-; A VM event must claim its epoch:token once, and check CanApply before EACH pool mutation.
+; Audited Papyrus float-recipe adapter: queue actual GlobalVariable property GetFormID() values.
+; This claims the ticket itself. It DOES NOT mutate XP on a VM thread or accept a caller's base.
+; The main thread uses the host offer, reads the personal multiplier, performs the engine wallet
+; setter + SKSE level-XP semantics, and independently verifies BOTH pools under the save pin.
+; Recipe: float multiply, int truncation, then floor to quantum (historical RFAB uses five).
+; A changed/native RFAB formula needs a different adapter; do not mislabel it as this recipe.
+; True means queued, NOT applied. No Complete call is needed for this recipe; the host owns it.
+bool Function RequestPersonalApply(string ticket, int walletForm, int multiplierForm, int quantum) global native
+
+; Other custom VM adapters must claim epoch:token once and check CanApply before EACH write.
 ; Duplicate/stale events cannot claim again. Normal saves/loads are excluded by the host's
 ; native reservation; a forced/failed load revokes the token and quarantines the old award.
 bool Function Claim(string ticket) global native

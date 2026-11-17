@@ -48,7 +48,11 @@ work is performed on the client update thread, not by ingress callbacks.
 Event OnRFABCoopRewardApply(string ticket, int baseXP)
 ```
 
-This event is an asynchronous request, **not an applied receipt**. It must:
+This event is an asynchronous request, **not an applied receipt**. The reviewed built-in Papyrus
+recipe calls `RequestPersonalApply(ticket, walletForm, multiplierForm, quantum)` and lets the host
+claim, compute and independently verify both pools. It must **not** pre-Claim or Complete that
+request. The generated receiver passes the actual attached properties' GetFormID values; VM ingress
+never resolves their native pointers. Other custom adapters must:
 
 1. Claim the exact `epoch:token` once with `Claim(ticket)`; duplicate events do no work.
 2. Calculate personal final XP using the installed RFAB multiplier/rounding policy, starting
@@ -68,13 +72,24 @@ A forced/failed load can still invalidate the world: its epoch revokes the old t
 old receipt is quarantined. This is not a promise of crash-proof atomic mutation inside Skyrim.
 The campaign inventory and reward journals are separate files, **not a coordinated checkpoint**.
 
+## Exact-preimage installed source tool (not an installed compatibility profile)
+
+`generate_reward_adapter.py` now prepares reviewed source-level interception/attached receivers,
+checks the original calculator **and both pool writer bodies**, retains explicit identities and
+unrelated side effects, and can invoke a real local Papyrus compiler. Source-only output has no
+PEX/capability table. Compiled output fingerprints its PEX and declared native DLLs; the client
+checks that table at world load and waits for the actual receiver before semantic Hello.
+See [installed profile contract](RFAB_INSTALLED_REWARD_PROFILE.md). The 18 synthetic tool tests
+exercise refusal, preimages, forwarding, encoding and staging; compiler subprocesses in the two
+staging tests are explicitly **mocked**, not executable-Papyrus compilation or installed evidence.
+
 ## Installed integration that is NOT yet complete
 
 The native/Papyrus API and registration/event delivery do **not** intercept RFAB by themselves.
 A compatible installed-profile override must capture rewards **before personal multiplication**,
 retain real quest/book/custom identities and non-XP side effects, suppress the original award,
-and implement verified dual-pool application. No such override for the user's newer installed
-RFAB is currently present or tested. The older public Handler/Alias/BA sources were reference
+and implement verified dual-pool application. No reviewed/compiled override for the user's newer installed
+RFAB is currently present or tested. The exact-preimage tool is not that missing profile. The older public Handler/Alias/BA sources were reference
 material only; they must not be shipped as a guessed replacement for newer scripts or RFAB.dll.
 The newer RFAB was not searched for.
 
@@ -91,18 +106,24 @@ This verifies bytes/signatures, **not execution in Skyrim's VM**.
 
 ## Evidence and remaining gates
 
-- Portable core: **88 cases / 30,219 assertions PASS**; with ASan+UBSan and extended seeds,
-  **88 / 277,971 PASS** (`build/core-semantic-bridge*.log`). Counts vary slightly with races.
-- Real server + both production codecs: **8 scenarios + crash-record PASS**, including frozen
-  equal base/different finals, legacy suppression, forged/non-owner death refusal, authoritative
-  kill token, downed/loading eligibility, late duplicate/no cohort extension and matching/mismatched
-  co-save cursor after restart (`build/server-semantic-rewards.log`). It does not execute Skyrim.
-- The first new production XP scenario exposed a dangling range-loop key after ledger publication
-  replaced its map. OfferNext now returns an owned offer captured before publication; the crash
-  is fixed in the passing wire run. Older seven-scenario passes did not cover XP.
-- Current production-server ASan+UBSan is still running at this writing; Windows compilation of
-  these new client/Papyrus files is not yet proven. Declaration tests: **5 PASS**, storage parser:
-  **18 PASS**, strict static: PASS, local PowerShell unavailable.
+- Current portable core: **93 cases / 30,520 assertions PASS** (`build/core-installed-xp.log`),
+  including independent personal float pools/property mailbox and bounded deployed-profile parser.
+- Earlier core ASan+UBSan: **88 / 277,971 PASS** (extended seeds); the new 93-case sanitized run
+  is pending at this writing and must not be confused with that older result.
+- Production server: **8 scenarios + crash-record PASS**, plain **and ASan+UBSan**, including frozen
+  equal base/different finals, authority/dedup/downed/loading/restart cursors. The server sanitizer
+  process completed successfully after the preceding documentation was written. These runs do
+  not execute Skyrim or the new client executor/profile checks.
+- The new production XP scenario found an OfferNext reference invalidated by ledger publication;
+  returning the owned offer captured before publication fixed the crash in both passing runs.
+- Native declarations: **8 functions / 665-byte deterministic PEX**, **5 tests PASS**. Installed
+  reward generator: **18 synthetic tests PASS**; storage generator: **18 PASS**. Full strict static
+  PASS; local PowerShell unavailable. None of these is Skyrim VM execution.
+- Windows startup-fix commit `3fe07e6`, run44169445636: **SUCCESS**, including build/test/package
+  and the unchanged live server smoke gate. That does not prove the earlier startup AV's cause.
+- Semantic commit `20775b9`, run44172443126: **FAIL**, native compile error from treating the
+  nested `TESQuest::Type` enum as a Form-type value. Current source uses `FormType::QuestItem`;
+  this fix and new client execution await the next Windows build. Linux20775/run44172443038 PASS.
 
 The overall candidate remains `ready_for_playtest=false`. There is no release/tag or intermediate
 shared gameplay test; the agreed single joint test follows completion of the whole candidate.

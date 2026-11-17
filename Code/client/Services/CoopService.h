@@ -56,7 +56,7 @@ private:
     World& m_world;
     TransportService& m_transport;
     std::atomic_bool m_active{false};
-    uint64_t m_session{}, m_generation{}, m_operation{}, m_serverOperation{}, m_helloAt{}, m_lastPoll{};
+    uint64_t m_session{}, m_generation{}, m_operation{}, m_serverOperation{}, m_helloAt{}, m_lastPoll{}, m_adapterWaitAt{};
     uint64_t m_safeSince{}, m_lastAnchor{}, m_hold{}, m_holdCounter{}, m_recoverUntil{}, m_recoverySession{};
     uint64_t m_encounter{}, m_lastEnemyScan{};
     Coop::ReadinessGate m_resetReadiness;

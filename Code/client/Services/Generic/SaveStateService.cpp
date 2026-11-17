@@ -159,6 +159,11 @@ SaveNativePin SaveStateService::PinNative() noexcept
     const auto ticket = SaveStateBridge::BeginNative(m_publicationEpoch);
     return ticket ? SaveNativePin{m_publicationEpoch, *ticket} : SaveNativePin{};
 }
+bool SaveStateService::NativeAdmitted(Coop::EffectId id) const noexcept
+{
+    const auto& receipt = m_timeline.Receipt();
+    return RFAB_EXPECT_MAIN_THREAD() && Ready() && OwnsNative() && receipt && receipt->Id == id && receipt->Stage == Coop::EffectStage::Prepared;
+}
 bool SaveStateService::Begin(Coop::EffectKind kind, Coop::EffectId id)
 {
     if (!RFAB_EXPECT_MAIN_THREAD() || !Ready() || !m_timeline.CanSave() || m_nativeTicket) return false;
@@ -222,6 +227,12 @@ void SaveStateService::Quarantine()
     if (!RFAB_EXPECT_MAIN_THREAD()) return;
     m_timeline.Fault();
     Publish();
+}
+void SaveStateService::Uncertain(Coop::EffectId id, uint64_t expectedEpoch)
+{
+    // A callback may have reentered load/adoption. An old frame cannot quarantine a NEW
+    // journal even if a server effect identity happens to recur in the next timeline.
+    if (RFAB_EXPECT_MAIN_THREAD() && m_publicationEpoch == expectedEpoch) Uncertain(id);
 }
 void SaveStateService::Uncertain(Coop::EffectId id)
 {

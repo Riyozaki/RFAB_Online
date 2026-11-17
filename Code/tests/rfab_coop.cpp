@@ -693,3 +693,107 @@ TEST_CASE("Papyrus reward tickets have one atomic claim and cannot write again a
     mailbox.NewEpoch(2);
     CHECK_FALSE(mailbox.CanApply(1, 100)); CHECK_FALSE(mailbox.ClaimApplication(1, 100));
 }
+
+#include <Coop/PersonalReward.h>
+TEST_CASE("Personal RFAB requests carry properties not caller-selected amounts and are taken once", "[rfab][rewards][personal]")
+{
+    PersonalRewardMailbox mailbox;
+    const PersonalRewardRequest first{5, 8, 0x123, 0x124, 5};
+    CHECK_FALSE(mailbox.Submit(first)); mailbox.NewEpoch(5);
+    REQUIRE(mailbox.Submit(first)); CHECK_FALSE(mailbox.Take(5, 7));
+    auto conflict = first; conflict.Quantum = 10; CHECK_FALSE(mailbox.Submit(conflict));
+    auto next = first; next.Token++;
+    CHECK_FALSE(mailbox.Submit(next)); // unconsumed application cannot be overwritten
+    REQUIRE(mailbox.Take(5, 8)); CHECK_FALSE(mailbox.Take(5, 8));
+    CHECK(mailbox.Submit(first)); CHECK_FALSE(mailbox.Take(5, 8)); // exact resend never re-enqueues after native work
+    REQUIRE(mailbox.Submit(next));
+    mailbox.NewEpoch(6); CHECK_FALSE(mailbox.Take(5, 9)); CHECK_FALSE(mailbox.Submit(first));
+    mailbox.NewEpoch(5); next.Epoch = 6; REQUIRE(mailbox.Submit(next));
+    CHECK_FALSE(mailbox.Take(5, 9)); REQUIRE(mailbox.Take(6, 9));
+    next.Token++;
+    next.Multiplier = next.Wallet; CHECK_FALSE(mailbox.Submit(next));
+    next.Multiplier++; next.Quantum = 0; CHECK_FALSE(mailbox.Submit(next));
+    next.Quantum = 1001; CHECK_FALSE(mailbox.Submit(next));
+}
+TEST_CASE("An audited Papyrus float recipe preserves its own rounding and both independent pool increments", "[rfab][rewards][personal]")
+{
+    const auto a = PlanPersonalReward(103, 1.25f, 1000.f, 250.5f, 5);
+    const auto b = PlanPersonalReward(103, 2.f, 10.f, 0.f, 5);
+    REQUIRE(a); REQUIRE(b);
+    CHECK(a->Final == 125); CHECK(a->WalletAfter == 1125.f); CHECK(a->EngineAfter == 375.5f);
+    CHECK(b->Final == 205); CHECK(b->WalletAfter == 215.f); CHECK(b->EngineAfter == 205.f);
+    // Float multiplication rounds 3*(float(5/3)) to 5 BEFORE the Papyrus int cast.
+    // Substituting a double/math formula here would silently change RFAB's personal multiplier.
+    CHECK(PapyrusPersonalRewardXP(3, 5.f / 3.f, 5) == 5);
+    CHECK(PersonalRewardXP(3, 5.f / 3.f, 5) == 0); // the other ABI helper deliberately has different precision
+    CHECK(PapyrusPersonalRewardXP(103, 0.f, 5) == 0);
+    CHECK_FALSE(PlanPersonalReward(103, 1.25f, 16777216.f, 0.f, 5)); // +125 cannot be stored exactly in this float wallet
+    CHECK_FALSE(PlanPersonalReward(103, 1.25f, 0.f, 16777216.f, 5));
+    CHECK_FALSE(PlanPersonalReward(103, 1.f, -1.f, 0.f, 5));
+    CHECK_FALSE(PlanPersonalReward(103, 1.f, 0.f, std::numeric_limits<float>::quiet_NaN(), 5));
+    CHECK_FALSE(PapyrusPersonalRewardXP(0, 1.f, 5)); CHECK_FALSE(PapyrusPersonalRewardXP(100, -1.f, 5));
+    CHECK_FALSE(PapyrusPersonalRewardXP(100, std::numeric_limits<float>::infinity(), 5));
+    CHECK_FALSE(PapyrusPersonalRewardXP(100, 1.f, 0)); CHECK_FALSE(PapyrusPersonalRewardXP(1000000, 1000.f, 5));
+}
+
+#include <Coop/RewardProfile.h>
+namespace
+{
+std::string RewardProfileTable()
+{
+    const std::string sha(64, 'a');
+    return "RFAB_REWARDS_V1\tportable-installed-profile\t00000000aabbccdd\t15\t0\tpapyrus-float-v1\n" +
+        sha + "\tscripts/RFABCoopRewards.pex\n" + sha + "\tscripts/ReviewedHandler.pex\n" + sha + "\tSKSE/Plugins/RFAB.dll\n";
+}
+}
+TEST_CASE("Installed Papyrus XP profile requires compiled receiver API and exact bounded identities", "[rfab][rewards][profile]")
+{
+    const auto profile = RewardProfile::Parse(RewardProfileTable()); REQUIRE(profile);
+    CHECK(profile->Name == "portable-installed-profile"); CHECK(profile->Signature == 0xAABBCCDD);
+    CHECK(profile->Kinds == 15); CHECK_FALSE(profile->Bizarre); REQUIRE(profile->Files.size() == 3);
+    CHECK(profile->Files[1].Path == "scripts/ReviewedHandler.pex"); CHECK(profile->Files[1].SHA256[0] == 0xaa);
+    auto adapter = TestRewardAdapter(); adapter.ApplyReward = nullptr; adapter.Receiver = 123;
+    CHECK(profile->Matches(adapter));
+    adapter.Flags |= Rewards::Bizarre; CHECK_FALSE(profile->Matches(adapter));
+    adapter.Flags = Rewards::kRequiredFlags; ++adapter.Signature; CHECK_FALSE(profile->Matches(adapter));
+    --adapter.Signature; adapter.Kinds = 7; CHECK_FALSE(profile->Matches(adapter));
+    adapter.Kinds = 15; adapter.ApplyReward = DummyRewardApply; CHECK_FALSE(profile->Matches(adapter));
+    adapter.ApplyReward = nullptr; std::memset(adapter.Name, 'x', sizeof(adapter.Name)); CHECK_FALSE(profile->Matches(adapter));
+    auto windows = RewardProfileTable();
+    for (size_t i = 0; i < windows.size(); ++i) if (windows[i] == '\n') { windows.insert(i, 1, '\r'); ++i; }
+    CHECK(RewardProfile::Parse(windows));
+}
+TEST_CASE("Installed XP profile refuses unknown recipe paths duplicate casing and uncompiled API-only tables", "[rfab][rewards][profile]")
+{
+    const auto replace = [](std::string text, std::string_view from, std::string_view to) {
+        const auto at = text.find(from); REQUIRE(at != text.npos); return text.replace(at, from.size(), to);
+    };
+    const auto good = RewardProfileTable();
+    for (const auto& bad : {
+        replace(good, "V1\t", "V2\t"), replace(good, "papyrus-float-v1", "guessed-rfab-dll"),
+        replace(good, "\t15\t", "\t16\t"), replace(good, "\t15\t", "\t0\t"), replace(good, "\t0\t", "\t2\t"),
+        replace(good, "00000000aabbccdd", "0000000000000000"), replace(good, "ReviewedHandler.pex", "../Bad.pex"),
+        replace(good, "ReviewedHandler.pex", "x\\bad.pex"), replace(good, "scripts/ReviewedHandler.pex", "/outside.pex"),
+        replace(good, "ReviewedHandler.pex", "rfabcooprewards.pex"), replace(good, "RFABCoopRewards.pex", "MissingApi.pex"),
+        replace(good, "scripts/ReviewedHandler.pex", "SKSE/Plugins/OnlyDll.dll"), replace(good, "RFAB.dll", "../Outside.dll"),
+        replace(good, std::string(64, 'a'), std::string(64, 'g')), good + "\n", std::string(65537, 'x')})
+        CHECK_FALSE(RewardProfile::Parse(bad));
+    CHECK_FALSE(RewardProfile::Parse({}));
+    const auto first = good.find('\n'); CHECK_FALSE(RewardProfile::Parse(good.substr(0, first + 1)));
+}
+TEST_CASE("Truncated and byte-mutated installed XP tables cannot bypass parser bounds", "[rfab][rewards][profile][fuzz]")
+{
+    const auto good = RewardProfileTable();
+    // Exercise all prefixes and individual byte damage under the same sanitizers as wire code.
+    const auto inspect = [](const std::optional<RewardProfile>& profile) {
+        if (!profile) return;
+        CHECK_FALSE(profile->Name.empty()); CHECK(profile->Signature != 0); CHECK(profile->Kinds <= 15);
+        CHECK(profile->Files.size() >= 2); CHECK(profile->Files.size() <= 128);
+        for (const auto& file : profile->Files)
+        { CHECK(file.Path.find("..") == file.Path.npos); CHECK(file.Path.find('\\') == file.Path.npos); }
+    };
+    for (size_t i = 0; i <= good.size(); ++i) inspect(RewardProfile::Parse(good.substr(0, i)));
+    for (size_t i = 0; i < good.size(); ++i)
+        for (unsigned byte : {0u, 9u, 10u, 47u, 127u, 255u})
+        { auto damaged = good; damaged[i] = static_cast<char>(byte); inspect(RewardProfile::Parse(damaged)); }
+}
