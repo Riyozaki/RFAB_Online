@@ -6,6 +6,7 @@
 #include <Services/SaveStateService.h>
 #include <Services/InteractionInput.h>
 #include <Services/StorageService.h>
+#include <Services/RewardService.h>
 #include <Events/CoopActionEvent.h>
 #include <World.h>
 #include <Events/UpdateEvent.h>
@@ -115,6 +116,7 @@ void CoopService::Send(Coop::Body aBody) noexcept
 void CoopService::OnConnected(const ConnectedEvent&) noexcept
 {
     m_active = false;
+    m_world.SetSemanticRewards(false);
     m_session = m_generation = m_serverOperation = m_operation = m_helloAt = m_lastPoll = 0;
     m_safeSince = m_lastAnchor = m_hold = m_encounter = 0;
     m_target = 0;
@@ -124,6 +126,7 @@ void CoopService::OnConnected(const ConnectedEvent&) noexcept
 void CoopService::OnDisconnected(const DisconnectedEvent& aEvent) noexcept
 {
     m_active = false;
+    m_world.SetSemanticRewards(false);
     if (aEvent.ForWorldLoad)
         return; // WorldLoaded handles the NEW timeline, without touching an old actor snapshot
     auto* player = PlayerCharacter::Get();
@@ -139,6 +142,7 @@ void CoopService::OnDisconnected(const DisconnectedEvent& aEvent) noexcept
 void CoopService::OnWorldLoaded(const WorldLoadedEvent&) noexcept
 {
     m_active.store(false, std::memory_order_release);
+    m_world.SetSemanticRewards(false);
     m_character = m_world.ctx().at<SaveStateService>().Character(); // actual SKSE save identity, never a new bag on arbitrary load
     m_downed.clear(); m_appliedRevision.clear(); m_appliedFormId.clear();
     m_reset.Clear(); m_recoverySession = m_recoverUntil = 0;
@@ -225,8 +229,10 @@ void CoopService::OnUpdate(const UpdateEvent&) noexcept
             const auto& storage = m_world.ctx().at<StorageService>();
             const uint32_t bank = inventory && storage.Available() ? Coop::PersistentStorage : 0u;
             const uint32_t scaling = inventory ? Coop::EnemyScaling : 0u;
-            Send(Coop::Hello{Coop::kProtocol, Coop::NativeDowned | Coop::GroundedAnchors | inventory | bank | scaling,
-                m_character, "se-1.5.97-native-v4", bank ? storage.Signature() : 0});
+            Coop::Hello hello{Coop::kProtocol, Coop::NativeDowned | Coop::GroundedAnchors | inventory | bank | scaling,
+                m_character, "se-1.5.97-native-v5", bank ? storage.Signature() : 0};
+            m_world.ctx().at<RewardService>().Describe(hello);
+            Send(std::move(hello));
         }
         return;
     }
@@ -312,6 +318,7 @@ void CoopService::OnPacket(const NotifyCoopAction& aMessage) noexcept
         m_session = packet.Session; m_generation = packet.Generation; m_capabilities = welcome->Capabilities; m_campaign = welcome->Campaign;
         m_serverOperation = packet.Operation;
         m_active = true;
+        m_world.SetSemanticRewards((m_capabilities & Coop::SemanticRewards) != 0);
         PlayerCharacter::Get()->SetPlayerRespawnMode(true);
         SetPaused(m_paused);
         Utils::ShowHudMessage("RFAB co-op: native downed, hold your assigned Activate action for 5 seconds to revive. Other systems require negotiated adapters.");

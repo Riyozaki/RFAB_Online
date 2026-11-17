@@ -163,6 +163,8 @@ void ActorValueService::OnDeathStateChange(const PacketEvent<RequestDeathStateCh
     auto& characterComponent = characterView.get<CharacterComponent>(*it);
     if (characterComponent.IsPlayer() && m_world.ctx().at<CoopService>().Manages(message.Id))
         return;
+    if (message.IsDead && !characterComponent.IsDead())
+        m_world.ctx().at<CoopService>().RecordKill(acMessage.pPlayer, message.Id, message.OwnershipEpoch);
     characterComponent.SetDead(message.IsDead);
     spdlog::debug("Updating death state {:x}:{}", message.Id, message.IsDead);
 

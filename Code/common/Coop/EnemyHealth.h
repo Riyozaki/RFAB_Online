@@ -27,6 +27,17 @@ inline std::optional<EnemyHealthPlan> PlanEnemyHealth(uint64_t life, float maxim
     if (!scale.IsValid()) return {};
     return EnemyHealthPlan{scale, static_cast<float>(scaled)};
 }
+// Recurring health packets must never retain/replay a spawn/control snapshot's non-health
+// values (e.g. restore old stamina each time an enemy takes a hit). Control is consumed once,
+// separately, under the same native admission as the canonical health update.
+inline std::optional<ActorValues> ScaleHealthOnly(const ActorValues& values)
+{
+    if (!values.IsValid() || !values.Scale.Life || !values.ActorValuesList.contains(24)) return {};
+    ActorValues health;
+    health.Scale = values.Scale; health.HealthRevision = values.HealthRevision; health.HealthSequences = values.HealthSequences;
+    health.ActorValuesList[24] = values.ActorValuesList.at(24); health.ActorMaxValuesList[24] = values.Scale.Maximum;
+    return health;
+}
 // Health-only replies may overtake the frame in which a full scale snapshot is applied.
 // Preserve included origin ACKs AND non-health AVs while keeping the latest canonical HP.
 inline bool MergeScaleSnapshot(ActorValues& pending, const ActorValues& next)

@@ -622,14 +622,19 @@ void CharacterService::OnRequestRespawn(const PacketEvent<RequestRespawn>& acMes
 
 void CharacterService::OnSyncExperienceRequest(const PacketEvent<SyncExperienceRequest>& acMessage) const noexcept
 {
-    if (!bEnableXpSync)
+    auto& coop = m_world.ctx().at<CoopService>();
+    if (!bEnableXpSync || !acMessage.pPlayer || coop.UsesSemanticRewards(acMessage.pPlayer) ||
+        !std::isfinite(acMessage.Packet.Experience) || acMessage.Packet.Experience <= 0.f)
         return;
 
     NotifySyncExperience notify;
     notify.Experience = acMessage.Packet.Experience;
 
     const auto& partyComponent = acMessage.pPlayer->GetParty();
-    GameServer::Get()->SendToParty(notify, partyComponent, acMessage.GetSender());
+    if (!partyComponent.JoinedPartyId) return;
+    for (auto* recipient : m_world.GetPlayerManager())
+        if (recipient != acMessage.pPlayer && recipient->GetParty().JoinedPartyId == partyComponent.JoinedPartyId &&
+            !coop.UsesSemanticRewards(recipient)) recipient->Send(notify);
 }
 
 void CharacterService::OnDialogueRequest(const PacketEvent<DialogueRequest>& acMessage) const noexcept

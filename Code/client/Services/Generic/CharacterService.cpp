@@ -1,5 +1,6 @@
 #include <TiltedOnlinePCH.h>
 #include <Services/LootService.h>
+#include <Services/CoopService.h>
 #include "Forms/TESObjectCELL.h"
 #include "Forms/TESWorldSpace.h"
 #include "Services/PapyrusService.h"
@@ -1206,11 +1207,13 @@ void CharacterService::OnNotifyNewPackage(const NotifyNewPackage& acMessage) con
 
 void CharacterService::OnAddExperienceEvent(const AddExperienceEvent& acEvent) noexcept
 {
+    if (m_world.ctx().at<CoopService>().Supports(Coop::SemanticRewards) || !std::isfinite(acEvent.Experience) || acEvent.Experience <= 0.f) return;
     m_cachedExperience += acEvent.Experience;
 }
 
 void CharacterService::OnNotifySyncExperience(const NotifySyncExperience& acMessage) noexcept
 {
+    if (m_world.ctx().at<CoopService>().Supports(Coop::SemanticRewards) || !std::isfinite(acMessage.Experience) || acMessage.Experience <= 0.f) return;
     PlayerCharacter* pPlayer = PlayerCharacter::Get();
 
     if (PlayerCharacter::LastUsedCombatSkill == -1)
@@ -2176,6 +2179,8 @@ void CharacterService::RunSpawnUpdates() const noexcept
 
 void CharacterService::RunExperienceUpdates() noexcept
 {
+    if (m_world.ctx().at<CoopService>().Supports(Coop::SemanticRewards))
+    { m_cachedExperience = 0.f; return; }
     static std::chrono::steady_clock::time_point lastSendTimePoint;
     constexpr auto cDelayBetweenSnapshots = 1000ms;
 

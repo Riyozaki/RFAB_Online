@@ -405,3 +405,38 @@ Runner теперь получает собственный linker map; compact 
 diagnostics; failed build log тоже сохраняется как artifact. Код возврата child сохраняется
 через раннее получение Process.Handle. Smoke gate не ослаблен, публикация/dev readiness не менялись.
 Семантический XP реализуется отдельным следующим изменением, не входит в этот fix commit.
+
+
+### 2026-11-17 — semantic XP transport/ledger and saved-existing HP admission
+
+- Protocol5/+coop-wire-5, co-save3 (reads1/2/3), durable RewardLedger и настоящий server wiring:
+  base+semantic source+cohort фиксируются до offer; личные finals могут различаться. Accepted
+  owner alive→dead выдаёт reference/incarnation и frozen nearby recipients; поддельная death/life
+  не допускается. Downed участвует; loading/stale/distant нет. Wallet polling/нормализации нет.
+- Native v1/Papyrus scalar API, epoch mailbox64, serial executor под native/save admission,
+  dual-pool receipt→co-save→server commit→native commit, dedup и no automatic replay/catch-up.
+  VM event сначала атомарно Claim-ит ticket, CanApply ревоцируется load/completion. Отдельный
+  reproducible native-declarations PEX и 5 ABI/byte/refusal tests, не заменитель компилятора RFAB.
+  Реального installed-profile RFAB interception/dual-pool override **пока нет**. Historical scripts
+  не приняты за новый RFAB; Bizarre не объявлен работающим по имени plugin. Подробно:
+  `RFAB_SEMANTIC_REWARDS.md`. Регистрация/event сама по себе не означает готовый semantic XP.
+- Saved-existing scaled actor теперь тоже требует native pin; health-only inbox не восстанавливает
+  старые stamina/magicka при каждом попадании. Full control применяется один раз на ownership
+  epoch/native form, каждый scalar native write проверяет load epoch, actor re-resolves после calls.
+  Это код нового client path, ещё без подтверждённой Windows compilation/game validation.
+
+Новый production-wire scenario8 впервые выполнил реальный XP OfferNext и нашёл use-after-publish:
+range-loop key ссылался на старую map, которую Publish заменял, затем использовался в Find.
+Теперь offer копируется **до** публикации и возвращается owned. Первый settings+XP run упал
+именно здесь (debug stack), а не на INI regression; после исправления **8 server scenarios +
+portable crash PASS**. Settings long/absent/command tests тоже PASS. Это не доказательство
+причины ранее наблюдавшегося Windows runner AV.
+
+Текущие portable checks: **88/30 219 core PASS**, **88/277 971 extended ASan+UBSan core PASS**,
+strict static PASS (18 storage parser + 5 native declarations; local pwsh skipped). Последовательный
+current server ASan+UBSan ещё компилируется, результат не заявляется. Linux3fe/run44169445647
+SUCCESS относится к pre-semantic startup fix; Windows3fe/run44169445636 всё ещё in_progress.
+
+Readiness=false/dev5.0.0-dev.1; без release/tag/промежуточного совместного теста. Остаются genuine
+installed RFAB source adapter, полный native life/reset/phase, A AI-task/targeted-hazard quiescence,
+downed/save/config recovery matrix и optional genuine coordinated B, плюс current Windows/package.

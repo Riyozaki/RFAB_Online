@@ -6,6 +6,7 @@
 #include <ThreadAffinity.h>
 #include <memory>
 #include <optional>
+#include <utility>
 
 struct World;
 // These callbacks read/write owned byte snapshots only. They never touch EnTT or retain actors.
@@ -32,6 +33,21 @@ struct SaveStateBridge
     static bool Publish(const Coop::CharacterState&, bool aSaveAllowed, uint64_t aEpoch);
     static bool ConsumeFault() noexcept;
 };
+// Short, non-journaled application of an ALREADY stamped life. It still excludes a save/load
+// admission and cannot release a new generation's reservation after native reentry.
+class SaveNativePin
+{
+public:
+    SaveNativePin() = default;
+    SaveNativePin(uint64_t epoch, uint64_t ticket) : m_epoch(epoch), m_ticket(ticket) {}
+    SaveNativePin(const SaveNativePin&) = delete;
+    SaveNativePin& operator=(const SaveNativePin&) = delete;
+    SaveNativePin(SaveNativePin&& other) noexcept : m_epoch(other.m_epoch), m_ticket(std::exchange(other.m_ticket, 0)) {}
+    ~SaveNativePin() { SaveStateBridge::EndNative(m_epoch, m_ticket); }
+    explicit operator bool() const noexcept { return SaveStateBridge::OwnsNative(m_epoch, m_ticket); }
+private:
+    uint64_t m_epoch{}, m_ticket{};
+};
 struct SaveStateService
 {
     explicit SaveStateService(World&) noexcept;
@@ -42,12 +58,14 @@ struct SaveStateService
     const std::string& Character() const noexcept { return m_timeline.State().Character; }
     bool Ready() const noexcept;
     bool CanSave() const noexcept { return Ready() && m_timeline.CanSave() && SaveStateBridge::SaveAllowed(); }
+    SaveNativePin PinNative() noexcept;
     bool Begin(Coop::EffectKind, Coop::EffectId);
     bool Applied(Coop::EffectId);
     bool Commit(Coop::EffectId);
     bool AbortBeforeNative(Coop::EffectId);
     bool StampStorage(Coop::SavedStorage);
     bool StampScale(Coop::SavedScale);
+    bool StampReward(Coop::SavedRewards);
     void Quarantine();
     void Uncertain(Coop::EffectId);
     void PollFault();

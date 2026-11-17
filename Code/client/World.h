@@ -47,10 +47,20 @@ struct World : WorldParts::DispatcherOwner, entt::registry, BSTEventSink<TESLoad
         const auto* world = s_published.load(std::memory_order_acquire);
         return world && (world->m_nativeFlags.load(std::memory_order_acquire) & 2);
     }
+    static bool SemanticRewardsCached() noexcept
+    {
+        const auto* world = s_published.load(std::memory_order_acquire);
+        return world && (world->m_nativeFlags.load(std::memory_order_acquire) & 4);
+    }
+    void SetSemanticRewards(bool aEnabled) noexcept
+    {
+        if (aEnabled) m_nativeFlags.fetch_or(4u, std::memory_order_release);
+        else m_nativeFlags.fetch_and(~4u, std::memory_order_release);
+    }
     void SetNetworkOnline(bool aOnline) noexcept
     {
         if (aOnline) m_nativeFlags.fetch_or(1, std::memory_order_release);
-        else m_nativeFlags.fetch_and(~1u, std::memory_order_release);
+        else m_nativeFlags.fetch_and(~5u, std::memory_order_release);
     }
 
     RunnerService& GetRunner() noexcept;

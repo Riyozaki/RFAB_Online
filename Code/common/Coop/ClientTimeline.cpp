@@ -1,4 +1,5 @@
 #include <Coop/ClientTimeline.h>
+#include <Coop/RewardLedger.h>
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -56,15 +57,15 @@ struct Codec
     }
     void State(CharacterState& state)
     {
-        uint32_t version = 2; Number(version);
-        if (version != 1 && version != 2) { Valid = false; return; }
+        uint32_t version = 3; Number(version);
+        if (version < 1 || version > 3) { Valid = false; return; }
         Character(state.Character); Number(state.Cursor);
         uint32_t count = static_cast<uint32_t>(state.Scales.size()); Number(count);
         if (!Valid || count > 8192) { Valid = false; return; }
         if (Reading) state.Scales.resize(count);
         for (auto& scale : state.Scales)
         { Number(scale.Form); Number(scale.Version); Number(scale.Life); Number(scale.Base); Number(scale.Maximum); }
-        if (version == 2)
+        if (version >= 2)
         {
             uint32_t storages = static_cast<uint32_t>(state.Storages.size()); Number(storages);
             if (!Valid || storages > 1024) { Valid = false; return; }
@@ -82,6 +83,24 @@ struct Codec
                 else Bytes.insert(Bytes.end(), storage.Campaign.begin(), storage.Campaign.end());
             }
         }
+        if (version >= 3)
+        {
+            uint8_t rewards = static_cast<uint8_t>(state.Rewards.size()); Number(rewards);
+            if (!Valid || rewards > 16) { Valid = false; return; }
+            if (Reading) state.Rewards.resize(rewards);
+            for (auto& reward : state.Rewards)
+            {
+                Number(reward.Revision); Number(reward.Digest); Number(reward.LastReward); Number(reward.BaseXP); Number(reward.FinalXP);
+                uint8_t length = static_cast<uint8_t>(reward.Campaign.size()); Number(length);
+                if (!Valid || !length || length > 48) { Valid = false; return; }
+                if (Reading)
+                {
+                    if (Input.size() < length) { Valid = false; return; }
+                    reward.Campaign.assign(reinterpret_cast<const char*>(Input.data()), length); Input = Input.subspan(length);
+                }
+                else Bytes.insert(Bytes.end(), reward.Campaign.begin(), reward.Campaign.end());
+            }
+        }
     }
     void Receipt(NativeReceipt& receipt)
     {
@@ -94,7 +113,16 @@ struct Codec
 }
 bool CharacterState::Valid() const noexcept
 {
-    if (!CharacterKey(Character) || Scales.size() > 8192 || Storages.size() > 1024) return false;
+    if (!CharacterKey(Character) || Scales.size() > 8192 || Storages.size() > 1024 || Rewards.size() > 16) return false;
+    std::set<std::string> campaigns;
+    for (const auto& reward : Rewards)
+    {
+        if (!reward.Revision || !reward.Digest || !reward.LastReward || reward.LastReward >= (1ull << 60) ||
+            reward.BaseXP <= 0 || reward.BaseXP > 1000000 || reward.FinalXP < 0 || reward.FinalXP > 100000000 || reward.Campaign.empty() || reward.Campaign.size() > 48 ||
+            !campaigns.insert(reward.Campaign).second) return false;
+        for (auto c : reward.Campaign)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+    }
     std::set<uint32_t> storageForms;
     for (const auto& storage : Storages)
     {
@@ -236,6 +264,28 @@ bool ClientTimeline::StampStorage(SavedStorage storage)
             old = storage; replaced = true; break;
         }
     if (!replaced) next.Storages.push_back(std::move(storage));
+    if (!next.Valid()) return false;
+    m_state = std::move(next); return true;
+}
+bool ClientTimeline::StampReward(SavedRewards reward)
+{
+    if (!Ready() || !m_receipt || m_receipt->Kind != EffectKind::Reward || m_receipt->Stage != EffectStage::Applied ||
+        NativeEffect(EffectKind::Reward, m_receipt->Id.Session, m_receipt->Id.Generation, reward.LastReward) != m_receipt->Id) return false;
+    auto next = m_state;
+    bool replaced{};
+    for (auto& old : next.Rewards)
+        if (old.Campaign == reward.Campaign)
+        {
+            if (old == reward) return true;
+            if (old.Revision == std::numeric_limits<uint64_t>::max() || reward.Revision != old.Revision + 1 || reward.LastReward <= old.LastReward ||
+                reward.Digest != AdvanceRewardDigest(old.Digest, reward.LastReward, reward.BaseXP)) return false;
+            old = reward; replaced = true; break;
+        }
+    if (!replaced)
+    {
+        if (reward.Revision != 1 || reward.Digest != AdvanceRewardDigest(0, reward.LastReward, reward.BaseXP)) return false;
+        next.Rewards.push_back(std::move(reward));
+    }
     if (!next.Valid()) return false;
     m_state = std::move(next); return true;
 }

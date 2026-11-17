@@ -14,7 +14,7 @@
 
 namespace Coop
 {
-inline constexpr uint32_t kProtocol = 4;
+inline constexpr uint32_t kProtocol = 5;
 inline constexpr uint32_t kReviveMs = 5000;
 inline constexpr uint32_t kWipeMs = 5000;
 inline constexpr uint32_t kHeartbeatTimeoutMs = 1500;
@@ -42,12 +42,20 @@ struct Pose
     RFAB_COOP_FIELDS(Cell, World, X, Y, Z, Heading)
     bool Valid() const noexcept { return Cell && std::isfinite(X) && std::isfinite(Y) && std::isfinite(Z) && std::isfinite(Heading); }
 };
+struct RewardProgress
+{
+    std::string Campaign;
+    uint64_t Revision{}, Digest{};
+    RFAB_COOP_FIELDS(Campaign, Revision, Digest)
+};
 struct Hello
 {
     uint32_t Protocol{kProtocol}, Capabilities{};
     std::string Character, Adapter;
-    uint64_t StorageSignature{};
-    RFAB_COOP_FIELDS(Protocol, Capabilities, Character, Adapter, StorageSignature)
+    uint64_t StorageSignature{}, RewardSignature{};
+    uint32_t RewardKinds{};
+    std::vector<RewardProgress> Rewards;
+    RFAB_COOP_FIELDS(Protocol, Capabilities, Character, Adapter, StorageSignature, RewardSignature, RewardKinds, Rewards)
 };
 struct Welcome
 {
@@ -137,19 +145,43 @@ struct Reward
     uint64_t Incarnation{}, Occurrence{};
     GameId Source{}, Context{};
     int32_t BaseXP{};
-    RFAB_COOP_FIELDS(Kind, Actor, Incarnation, Occurrence, Source, Context, BaseXP)
+    uint64_t Nonce{};
+    RFAB_COOP_FIELDS(Kind, Actor, Incarnation, Occurrence, Source, Context, BaseXP, Nonce)
 };
+enum class RewardResult : uint8_t { Offered, Committed, Rejected, Quarantined };
 struct RewardGrant
 {
     uint64_t RewardId{};
     int32_t BaseXP{};
-    RFAB_COOP_FIELDS(RewardId, BaseXP)
+    RewardResult Result{RewardResult::Offered};
+    uint64_t BeforeRevision{}, BeforeDigest{};
+    std::string Reason;
+    RFAB_COOP_FIELDS(RewardId, BaseXP, Result, BeforeRevision, BeforeDigest, Reason)
+    bool operator==(const RewardGrant&) const = default;
 };
 struct RewardReceipt
 {
     uint64_t RewardId{};
-    bool Applied{};
-    RFAB_COOP_FIELDS(RewardId, Applied)
+    bool Applied{}, Uncertain{};
+    int32_t FinalXP{};
+    uint64_t Revision{}, Digest{};
+    RFAB_COOP_FIELDS(RewardId, Applied, Uncertain, FinalXP, Revision, Digest)
+    bool operator==(const RewardReceipt&) const = default;
+};
+struct RewardReport
+{
+    uint64_t Nonce{}, RewardId{};
+    bool Accepted{};
+    std::string Reason;
+    RFAB_COOP_FIELDS(Nonce, RewardId, Accepted, Reason)
+};
+// A kill's life comes from the authority, not the local BaseId, wallet delta or wall clock.
+struct RewardSource
+{
+    uint32_t Actor{}, Epoch{};
+    uint64_t Incarnation{};
+    GameId Source{};
+    RFAB_COOP_FIELDS(Actor, Epoch, Incarnation, Source)
 };
 // A secure storage access point is NOT the identity of its backing container.
 // Plugin is a normalized filename, not the current load-order or EnTT id.
@@ -222,7 +254,7 @@ struct Checkpoint
 
 using Body = std::variant<Hello, Welcome, Presence, Revive, DownedState, Anchor, EncounterState,
     ResetPlan, EnemyContact, EnemyScale, Reward, RewardGrant, RewardReceipt, StorageOpen,
-    StorageState, Transfer, TransferReply, TransferReceipt, Checkpoint, ResetReceipt, InventoryQuery, InventoryState>;
+    StorageState, Transfer, TransferReply, TransferReceipt, Checkpoint, ResetReceipt, InventoryQuery, InventoryState, RewardSource, RewardReport>;
 
 struct Packet
 {

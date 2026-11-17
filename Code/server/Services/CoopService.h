@@ -2,6 +2,7 @@
 #include <Coop/Encounter.h>
 #include <Coop/InventoryLedger.h>
 #include <Coop/StorageCatalog.h>
+#include <Coop/RewardLedger.h>
 #include <Coop/DurableFile.h>
 #include <Coop/DurableLease.h>
 #include <Events/PacketEvent.h>
@@ -29,6 +30,8 @@ struct CoopService
     uint64_t Session() const noexcept { return m_session; }
     uint64_t Generation() const noexcept { return m_generation; }
     bool UsesTransactionalInventory(Player*) const noexcept;
+    bool UsesSemanticRewards(Player*) const noexcept;
+    void RecordKill(Player*, uint32_t aActor, uint32_t aEpoch) noexcept;
     bool InventoryLocked(uint32_t aEntity) const noexcept;
     bool AllowsLegacyInventory(Player*, uint32_t aEntity) const noexcept;
     bool ObserveInventory(uint32_t aEntity, Inventory& aContent, uint32_t aEpoch) noexcept;
@@ -42,6 +45,8 @@ private:
         uint64_t LastOperation{};
         std::map<uint64_t, std::vector<uint8_t>> Retries; // bounded exact envelopes, idempotent inventory only
         std::string Character;
+        uint64_t RewardSignature{};
+        uint32_t RewardKinds{};
         bool Downed{};
     };
     struct Group
@@ -64,6 +69,14 @@ private:
     void Handle(Player*, Client&, const Coop::TransferReceipt&) noexcept;
     void Handle(Player*, Client&, const Coop::InventoryQuery&) noexcept;
     void Handle(Player*, Client&, const Coop::StorageOpen&) noexcept;
+    void Handle(Player*, Client&, const Coop::Reward&) noexcept;
+    void Handle(Player*, Client&, const Coop::RewardReceipt&) noexcept;
+    void InitializeRewards() noexcept;
+    void TickRewards() noexcept;
+    bool RewardsReady() const noexcept;
+    bool AttachRewards(const Coop::Hello&, uint32_t aGroup) noexcept;
+    Coop::RewardGrant RewardGrant(const Coop::RewardLedger::Record&, const std::string&) const;
+    std::vector<std::string> RewardRecipients(uint32_t aGroup, const Coop::Pose&, double aRadius) const;
     void InitializeInventory() noexcept;
     void TickInventory() noexcept;
     bool InventoryReady() const noexcept;
@@ -99,6 +112,17 @@ private:
     std::unique_ptr<Coop::InventoryLedger> m_inventory;
     std::unique_ptr<Coop::DurableFile> m_inventoryFile;
     std::unique_ptr<Coop::DurableLease> m_inventoryLease;
+    std::unique_ptr<Coop::RewardLedger> m_rewards;
+    std::unique_ptr<Coop::DurableFile> m_rewardFile;
+    struct KillSource
+    {
+        Coop::RewardSource Wire;
+        uint32_t Group{};
+        bool Dead{};
+        std::vector<std::string> Recipients; // frozen at the authoritative death, before delayed Papyrus award
+    };
+    std::map<uint32_t, KillSource> m_killSources;
+    uint64_t m_rewardNonce{}, m_rewardResend{};
     std::optional<std::vector<uint8_t>> m_pendingInventory;
     Coop::StorageCatalog m_storageCatalog;
     std::map<uint32_t, std::string> m_inventoryBindings;

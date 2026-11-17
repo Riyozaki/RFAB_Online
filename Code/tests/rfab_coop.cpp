@@ -252,7 +252,7 @@ TEST_CASE("RFAB action codec roundtrips records and rejects every byte truncatio
     records.emplace_back(ResetReceipt{3, ResetPhase::Commit, true});
     records.emplace_back(EnemyContact{4, 2, true, false, false});
     records.emplace_back(EnemyScale{4, 2, 3, 100.f, 200.f, 190.f});
-    records.emplace_back(Reward{RewardKind::Kill, 4, 1, 1, GameId(0, 0x50), {}, 100});
+    records.emplace_back(Reward{RewardKind::Kill, 4, 1, 1, GameId(0, 0x50), {}, 100, 1});
     records.emplace_back(RewardGrant{100, 500});
     records.emplace_back(RewardReceipt{100, true});
     Inventory::Entry item; item.BaseId = GameId(0, 0x12eb7); item.Count = 1;
@@ -406,4 +406,290 @@ TEST_CASE("Native override scopes preserve an outer reentrant TLS value", "[rfab
         CHECK(value);
     }
     CHECK_FALSE(value);
+}
+
+#include <Coop/RewardLedger.h>
+#include <Coop/ClientTimeline.h>
+
+namespace
+{
+struct RewardsFixture
+{
+    std::optional<RewardLedger::State> Disk;
+    bool Writes{true};
+    RewardLedger Ledger{"campaign", [this](const auto& s) { if (!Writes) return false; Disk = s; return true; }};
+    RewardIdentity Quest(uint64_t slot = 1, uint64_t cycle = 0) const
+    { return {RewardKind::Quest, {"Skyrim.esm", 0x12345, false}, {}, cycle, slot}; }
+    RewardsFixture() { REQUIRE(Ledger.Attach("alice", 0, 0)); REQUIRE(Ledger.Attach("bob", 0, 0)); }
+    void Apply(uint64_t id, const std::string& character, int32_t final)
+    {
+        const auto& r = *Ledger.Find(id); const auto d = r.Recipients.at(character);
+        REQUIRE(Ledger.Receipt(id, character, true, false, final, d.BeforeRevision + 1,
+            AdvanceRewardDigest(d.BeforeDigest, id, r.BaseXP)));
+    }
+};
+}
+TEST_CASE("Semantic rewards freeze equal bases and participants but keep personal final XP independent", "[rfab][rewards]")
+{
+    RewardsFixture f;
+    const auto first = f.Ledger.Create(f.Quest(), 100, {"alice", "bob"}); REQUIRE(first);
+    const auto same = f.Ledger.Create(f.Quest(), 150, {"alice"}); REQUIRE(same);
+    CHECK(*same == *first); CHECK(f.Ledger.Find(*first)->BaseXP == 100);
+    CHECK(f.Ledger.Find(*first)->Recipients.size() == 2); // neither a personal multiplier nor later membership rewrites the event
+    const auto second = f.Ledger.Create(f.Quest(2), 100, {"alice", "bob"}); REQUIRE(second); CHECK(*second != *first);
+    const auto repeatable = f.Ledger.Create(f.Quest(1, 1), 100, {"alice", "bob"}); REQUIRE(repeatable); CHECK(*repeatable != *first);
+    REQUIRE(f.Ledger.OfferNext("alice", 100)); REQUIRE(f.Ledger.OfferNext("bob", 100));
+    CHECK_FALSE(f.Ledger.OfferNext("alice", 101)); // one serial native application, not all pending at once
+    f.Apply(*first, "alice", 125); f.Apply(*first, "bob", 200);
+    CHECK(f.Ledger.Find(*first)->Recipients.at("alice").FinalXP == 125);
+    CHECK(f.Ledger.Find(*first)->Recipients.at("bob").FinalXP == 200);
+    const auto digest = AdvanceRewardDigest(0, *first, 100);
+    CHECK(f.Ledger.Receipt(*first, "alice", true, false, 125, 1, digest));
+    CHECK_FALSE(f.Ledger.Receipt(*first, "alice", true, false, 130, 1, digest));
+    CHECK_FALSE(f.Ledger.Receipt(*first, "alice", false, false, 0, 0, 0));
+    CHECK(f.Ledger.FindAccount("alice")->Revision == 1);
+    CHECK(f.Ledger.FindAccount("alice")->Digest == f.Ledger.FindAccount("bob")->Digest);
+    REQUIRE(f.Ledger.OfferNext("alice", 102));
+    CHECK(f.Ledger.Find(*second)->Recipients.at("alice").State == RewardLedger::Stage::Offered);
+}
+TEST_CASE("Kill reference-life and once-per-campaign book keys never use equal amounts or BaseId races", "[rfab][rewards]")
+{
+    RewardsFixture f;
+    RewardIdentity kill{RewardKind::Kill, {"Skyrim.esm", 0x100, false}, {}, 9001, 1};
+    const auto id = f.Ledger.Create(kill, 50, {"alice", "bob"}); REQUIRE(id);
+    auto other = kill; ++other.Source.Local; REQUIRE(f.Ledger.Create(other, 50, {"alice", "bob"}));
+    other = kill; ++other.Incarnation; REQUIRE(f.Ledger.Create(other, 50, {"alice", "bob"}));
+    other = kill; other.Source.Plugin = "SKYRIM.ESM";
+    CHECK(f.Ledger.Create(other, 50, {"alice", "bob"}) == id);
+    CHECK(f.Ledger.Snapshot().Records.size() == 3);
+    other.Incarnation = 0; CHECK_FALSE(SemanticRewardKey(other));
+    RewardIdentity book{RewardKind::Book, {"books.esl", 0xABC, true}, {}, 0, 1};
+    REQUIRE(f.Ledger.Create(book, 200, {"alice", "bob"}));
+    CHECK(f.Ledger.Create(book, 600, {"alice"}) == 4); // reader levels cannot turn one book into two group rewards
+    book.Occurrence = 2; CHECK_FALSE(f.Ledger.Create(book, 200, {"alice"}));
+    book.Occurrence = 1; book.Incarnation = 1; CHECK_FALSE(SemanticRewardKey(book));
+    book.Incarnation = 0; book.Context = kill.Source; CHECK_FALSE(SemanticRewardKey(book));
+    kill.Source.Local = 0x1000; kill.Source.Light = true; CHECK_FALSE(SemanticRewardKey(kill));
+    kill.Source = {"../../unsafe.esp", 1, false}; CHECK_FALSE(f.Ledger.Create(kill, 50, {"alice"}));
+}
+TEST_CASE("Reward startup and disconnect never guess replay of an offered or applied grant", "[rfab][rewards][fault]")
+{
+    for (bool restart : {false, true})
+    {
+        RewardsFixture f;
+        const auto id = f.Ledger.Create(f.Quest(), 100, {"alice", "bob"}); REQUIRE(id);
+        REQUIRE(f.Ledger.OfferNext("alice", 100));
+        if (restart)
+        {
+            const auto bytes = RewardLedger::Encode(*f.Disk); REQUIRE(bytes);
+            const auto state = RewardLedger::Decode(*bytes); REQUIRE(state);
+            RewardLedger newProcess("campaign", [](const auto&) { return true; });
+            REQUIRE(newProcess.Restore(*state));
+            CHECK_FALSE(newProcess.Attach("alice", 0, 0)); CHECK_FALSE(newProcess.OfferNext("alice", 200));
+            CHECK(newProcess.Find(*id)->Recipients.at("alice").State == RewardLedger::Stage::Uncertain);
+            CHECK(newProcess.Find(*id)->Recipients.at("bob").State == RewardLedger::Stage::Rejected); // never offered: no native uncertainty
+            CHECK(newProcess.Attach("bob", 0, 0)); CHECK_FALSE(newProcess.OfferNext("bob", 200));
+        }
+        else
+        {
+            REQUIRE(f.Ledger.Disconnect("alice"));
+            CHECK_FALSE(f.Ledger.Attach("alice", 0, 0));
+            CHECK_FALSE(f.Ledger.Receipt(*id, "alice", true, false, 100, 1, AdvanceRewardDigest(0, *id, 100)));
+        }
+    }
+    RewardsFixture f;
+    const auto id = f.Ledger.Create(f.Quest(), 100, {"alice"}); REQUIRE(id);
+    REQUIRE(f.Ledger.OfferNext("alice", 100)); REQUIRE(f.Ledger.Expire(15099));
+    CHECK_FALSE(f.Ledger.FindAccount("alice")->Blocked);
+    REQUIRE(f.Ledger.Expire(15100)); CHECK(f.Ledger.FindAccount("alice")->Blocked);
+    CHECK_FALSE(f.Ledger.OfferNext("alice", 15101));
+}
+TEST_CASE("Reward durability faults and old-save progress cannot produce a memory-only payment", "[rfab][rewards][fault]")
+{
+    RewardsFixture f;
+    const auto id = f.Ledger.Create(f.Quest(), 100, {"alice"}); REQUIRE(id);
+    const auto snapshot = RewardLedger::Encode(*f.Disk); REQUIRE(snapshot);
+    for (size_t n = 0; n < snapshot->size(); ++n) CHECK_FALSE(RewardLedger::Decode(std::span(snapshot->data(), n)));
+    auto trailing = *snapshot; trailing.push_back(0); CHECK_FALSE(RewardLedger::Decode(trailing));
+    auto bad = *f.Disk; bad.Accounts.at("alice").Revision = 1; bad.Accounts.at("alice").Digest = 1;
+    CHECK_FALSE(RewardLedger::Encode(bad));
+    REQUIRE(f.Ledger.OfferNext("alice", 1)); f.Apply(*id, "alice", 0); // a legitimate zero personal multiplier still consumes this event
+    CHECK_FALSE(f.Ledger.Attach("alice", 0, 0));
+    CHECK(f.Ledger.Attach("alice", 1, AdvanceRewardDigest(0, *id, 100)));
+    CHECK_FALSE(f.Ledger.Attach("alice", 1, 7));
+    f.Writes = false;
+    CHECK_FALSE(f.Ledger.Create(f.Quest(2), 100, {"alice"}));
+    CHECK(f.Ledger.Faulted()); CHECK(f.Ledger.Snapshot().Records.size() == 1);
+    RewardsFixture offered;
+    REQUIRE(offered.Ledger.Create(offered.Quest(), 100, {"alice"})); offered.Writes = false;
+    CHECK_FALSE(offered.Ledger.OfferNext("alice", 100)); CHECK(offered.Ledger.Faulted());
+    CHECK(offered.Ledger.Find(1)->Recipients.at("alice").State == RewardLedger::Stage::Pending);
+}
+TEST_CASE("Semantic receipt chain lives with both native XP pools in the character co-save", "[rfab][rewards][timeline]")
+{
+    std::optional<NativeReceipt> disk;
+    ClientTimeline timeline([&](const auto& r) { disk = r; return true; });
+    CharacterState state{"00112233445566778899aabbccddeeff", 0, {}};
+    REQUIRE(timeline.Load(state, {}));
+    const auto id = NativeEffect(EffectKind::Reward, 2, 3, 10);
+    SavedRewards reward{"campaign", 1, AdvanceRewardDigest(0, 10, 100), 10, 100, 125};
+    CHECK_FALSE(timeline.StampReward(reward)); REQUIRE(timeline.Begin(EffectKind::Reward, id));
+    CHECK_FALSE(timeline.StampReward(reward)); REQUIRE(timeline.Applied(id));
+    auto bad = reward; bad.Digest ^= 123; CHECK_FALSE(timeline.StampReward(bad));
+    REQUIRE(timeline.StampReward(reward)); REQUIRE(timeline.StampReward(reward));
+    CHECK_FALSE(timeline.CanSave()); REQUIRE(timeline.Commit(id));
+    const auto bytes = timeline.State().Encode(); REQUIRE(bytes);
+    const auto decoded = CharacterState::Decode(*bytes); REQUIRE(decoded); CHECK(*decoded == timeline.State());
+    ClientTimeline restarted([](const auto&) { return true; }); REQUIRE(restarted.Load(*decoded, disk));
+    CHECK_FALSE(restarted.Load(state, disk)); // no old-ESS replay after spending in the newer timeline
+    const auto next = NativeEffect(EffectKind::Reward, 2, 3, 11);
+    REQUIRE(timeline.Begin(EffectKind::Reward, next)); REQUIRE(timeline.Applied(next));
+    bad = reward; bad.Revision = 3; bad.LastReward = 11; CHECK_FALSE(timeline.StampReward(bad));
+    bad.Revision = 2; bad.Digest = AdvanceRewardDigest(reward.Digest, 11, 100); REQUIRE(timeline.StampReward(bad));
+    REQUIRE(timeline.Commit(next));
+    auto duplicate = timeline.State(); duplicate.Rewards.push_back(duplicate.Rewards.front()); CHECK_FALSE(duplicate.Valid());
+    for (size_t n = 0; n < bytes->size(); ++n) REQUIRE_FALSE(CharacterState::Decode(std::span(bytes->data(), n)));
+}
+
+#include <Coop/RewardMailbox.h>
+#include <thread>
+
+namespace
+{
+Rewards::Completion DummyRewardApply(uint64_t epoch, uint64_t token, int32_t base)
+{ return {epoch, token, Rewards::Result::Applied, base, Rewards::Wallet | Rewards::Engine}; }
+Rewards::Adapter TestRewardAdapter()
+{
+    Rewards::Adapter adapter;
+    adapter.Signature = 0xAABBCCDD; adapter.Kinds = 15; adapter.Flags = Rewards::kRequiredFlags;
+    std::strcpy(adapter.Name, "portable-installed-profile"); adapter.ApplyReward = DummyRewardApply;
+    return adapter;
+}
+Rewards::Source QuestSource(uint64_t epoch, uint64_t slot = 1)
+{
+    Rewards::Source source;
+    source.WorldEpoch = epoch; source.Kind = static_cast<uint32_t>(RewardKind::Quest);
+    source.SourceForm = 0x12345; source.BaseXP = 100; source.Occurrence = slot;
+    return source;
+}
+}
+TEST_CASE("Native semantic ingress is generation-bound bounded and holds the original path during negotiation", "[rfab][rewards][bridge]")
+{
+    RewardMailbox mailbox;
+    mailbox.NewEpoch(10);
+    const auto adapter = TestRewardAdapter(); REQUIRE(mailbox.Register(10, adapter));
+    auto source = QuestSource(10);
+    CHECK(mailbox.Submit(10, source) == Rewards::Submission::PassThrough); // ordinary offline RFAB remains ordinary RFAB
+    mailbox.Configure(10, Rewards::Mode::Negotiating);
+    CHECK(mailbox.Submit(10, source) == Rewards::Submission::Queued);
+    CHECK(mailbox.Submit(10, source) == Rewards::Submission::Queued); // exact duplicate doesn't consume queue capacity
+    CHECK(mailbox.Take(10).empty());
+    mailbox.Configure(10, Rewards::Mode::Active);
+    const auto events = mailbox.Take(10); REQUIRE(events.size() == 1); CHECK(events[0].Nonce == 1);
+    CHECK(events[0].Source.SourceForm == 0x12345);
+    mailbox.NewEpoch(11);
+    CHECK_FALSE(mailbox.Register(10, adapter));
+    CHECK(mailbox.Submit(10, source) == Rewards::Submission::Blocked); // never pass an old event into a new single-player world
+    REQUIRE(mailbox.Register(11, adapter));
+    mailbox.NewEpoch(11); CHECK(mailbox.Adapter(11)); // an early OnPlayerLoadGame registration survives main-thread adoption
+    mailbox.NewEpoch(9); CHECK(mailbox.Adapter(11));
+    mailbox.Configure(11, Rewards::Mode::Active);
+    for (uint64_t i = 1; i <= RewardMailbox::kCapacity; ++i) CHECK(mailbox.Submit(11, QuestSource(11, i)) == Rewards::Submission::Queued);
+    CHECK(mailbox.Submit(11, QuestSource(11, 1000)) == Rewards::Submission::Blocked);
+    CHECK(mailbox.ConsumeFault()); CHECK_FALSE(mailbox.ConsumeFault());
+    mailbox.Configure(11, Rewards::Mode::Negotiating);
+    CHECK(mailbox.Mode() == Rewards::Mode::Blocked); CHECK_FALSE(mailbox.Adapter(11)); // consuming a notification never clears quarantine
+}
+TEST_CASE("Native dual-pool completion cannot echo reapply switch adapters or release another epoch", "[rfab][rewards][bridge]")
+{
+    RewardMailbox mailbox; mailbox.NewEpoch(1);
+    auto adapter = TestRewardAdapter(); REQUIRE(mailbox.Register(1, adapter));
+    mailbox.Configure(1, Rewards::Mode::Active);
+    REQUIRE(mailbox.BeginApplication(1, 50)); CHECK_FALSE(mailbox.BeginApplication(1, 51));
+    auto echo = QuestSource(1); echo.InboundToken = 50;
+    CHECK(mailbox.Submit(1, echo) == Rewards::Submission::PassThrough); CHECK(mailbox.Take(1).empty());
+    echo.InboundToken = 51; CHECK(mailbox.Submit(1, echo) == Rewards::Submission::Blocked);
+    const auto completion = DummyRewardApply(1, 50, 125);
+    CHECK_FALSE(mailbox.Complete(1, {1, 49, Rewards::Result::Applied, 125, 3}));
+    REQUIRE(mailbox.Complete(1, completion)); CHECK(mailbox.Complete(1, completion));
+    REQUIRE(mailbox.Completion(1, 50)); CHECK_FALSE(mailbox.FinishApplication(1, 51));
+    REQUIRE(mailbox.FinishApplication(1, 50)); CHECK_FALSE(mailbox.Complete(1, completion));
+    REQUIRE(mailbox.BeginApplication(1, 51));
+    CHECK_FALSE(mailbox.Complete(1, {1, 51, Rewards::Result::Applied, 125, Rewards::Wallet}));
+    CHECK(mailbox.ConsumeFault()); CHECK_FALSE(mailbox.Adapter(1));
+    mailbox.NewEpoch(2); REQUIRE(mailbox.Register(2, adapter)); mailbox.Configure(2, Rewards::Mode::Active);
+    REQUIRE(mailbox.BeginApplication(2, 51));
+    CHECK_FALSE(mailbox.Complete(1, completion)); CHECK_FALSE(mailbox.FinishApplication(1, 50));
+    CHECK(mailbox.HasPending());
+    CHECK(mailbox.Complete(2, {2, 51, Rewards::Result::Applied, 200, 3}));
+    CHECK_FALSE(mailbox.Complete(2, {2, 51, Rewards::Result::Applied, 205, 3})); // conflicting receipts are not last-writer-wins
+    CHECK(mailbox.ConsumeFault());
+    mailbox.NewEpoch(3); REQUIRE(mailbox.Register(3, adapter)); mailbox.Configure(3, Rewards::Mode::Active);
+    adapter.Signature++;
+    CHECK_FALSE(mailbox.Register(3, adapter)); CHECK(mailbox.ConsumeFault());
+}
+TEST_CASE("Clean semantic reconnect can negotiate but a late disconnected event cannot become solo XP", "[rfab][rewards][bridge]")
+{
+    RewardMailbox mailbox; mailbox.NewEpoch(1); REQUIRE(mailbox.Register(1, TestRewardAdapter()));
+    mailbox.Configure(1, Rewards::Mode::Active); mailbox.Configure(1, Rewards::Mode::Offline);
+    CHECK(mailbox.Mode() == Rewards::Mode::Blocked);
+    mailbox.Configure(1, Rewards::Mode::Negotiating); CHECK(mailbox.Mode() == Rewards::Mode::Negotiating);
+    mailbox.Configure(1, Rewards::Mode::Active); mailbox.Configure(1, Rewards::Mode::Offline);
+    CHECK(mailbox.Submit(1, QuestSource(1)) == Rewards::Submission::Blocked);
+    mailbox.Configure(1, Rewards::Mode::Negotiating); CHECK(mailbox.Mode() == Rewards::Mode::Blocked);
+    CHECK(mailbox.ConsumeFault());
+}
+TEST_CASE("Reward callbacks race a load only as owned records, never native ECS work", "[rfab][rewards][bridge][race]")
+{
+    for (uint64_t i = 0; i < 64; ++i)
+    {
+        RewardMailbox mailbox; mailbox.NewEpoch(1); REQUIRE(mailbox.Register(1, TestRewardAdapter())); mailbox.Configure(1, Rewards::Mode::Active);
+        REQUIRE(mailbox.BeginApplication(1, 90));
+        std::thread completion([&] { mailbox.Complete(1, {1, 90, Rewards::Result::Applied, 125, 3}); });
+        mailbox.NewEpoch(2); completion.join();
+        CHECK_FALSE(mailbox.Completion(2, 90)); CHECK_FALSE(mailbox.HasPending());
+        REQUIRE(mailbox.Register(2, TestRewardAdapter())); mailbox.Configure(2, Rewards::Mode::Active); REQUIRE(mailbox.BeginApplication(2, 91));
+        CHECK_FALSE(mailbox.FinishApplication(1, 90)); CHECK(mailbox.HasPending());
+    }
+}
+TEST_CASE("Personal RFAB rounding is forward-only and never reconstructs a shared base from wallets", "[rfab][rewards]")
+{
+    CHECK(PersonalRewardXP(103, 1.25) == 125); CHECK(PersonalRewardXP(103, 2.0) == 205);
+    CHECK(PersonalRewardXP(100, 0.0) == 0); CHECK(PersonalRewardXP(100, 1.0, 1) == 100);
+    CHECK_FALSE(PersonalRewardXP(0, 1.0)); CHECK_FALSE(PersonalRewardXP(100, -1.0));
+    CHECK_FALSE(PersonalRewardXP(100, std::numeric_limits<double>::quiet_NaN()));
+    CHECK_FALSE(PersonalRewardXP(100, std::numeric_limits<double>::infinity()));
+    CHECK_FALSE(PersonalRewardXP(1000000, 1e100)); CHECK_FALSE(PersonalRewardXP(100, 1.0, 0));
+}
+
+#include <Coop/EnemyHealth.h>
+TEST_CASE("Scaled health inbox cannot repeatedly restore old full-snapshot non-health AVs", "[rfab][health][scale]")
+{
+    ActorValues full;
+    full.Scale = {100, 100.f, 200.f}; full.HealthRevision = 4;
+    full.ActorValuesList[24] = 150.f; full.ActorMaxValuesList[24] = 200.f;
+    full.ActorValuesList[26] = 100.f; full.ActorMaxValuesList[26] = 150.f;
+    const auto projected = ScaleHealthOnly(full); REQUIRE(projected);
+    CHECK(projected->ActorValuesList.size() == 1); CHECK(projected->ActorMaxValuesList.size() == 1);
+    auto pending = *projected;
+    auto reply = *projected; reply.HealthRevision++; reply.ActorValuesList[24] = 140.f;
+    REQUIRE(MergeScaleSnapshot(pending, reply)); CHECK(pending.ActorValuesList.at(24) == 140.f);
+    CHECK_FALSE(pending.ActorValuesList.contains(26)); CHECK_FALSE(pending.ActorMaxValuesList.contains(26));
+    full.ActorValuesList.erase(24); CHECK_FALSE(ScaleHealthOnly(full));
+}
+TEST_CASE("Papyrus reward tickets have one atomic claim and cannot write again after completion or load", "[rfab][rewards][bridge][race]")
+{
+    RewardMailbox mailbox; mailbox.NewEpoch(1); REQUIRE(mailbox.Register(1, TestRewardAdapter()));
+    mailbox.Configure(1, Rewards::Mode::Active); REQUIRE(mailbox.BeginApplication(1, 99));
+    CHECK_FALSE(mailbox.CanApply(1, 99));
+    bool one{}, two{};
+    std::thread a([&] { one = mailbox.ClaimApplication(1, 99); });
+    std::thread b([&] { two = mailbox.ClaimApplication(1, 99); });
+    a.join(); b.join(); CHECK(one != two); CHECK(mailbox.CanApply(1, 99));
+    CHECK_FALSE(mailbox.ClaimApplication(1, 99)); CHECK_FALSE(mailbox.CanApply(1, 98));
+    REQUIRE(mailbox.Complete(1, {1, 99, Rewards::Result::Applied, 125, 3}));
+    CHECK_FALSE(mailbox.CanApply(1, 99)); REQUIRE(mailbox.FinishApplication(1, 99));
+    REQUIRE(mailbox.BeginApplication(1, 100)); REQUIRE(mailbox.ClaimApplication(1, 100));
+    mailbox.NewEpoch(2);
+    CHECK_FALSE(mailbox.CanApply(1, 100)); CHECK_FALSE(mailbox.ClaimApplication(1, 100));
 }

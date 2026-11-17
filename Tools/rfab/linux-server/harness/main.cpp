@@ -57,6 +57,8 @@
 #include <Messages/RequestOwnershipTransfer.h>
 #include <Messages/RequestQuestUpdate.h>
 #include <Messages/SendChatMessageRequest.h>
+#include <Messages/SyncExperienceRequest.h>
+#include <Messages/NotifySyncExperience.h>
 #include <Messages/ServerMessageFactory.h>
 #include <Messages/ServerReferencesMoveRequest.h>
 
@@ -701,6 +703,7 @@ void RunTransactionalInventoryScenario(Console::ConsoleRegistry& console)
 }
 #include "storage_scenario.inc"
 #include "health_scale_scenario.inc"
+#include "reward_scenario.inc"
 } // namespace
 
 int main()
@@ -737,6 +740,7 @@ int main()
     RunTransactionalInventoryScenario(console);
     RunPersistentStorageScenario(console);
     RunEnemyHealthScalingScenario(console);
+    RunSemanticRewardScenario(console);
 
     if (g_failures != 0)
     {

@@ -25,6 +25,7 @@
 #include <Services/LootService.h>
 #include <Services/SaveStateService.h>
 #include <Services/StorageService.h>
+#include <Services/RewardService.h>
 
 #include <Events/PreUpdateEvent.h>
 #include <Events/UpdateEvent.h>
@@ -63,6 +64,7 @@ World::World()
     ctx().emplace<CoopService>(*this, m_dispatcher, m_transport);
     ctx().emplace<LootService>(*this, m_dispatcher, m_transport);
     ctx().emplace<StorageService>(*this, m_dispatcher);
+    ctx().emplace<RewardService>(*this, m_dispatcher, m_transport);
 
     BehaviorVar::Get()->Init();
     EventDispatcherManager::Get()->loadGameEvent.RegisterSink(this);
@@ -83,7 +85,8 @@ void World::SignalWorldLoad() noexcept
     world->m_bridgeCompleted.store(false, std::memory_order_release);
     world->m_failedLoad.store(false, std::memory_order_release);
     world->m_loadPending.store(false, std::memory_order_release);
-    world->m_nativeFlags.fetch_and(~1u, std::memory_order_release);
+    world->m_nativeFlags.fetch_and(~5u, std::memory_order_release);
+    RewardBridgeClient::Mailbox().NewEpoch(SaveStateBridge::Epoch());
     world->m_runner.Invalidate();
     world->m_preloadPending.store(true, std::memory_order_release);
 }

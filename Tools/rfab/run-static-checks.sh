@@ -30,6 +30,7 @@ run "actor lifetime self-test"    python3 Tools/rfab/check_actor_lifetime.py --s
 run "filesystem calls self-test"  python3 Tools/rfab/check_filesystem_calls.py --self-test
 run "wire contract self-test"     python3 Tools/rfab/check_wire_contract.py --self-test
 run "installed storage profile tests" python3 Tools/rfab/test_storage_profile.py
+run "native Papyrus declarations" python3 Tools/rfab/test_native_psc.py
 run "crash symbolizer self-test"  python3 Tools/rfab/symbolize_crash.py --self-test
 # Not a check of the sources: the tool that brings a reset working copy back in line with the server
 # must keep telling "an older version" from "work that was never pushed" (it runs on throwaway repos).

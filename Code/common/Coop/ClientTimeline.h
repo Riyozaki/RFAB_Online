@@ -24,12 +24,20 @@ struct SavedStorage
     uint64_t Revision{};
     bool operator==(const SavedStorage&) const = default;
 };
+struct SavedRewards
+{
+    std::string Campaign;
+    uint64_t Revision{}, Digest{}, LastReward{};
+    int32_t BaseXP{}, FinalXP{};
+    bool operator==(const SavedRewards&) const = default;
+};
 struct CharacterState
 {
     std::string Character; // 128-bit random bearer identity, local save + private server only
     uint64_t Cursor{};
     std::vector<SavedScale> Scales;
     std::vector<SavedStorage> Storages; // explicitly adopted server caches, never old personal items by inference
+    std::vector<SavedRewards> Rewards; // semantic receipts, not a wallet snapshot; at most 16 campaigns
     bool operator==(const CharacterState&) const = default;
     bool Valid() const noexcept;
     std::optional<std::vector<uint8_t>> Encode() const;
@@ -85,6 +93,7 @@ public:
     // A bank cache reconciliation stamps at Prepared; a paired native transfer advances its
     // already adopted cache revision at Applied, before its final Committed publication.
     bool StampStorage(SavedStorage);
+    bool StampReward(SavedRewards);
     void Fault() noexcept { m_faulted = true; }
 private:
     bool Publish(NativeReceipt);

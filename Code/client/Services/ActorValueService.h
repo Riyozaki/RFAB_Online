@@ -51,9 +51,9 @@ public:
     void DescribeScale(Actor*, ActorValues&) noexcept;
 
 private:
-    void QueueScale(uint32_t, uint32_t, const ActorValues&) noexcept;
+    void QueueScale(uint32_t, uint32_t, const ActorValues&, bool aControl = false) noexcept;
     bool ApplyPendingScale(uint32_t) noexcept;
-    void ApplyHealthBaseline(uint32_t, uint32_t, const ActorValues&) noexcept;
+    void ApplyHealthBaseline(uint32_t, uint32_t, const ActorValues&, bool aApplyNative = true) noexcept;
     void RunScaleUpdates() noexcept;
     void ScaleFault(const char*) noexcept;
     struct PendingScale
@@ -61,9 +61,11 @@ private:
         uint32_t Epoch{};
         ActorValues Values;
         uint64_t Since{};
+        std::optional<ActorValues> Control; // one accepted spawn/handoff, never replayed by a later HP-only packet
     };
     std::map<uint32_t, PendingScale> m_pendingScales;
     std::map<uint32_t, HealthScale> m_scales;
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> m_scaleControls; // server -> consumed epoch/native form
     std::string m_scaleFault;
 
     enum ValueType : uint8_t

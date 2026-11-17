@@ -1,5 +1,6 @@
 #include <Misc/BSScript.h>
 #include <Misc/NativeFunction.h>
+#include <Misc/RewardPapyrus.h>
 
 #include <World.h>
 #include <Events/PapyrusFunctionRegisterEvent.h>
@@ -40,6 +41,7 @@ void TP_MAKE_THISCALL(HookBindEverythingToScript, BSScript::IVirtualMachine*)
     (*apThis)->BindNativeMethod(new BSScript::IsPlayerFunc("IsPlayer", "SkyrimTogetherUtils", PapyrusFunctions::IsPlayer, BSScript::Variable::kBoolean));
     (*apThis)->BindNativeMethod(new BSScript::DidLaunchSkyrimTogetherFunc("DidLaunchSkyrimTogether", "SkyrimTogetherVerifyLaunchScript", PapyrusFunctions::DidLaunchSkyrimTogether, BSScript::Variable::kBoolean));
 
+    BindRFABRewardFunctions(*apThis);
     TiltedPhoques::ThisCall(RealBindEverythingToScript, apThis);
 }
 

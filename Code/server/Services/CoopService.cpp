@@ -40,6 +40,7 @@ CoopService::CoopService(World& aWorld, entt::dispatcher& aDispatcher) : m_world
     m_now = MonotonicMs();
     m_scaleNonce = m_session & ((1ull << 60) - 1);
     InitializeInventory();
+    InitializeRewards();
     m_packetConnection = aDispatcher.sink<PacketEvent<RequestCoopAction>>().connect<&CoopService::OnPacket>(this);
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CoopService::OnUpdate>(this);
     m_leaveConnection = aDispatcher.sink<PlayerLeaveEvent>().connect<&CoopService::OnLeave>(this);
@@ -92,7 +93,8 @@ void CoopService::OnPacket(const PacketEvent<RequestCoopAction>& aEvent) noexcep
     if (client == m_clients.end() || packet.Session != m_session || packet.Generation != m_generation)
         return;
     const bool idempotent = std::holds_alternative<Coop::Transfer>(packet.Content) ||
-        std::holds_alternative<Coop::TransferReceipt>(packet.Content) || std::holds_alternative<Coop::InventoryQuery>(packet.Content);
+        std::holds_alternative<Coop::TransferReceipt>(packet.Content) || std::holds_alternative<Coop::InventoryQuery>(packet.Content) ||
+        std::holds_alternative<Coop::Reward>(packet.Content) || std::holds_alternative<Coop::RewardReceipt>(packet.Content);
     std::vector<uint8_t> bytes;
     if (idempotent)
     {
@@ -184,6 +186,12 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
     {
         group = old->second.first;
     }
+    if (!AttachRewards(aHello, group))
+    {
+        response.Error = "Semantic XP adapter/profile or saved reward receipts differ; unresolved awards are never replayed or replaced by legacy XP";
+        Send(aPlayer, response);
+        return;
+    }
     auto& runtime = m_groups[group].Encounter;
     Client client;
     client.PlayerId = aPlayer->GetId(); client.Actor = actor; client.Group = group;
@@ -191,6 +199,11 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
     client.LastOperation = aPacket.Operation;
     // Adapter-dependent capabilities are NEVER inferred from a filename or claimed by the server.
     client.Capabilities = aHello.Capabilities & kBuiltInCapabilities;
+    if (aHello.Capabilities & Coop::SemanticRewards)
+    {
+        client.Capabilities |= Coop::SemanticRewards | (aHello.Capabilities & Coop::BizarreAdapter);
+        client.RewardSignature = aHello.RewardSignature; client.RewardKinds = aHello.RewardKinds;
+    }
     if (InventoryReady() && (aHello.Capabilities & Coop::TransactionalLoot))
     {
         const auto key = "player|" + client.Character;
@@ -451,6 +464,7 @@ void CoopService::Tick(uint64_t aNowMs) noexcept
         return;
     m_now = aNowMs;
     TickInventory();
+    TickRewards();
     for (auto& [id, group] : m_groups)
     {
         group.Encounter.Tick(m_now);
@@ -467,6 +481,7 @@ void CoopService::OnLeave(const PlayerLeaveEvent& aEvent) noexcept
     if (it == m_clients.end())
         return;
     const auto group = it->second.Group, actor = it->second.Actor;
+    if (m_rewards) m_rewards->Disconnect(it->second.Character);
     m_openStorage.erase(it->first);
     m_clients.erase(it);
     m_groups.at(group).Encounter.Disconnect(actor);

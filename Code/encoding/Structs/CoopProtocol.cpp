@@ -1,4 +1,5 @@
 #include <Structs/CoopProtocol.h>
+#include <algorithm>
 #include <limits>
 
 namespace Coop
@@ -152,9 +153,35 @@ bool ValidBody(const Body& aBody)
         else if constexpr (std::is_same_v<T, Checkpoint>)
             return body.Phase <= CheckpointPhase::Blocked;
         else if constexpr (std::is_same_v<T, Reward>)
-            return body.Kind <= RewardKind::Custom && body.BaseXP > 0;
+            return body.Nonce && body.Kind <= RewardKind::Custom && body.Source && body.Occurrence && body.BaseXP > 0 && body.BaseXP <= 1000000 &&
+                (body.Kind != RewardKind::Kill || (body.Actor && body.Incarnation)) &&
+                (body.Kind != RewardKind::Book || (!body.Incarnation && body.Occurrence == 1 && !body.Context));
         else if constexpr (std::is_same_v<T, RewardGrant>)
-            return body.RewardId != 0 && body.BaseXP > 0;
+            return body.RewardId != 0 && body.RewardId < (1ull << 60) && body.BaseXP > 0 && body.BaseXP <= 1000000 &&
+                body.Result <= RewardResult::Quarantined && bool(body.BeforeRevision) == bool(body.BeforeDigest) &&
+                body.BeforeRevision < std::numeric_limits<uint64_t>::max();
+        else if constexpr (std::is_same_v<T, RewardReceipt>)
+            return body.RewardId && body.RewardId < (1ull << 60) && body.FinalXP >= 0 && body.FinalXP <= 100000000 &&
+                (body.Applied || !body.FinalXP) && bool(body.Revision) == bool(body.Digest);
+        else if constexpr (std::is_same_v<T, RewardReport>)
+            return body.Nonce && (body.Accepted ? body.RewardId && body.RewardId < (1ull << 60) : !body.RewardId);
+        else if constexpr (std::is_same_v<T, RewardSource>)
+            return body.Actor && body.Epoch && body.Incarnation && body.Source && body.Source.ModId < 0xFFFFFFFEu;
+        else if constexpr (std::is_same_v<T, Hello>)
+        {
+            if (body.Rewards.size() > 16 || (body.Capabilities & SemanticRewards &&
+                (!body.RewardSignature || !body.RewardKinds || (body.RewardKinds & ~15u)))) return false;
+            std::vector<std::string> campaigns;
+            for (const auto& reward : body.Rewards)
+            {
+                if (reward.Campaign.empty() || reward.Campaign.size() > 48 || !reward.Revision || !reward.Digest ||
+                    std::find(campaigns.begin(), campaigns.end(), reward.Campaign) != campaigns.end()) return false;
+                for (auto c : reward.Campaign)
+                    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+                campaigns.push_back(reward.Campaign);
+            }
+            return true;
+        }
         else if constexpr (std::is_same_v<T, Presence>)
             return !(body.Flags & ~uint32_t(Bleedout | InCombat | CanInteract | Grounded | Stable | Loading | UnsafeEncounter)) &&
                 ((body.Flags & Loading) || body.Location.Valid());

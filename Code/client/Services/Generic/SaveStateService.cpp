@@ -153,6 +153,12 @@ void SaveStateService::AdoptWithoutBridge()
     s_mailbox.CompleteLoad(epoch, true);
     if (auto loaded = s_mailbox.TakeCompleted()) Adopt(std::move(*loaded));
 }
+SaveNativePin SaveStateService::PinNative() noexcept
+{
+    if (!RFAB_EXPECT_MAIN_THREAD() || !Ready() || !m_timeline.CanSave() || m_nativeTicket) return {};
+    const auto ticket = SaveStateBridge::BeginNative(m_publicationEpoch);
+    return ticket ? SaveNativePin{m_publicationEpoch, *ticket} : SaveNativePin{};
+}
 bool SaveStateService::Begin(Coop::EffectKind kind, Coop::EffectId id)
 {
     if (!RFAB_EXPECT_MAIN_THREAD() || !Ready() || !m_timeline.CanSave() || m_nativeTicket) return false;
@@ -203,6 +209,12 @@ bool SaveStateService::StampScale(Coop::SavedScale scale)
 {
     if (!RFAB_EXPECT_MAIN_THREAD() || !OwnsNative()) return false;
     const bool result = m_timeline.StampScale(scale);
+    return Publish() && result;
+}
+bool SaveStateService::StampReward(Coop::SavedRewards reward)
+{
+    if (!RFAB_EXPECT_MAIN_THREAD() || !OwnsNative()) return false;
+    const bool result = m_timeline.StampReward(std::move(reward));
     return Publish() && result;
 }
 void SaveStateService::Quarantine()

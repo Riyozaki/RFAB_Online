@@ -206,7 +206,7 @@ void TP_MAKE_THISCALL(HookSetBeastForm, void, void* apUnk1, void* apUnk2, bool a
 
 void TP_MAKE_THISCALL(HookAddSkillExperience, PlayerCharacter, int32_t aSkill, float aExperience)
 {
-    if (!World::IsCreated())
+    if (!World::IsCreated() || World::SemanticRewardsCached())
         return TiltedPhoques::ThisCall(RealAddSkillExperience, apThis, aSkill, aExperience);
 
     // TODO: armor skills? sneak?
