@@ -14,7 +14,7 @@
 
 namespace Coop
 {
-inline constexpr uint32_t kProtocol = 3;
+inline constexpr uint32_t kProtocol = 4;
 inline constexpr uint32_t kReviveMs = 5000;
 inline constexpr uint32_t kWipeMs = 5000;
 inline constexpr uint32_t kHeartbeatTimeoutMs = 1500;

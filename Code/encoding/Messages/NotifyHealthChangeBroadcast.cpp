@@ -9,6 +9,7 @@ void NotifyHealthChangeBroadcast::SerializeRaw(TiltedPhoques::Buffer::Writer& aW
     Serialization::WriteFloat(aWriter, Health);
     Serialization::WriteVarInt(aWriter, Revision);
     Serialization::WriteVarInt(aWriter, SourcePlayerId);
+    Scale.Serialize(aWriter);
 }
 
 void NotifyHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept
@@ -22,4 +23,5 @@ void NotifyHealthChangeBroadcast::DeserializeRaw(TiltedPhoques::Buffer::Reader& 
     Health = Serialization::ReadFloat(aReader);
     Revision = Serialization::ReadVarInt(aReader);
     SourcePlayerId = Serialization::ReadVarInt(aReader) & 0xFFFFFFFF;
+    Scale.Deserialize(aReader);
 }

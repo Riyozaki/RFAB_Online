@@ -286,3 +286,46 @@ CommonLib/header blocker пройден. MSVC выявил missing complete Acto
 Loot/Storage/AV services; Storage получил явный Games/TES include. Диагностика сохранена в
 excluded build/windows-fifth-annotations.jsonl, результат продублирован здесь. 0291b0f Linux/
 Windows CI и новые local sanitizer runs пока выполняются; ready_for_playtest=false.
+
+
+### 2026-11-17 — enemy HP×2: save-bound life stamp, canonical scaling and ACK handoff
+
+- Wire **4** / `+coop-wire-4`: ActorValues/control snapshots и health replies несут
+  `Life/Base/Maximum`. Active stamp требует finite positive base и exact ×2 max; пустой stamp
+  действительно нулевой. Truncated/overflow/duplicate-origin fixtures проверяют новый layout,
+  а не обходят validation старым malformed payload.
+- Сервер фиксирует решение масштабирования при старте encounter: ровно два свежих capable
+  участника рядом. Позднее подключение не лечит/не увеличивает текущий бой. Owner contact
+  изменяет **канонические** current и max HP ×2 с сохранением доли, один раз на жизнь, не спавны
+  и не resistance. Signed damage после границы остаётся абсолютным. Snapshot содержит own ACK
+  конкретного получателя: overtaken damage reply не удваивает предсказанный удар.
+- Жизнь/исходный max сохраняются в character co-save; handoff/late viewer/следующий encounter/
+  повторный contact не новая жизнь. Native first application берёт общий save/effect reservation,
+  пишет Prepared, stamp, проверяет фактические HP/max, затем Applied→Commit. Нельзя вычислять
+  base делением нынешнего max, незаметно заменять уже saved life или повторять ×2 после неопределённости.
+  Очередь bounded; merged health-only replies не теряют собственный ACK или полный AV snapshot.
+- Player/allied/commanded/summon/mount/dead/nonhostile и распознанные scene/essential/protected
+  участники исключаются. Это **не** универсальный детектор любого Papyrus boss script.
+  Dynamic spawned refs и genuine respawn/new-life пока не адаптированы: сохранённый stamp
+  при несовпадающем native max/phase не угадывается и не затирается — shared effects quarantine.
+  До этих адаптеров HP milestone частичный, не готовый весь игровой контракт.
+- Найдена дополнительная save-pin гонка: запрещающая публикация во время immutable save pin
+  теперь оставляет pinned bytes неизменными, но не открывает будущие saves после EndSave.
+  Отдельный regression проверяет revocation; native и save по-прежнему взаимоисключаются.
+
+Проверки текущей реализации: core **75 cases / 29 091 assertions PASS** (число asserts немного
+зависит от исхода 128 thread races), server **7 production-wire scenarios + crash-record PASS**,
+strict static PASS/local pwsh skipped. Новые native methods определены; это не доказательство
+компиляции Windows или работы Skyrim. Ранее последовательный pre-HP sanitizer run действительно
+завершился **72 / 276 435 core + 6 server scenarios/crash ASan+UBSan PASS**, вместо прежнего
+pending/OOM; для новых HP/save-revocation edits нужен новый прогон.
+
+Windows f3d62ad/run44149881757 завершился **FAIL**: `LootService.cpp:82` сохранял `const Actor*`,
+а `Actor::GetExtension()` non-const. Исправлен тип локального указателя, без const_cast/изменения
+ABI. Installer preflight этого run снова PASS; готовый client/package всё ещё не получен.
+Linux0291/run44148961280 и f3/run44149881546 — все jobs **success**.
+
+Semantic XP, trusted server access coordinates, полноценные native life/reset adapters,
+genuine A retreat/AI-task/targeted-hazard quiescence и полный Windows package остаются работой
+единого кандидата. Optional B не подменён A. Версия dev/readiness=false; release/tag и
+промежуточный совместный игровой тест не создавались.

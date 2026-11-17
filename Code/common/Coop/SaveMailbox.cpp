@@ -97,7 +97,15 @@ std::optional<SaveMailbox::Loaded> SaveMailbox::TakeCompleted()
 bool SaveMailbox::Publish(uint64_t epoch, std::shared_ptr<const std::vector<uint8_t>> bytes, bool allowed)
 {
     std::lock_guard lock(m_mutex);
-    if (!epoch || epoch != m_epoch || (m_loading && !m_taken) || m_saveOpen) return false;
+    if (!epoch || epoch != m_epoch || (m_loading && !m_taken)) return false;
+    if (m_saveOpen)
+    {
+        // Quarantine/revocation cannot replace the PINNED bytes of an in-flight save, but it
+        // must still close FUTURE saves. Otherwise EndSave could reopen an old allowed flag
+        // after a native/receipt failure that occurred while that pin was held.
+        if (!allowed) m_allowed = false;
+        return false;
+    }
     m_loading = false;
     m_snapshot = std::move(bytes);
     if (allowed && (!m_snapshot || m_snapshot->empty())) FaultLocked();

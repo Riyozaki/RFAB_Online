@@ -78,7 +78,8 @@ void ActorValueService::OnActorMaxValueChanges(const PacketEvent<RequestActorMax
     notify.Id = message.Id;
     for (const auto& [id, value] : message.Values)
     {
-        if (id >= 164 || id == kInfamyActorValueId || !std::isfinite(value) || (id == 24 && value < 0.f))
+        if (id >= 164 || id == kInfamyActorValueId || !std::isfinite(value) ||
+            (id == 24 && (value < 0.f || actorValuesComponent.CurrentActorValues.Scale.Life)))
             continue;
         actorValuesComponent.CurrentActorValues.ActorMaxValuesList[id] = value;
         notify.Values[id] = value;
@@ -142,6 +143,7 @@ void ActorValueService::OnHealthChangeBroadcast(const PacketEvent<RequestHealthC
     notify.Revision = values.HealthRevision;
     notify.Health = values.ActorValuesList[24];
     notify.DeltaHealth = delta;
+    notify.Scale = values.Scale;
     // Include the origin. Its local prediction is retired by this acknowledgement, not added twice.
     GameServer::Get()->SendToPlayersInRange(notify, entity, nullptr);
 

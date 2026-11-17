@@ -106,7 +106,7 @@ bool CharacterState::Valid() const noexcept
     std::set<uint32_t> forms;
     std::set<uint64_t> lives;
     for (const auto& s : Scales)
-        if (!s.Form || !s.Life || s.Version != 1 || !std::isfinite(s.Base) || s.Base <= 0.f ||
+        if (!s.Form || !s.Life || s.Life >= (1ull << 60) || s.Version != 1 || !std::isfinite(s.Base) || s.Base <= 0.f ||
             !std::isfinite(s.Maximum) || s.Maximum != double(s.Base) * 2.0 ||
             !forms.insert(s.Form).second || !lives.insert(s.Life).second) return false;
     return true;
@@ -210,7 +210,15 @@ bool ClientTimeline::StampScale(SavedScale scale)
     if (!Ready() || !m_receipt || m_receipt->Kind != EffectKind::Scale || m_receipt->Stage != EffectStage::Prepared) return false;
     auto next = m_state;
     bool replaced = false;
-    for (auto& old : next.Scales) if (old.Form == scale.Form) { old = scale; replaced = true; break; }
+    for (const auto& old : next.Scales)
+        if (old.Form == scale.Form)
+        {
+            // A new ownership epoch/session is not a native respawn. Until an explicit
+            // coordinated reset adapter retires this life, never replace it implicitly.
+            if (old != scale) return false;
+            replaced = true;
+            break;
+        }
     if (!replaced) next.Scales.push_back(scale);
     if (!next.Valid()) return false;
     m_state = std::move(next); return true;

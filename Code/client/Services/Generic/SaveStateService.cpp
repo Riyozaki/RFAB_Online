@@ -199,6 +199,18 @@ bool SaveStateService::StampStorage(Coop::SavedStorage storage)
     const bool result = m_timeline.StampStorage(std::move(storage));
     return Publish() && result;
 }
+bool SaveStateService::StampScale(Coop::SavedScale scale)
+{
+    if (!RFAB_EXPECT_MAIN_THREAD() || !OwnsNative()) return false;
+    const bool result = m_timeline.StampScale(scale);
+    return Publish() && result;
+}
+void SaveStateService::Quarantine()
+{
+    if (!RFAB_EXPECT_MAIN_THREAD()) return;
+    m_timeline.Fault();
+    Publish();
+}
 void SaveStateService::Uncertain(Coop::EffectId id)
 {
     if (!RFAB_EXPECT_MAIN_THREAD()) return;

@@ -1758,6 +1758,7 @@ ActorData CharacterService::BuildActorData(Actor* apActor) const noexcept
 {
     ActorData actorData{};
     actorData.InitialActorValues = apActor->GetEssentialActorValues();
+    m_world.ctx().at<ActorValueService>().DescribeScale(apActor, actorData.InitialActorValues);
     actorData.InitialInventory = apActor->GetActorInventory();
     actorData.IsDead = apActor->IsDead();
     actorData.IsWeaponDrawn = apActor->actorState.IsWeaponFullyDrawn();

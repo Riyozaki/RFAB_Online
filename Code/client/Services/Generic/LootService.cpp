@@ -78,7 +78,7 @@ bool LootService::Intercept(TESObjectREFR* source, TESBoundObject* item, int32_t
     if (!source || !destination || !item || count <= 0) return true;
     // Merchant stock, confiscation/quest stores and ordinary personal home chests remain personal.
     auto* other = source->formID == 0x14 ? destination : source;
-    const auto* actor = Cast<Actor>(other);
+    auto* actor = Cast<Actor>(other);
     if (actor && actor->GetExtension()->IsPlayer()) return false;
     if (!actor && !m_world.ctx().at<ObjectService>().IsSharedInventoryObject(other)) return false;
     if (actor && !actor->IsDead())

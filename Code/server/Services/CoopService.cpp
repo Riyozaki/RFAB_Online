@@ -5,6 +5,8 @@
 #include <Events/UpdateEvent.h>
 #include <Events/PlayerLeaveEvent.h>
 #include <Messages/NotifyCoopAction.h>
+#include <Messages/NotifyHealthChangeBroadcast.h>
+#include <Coop/EnemyHealth.h>
 #include <Setting.h>
 #include <chrono>
 #include <limits>
@@ -36,6 +38,7 @@ CoopService::CoopService(World& aWorld, entt::dispatcher& aDispatcher) : m_world
     if (!m_session)
         m_session = 1;
     m_now = MonotonicMs();
+    m_scaleNonce = m_session & ((1ull << 60) - 1);
     InitializeInventory();
     m_packetConnection = aDispatcher.sink<PacketEvent<RequestCoopAction>>().connect<&CoopService::OnPacket>(this);
     m_updateConnection = aDispatcher.sink<UpdateEvent>().connect<&CoopService::OnUpdate>(this);
@@ -197,6 +200,7 @@ void CoopService::Hello(Player* aPlayer, const Coop::Packet& aPacket, const Coop
             return;
         }
         client.Capabilities |= Coop::TransactionalLoot;
+        if (aHello.Capabilities & Coop::EnemyScaling) client.Capabilities |= Coop::EnemyScaling;
         if (!m_storageAccess.empty() && (aHello.Capabilities & Coop::PersistentStorage))
             client.Capabilities |= Coop::PersistentStorage;
     }
@@ -339,6 +343,84 @@ void CoopService::Handle(Player* aPlayer, Client& aClient, const Coop::EnemyCont
         return;
     }
     group.Enemies.insert(aContact.Actor);
+    ScaleEnemy(aPlayer, aClient, aContact);
+}
+
+bool CoopService::CanScaleEncounter(uint32_t aGroup) const noexcept
+{
+    const auto& runtime = m_groups.at(aGroup).Encounter;
+    if (runtime.Cohort.size() != 2) return false;
+    const Coop::EncounterRuntime::Member* first{};
+    for (auto actor : runtime.Cohort)
+    {
+        const auto& member = runtime.Members.at(actor);
+        if (!member.Connected || !member.Seen || Now() < member.Seen || Now() - member.Seen > Coop::kHeartbeatTimeoutMs ||
+            (member.Flags & Coop::Loading)) return false;
+        bool capable{};
+        for (const auto& [_, client] : m_clients)
+            if (client.Group == aGroup && client.Actor == actor) capable = (client.Capabilities & Coop::EnemyScaling) != 0;
+        if (!capable || (first && Coop::DistanceSquared(first->Location, member.Location) > 4096.0 * 4096.0)) return false;
+        first = &member;
+    }
+    return true;
+}
+void CoopService::ScaleEnemy(Player* player, const Client& client, const Coop::EnemyContact& contact) noexcept
+{
+    const auto actor = contact.Actor;
+    auto& group = m_groups.at(client.Group);
+    const auto entity = static_cast<entt::entity>(actor);
+    const auto* owner = m_world.try_get<OwnerComponent>(entity);
+    const auto* character = m_world.try_get<CharacterComponent>(entity);
+    auto* component = m_world.try_get<ActorValuesComponent>(entity);
+    if (!owner || owner->GetOwner() != player || !character || !component || !group.ScaleEncounter ||
+        !m_world.all_of<FormIdComponent>(entity) || // dynamic spawned refs need a separate persistent-life adapter
+        group.Encounter.Blocked || group.Encounter.Resetting || group.Encounter.Unsafe || !(client.Capabilities & Coop::EnemyScaling) ||
+        !Coop::EnemyEligibility{character->IsPlayer(), contact.Allied, character->IsPlayerSummon(), character->IsMount(),
+            character->IsDead(), contact.Scripted, contact.Hostile}.Allowed()) return;
+    for (const auto* factions : {&character->FactionsContent.NpcFactions, &character->FactionsContent.ExtraFactions})
+        for (const auto& faction : *factions)
+            if (faction.Rank >= 0)
+                if (const auto form = NameForm(faction.Id); form && form->Local == 0xDB1)
+                    if (const auto plugin = Coop::NormalizePlugin(form->Plugin); plugin && *plugin == "skyrim.esm") return;
+    auto& values = component->CurrentActorValues;
+    if (values.Scale.Life) return; // save import/handoff/next fight is not a second multiplier
+    if (m_scaleLives.size() >= 8192 || values.HealthRevision == std::numeric_limits<uint64_t>::max())
+    { group.Encounter.Unsafe = true; return; }
+    uint64_t life{};
+    for (size_t attempt = 0; attempt <= 8192; ++attempt)
+    {
+        m_scaleNonce = (m_scaleNonce + 1) & ((1ull << 60) - 1);
+        if (!m_scaleNonce || m_scaleLives.contains(m_scaleNonce)) continue;
+        bool used{};
+        for (auto other : m_world.view<ActorValuesComponent>())
+            used |= m_world.get<ActorValuesComponent>(other).CurrentActorValues.Scale.Life == m_scaleNonce;
+        if (!used) { life = m_scaleNonce; break; }
+    }
+    const auto maximum = values.ActorMaxValuesList.find(24), health = values.ActorValuesList.find(24);
+    if (maximum == values.ActorMaxValuesList.end() || health == values.ActorValuesList.end()) return;
+    const auto plan = Coop::PlanEnemyHealth(life, maximum->second, health->second);
+    if (!plan) { group.Encounter.Unsafe = true; return; }
+    m_scaleLives.insert(life);
+    values.Scale = plan->Scale;
+    values.ActorMaxValuesList[24] = plan->Scale.Maximum;
+    values.ActorValuesList[24] = plan->Health;
+    ++values.HealthRevision;
+    // Each recipient gets its own included watermark. A scale control snapshot must not double
+    // a hit whose older health ACK was overtaken by this absolute canonical revision.
+    const auto* cell = m_world.try_get<CellIdComponent>(entity);
+    for (auto* recipient : m_world.GetPlayerManager())
+    {
+        if (!cell || !cell->IsInRange(recipient->GetCellComponent(), character->IsDragon())) continue;
+        NotifyHealthChangeBroadcast notify;
+        notify.Id = actor; notify.OwnershipEpoch = owner->OwnershipEpoch;
+        notify.Revision = values.HealthRevision; notify.Health = health->second; notify.Scale = values.Scale;
+        notify.SourcePlayerId = recipient->GetId();
+        const auto ack = values.HealthSequences.find(recipient->GetId());
+        if (ack != values.HealthSequences.end()) notify.Sequence = ack->second;
+        recipient->Send(notify);
+    }
+    spdlog::info("[RFAB] enemy {:X} life {} HP x2: base {}, maximum {}, health {}, epoch {}", actor, life,
+        values.Scale.Base, values.Scale.Maximum, health->second, owner->OwnershipEpoch);
 }
 
 void CoopService::Flush(uint32_t aGroup) noexcept
@@ -353,6 +435,7 @@ void CoopService::Flush(uint32_t aGroup) noexcept
         {
             it->second.LastEncounter = encounter->Encounter;
             it->second.Enemies.clear();
+            it->second.ScaleEncounter = CanScaleEncounter(aGroup);
         }
         if (auto* downed = std::get_if<Coop::DownedState>(&body))
             FillRecovery(*downed);

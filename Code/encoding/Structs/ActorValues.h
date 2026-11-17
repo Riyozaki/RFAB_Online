@@ -1,4 +1,7 @@
 #pragma once
+#include <TiltedCore/Stl.hpp>
+#include <TiltedCore/Buffer.hpp>
+#include <Structs/HealthScale.h>
 
 struct ActorValues
 {
@@ -14,6 +17,7 @@ struct ActorValues
     bool WireValid{true};
     bool IsValid() const noexcept;
     uint64_t HealthRevision{};
+    HealthScale Scale;
     // Server-only origin watermarks travel in control snapshots so an overtaken mutation reply
     // cannot make the client predict the same damage twice. Never accepted from a client.
     TiltedPhoques::Map<uint32_t, uint64_t> HealthSequences{};

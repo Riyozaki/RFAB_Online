@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Message.h"
+#include <Structs/HealthScale.h>
 
 struct NotifyHealthChangeBroadcast final : ServerMessage
 {
@@ -14,7 +15,7 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
     void SerializeRaw(TiltedPhoques::Buffer::Writer& aWriter) const noexcept override;
     void DeserializeRaw(TiltedPhoques::Buffer::Reader& aReader) noexcept override;
 
-    bool operator==(const NotifyHealthChangeBroadcast& acRhs) const noexcept { return Id == acRhs.Id && OwnershipEpoch == acRhs.OwnershipEpoch && Sequence == acRhs.Sequence && DeltaHealth == acRhs.DeltaHealth && Health == acRhs.Health && Revision == acRhs.Revision && SourcePlayerId == acRhs.SourcePlayerId && GetOpcode() == acRhs.GetOpcode(); }
+    bool operator==(const NotifyHealthChangeBroadcast& acRhs) const noexcept { return Id == acRhs.Id && OwnershipEpoch == acRhs.OwnershipEpoch && Sequence == acRhs.Sequence && DeltaHealth == acRhs.DeltaHealth && Health == acRhs.Health && Revision == acRhs.Revision && SourcePlayerId == acRhs.SourcePlayerId && Scale == acRhs.Scale && GetOpcode() == acRhs.GetOpcode(); }
 
     uint32_t Id{};
     uint32_t OwnershipEpoch{};
@@ -23,4 +24,5 @@ struct NotifyHealthChangeBroadcast final : ServerMessage
     float Health{};
     uint64_t Revision{};
     uint32_t SourcePlayerId{};
+    HealthScale Scale;
 };

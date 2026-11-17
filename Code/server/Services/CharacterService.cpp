@@ -673,6 +673,18 @@ void CharacterService::CreateCharacter(const PacketEvent<AssignCharacterRequest>
     const auto isTemporary = gameId.ModId == std::numeric_limits<uint32_t>::max();
     const auto isPlayer = (gameId.ModId == 0 && gameId.BaseId == 0x14);
     const auto isCustom = isPlayer || isTemporary;
+    if (message.CurrentActorData.InitialActorValues.Scale.Life &&
+        (isCustom || message.IsPlayerSummon || message.IsMount))
+    {
+        m_world.destroy(cEntity);
+        return; // dynamic clones need a separate persistent-life adapter; never import an avatar/summon/mount stamp
+    }
+
+    const auto& scale = message.CurrentActorData.InitialActorValues.Scale;
+    if (scale.Life)
+        for (auto other : m_world.view<ActorValuesComponent>())
+            if (m_world.get<ActorValuesComponent>(other).CurrentActorValues.Scale.Life == scale.Life)
+            { m_world.destroy(cEntity); return; }
 
     // For player characters and temporary forms
     if (!isCustom)

@@ -698,6 +698,7 @@ void RunTransactionalInventoryScenario(Console::ConsoleRegistry& console)
     }
 }
 #include "storage_scenario.inc"
+#include "health_scale_scenario.inc"
 } // namespace
 
 int main()
@@ -716,6 +717,7 @@ int main()
     RunNegotiatedCoopScenario(console);
     RunTransactionalInventoryScenario(console);
     RunPersistentStorageScenario(console);
+    RunEnemyHealthScalingScenario(console);
 
     if (g_failures != 0)
     {

@@ -224,8 +224,9 @@ void CoopService::OnUpdate(const UpdateEvent&) noexcept
             const uint32_t inventory = InventoryHook::Installed() && m_world.ctx().at<SaveStateService>().Ready() ? Coop::TransactionalLoot : 0u;
             const auto& storage = m_world.ctx().at<StorageService>();
             const uint32_t bank = inventory && storage.Available() ? Coop::PersistentStorage : 0u;
-            Send(Coop::Hello{Coop::kProtocol, Coop::NativeDowned | Coop::GroundedAnchors | inventory | bank,
-                m_character, "se-1.5.97-native-v3", bank ? storage.Signature() : 0});
+            const uint32_t scaling = inventory ? Coop::EnemyScaling : 0u;
+            Send(Coop::Hello{Coop::kProtocol, Coop::NativeDowned | Coop::GroundedAnchors | inventory | bank | scaling,
+                m_character, "se-1.5.97-native-v4", bank ? storage.Signature() : 0});
         }
         return;
     }
@@ -407,7 +408,14 @@ void CoopService::ObserveEnemies() noexcept
             continue;
         const auto* scene = npc->GetCurrentScene();
         const bool scripted = (scene && scene->isPlaying) || npc->IsEssential() || (npc->flags2 & (1u << 19));
-        Send(Coop::EnemyContact{*server, epoch, true, false, scripted});
+        // CommonLibSSE-NG b93280e Actor::BOOL_BITS::kPlayerTeammate is flags1 bit26.
+        // A frenzy/hostile target does not turn a companion, summon or mount into a scaled enemy.
+        bool allied = (npc->flags1 & (1u << 26)) || npc->IsPlayerSummon() || npc->IsCommandedActor() || npc->IsMount();
+        const auto factions = npc->GetFactions();
+        for (const auto* list : {&factions.NpcFactions, &factions.ExtraFactions})
+            for (const auto& faction : *list)
+                allied |= faction.Rank >= 0 && m_world.GetModSystem().GetGameId(faction.Id) == 0xDB1;
+        Send(Coop::EnemyContact{*server, epoch, true, allied, scripted});
         m_reportedEnemies[*server] = epoch;
         if (++sent >= 32)
             break;

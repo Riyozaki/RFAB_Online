@@ -49,10 +49,7 @@ private:
         Coop::EncounterRuntime Encounter;
         std::set<uint32_t> Enemies;
         uint64_t LastEncounter{};
-    };
-    struct Scaling
-    {
-        float Base{}, Maximum{};
+        bool ScaleEncounter{}; // frozen at encounter start, never recomputed on join/disconnect
     };
     void OnPacket(const PacketEvent<RequestCoopAction>&) noexcept;
     void OnUpdate(const UpdateEvent&) noexcept;
@@ -86,6 +83,8 @@ private:
     void FillRecovery(Coop::DownedState&) noexcept;
     void FillReset(uint32_t aGroup, Coop::ResetPlan&) noexcept;
     uint32_t AdvanceEpoch(uint32_t aActor, float aHealth) noexcept;
+    bool CanScaleEncounter(uint32_t aGroup) const noexcept;
+    void ScaleEnemy(Player*, const Client&, const Coop::EnemyContact&) noexcept;
     uint64_t Now() const noexcept;
 
     World& m_world;
@@ -93,7 +92,8 @@ private:
     std::map<uint32_t, Client> m_clients;
     std::map<uint32_t, Group> m_groups;
     std::map<std::string, std::pair<uint32_t, uint32_t>> m_characters;
-    std::map<uint32_t, Scaling> m_scaling;
+    uint64_t m_scaleNonce{};
+    std::set<uint64_t> m_scaleLives;
     std::string m_campaign;
     std::unique_ptr<Coop::InventoryLedger> m_inventory;
     std::unique_ptr<Coop::DurableFile> m_inventoryFile;

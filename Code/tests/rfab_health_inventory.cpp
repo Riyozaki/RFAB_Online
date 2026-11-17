@@ -431,7 +431,9 @@ TEST_CASE("Health watermark codec rejects duplicate origins overflow and every t
     }
     auto malformed = [](uint16_t count, bool duplicate) {
         TiltedPhoques::Buffer raw(4096); TiltedPhoques::Buffer::Writer out(&raw);
-        out.WriteBits(1, 64); out.WriteBits(count, 16);
+        out.WriteBits(1, 64); // revision
+        HealthScale{}.Serialize(out);
+        out.WriteBits(count, 16);
         for (uint16_t i = 0; i < count; ++i) { out.WriteBits(duplicate ? 1 : i + 1, 32); out.WriteBits(1, 64); }
         out.WriteBits(0, 16); out.WriteBits(0, 16); out.WriteBits(1, 1);
         TiltedPhoques::Buffer::Reader in(&raw); ActorValues decoded; decoded.Deserialize(in);
@@ -761,7 +763,8 @@ TEST_CASE("Native effect reservation and game-save snapshot pin are mutually exc
         }
         else
         {
-            CHECK_FALSE(f.Mail.BeginNative(f.Epoch)); CHECK_FALSE(f.Mail.Publish(f.Epoch, f.Bytes, false));
+            CHECK_FALSE(f.Mail.BeginNative(f.Epoch));
+            CHECK_FALSE(f.Mail.Publish(f.Epoch, f.Bytes, true)); // replacement cannot mutate a pinned snapshot
             CHECK(f.Mail.BeginLoad() == 0);
             REQUIRE(f.Mail.BeginSerialization());
             const auto pinned = f.Mail.SaveSnapshot(); REQUIRE(pinned.Bytes);
@@ -818,4 +821,94 @@ TEST_CASE("Serialization errors bypassed save paths and native overlapping loads
     const auto loaded = overlap.Mail.TakeCompleted(); REQUIRE(loaded); CHECK(loaded->Corrupt);
     overlap.Mail.EndSerialization(old, true); overlap.Mail.EndSave(*pinned, true);
     REQUIRE(overlap.Mail.Publish(epoch, overlap.Bytes, true)); CHECK_FALSE(overlap.Mail.SaveAllowed());
+}
+
+#include <Coop/EnemyHealth.h>
+TEST_CASE("Two-player enemy health scales the canonical fraction exactly once per explicit life", "[rfab][health][scale]")
+{
+    const auto plan = Coop::PlanEnemyHealth(55, 150.f, 110.f); REQUIRE(plan);
+    CHECK(plan->Scale.Life == 55); CHECK(plan->Scale.Base == 150.f);
+    CHECK(plan->Scale.Maximum == 300.f); CHECK(plan->Health == 220.f); // not a full heal to300
+    CHECK(Coop::PlanEnemyHealth(56, 100.f, 125.f)->Health == 250.f); // legitimate temporary buff is not clamped away
+    for (const float bad : {0.f, -1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::max()})
+    {
+        CHECK_FALSE(Coop::PlanEnemyHealth(1, bad, 100.f));
+        CHECK_FALSE(Coop::PlanEnemyHealth(1, 100.f, bad));
+    }
+    CHECK_FALSE(Coop::PlanEnemyHealth(0, 100.f, 100.f));
+    CHECK_FALSE(Coop::PlanEnemyHealth(1ull << 60, 100.f, 100.f));
+    CHECK_FALSE((HealthScale{0, 100.f, 200.f}).IsValid());
+    CHECK_FALSE((HealthScale{1, 100.f, 300.f}).IsValid());
+    CHECK_FALSE((HealthScale{1, 100.f, 400.f}).IsValid());
+    CHECK(HealthScale{}.IsValid());
+    for (unsigned mask = 0; mask < 256; ++mask)
+    {
+        Coop::EnemyEligibility candidate{bool(mask & 1), bool(mask & 2), bool(mask & 4), bool(mask & 8),
+            bool(mask & 16), bool(mask & 32), bool(mask & 64)};
+        CHECK(candidate.Allowed() == ((mask & 127) == 64));
+    }
+    TimelineFixture f;
+    REQUIRE(f.Timeline.Begin(Coop::EffectKind::Scale, f.Id));
+    CHECK_FALSE(f.Timeline.StampScale({0x123, 1, 1ull << 60, 100.f, 200.f}));
+    REQUIRE(f.Timeline.StampScale({0x123, 1, plan->Scale.Life, plan->Scale.Base, plan->Scale.Maximum}));
+    REQUIRE(f.Timeline.StampScale({0x123, 1, plan->Scale.Life, plan->Scale.Base, plan->Scale.Maximum}));
+    CHECK_FALSE(f.Timeline.StampScale({0x123, 1, plan->Scale.Life + 1, plan->Scale.Base, plan->Scale.Maximum}));
+    CHECK_FALSE(f.Timeline.StampScale({0x123, 1, plan->Scale.Life, 300.f, 600.f}));
+    REQUIRE(f.Timeline.Applied(f.Id)); REQUIRE(f.Timeline.Commit(f.Id));
+    const auto bytes = f.Timeline.State().Encode(); REQUIRE(bytes);
+    const auto loaded = Coop::CharacterState::Decode(*bytes); REQUIRE(loaded);
+    CHECK(loaded->Scales.front().Base == 150.f); CHECK(loaded->Scales.front().Maximum == 300.f);
+}
+TEST_CASE("Scale wire metadata survives control snapshots and queued health-only replies without losing own ACKs", "[rfab][health][scale][wire]")
+{
+    ActorValues initial;
+    initial.HealthRevision = 2; initial.Scale = {9001, 100.f, 200.f};
+    initial.ActorValuesList[24] = 180.f; initial.ActorMaxValuesList[24] = 200.f;
+    initial.ActorValuesList[25] = 100.f; initial.HealthSequences[1] = 2;
+    REQUIRE(initial.IsValid());
+    TiltedPhoques::Buffer raw(4096); TiltedPhoques::Buffer::Writer writer(&raw); initial.Serialize(writer);
+    TiltedPhoques::Buffer::Reader reader(&raw); ActorValues decoded; decoded.Deserialize(reader);
+    REQUIRE(decoded.IsValid()); CHECK(decoded == initial);
+    for (size_t length = 0; length < writer.Size(); ++length)
+    {
+        TiltedPhoques::ViewBuffer shortBuffer(raw.GetWriteData(), length);
+        TiltedPhoques::Buffer::Reader shortReader(&shortBuffer); ActorValues shortValues; shortValues.Deserialize(shortReader);
+        REQUIRE_FALSE(shortValues.IsValid());
+    }
+    ActorValues reply;
+    reply.Scale = initial.Scale; reply.HealthRevision = 3;
+    reply.ActorValuesList[24] = 175.f; reply.ActorMaxValuesList[24] = 200.f;
+    REQUIRE(Coop::MergeScaleSnapshot(decoded, reply));
+    CHECK(decoded.HealthRevision == 3); CHECK(decoded.ActorValuesList.at(24) == 175.f);
+    CHECK(decoded.ActorValuesList.at(25) == 100.f); CHECK(decoded.HealthSequences.at(1) == 2);
+    REQUIRE(Coop::MergeScaleSnapshot(decoded, initial)); // stale retry cannot restore old health
+    CHECK(decoded.ActorValuesList.at(24) == 175.f);
+    auto conflict = reply; conflict.Scale.Life = 9002;
+    CHECK_FALSE(Coop::MergeScaleSnapshot(decoded, conflict));
+    conflict = reply; conflict.ActorMaxValuesList[24] = 400.f;
+    CHECK_FALSE(conflict.IsValid()); CHECK_FALSE(Coop::MergeScaleSnapshot(decoded, conflict));
+    CHECK(decoded.Scale == initial.Scale);
+    Coop::HealthPrediction prediction; prediction.Reset(1, 1, 100.f);
+    REQUIRE(prediction.Observe(90.f)); REQUIRE(prediction.Observe(85.f));
+    // Server has included only sequence1, scales90->180, then linearizes sequence2 as -5.
+    CHECK(prediction.Adopt(1, 2, 180.f, 1) == 175.f);
+    CHECK(prediction.Accept(3, 175.f, 2) == 175.f);
+    CHECK(prediction.Pending.empty());
+    const auto savedLife = decoded.Scale;
+    prediction.Adopt(2, 3, 175.f); // AI handoff fences sequences, NOT life/max/base
+    CHECK(savedLife.Maximum == 200.f); CHECK(savedLife.Base == 100.f);
+}
+TEST_CASE("Revocation during a pinned save cannot reopen future saves when the pin completes", "[rfab][timeline][mailbox][race]")
+{
+    MailboxFixture f;
+    const auto save = f.Mail.BeginSave(); REQUIRE(save);
+    REQUIRE(f.Mail.BeginSerialization());
+    const auto pinned = f.Mail.SaveSnapshot(); REQUIRE(pinned.Bytes);
+    CHECK_FALSE(f.Mail.Publish(f.Epoch, f.Bytes, false)); // cannot replace the pinned snapshot
+    CHECK(f.Mail.SaveSnapshot().Bytes == pinned.Bytes);
+    f.Mail.EndSerialization(pinned, true); f.Mail.EndSave(*save, true);
+    CHECK_FALSE(f.Mail.SaveAllowed()); CHECK_FALSE(f.Mail.BeginNative(f.Epoch));
+    // Only an explicit valid publication can reopen it; real faulted ClientTimeline never does.
+    REQUIRE(f.Mail.Publish(f.Epoch, f.Bytes, true)); CHECK(f.Mail.SaveAllowed());
 }

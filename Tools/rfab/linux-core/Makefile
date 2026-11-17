@@ -104,7 +104,7 @@ ALL_OBJS := $(CORE_OBJS) $(ENCODING_OBJS) $(COMMON_OBJS) $(TEST_OBJS) $(MIMALLOC
 # Every public co-op boundary is also parsed as the FIRST include in its own TU. A PCH
 # in an unrelated target must never make a header appear self-contained when it is not.
 STANDALONE_HEADERS := $(wildcard $(REPO_ROOT)/Code/common/Coop/*.h) \
-  $(addprefix $(REPO_ROOT)/Code/encoding/Structs/,GameId.h Inventory.h MagicEquipment.h)
+  $(addprefix $(REPO_ROOT)/Code/encoding/Structs/,GameId.h Inventory.h MagicEquipment.h ActorValues.h HealthScale.h)
 header_check = $(BUILD_DIR)/headers/$(call rel_name,$(1)).ok
 HEADER_CHECKS := $(foreach h,$(STANDALONE_HEADERS),$(call header_check,$(h)))
 ALL_DEPS := $(ALL_OBJS:.o=.d) $(HEADER_CHECKS:.ok=.d)

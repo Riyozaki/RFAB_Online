@@ -8,7 +8,7 @@ using TiltedPhoques::Serialization;
 
 bool ActorValues::operator==(const ActorValues& acRhs) const noexcept
 {
-    return HealthRevision == acRhs.HealthRevision && HealthSequences == acRhs.HealthSequences && ActorValuesList == acRhs.ActorValuesList && ActorMaxValuesList == acRhs.ActorMaxValuesList;
+    return HealthRevision == acRhs.HealthRevision && Scale == acRhs.Scale && HealthSequences == acRhs.HealthSequences && ActorValuesList == acRhs.ActorValuesList && ActorMaxValuesList == acRhs.ActorMaxValuesList;
 }
 
 bool ActorValues::operator!=(const ActorValues& acRhs) const noexcept
@@ -62,6 +62,7 @@ struct ValuesWire
     void Values(ActorValues& value)
     {
         Number(value.HealthRevision);
+        Number(value.Scale.Life); Number(value.Scale.Base); Number(value.Scale.Maximum);
         Entries(value.HealthSequences, 32);
         Entries(value.ActorValuesList, CoopPacketSafety::kMaxActorValues);
         Entries(value.ActorMaxValuesList, CoopPacketSafety::kMaxActorValues);
@@ -73,8 +74,13 @@ struct ValuesWire
 }
 bool ActorValues::IsValid() const noexcept
 {
-    if (!WireValid || HealthSequences.size() > 32 || ActorValuesList.size() > CoopPacketSafety::kMaxActorValues ||
+    if (!WireValid || !Scale.IsValid() || HealthSequences.size() > 32 || ActorValuesList.size() > CoopPacketSafety::kMaxActorValues ||
         ActorMaxValuesList.size() > CoopPacketSafety::kMaxActorValues) return false;
+    if (Scale.Life)
+    {
+        const auto maximum = ActorMaxValuesList.find(24);
+        if (maximum == ActorMaxValuesList.end() || maximum->second != Scale.Maximum) return false;
+    }
     for (const auto& [origin, sequence] : HealthSequences) if (!origin || !sequence) return false;
     for (const auto& [key, value] : ActorValuesList) if (key >= 256 || !std::isfinite(value)) return false;
     for (const auto& [key, value] : ActorMaxValuesList) if (key >= 256 || !std::isfinite(value)) return false;

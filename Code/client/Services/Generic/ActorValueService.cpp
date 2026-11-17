@@ -2,8 +2,12 @@
 #include <Games/ActorExtension.h>
 
 #include <Services/ActorValueService.h>
+#include <Services/SaveStateService.h>
+#include <Services/CoopService.h>
+#include <Coop/EnemyHealth.h>
 #include <World.h>
 #include <Forms/ActorValueInfo.h>
+#include <Forms/TESQuest.h>
 #include <Games/References.h>
 #include <Components.h>
 #include <Systems/OwnershipSystem.h>
@@ -71,6 +75,7 @@ void ActorValueService::OnLocalComponentAdded(entt::registry& aRegistry, const e
 void ActorValueService::OnDisconnected(const DisconnectedEvent& acEvent) noexcept
 {
     m_health.clear();
+    m_scales.clear(); m_pendingScales.clear(); m_scaleFault.clear();
     m_world.clear<ActorValuesComponent>();
 }
 
@@ -92,11 +97,17 @@ void ActorValueService::OnActorRemoved(const ActorRemovedEvent& acEvent) noexcep
         });
 
     if (it != std::end(view))
+    {
+        if (const auto id = Utils::GetServerId(*it))
+        { m_scales.erase(*id); m_pendingScales.erase(*id); m_health.erase(*id); }
         m_world.remove<ActorValuesComponent>(*it);
+    }
 }
 
 void ActorValueService::OnUpdate(const UpdateEvent& acEvent) noexcept
 {
+    RunScaleUpdates();
+    if (!m_transport.IsConnected()) return;
     RunSmallHealthUpdates();
     RunDeathStateUpdates();
     RunActorValuesUpdates();
@@ -145,6 +156,14 @@ void ActorValueService::BroadcastActorValues() noexcept
 
             float newMaxValue = pActor->GetActorPermanentValue(i);
             float oldMaxValue = actorValuesComponent.CurrentActorValues.ActorMaxValuesList[i];
+            const auto scale = m_scales.find(localComponent.Id);
+            if (i == ActorValueInfo::kHealth && scale != m_scales.end())
+            {
+                if (!std::isfinite(newMaxValue) || std::abs(newMaxValue - scale->second.Maximum) >
+                    std::max(0.01f, scale->second.Maximum * 0.00001f))
+                    ScaleFault("scaled permanent HP changed outside its verified life adapter (possible scripted phase/reset)");
+                continue; // an old periodic max snapshot must never undo or re-multiply x2
+            }
             if (newMaxValue != oldMaxValue)
             {
                 requestMaxValueChanges.Values.insert({i, newMaxValue});
@@ -167,6 +186,31 @@ void ActorValueService::BroadcastActorValues() noexcept
 void ActorValueService::AdoptHealth(uint32_t aServerId, uint32_t aEpoch, const ActorValues& acValues) noexcept
 {
     if (!acValues.IsValid()) return;
+    if (acValues.Scale.Life)
+    {
+        QueueScale(aServerId, aEpoch, acValues);
+        ApplyPendingScale(aServerId);
+        return;
+    }
+    // Reset A supplies a health-only control record. Retain the already proven life/max; a
+    // complete unscaled actor snapshot over a scaled life is NOT an implicit respawn/reset.
+    const auto scale = m_scales.find(aServerId);
+    if (scale != m_scales.end() && !acValues.ActorMaxValuesList.contains(ActorValueInfo::kHealth))
+    {
+        auto values = acValues; values.Scale = scale->second;
+        values.ActorMaxValuesList[ActorValueInfo::kHealth] = scale->second.Maximum;
+        QueueScale(aServerId, aEpoch, values); ApplyPendingScale(aServerId);
+        return;
+    }
+    if (auto* actor = Utils::GetByServerId<Actor>(aServerId); actor && acValues.ActorMaxValuesList.contains(ActorValueInfo::kHealth))
+        for (const auto& saved : m_world.ctx().at<SaveStateService>().State().Scales)
+            if (saved.Form == actor->formID)
+            { ScaleFault("unscaled control snapshot conflicts with a save-bound enemy life"); return; }
+    ApplyHealthBaseline(aServerId, aEpoch, acValues);
+}
+void ActorValueService::ApplyHealthBaseline(uint32_t aServerId, uint32_t aEpoch, const ActorValues& acValues) noexcept
+{
+    if (!acValues.IsValid()) return;
     const auto it = acValues.ActorValuesList.find(ActorValueInfo::kHealth);
     if (it == acValues.ActorValuesList.end() || !std::isfinite(it->second))
         return;
@@ -179,6 +223,8 @@ void ActorValueService::AdoptHealth(uint32_t aServerId, uint32_t aEpoch, const A
     const auto ack = acValues.HealthSequences.find(m_transport.GetLocalPlayerId());
     const auto adopted = state.Adopt(aEpoch, acValues.HealthRevision, it->second,
         ack == acValues.HealthSequences.end() ? 0 : ack->second);
+    if (adopted && actor && acValues.Scale.Life)
+        actor->ForceActorValue(ActorValueOwner::ForceMode::PERMANENT, ActorValueInfo::kHealth, acValues.Scale.Maximum);
     if (adopted && actor)
         actor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, *adopted);
 }
@@ -187,7 +233,17 @@ void ActorValueService::ApplyActorValues(Actor* apActor, uint32_t aServerId, uin
 {
     if (!apActor || !acValues.IsValid())
         return;
-    apActor->SetActorValues(acValues); // non-HP AVs only
+    if (acValues.Scale.Life)
+    {
+        QueueScale(aServerId, aEpoch, acValues); ApplyPendingScale(aServerId);
+        return;
+    }
+    if (m_scales.contains(aServerId))
+    { ScaleFault("complete unscaled control snapshot over a saved scaled life"); return; }
+    for (const auto& saved : m_world.ctx().at<SaveStateService>().State().Scales)
+        if (saved.Form == apActor->formID)
+        { ScaleFault("unscaled control snapshot conflicts with this character's saved enemy life"); return; }
+    apActor->SetActorValues(acValues); // health remains exclusively canonical/predicted
     const auto state = m_health.find(aServerId);
     if (state != m_health.end() && state->second.Epoch == aEpoch)
         apActor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, state->second.Project());
@@ -302,9 +358,32 @@ void ActorValueService::RunActorValuesUpdates() noexcept
 
 void ActorValueService::OnHealthChangeBroadcast(const NotifyHealthChangeBroadcast& acMessage) noexcept
 {
-    if (!std::isfinite(acMessage.Health))
+    if (!std::isfinite(acMessage.Health) || !acMessage.Scale.IsValid()) return;
+    if (acMessage.Scale.Life)
+    {
+        ActorValues values;
+        values.Scale = acMessage.Scale; values.HealthRevision = acMessage.Revision;
+        values.ActorValuesList[ActorValueInfo::kHealth] = acMessage.Health;
+        values.ActorMaxValuesList[ActorValueInfo::kHealth] = acMessage.Scale.Maximum;
+        if (acMessage.SourcePlayerId == m_transport.GetLocalPlayerId() && acMessage.Sequence)
+            values.HealthSequences[acMessage.SourcePlayerId] = acMessage.Sequence;
+        QueueScale(acMessage.Id, acMessage.OwnershipEpoch, values); ApplyPendingScale(acMessage.Id);
         return;
+    }
     const auto entity = Utils::FindEntityByServerId(acMessage.Id);
+    if (!entity || OwnershipSystem::GetOwnershipEpoch(m_world, *entity) != acMessage.OwnershipEpoch) return;
+    if (m_scales.contains(acMessage.Id) || m_pendingScales.contains(acMessage.Id))
+    {
+        const auto baseline = m_health.find(acMessage.Id);
+        const auto pending = m_pendingScales.find(acMessage.Id);
+        // A health reply sent BEFORE scaling may arrive while the first stamped snapshot is
+        // waiting for the native/save boundary. Only a newer/equal omission is contradictory.
+        const auto revision = pending != m_pendingScales.end() ? pending->second.Values.HealthRevision :
+            (baseline != m_health.end() ? baseline->second.Revision : 0);
+        if (acMessage.Revision >= revision)
+            ScaleFault("health update omitted an already negotiated life stamp");
+        return;
+    }
     auto it = m_health.find(acMessage.Id);
     if (!entity || it == m_health.end() || it->second.Epoch != acMessage.OwnershipEpoch ||
         OwnershipSystem::GetOwnershipEpoch(m_world, *entity) != acMessage.OwnershipEpoch)
@@ -379,7 +458,7 @@ void ActorValueService::OnActorMaxValueChanges(const NotifyActorMaxValueChanges&
 
     for (const auto& [key, value] : acMessage.Values)
     {
-        if (key >= ActorValueInfo::kActorValueCount || key == ActorValueInfo::kInfamy || !std::isfinite(value) || key == ActorValueInfo::kDragonSouls)
+        if ((key == ActorValueInfo::kHealth && (m_scales.contains(acMessage.Id) || m_pendingScales.contains(acMessage.Id))) || key >= ActorValueInfo::kActorValueCount || key == ActorValueInfo::kInfamy || !std::isfinite(value) || key == ActorValueInfo::kDragonSouls)
             continue;
 
         spdlog::debug("Actor max value update, server ID: {:X}, key: {}, value: {}", acMessage.Id, key, value);
@@ -416,4 +495,154 @@ void ActorValueService::OnDeathStateChange(const NotifyDeathStateChange& acMessa
         spdlog::info("Applying death state {} to remote actor {:X}, server id: {:X}", acMessage.IsDead, pActor->formID, acMessage.Id);
         acMessage.IsDead ? pActor->Kill() : pActor->Respawn();
     }
+}
+
+namespace
+{
+uint64_t ScaleNow() noexcept
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+bool ScaleNear(float actual, float expected) noexcept
+{
+    return std::isfinite(actual) && std::isfinite(expected) &&
+        std::abs(actual - expected) <= std::max(0.01f, std::abs(expected) * 0.00001f);
+}
+}
+void ActorValueService::ScaleFault(const char* reason) noexcept
+{
+    if (m_scaleFault.empty()) m_scaleFault = reason;
+    m_world.ctx().at<SaveStateService>().Quarantine();
+}
+void ActorValueService::DescribeScale(Actor* actor, ActorValues& values) noexcept
+{
+    if (!actor || actor->GetExtension()->IsPlayer()) return;
+    for (const auto& saved : m_world.ctx().at<SaveStateService>().State().Scales)
+        if (saved.Form == actor->formID)
+        {
+            const auto maximum = values.ActorMaxValuesList.find(ActorValueInfo::kHealth);
+            HealthScale scale{saved.Life, saved.Base, saved.Maximum};
+            if (saved.Version != 1 || !scale.IsValid() || maximum == values.ActorMaxValuesList.end() ||
+                !ScaleNear(maximum->second, saved.Maximum))
+            {
+                values.WireValid = false; // an unknown reset/phase is not permission to divide or multiply HP again
+                ScaleFault("saved enemy life does not match native permanent HP; a validated reset/phase adapter is required");
+                return;
+            }
+            values.Scale = scale;
+            values.ActorMaxValuesList[ActorValueInfo::kHealth] = saved.Maximum;
+            return;
+        }
+}
+void ActorValueService::QueueScale(uint32_t server, uint32_t epoch, const ActorValues& values) noexcept
+{
+    if (!server || !epoch || !values.IsValid() || !values.Scale.Life) return;
+    if (const auto entity = Utils::FindEntityByServerId(server); entity &&
+        OwnershipSystem::GetOwnershipEpoch(m_world, *entity) > epoch) return;
+    if (m_pendingScales.size() >= 512 && !m_pendingScales.contains(server))
+    { ScaleFault("enemy scale inbox exceeds its bounded capacity"); return; }
+    const auto known = m_scales.find(server);
+    if (known != m_scales.end() && known->second != values.Scale)
+    { ScaleFault("enemy life changed without a coordinated native reset"); return; }
+    auto& pending = m_pendingScales[server];
+    if (epoch < pending.Epoch) return;
+    if (epoch > pending.Epoch)
+    {
+        pending = {epoch, values, ScaleNow()};
+        return;
+    }
+    if (!Coop::MergeScaleSnapshot(pending.Values, values))
+        ScaleFault("conflicting or over-limit scale snapshots in one ownership epoch");
+}
+bool ActorValueService::ApplyPendingScale(uint32_t server) noexcept
+{
+    const auto it = m_pendingScales.find(server);
+    if (it == m_pendingScales.end() || !m_scaleFault.empty()) return false;
+    const auto pending = it->second; // owned data, never retain a native pointer across a frame
+    auto& coop = m_world.ctx().at<CoopService>();
+    auto& saves = m_world.ctx().at<SaveStateService>();
+    if (!coop.Active()) return false; // spawn/control can precede Welcome
+    if (!coop.Supports(Coop::EnemyScaling) || !saves.Ready())
+    { ScaleFault("scaled actor requires negotiated enemy-health and a matching loaded co-save"); return false; }
+    if (ScaleNow() - pending.Since > 5000)
+    { ScaleFault("enemy scale could not acquire its native/receipt boundary within five seconds"); return false; }
+    const auto entity = Utils::FindEntityByServerId(server);
+    auto* actor = Utils::GetByServerId<Actor>(server);
+    if (!entity || !actor || !actor->GetNiNode()) return false;
+    const auto epoch = OwnershipSystem::GetOwnershipEpoch(m_world, *entity);
+    if (epoch > pending.Epoch) { m_pendingScales.erase(server); return false; }
+    if (epoch != pending.Epoch) return false;
+    if (actor->GetExtension()->IsPlayer() || actor->IsPlayerSummon() || actor->IsCommandedActor() || actor->IsMount() ||
+        (actor->flags1 & (1u << 26)))
+    { ScaleFault("enemy scale targets a player, ally, commanded actor or mount"); return false; }
+    if (const auto* scene = actor->GetCurrentScene(); (scene && scene->isPlaying) || actor->IsEssential() || (actor->flags2 & (1u << 19)))
+    { ScaleFault("scripted/protected actor requires an explicit health-phase adapter"); return false; }
+    const auto& values = pending.Values;
+    const auto& scale = values.Scale;
+    const Coop::SavedScale* saved{};
+    for (const auto& stamp : saves.State().Scales) if (stamp.Form == actor->formID) { saved = &stamp; break; }
+    if (saved && (saved->Version != 1 || saved->Life != scale.Life || saved->Base != scale.Base || saved->Maximum != scale.Maximum))
+    { ScaleFault("enemy life conflicts with this character's saved scale stamp"); return false; }
+    if (saved && !ScaleNear(actor->GetActorPermanentValue(ActorValueInfo::kHealth), scale.Maximum))
+    { ScaleFault("a script/reset changed scaled permanent HP outside its negotiated life adapter"); return false; }
+    const auto effect = Coop::NativeEffect(Coop::EffectKind::Scale, coop.Session(), coop.Generation(), scale.Life);
+    const bool first = saved == nullptr;
+    if (first && m_world.all_of<LocalComponent>(*entity) &&
+        !ScaleNear(actor->GetActorPermanentValue(ActorValueInfo::kHealth), scale.Base))
+    { ScaleFault("native owner maximum changed before scale application; no guessed script-phase override"); return false; }
+    if (first)
+    {
+        if (!saves.Begin(Coop::EffectKind::Scale, effect)) return false; // no blocking main-thread wait
+        if (!saves.StampScale({actor->formID, 1, scale.Life, scale.Base, scale.Maximum}))
+        { saves.AbortBeforeNative(effect); ScaleFault("cannot stamp enemy scale in this bounded character co-save"); return false; }
+    }
+    // Observe unsent local damage BEFORE changing permanent HP (which can itself change current
+    // HP), then adopt the canonical revision+ACK and restore its prediction once, not x2 again.
+    ApplyHealthBaseline(server, pending.Epoch, values);
+    actor->SetActorValues(values);
+    const auto health = m_health.find(server);
+    if (health != m_health.end())
+        actor->ForceActorValue(ActorValueOwner::ForceMode::DAMAGE, ActorValueInfo::kHealth, health->second.Project());
+    bool applied = health != m_health.end() && health->second.Epoch == pending.Epoch &&
+        ScaleNear(actor->GetActorPermanentValue(ActorValueInfo::kHealth), scale.Maximum) &&
+        ScaleNear(actor->GetActorValue(ActorValueInfo::kHealth), health->second.Project());
+    if (first) applied = applied && saves.Applied(effect) && saves.Commit(effect);
+    if (!applied)
+    {
+        if (first) saves.Uncertain(effect);
+        ScaleFault("enemy HP/native receipt application is uncertain; no guessed rollback or repeat multiplier");
+        return false;
+    }
+    m_scales[server] = scale;
+    if (auto* cache = m_world.try_get<ActorValuesComponent>(*entity))
+    {
+        cache->CurrentActorValues.Scale = scale;
+        cache->CurrentActorValues.ActorMaxValuesList[ActorValueInfo::kHealth] = scale.Maximum;
+        cache->CurrentActorValues.HealthRevision = health->second.Revision;
+        cache->CurrentActorValues.ActorValuesList[ActorValueInfo::kHealth] = health->second.Project();
+    }
+    if (auto* waiting = m_world.try_get<WaitingFor3D>(*entity))
+    {
+        waiting->SpawnRequest.InitialActorValues.Scale = scale;
+        waiting->SpawnRequest.InitialActorValues.ActorMaxValuesList[ActorValueInfo::kHealth] = scale.Maximum;
+        waiting->SpawnRequest.InitialActorValues.ActorValuesList[ActorValueInfo::kHealth] = health->second.Project();
+        waiting->SpawnRequest.InitialActorValues.HealthRevision = health->second.Revision;
+    }
+    m_pendingScales.erase(server);
+    if (!actor->IsDead() && health->second.Project() <= 0.f) actor->Kill();
+    return true;
+}
+void ActorValueService::RunScaleUpdates() noexcept
+{
+    if (!RFAB_EXPECT_MAIN_THREAD()) return;
+    std::vector<uint32_t> pending;
+    for (const auto& [server, _] : m_pendingScales) pending.push_back(server);
+    for (auto server : pending) ApplyPendingScale(server);
+    if (m_scaleFault.empty()) return;
+    const auto reason = m_scaleFault; // Close() synchronously clears this service's network caches
+    m_world.ctx().at<SaveStateService>().Quarantine();
+    spdlog::error("[RFAB] enemy-health adapter quarantined: {}", reason);
+    Utils::ShowHudMessage("RFAB: enemy life/HP adapter mismatch. Session disconnected and shared effects locked; load a matching save. No automatic x4 scaling or base-HP guess.");
+    m_transport.Close();
 }

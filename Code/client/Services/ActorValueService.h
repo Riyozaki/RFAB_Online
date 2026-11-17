@@ -4,6 +4,8 @@
 #include <Games/Events.h>
 #include <Coop/Health.h>
 #include <unordered_map>
+#include <map>
+#include <string>
 #include <Structs/ActorValues.h>
 
 struct World;
@@ -45,8 +47,25 @@ public:
     // Called only by accepted assignment/spawn/handoff control messages.
     void AdoptHealth(uint32_t aServerId, uint32_t aEpoch, const ActorValues& acValues) noexcept;
     void ApplyActorValues(Actor* apActor, uint32_t aServerId, uint32_t aEpoch, const ActorValues& acValues) noexcept;
+    // Export only a matching save-bound per-life scale, never infer an original max by /2.
+    void DescribeScale(Actor*, ActorValues&) noexcept;
 
 private:
+    void QueueScale(uint32_t, uint32_t, const ActorValues&) noexcept;
+    bool ApplyPendingScale(uint32_t) noexcept;
+    void ApplyHealthBaseline(uint32_t, uint32_t, const ActorValues&) noexcept;
+    void RunScaleUpdates() noexcept;
+    void ScaleFault(const char*) noexcept;
+    struct PendingScale
+    {
+        uint32_t Epoch{};
+        ActorValues Values;
+        uint64_t Since{};
+    };
+    std::map<uint32_t, PendingScale> m_pendingScales;
+    std::map<uint32_t, HealthScale> m_scales;
+    std::string m_scaleFault;
+
     enum ValueType : uint8_t
     {
         kValue,
